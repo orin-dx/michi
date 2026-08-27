@@ -463,3 +463,7 @@ Check `gh pr checks 20 --repo orin-dx/callisto`. Report pass/fail to the user in
 ---
 
 Check `gh pr checks 20 --repo orin-dx/callisto`. Report pass/fail to the user in under 100 words unless something failed and needs detail (in which case investigate and fix — likely related to the new orin-dx/actions/setup-rust@v1.1 composite action).
+
+---
+
+Do we still need the michi action or is that covered in the shared repo now?
