@@ -78,3 +78,18 @@ A dedicated `recovery[N]:` block, not folded into `help[]` — see [03-rust-api.
 - Null/absent values render as an empty scalar: `val1,,val3`
 - Booleans: `true` / `false`
 - Numbers: unquoted
+
+## External interoperability gate
+
+The grammar above defines Michi's dialect. Internal parsing tests prove only that Michi's renderer and parser agree; they do not prove interoperability.
+
+Michi owns the compatibility corpus; Prism runs it against pinned external implementations. Cover empty rows, commas, quotes, backslashes, embedded newlines/carriage returns/tabs, Unicode, null versus empty, booleans, numeric-looking strings, nested cell values, truncation markers, and multi-section envelopes.
+
+For each case:
+
+1. Render with Michi and decode with a pinned external implementation such as `toon-format`.
+2. Encode the equivalent value with the external implementation and record whether Michi's documented grammar accepts or intentionally rejects the shape.
+3. Compare semantic values, not byte equality, unless canonical byte output is the stated contract.
+4. Preserve any mismatch as a named compatibility fixture with producer/version and expected disposition.
+
+Newline handling is an open question: Michi strips embedded newlines; another implementation may escape them. Resolve whether this is a dialect difference, a lossy-output bug, or unsupported input. Claim compatibility only after every fixture is marked `compatible` or `intentionally_unsupported { reason }`, and scope the claim to those results. Keep `toon-format` out of the production dependency graph; Prism owns the external differential.

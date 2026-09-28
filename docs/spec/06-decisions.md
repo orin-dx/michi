@@ -27,6 +27,16 @@ For external Rust binaries to depend on `michi`:
 
 **Recommendation:** (b) during development, (a) at first stable release. crates.io publish is gated behind at least one real consumer integration test.
 
+### Open until two consumers agree — measurement-basis rendering
+
+**Blocks:** a shared rendering primitive for measured and modeled values
+
+ProjectAtlas distinguishes observed values, deterministic derivations, and modeled counterfactuals. Lumen may need the same distinction. This supports investigation, not a new Michi domain type.
+
+First test whether `ProvenanceBlock` and ordinary section fields express this clearly. Add a `MeasurementBasis`/`Measured<T>` API only when two real consumers need the same wire contract and the design passes the five gates in `PRINCIPLES.md`. Michi renders the basis; callers decide whether a value is observed, derived, or modeled.
+
+This question adds no production dependency. External telemetry or TOON crates remain evaluation/dev dependencies unless an implementation spec proves otherwise.
+
 ### Deferred to v2 — `cli` feature scope
 
 **Blocks:** terminal-aware rendering
