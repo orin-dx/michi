@@ -196,3 +196,7 @@ A string cell longer than `max_cell_len` chars (default 200) is cut, and its tex
 ## Out of scope
 
 michi emits flat lists only, so these parts of TOON 4.4 never appear in its output: nested objects (§8), nested field groups and keyed tabular objects (§9.3, §9.5), arrays of arrays and mixed lists (§9.2, §9.4 beyond empty objects), the tab and pipe delimiters (§11), other indent sizes (§12), root primitives and root arrays (§5). serde `list()` normalizes a nested array or object to a string holding its compact JSON text (§3 host-type normalization) instead of emitting nested TOON.
+
+## External interoperability gate
+
+The official TOON 4.4 encode fixtures (`tests/toon_spec_fixtures.rs`) are external evidence that michi's encoder conforms to the specification for the subset it emits. They do not show that independent decoders or other TOON implementations accept michi's output; track those comparisons and any compatibility claims in the [TOON interoperability research note](../research/toon-interoperability.md).

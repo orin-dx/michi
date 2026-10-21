@@ -198,26 +198,11 @@ None of these thirteen inputs is ever silently clamped, truncated, or defaulted 
 
 `@napi-rs/cli`'s `--cross-compile` flag selects `cargo-zigbuild` as the linker for non-native Linux targets (and `cargo-xwin` for Windows, unused here).
 
-In CI, three of the four targets build natively on their own runner:
+CI builds three NAPI targets: `aarch64-apple-darwin` and `x86_64-unknown-linux-gnu` natively, plus `x86_64-unknown-linux-musl` with `cargo-zigbuild`.
 
-- `x86_64-apple-darwin` on `macos-13`
-- `aarch64-apple-darwin` on `macos-latest`
-- `x86_64-unknown-linux-gnu` on `ubuntu-latest`
+`.github/workflows/release.yml` uses Callisto 0.10. Ordinary pushes to `main` create or update a version PR when changesets are present. A verified merge of that managed PR builds all three targets, collects and checks their artifacts, then runs Callisto's release action. The npm package's `prepublishOnly` publishes the platform packages; Callisto owns GitHub releases and tags.
 
-Only `x86_64-unknown-linux-musl` cross-compiles, from an `ubuntu-latest` runner:
-
-```bash
-cargo install cargo-zigbuild
-napi build --release --cross-compile --target x86_64-unknown-linux-musl
-```
-
-Today's `.github/workflows/ci.yml` has a `napi` job with a `fail-fast: false` matrix that **builds and tests** four targets on every push: `x86_64-apple-darwin`, `aarch64-apple-darwin`, `x86_64-unknown-linux-gnu`, `x86_64-unknown-linux-musl` (the last cross-compiled via `cargo-zigbuild`).
-
-- `.github/workflows/release.yml` ("Release & Publish") runs on every push to `main`, invoking the `orin-dx/callisto` action with `publish: "true"` — an automated publish pipeline exists.
-- As of this writing, that pipeline has never actually produced a release: neither `michi-core`/`michi-pipeline` on crates.io nor `@orin-dx/michi` on npm exists yet (verified directly against both registries, not assumed). crates.io publish is gated behind at least one real consumer integration test (see [`docs/spec/06-decisions.md`](06-decisions.md)) — the pipeline exists, but the gate condition it's waiting on hasn't been met.
-- What callisto's release job actually does internally (version detection, per-platform `.node` artifact assembly, `napi prepublish`) is external to this repo — `orin-dx/callisto`'s own source is the reference, not restated here.
-
-The `version-sync` job already asserts the npm package version equals the crate version on every push/PR (see [05-scope-and-quality.md](05-scope-and-quality.md)) — that check exists today and would gate a publish job once one is built.
+The pipeline has not produced a release yet: neither `michi-core`/`michi-pipeline` on crates.io nor `@orin-dx/michi` on npm exists. The three packages ship one version through the Callisto fixed group, and the first release establishes the published versions for downstream integration; consumer integration follows publication (see [ADR 4](../adr/0004-publish-before-consumer-integration.md)). The `version-sync` CI job checks that the npm package version matches the workspace version in the root `Cargo.toml`.
 
 **Windows is a non-goal for v1.** michi's agent consumers (MCP servers, CLIs invoked by coding agents) run on Linux and macOS hosts; a `windows-x64` target would add `cargo-xwin` tooling and another CI lane for no current consumer. Nothing blocks adding it later.
 

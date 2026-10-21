@@ -15,6 +15,8 @@ AXI response primitives for agent-ergonomic tools — TOON lists, key-value bloc
 
 Available as Rust crates (`michi-core`, plus `michi-pipeline` for async execution) or a Node.js package (`@orin-dx/michi`).
 
+For developer docs, start with the [documentation map](docs/README.md).
+
 > [!IMPORTANT]\
 > Not yet published to crates.io or npm. Clone the repo and build from source to try it — see [Local Development](#local-development).
 

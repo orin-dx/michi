@@ -27,8 +27,6 @@ publish-to = ["npm"]
 release-trigger = "changeset"
 
 # Every michi package ships one version: a change to any of them releases all three.
-
-# Every michi package ships one version: a change to any of them releases all three.
 [[fixed-group]]
 name = "michi"
 members = ["michi-core", "michi-pipeline", "michi-node"]
