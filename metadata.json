@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.11.7-nightly.202610210625.fedd31ca1",
+  "checkpoint_id": "01M5FZQM5A7J5V6J1HSHJS4TYB",
+  "strategy": "manual-commit",
+  "branch": "docs/envelope-spec-fsl",
+  "checkpoints_count": 4,
+  "files_touched": [
+    "CONTRIBUTING.md",
+    "PRINCIPLES.md",
+    "README.md",
+    "docs/spec/02-toon-format.md",
+    "docs/spec/04-mcp-and-napi.md",
+    "docs/spec/05-scope-and-quality.md",
+    "docs/spec/06-decisions.md",
+    "docs/spec/07-wisp-and-monokl-envelope.md",
+    "docs/spec/README.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/0/metadata.json",
+      "transcript": "/0/full.jsonl",
+      "compact_transcript": "/0/transcript.jsonl",
+      "content_hash": "/0/content_hash.txt",
+      "prompt": "/0/prompt.txt"
+    }
+  ]
+}

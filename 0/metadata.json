@@ -1,0 +1,28 @@
+{
+  "cli_version": "0.11.7-nightly.202610210625.fedd31ca1",
+  "checkpoint_id": "01M5FZQM5A7J5V6J1HSHJS4TYB",
+  "session_id": "01a15ee7-9cc1-7301-a027-522afabdcff4",
+  "strategy": "manual-commit",
+  "created_at": "2026-10-21T19:41:41.567458Z",
+  "branch": "docs/envelope-spec-fsl",
+  "checkpoints_count": 4,
+  "save_step_count": 1,
+  "files_touched": [
+    "CONTRIBUTING.md",
+    "PRINCIPLES.md",
+    "README.md",
+    "docs/spec/02-toon-format.md",
+    "docs/spec/04-mcp-and-napi.md",
+    "docs/spec/05-scope-and-quality.md",
+    "docs/spec/06-decisions.md",
+    "docs/spec/07-wisp-and-monokl-envelope.md",
+    "docs/spec/README.md"
+  ],
+  "agent": "Codex",
+  "model": "gpt-6-sol",
+  "turn_id": "4f5a65fa3555",
+  "compact_transcript_start": 0,
+  "session_metrics": {
+    "turn_count": 4
+  }
+}

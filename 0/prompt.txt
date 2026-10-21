@@ -1,0 +1,21 @@
+We've been working hard towards a v1 of michi and we would like your help in evaluating the work that claude has been doing. Consider them in the context of our goals for the project, the stated architecture and semantic models. Also consider Rust best practices, performance and security, DX and maintainability.
+
+Give me a comprehensive report, including concerns, architectural issues, Rust semantic and best practices smells, bugs, etc. Be comprehensive. Come at this from a principal engineer lens worried about our v1 release and worried about proving the value
+
+---
+
+Is this a surface review or a very thorough, reliable review that can drive real change?
+
+---
+
+Provide a comprehensive report that includes the initial findinds as well as the work you're doing in the deeper analysis
+
+---
+
+Any more details we can give claude?
+
+---
+
+Claude claims to have fixed all the issues you found. Can you first verify that claim and then check if it introduced new ones? Or if there are others we missed?
+
+Any architecture concerns? Any semantic model smells?
