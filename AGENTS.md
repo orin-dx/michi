@@ -35,7 +35,7 @@
 
 ## Architecture
 
-- Virtual Cargo workspace: the root `Cargo.toml` has no `[package]`; `[workspace.package] version` is the one version every crate shares (Callisto fixed group `michi`, lockstep releases)
+- Virtual Cargo workspace: the root `Cargo.toml` has no `[package]` and no shared version; Callisto writes each crate's `version` and keeps them equal (fixed group `michi`, lockstep releases, checked by CI version-sync)
 - `crates/michi-core/` — pure sync rendering library, every primitive (default features: only `thiserror` + `compact_str`). Integration tests, divan benches and examples live in `crates/michi-core/{tests,benches,examples}` (`cargo run -p michi-core --example basic_toon`)
 - `crates/michi-pipeline/` — async pipeline execution (Plan 2, shipped): validated `Plan` of `ExecStep`s, `execute`/`resume` returning a `RunRecord`, keyed `BreakerRegistry`, retry budget, `CancellationToken` (wraps tokio-util), `StepObserver`, its own `ExecutionError` (not a `michi_core::Error` variant — see `docs/spec/06-decisions.md`). API: `docs/spec/08-pipeline-execution.md`. Depends on `michi-core` (exact `=` version pin) + `tokio` + `tokio-util`; not re-exported through `michi-core`.
 - `packages/michi-node/` — thin NAPI cdylib shim (`publish = false`), npm package name `@orin-dx/michi`; the exports themselves live in `crates/michi-core/src/napi.rs` behind michi-core's `napi` feature and are re-exported via `pub use michi_core::napi::*;`

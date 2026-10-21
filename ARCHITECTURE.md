@@ -27,7 +27,7 @@ graph LR
     node -- "features = [napi]" --> core
 ```
 
-All three version in lockstep (`[workspace.package] version`), released together as a Callisto fixed group. `michi-pipeline` and `michi-node` depend on `michi-core` through an exact `=x.y.z` workspace pin, so a mixed set never resolves.
+All three version in lockstep (each crate's `version`, kept equal by Callisto), released together as a Callisto fixed group. `michi-pipeline` and `michi-node` depend on `michi-core` through an exact `=x.y.z` workspace pin, so a mixed set never resolves.
 
 ## Component Overview
 
