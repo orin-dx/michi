@@ -1,6 +1,6 @@
 # michi
 
-## [Unreleased]
+## 0.3.0
 
 - The workspace publishes two crates, `michi-core` and `michi-pipeline`, plus the `@orin-dx/michi` npm package, all on one version (0.3.0). The `michi` facade and the `michi-toon`, `michi-truncate` and `michi-resilience` crates are merged into `michi-core` as the `toon`, `truncate` and `resilience` modules; replace `michi::` paths with `michi_core::`. The `michi` name on crates.io belongs to an unrelated project. See [06-decisions.md](docs/spec/06-decisions.md).
 - License changed to FSL-1.1-MIT (from AGPL-3.0-or-later), for suite consistency with Lumen and Wisp and to remove the FSL/AGPL linking conflict. See [06-decisions.md](docs/spec/06-decisions.md).

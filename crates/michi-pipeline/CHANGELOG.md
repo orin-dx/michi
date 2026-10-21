@@ -1,6 +1,6 @@
 # michi-pipeline
 
-## Unreleased
+## 0.3.0
 
 - **Breaking:** the execution API is redesigned (see `docs/spec/08-pipeline-execution.md`). `execute_pipeline`, `execute_pipeline_parallel`, `StepDependencies`, positional runner lists, `CircuitBreaker::call`/`CircuitBreaker::new(retry, timeout, threshold, open)` and the `StepCountMismatch`, `UnknownStepId`, `DuplicateStepId` and `CyclicDependency` error variants are removed. In their place:
   - `StepId` and `RunId` are validated slugs (1 to 64 ASCII letters, digits, `_`, `-`, `.`). `RunId::unique(prefix)` builds one without a UUID dependency.
