@@ -1,0 +1,56 @@
+{
+  "cli_version": "0.11.7-nightly.202610210625.fedd31ca1",
+  "checkpoint_id": "01M5FZYJCFY089EW25S2ZW7NG9",
+  "strategy": "manual-commit",
+  "branch": "chore/orin-dx-rename",
+  "checkpoints_count": 5,
+  "files_touched": [
+    ".github/actions/setup-callisto/action.yml",
+    ".github/workflows/release.yml",
+    "AGENTS.md",
+    "CONTRIBUTING.md",
+    "PRINCIPLES.md",
+    "README.md",
+    "callisto.toml",
+    "docs/README.md",
+    "docs/adr/0001-async-pipeline-separate-crate.md",
+    "docs/adr/0002-consumer-integration-before-crates-io.md",
+    "docs/adr/0003-fsl-1-1-mit-license.md",
+    "docs/adr/0004-publish-before-consumer-integration.md",
+    "docs/adr/README.md",
+    "docs/research/README.md",
+    "docs/research/callisto-publishing.md",
+    "docs/research/toon-interoperability.md",
+    "docs/research/toon-retrieval-accuracy.md",
+    "docs/spec/02-toon-format.md",
+    "docs/spec/04-mcp-and-napi.md",
+    "docs/spec/05-scope-and-quality.md",
+    "docs/spec/06-decisions.md",
+    "docs/spec/07-wisp-and-monokl-envelope.md",
+    "docs/spec/README.md",
+    "packages/michi-node/package.json"
+  ],
+  "sessions": [
+    {
+      "metadata": "/0/metadata.json",
+      "transcript": "/0/full.jsonl",
+      "compact_transcript": "/0/transcript.jsonl",
+      "content_hash": "/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 20,
+    "cache_creation_tokens": 10764,
+    "cache_read_tokens": 6247769,
+    "output_tokens": 4512,
+    "api_call_count": 10,
+    "subagent_tokens": {
+      "input_tokens": 44,
+      "cache_creation_tokens": 20885,
+      "cache_read_tokens": 6092742,
+      "output_tokens": 5560,
+      "api_call_count": 22
+    }
+  }
+}
