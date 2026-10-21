@@ -48,14 +48,15 @@ jobs:
       - uses: moonrepo/setup-toolchain@v0
         with:
           auto-install: true
-      - name: Assert Cargo.toml and package.json versions match
+      - name: Assert every published package has the same version
         run: |
-          CARGO_VERSION=$(grep -m1 '^version' Cargo.toml | sed -E 's/version *= *"(.*)"/\1/')
-          NPM_VERSION=$(node -p "require('./packages/michi-node/package.json').version")
-          echo "Cargo.toml: $CARGO_VERSION"
-          echo "package.json: $NPM_VERSION"
-          if [ "$CARGO_VERSION" != "$NPM_VERSION" ]; then
-            echo "::error::Version mismatch: Cargo.toml=$CARGO_VERSION package.json=$NPM_VERSION"
+          crate_version() { grep -m1 '^version' "$1" | sed -E 's/version *= *"(.*)"/\1/'; }
+          CORE=$(crate_version crates/michi-core/Cargo.toml)
+          PIPELINE=$(crate_version crates/michi-pipeline/Cargo.toml)
+          NPM=$(node -p "require('./packages/michi-node/package.json').version")
+          echo "michi-core: $CORE  michi-pipeline: $PIPELINE  @orin-dx/michi: $NPM"
+          if [ "$CORE" != "$PIPELINE" ] || [ "$CORE" != "$NPM" ]; then
+            echo "::error::Version mismatch: michi-core=$CORE michi-pipeline=$PIPELINE @orin-dx/michi=$NPM"
             exit 1
           fi
 

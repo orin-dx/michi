@@ -93,7 +93,7 @@ Format changes are major versions. Treat the rendered string as a contract — t
 
 **MSRV policy:** `rust-version = "1.96"` is the declared minimum. A bump happens only when a needed language or `std` feature requires it, gets recorded in the CHANGELOG, and counts as a **minor** bump — never a patch.
 
-**Version sync:** `michi-core`, `michi-pipeline`, and the npm package share one version (`[workspace.package] version` in the root `Cargo.toml`), released in lockstep as a Callisto fixed group named `michi`. `michi-pipeline` depends on `michi-core` through an exact `=` pin, so a mixed set never resolves.
+**Version sync:** `michi-core`, `michi-pipeline`, and the npm package share one version (each crate's own `version`, written by Callisto), released in lockstep as a Callisto fixed group named `michi`. `michi-pipeline` depends on `michi-core` through an exact `=` pin, so a mixed set never resolves.
 
 - A `version-sync` CI job asserts the npm package version equals the workspace version on every push/PR, so `michi-core` at `0.3.1` and the `@orin-dx/michi` npm package at `0.3.1` always describe the same source.
 - `.github/workflows/callisto-release.yml` uses Callisto to open version PRs and publish after a verified merge. The first release establishes versioned packages for downstream integration; consumer integration is a post-release validation, not a publication prerequisite (see [ADR 4](../adr/0004-publish-before-consumer-integration.md)).
