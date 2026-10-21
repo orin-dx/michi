@@ -203,7 +203,8 @@ jobs:
             fi
           done
           pnpm exec napi create-npm-dirs
-          pnpm exec napi artifacts --output-dir "$NATIVE_DIR"
+          # napi joins --output-dir onto the package directory, so an absolute path must be made relative.
+          pnpm exec napi artifacts --output-dir "$(realpath --relative-to="$PWD" "$NATIVE_DIR")"
           for file in \
             michi.darwin-arm64.node \
             michi.linux-x64-gnu.node \
