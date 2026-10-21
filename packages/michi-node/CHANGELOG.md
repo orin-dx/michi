@@ -1,5 +1,10 @@
 # michi-node
 
+## 0.3.1
+
+- First published release. `@orin-dx/michi` installs a release-built native binary through its per-platform packages (`@orin-dx/michi-darwin-arm64`, `@orin-dx/michi-linux-x64-gnu`, `@orin-dx/michi-linux-x64-musl`) and ships its TypeScript declarations.
+- Joined the `michi` group at this version.
+
 ## 0.3.0
 
 - Versions in lockstep with the `michi-core` and `michi-pipeline` crates (0.3.0); the exports now come from `michi-core`'s `napi` feature.

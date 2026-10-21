@@ -1,6 +1,6 @@
 [package]
 name        = "michi-node"
-version.workspace      = true
+version = "0.3.1"
 publish     = false
 edition.workspace      = true
 rust-version.workspace = true
