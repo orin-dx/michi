@@ -1,5 +1,10 @@
 # michi-core
 
+## 0.3.1
+
+- Released together with the `michi` fixed group.
+- Joined the `michi` group at this version.
+
 ## 0.3.0
 
 - **Breaking:** `pipeline::StepStatus` gains `Running`, `CompletedEarlier`, `OutcomeUnknown(UnknownCause)`, `NotRun(NotRunReason)` and `Panicked`, and `Skipped` now carries a `SkipReason` (`PrerequisiteFailed` or `Cancelled`). The reason enums are `#[non_exhaustive]`. New `StepStatus::reason()` and `is_success()`; labels are snake_case (`completed_earlier`, `outcome_unknown`, `not_run`). With `serde`, the status types serialize in snake_case.

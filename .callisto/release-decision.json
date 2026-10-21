@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 2,
+  "entries": [
+    {
+      "package": "cargo/michi-core",
+      "targetVersion": "0.3.1",
+      "reasons": [
+        {
+          "kind": "fixedGroup",
+          "groupId": "michi"
+        }
+      ]
+    },
+    {
+      "package": "cargo/michi-node",
+      "targetVersion": "0.3.1",
+      "reasons": [
+        {
+          "kind": "changeset"
+        }
+      ]
+    },
+    {
+      "package": "cargo/michi-pipeline",
+      "targetVersion": "0.3.1",
+      "reasons": [
+        {
+          "kind": "fixedGroup",
+          "groupId": "michi"
+        }
+      ]
+    },
+    {
+      "package": "npm/@orin-dx/michi",
+      "targetVersion": "0.3.1",
+      "reasons": [
+        {
+          "kind": "changeset"
+        }
+      ]
+    }
+  ],
+  "digest": "2d8685747e79eb027529fbc1f0f251087bfad534d82191b404f377c0acfed38e"
+}

@@ -18,7 +18,7 @@ homepage     = "https://orin-dx.com/tools/michi/"
 
 [workspace.dependencies]
 # Exact pin: workspace crates release in lockstep, so a mixed set must never resolve.
-michi-core  = { path = "crates/michi-core", version = "=0.3.0" }
+michi-core  = { path = "crates/michi-core", version = "=0.3.1" }
 thiserror   = "2"
 compact_str = "0.8"
 serde       = { version = "1.0.228", features = ["derive"] }

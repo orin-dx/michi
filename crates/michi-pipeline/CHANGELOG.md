@@ -1,5 +1,10 @@
 # michi-pipeline
 
+## 0.3.1
+
+- Released together with the `michi` fixed group.
+- Joined the `michi` group at this version.
+
 ## 0.3.0
 
 - **Breaking:** the execution API is redesigned (see `docs/spec/08-pipeline-execution.md`). `execute_pipeline`, `execute_pipeline_parallel`, `StepDependencies`, positional runner lists, `CircuitBreaker::call`/`CircuitBreaker::new(retry, timeout, threshold, open)` and the `StepCountMismatch`, `UnknownStepId`, `DuplicateStepId` and `CyclicDependency` error variants are removed. In their place:
