@@ -1,9 +1,14 @@
 use crate::kv::KvValue;
 
 /// A structured recovery hint for an agent encountering an error.
+///
+/// With the `serde` feature it serializes to the same JSON as the structured companions of `AgentResponse` and
+/// `DomainError`: `{"tool": ..., "params": {key: value, ...}, "reason": ...}`, with `reason` omitted when absent and
+/// each parameter as a plain JSON value. Deserializing maps strings to `Text`, integers to `Int`, other numbers to
+/// `Float` (decimal places taken from the number), booleans to `Bool` and `null` to `Missing`.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "serde", serde(into = "RecoveryHintWire", from = "RecoveryHintWire"))]
 pub struct RecoveryHint {
     /// The tool/operation name the agent should call to recover.
     pub tool: String,
@@ -34,6 +39,76 @@ impl RecoveryHint {
     }
 }
 
+#[cfg(feature = "serde")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schemars", schemars(rename = "RecoveryHint"))]
+struct RecoveryHintWire {
+    tool: String,
+    params: serde_json::Map<String, serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+}
+
+#[cfg(feature = "serde")]
+impl From<RecoveryHint> for RecoveryHintWire {
+    fn from(h: RecoveryHint) -> Self {
+        let params = h
+            .params
+            .iter()
+            .map(|(k, v)| {
+                // Same writer as the hand-built companions, so the two shapes cannot drift.
+                let mut json = String::new();
+                crate::kv::kv_value_to_json(&mut json, v);
+                (k.clone(), serde_json::from_str(&json).unwrap_or(serde_json::Value::String(json)))
+            })
+            .collect();
+        Self { tool: h.tool, params, reason: h.reason }
+    }
+}
+
+#[cfg(feature = "serde")]
+fn json_to_kv_value(v: serde_json::Value) -> KvValue {
+    match v {
+        serde_json::Value::Null => KvValue::Missing,
+        serde_json::Value::Bool(b) => KvValue::Bool(b),
+        serde_json::Value::String(s) => KvValue::Text(s),
+        serde_json::Value::Number(n) => match (n.as_i64(), n.as_f64()) {
+            (Some(i), _) => KvValue::Int(i),
+            (None, Some(f)) if n.is_f64() => {
+                let text = n.to_string();
+                let decimals = text.split_once('.').map_or(0, |(_, frac)| frac.len().min(20));
+                KvValue::Float(f, u8::try_from(decimals).unwrap_or(20))
+            }
+            _ => KvValue::Text(n.to_string()),
+        },
+        other => KvValue::Text(other.to_string()),
+    }
+}
+
+#[cfg(feature = "serde")]
+impl From<RecoveryHintWire> for RecoveryHint {
+    fn from(w: RecoveryHintWire) -> Self {
+        Self {
+            tool: w.tool,
+            params: w.params.into_iter().map(|(k, v)| (k, json_to_kv_value(v))).collect(),
+            reason: w.reason,
+        }
+    }
+}
+
+// The schema describes the wire form above, not the Rust field layout.
+#[cfg(feature = "schemars")]
+impl schemars::JsonSchema for RecoveryHint {
+    fn schema_name() -> String {
+        RecoveryHintWire::schema_name()
+    }
+
+    fn json_schema(generator: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+        RecoveryHintWire::json_schema(generator)
+    }
+}
+
 /// Render a list of recovery hints as an agent-readable block.
 #[must_use]
 pub fn render_recovery(hints: &[RecoveryHint]) -> String {
@@ -60,14 +135,14 @@ pub fn append_recovery(out: &mut String, hints: &[RecoveryHint]) {
 pub(crate) fn append_recovery_lines(out: &mut String, hints: &[RecoveryHint]) {
     for hint in hints {
         out.push_str("  ");
-        out.push_str(&hint.tool);
+        out.push_str(&crate::text::escape_line_breaks(&hint.tool));
         if !hint.params.is_empty() {
             out.push_str(": suggestedParams: { ");
             for (i, (k, v)) in hint.params.iter().enumerate() {
                 if i > 0 {
                     out.push_str(", ");
                 }
-                out.push_str(k);
+                out.push_str(&crate::text::escape_line_breaks(k));
                 out.push_str(": ");
                 crate::kv::push_kv_value(out, v);
             }
@@ -75,7 +150,7 @@ pub(crate) fn append_recovery_lines(out: &mut String, hints: &[RecoveryHint]) {
         }
         if let Some(reason) = &hint.reason {
             out.push_str(" — ");
-            out.push_str(reason);
+            out.push_str(&crate::text::escape_line_breaks(reason));
         }
         out.push('\n');
     }
@@ -171,18 +246,19 @@ mod tests {
     }
 
     #[test]
-    fn ac018b_newline_in_tool_or_reason_passes_through_unstripped() {
+    fn ac018b_newline_in_tool_or_reason_is_escaped() {
         let hints = [RecoveryHint::new("a\nb").reason("c\nd")];
         let out = render_recovery(&hints);
-        assert_eq!(out, "recovery[1]:\n  a\nb — c\nd\n");
-        assert_eq!(out.lines().count(), 4, "two embedded newlines add two extra lines beyond the fixed count");
+        assert_eq!(out, "recovery[1]:\n  a\\nb — c\\nd\n");
+        assert_eq!(out.lines().count(), 2, "escaped newlines add no lines beyond the fixed count");
     }
 
     #[test]
-    fn carriage_return_in_tool_or_reason_passes_through_but_does_not_change_line_count() {
+    fn carriage_return_in_tool_or_reason_is_escaped() {
         let hints = [RecoveryHint::new("a\rb").reason("c\rd")];
         let out = render_recovery(&hints);
-        assert_eq!(out, "recovery[1]:\n  a\rb — c\rd\n");
+        assert_eq!(out, "recovery[1]:\n  a\\rb — c\\rd\n");
+        assert!(!out.contains('\r'), "no raw CR may survive, got: {out:?}");
         assert_eq!(out.lines().count(), 2);
     }
 
@@ -194,27 +270,24 @@ mod tests {
     }
 
     #[test]
-    fn ac018c_newline_in_param_key_passes_through_unstripped() {
+    fn ac018c_newline_in_param_key_is_escaped() {
         let hints = [RecoveryHint::new("t").param("k\nz", KvValue::Text("v".to_string()))];
         let out = render_recovery(&hints);
-        assert_eq!(out, "recovery[1]:\n  t: suggestedParams: { k\nz: v }\n");
-        assert_eq!(out.lines().count(), 3, "one extra line from the embedded \\n in the param key");
+        assert_eq!(out, "recovery[1]:\n  t: suggestedParams: { k\\nz: v }\n");
+        assert_eq!(out.lines().count(), 2, "the escaped \\n in the param key adds no line");
     }
 
     #[test]
-    fn ac018c_carriage_return_in_param_key_passes_through_but_does_not_change_line_count() {
+    fn ac018c_carriage_return_in_param_key_is_escaped() {
         let hints = [RecoveryHint::new("t").param("k\rz", KvValue::Text("v".to_string()))];
         let out = render_recovery(&hints);
-        assert_eq!(out, "recovery[1]:\n  t: suggestedParams: { k\rz: v }\n");
-        assert_eq!(out.lines().count(), 2, "unchanged by the lone \\r");
+        assert_eq!(out, "recovery[1]:\n  t: suggestedParams: { k\\rz: v }\n");
+        assert!(!out.contains('\r'), "no raw CR may survive, got: {out:?}");
     }
 
     #[test]
     #[cfg(feature = "serde")]
-    fn ac037b_serializes_with_null_for_unset_reason_and_no_rename() {
-        assert_eq!(
-            serde_json::to_string(&RecoveryHint::new("t")).unwrap(),
-            "{\"tool\":\"t\",\"params\":[],\"reason\":null}"
-        );
+    fn ac037b_serializes_params_as_an_object_and_omits_an_unset_reason() {
+        assert_eq!(serde_json::to_string(&RecoveryHint::new("t")).unwrap(), "{\"tool\":\"t\",\"params\":{}}");
     }
 }

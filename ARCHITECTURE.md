@@ -4,31 +4,38 @@ This document describes how the `michi` workspace crates fit together.
 
 ## Workspace Layout
 
-`michi` is structured as a Cargo workspace with dedicated, single-responsibility sub-crates in `crates/` and a top-level facade crate:
+`michi` is structured as a virtual Cargo workspace (the root `Cargo.toml` has no `[package]`) with two published crates in `crates/` and one unpublished binding crate in `packages/`:
 
 ```text
-michi (workspace root)
+michi (workspace root, virtual manifest)
 ├── crates/
-│   ├── michi-truncate    # O(1) UTF-8 safe string truncation (zero dependencies)
-│   ├── michi-resilience  # Backoff delay math, RFC 7231 Retry-After parser, FNV-1a idempotency
-│   ├── michi-toon        # TOON format renderer, parser, CompactString cells, ToonSerializer
-│   ├── michi-core        # Core AXI types: AgentResponse, Audience, Hint, RecoveryHint, DomainError, StatusResponse
-│   └── michi-pipeline    # Async pipeline execution (Plan 2): execute_pipeline, execute_pipeline_parallel, CircuitBreaker, CancellationToken
-├── michi                 # Facade crate re-exporting all sub-crates (michi-pipeline is NOT re-exported here)
-└── packages/michi-node   # Node.js NAPI binding (@orin-dx/michi)
+│   ├── michi-core        # Every sync primitive: toon, kv, hints, recovery, empty, error, status, mcp, audience,
+│   │                     #   response (AgentResponse), pipeline (data type), truncate, resilience, telemetry; napi (feature)
+│   └── michi-pipeline    # Async pipeline execution: execute_pipeline, execute_pipeline_parallel, CircuitBreaker, CancellationToken
+└── packages/michi-node   # Node.js NAPI cdylib (@orin-dx/michi), publish = false
 ```
+
+Dependency direction:
+
+```mermaid
+graph LR
+    core["michi-core"]
+    pipeline["michi-pipeline"]
+    node["packages/michi-node (@orin-dx/michi)"]
+
+    pipeline --> core
+    node -- "features = [napi]" --> core
+```
+
+All three version in lockstep (`[workspace.package] version`), released together as a Callisto fixed group. `michi-pipeline` and `michi-node` depend on `michi-core` through an exact `=x.y.z` workspace pin, so a mixed set never resolves.
 
 ## Component Overview
 
-| Crate / Package | Layer | Responsibility | Runtime Dependencies |
-| --- | --- | --- | --- |
-| `michi-truncate` | Layer 1 | UTF-8 char-boundary content truncation (`floor_char_boundary`). | None |
-| `michi-resilience` | Layer 1 | Retry backoff math, `Retry-After` HTTP date parsing, FNV-1a idempotency keys. | None |
-| `michi-toon` | Layer 1 | TOON list rendering and parsing. Stack-inlined `CompactString` values for cell optimization. | `compact_str` |
-| `michi-core` | Layer 2 | High-level response DTOs (`AgentResponse`, `DomainError`, `StatusResponse`, `CallToolResult`). | `thiserror` (Optional: `serde`, `schemars`, `miette`) |
-| `michi-pipeline` | Layer 3 | Async execution over `michi-core`'s `Pipeline` data type: sequential `execute_pipeline`, concurrent `execute_pipeline_parallel`, `CircuitBreaker` resilience, cooperative `CancellationToken`. Own `ExecutionError` type, converts into `DomainError` via `From` — not a variant of `michi_core::Error`. Independently versioned, not re-exported through the facade. | `michi-core`, `michi-resilience`, `tokio` |
-| `michi` | Facade | Root re-export facade (`pub use michi_core::*`, `pub use michi_toon::*`, etc.). | `michi-*` workspace crates |
-| `packages/michi-node` | Shim | NAPI C-dylib binding for `@orin-dx/michi`. | `napi`, `napi-derive`, `serde_json` |
+| Crate / Package | Responsibility | Runtime Dependencies |
+| --- | --- | --- |
+| `michi-core` | All sync AXI primitives. `toon`: TOON list rendering and parsing with stack-inlined `CompactString` cells. `truncate`: UTF-8 char-boundary content truncation (`floor_char_boundary`). `resilience`: retry back-off math, `Retry-After` HTTP date parsing, FNV-1a idempotency keys. Response DTOs: `AgentResponse`, `DomainError`, `StatusResponse`, `CallToolResult`, and the `Pipeline` data type. `resilience::*` and `truncate::*` are re-exported at the crate root. | `thiserror`, `compact_str` (Optional: `serde`, `serde_json`, `schemars`, `miette`, `napi`, `napi-derive`) |
+| `michi-pipeline` | Async execution over `michi-core`'s `Pipeline` data type: sequential `execute_pipeline`, concurrent `execute_pipeline_parallel`, `CircuitBreaker` resilience, cooperative `CancellationToken`. Own `ExecutionError` type, converts into `DomainError` via `From` — not a variant of `michi_core::Error`. | `michi-core`, `tokio`, `thiserror` |
+| `packages/michi-node` | NAPI cdylib shim for `@orin-dx/michi`. Not published to crates.io. | `michi-core` (`napi` feature), `napi`, `napi-derive` |
 
 ## Data Composition & Render Flow
 
@@ -40,11 +47,11 @@ michi (workspace root)
 ```mermaid
 flowchart TB
     subgraph primitives["Primitives"]
-        toon["michi-toon"]
+        toon["michi-core::toon"]
         kv["michi-core::kv"]
         hints["michi-core::hints"]
         recovery["michi-core::recovery"]
-        truncate["michi-truncate"]
+        truncate["michi-core::truncate"]
     end
 
     toon --> AR
@@ -75,13 +82,13 @@ flowchart TB
 
 The Node.js native addon lives in `packages/michi-node` because Cargo requires a separate `cdylib` target definition:
 
-- Public FFI exports, input validation, and bounds checking live in `src/napi.rs` inside the root crate.
-- `packages/michi-node/src/lib.rs` re-exports `src/napi.rs` functions across the crate boundary via `pub use michi::napi::*;`.
+- Public FFI exports, input validation, and bounds checking live in `crates/michi-core/src/napi.rs` (numeric newtypes in `napi/num.rs`), compiled only with `michi-core`'s `napi` feature.
+- `packages/michi-node/src/lib.rs` re-exports those functions across the crate boundary via `pub use michi_core::napi::*;`.
 - `napi-derive` uses linker sections (`ctor`) to register native functions across crate boundaries without manual wrapper boilerplates.
 
 ## NAPI Boundary Contract
 
-The NAPI boundary (`src/napi.rs`) has a specific constructor discipline that differs from pure-Rust callers:
+The NAPI boundary (`crates/michi-core/src/napi.rs`) has a specific constructor discipline that differs from pure-Rust callers:
 
 **NAPI functions always use normalizing constructors (`new()`), never strict ones (`try_new()`).**
 
@@ -95,4 +102,4 @@ This asymmetry is intentional. The NAPI layer operates in a "be maximally resili
 
 ## WASM & Platform Targets
 
-All core workspace crates (`michi-truncate`, `michi-resilience`, `michi-toon`, `michi-core`) compile for `wasm32-unknown-unknown` and `wasm32-wasip1` targets without OS dependencies.
+`michi-core` compiles (default features) for `wasm32-unknown-unknown` and `wasm32-wasip1` targets without OS dependencies.

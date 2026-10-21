@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 318110df166844aefe51fabfc56c150348d58de41067630bc205995dbcc46b0e # shrinks to (type_name, field_count, row_count, total_count, cells) = ("a", 1, 1, None, [["\n"]])
+cc 87501c77e5487bba56cf23154b6a50fc87d3ae33ee213078a6d8a08f880c10d7 # shrinks to (type_name, field_count, row_count, total_count, cells) = ("af89", 3, 4, None, [["", "", ""], ["", "", ""], ["", "m0", "k  R"], ["\\,r\\\"l\rkj\r", " b6UjNJ", "\\\r\r11\n\\8\n"]])

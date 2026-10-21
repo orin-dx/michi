@@ -82,7 +82,7 @@ Setters return `void`, not `this`, so call them as sequential statements rather 
 | `.humanContent` | `(text: string) => void` — attach a `user`-audience companion block for `toCallToolResult()` |
 | `.toCallToolResult` | `() => CallToolResult` — the MCP `tools/call` response shape: `{content, isError, structuredContent}`, with each content block's `annotations.audience` set correctly |
 
-Full type definitions ship in `index.d.ts`. See the [main repo](https://github.com/orin-dx/michi) for the complete primitive set, the TOON grammar, and the Rust API this wraps.
+Full type definitions ship in `index.d.ts`. See the [main repo](https://github.com/orin-dx/michi) for the complete primitive set, the TOON grammar, and the `michi-core` Rust API this wraps (this package always carries the same version as `michi-core`).
 
 ## Supported platforms
 

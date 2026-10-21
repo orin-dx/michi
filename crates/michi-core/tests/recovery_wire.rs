@@ -1,0 +1,59 @@
+//! `RecoveryHint` has one JSON shape: serde, the schema and both hand-written structured companions agree.
+#![cfg(feature = "serde")]
+
+use michi_core::{AgentResponse, DomainError, ErrorCode, KvValue, OutputFormat, RecoveryHint};
+
+fn hints() -> Vec<RecoveryHint> {
+    vec![
+        RecoveryHint::new("create_item").param("project", KvValue::Text("PROJ".into())).param("count", KvValue::Int(3)),
+        RecoveryHint::new("list_items").reason("item may have moved"),
+    ]
+}
+
+fn companion_recovery(json: &str) -> serde_json::Value {
+    let v: serde_json::Value = serde_json::from_str(json).expect("structured content is JSON");
+    v["recovery"].clone()
+}
+
+#[test]
+fn serde_matches_the_agent_response_companion() {
+    let mut response = AgentResponse::new("t");
+    for h in hints() {
+        response = response.recovery_hint(h);
+    }
+    let serde_form = serde_json::to_value(hints()).expect("serializes");
+    assert_eq!(serde_form, companion_recovery(&response.render(OutputFormat::Json)));
+    assert_eq!(serde_form[0]["params"], serde_json::json!({"project": "PROJ", "count": 3}));
+    assert!(serde_form[0].get("reason").is_none(), "absent reason is omitted, not null");
+}
+
+#[test]
+fn serde_matches_the_domain_error_companion() {
+    let hint = hints().remove(0);
+    let err = DomainError::new(ErrorCode::NotFound, "m").recovery(hint.clone());
+    let companion: serde_json::Value = serde_json::from_str(&err.render_json()).expect("JSON");
+    assert_eq!(serde_json::to_value(&hint).expect("serializes"), companion["recovery"]);
+}
+
+#[test]
+fn wire_form_round_trips_text_int_bool_and_missing() {
+    let hint = RecoveryHint::new("t")
+        .param("s", KvValue::Text("x".into()))
+        .param("n", KvValue::Int(-4))
+        .param("b", KvValue::Bool(true))
+        .param("m", KvValue::Missing)
+        .reason("r");
+    let json = serde_json::to_string(&hint).expect("serializes");
+    assert_eq!(serde_json::from_str::<RecoveryHint>(&json).expect("deserializes"), hint);
+}
+
+#[cfg(feature = "schemars")]
+#[test]
+fn schema_describes_the_wire_form() {
+    let schema = serde_json::to_value(schemars::schema_for!(RecoveryHint)).expect("schema serializes");
+    let props = schema["properties"].as_object().expect("object schema");
+    assert_eq!(props["params"]["type"], "object", "params is a JSON object on the wire: {schema:#}");
+    let required: Vec<&str> =
+        schema["required"].as_array().into_iter().flatten().filter_map(serde_json::Value::as_str).collect();
+    assert!(!required.contains(&"reason"), "reason is optional on the wire: {schema:#}");
+}

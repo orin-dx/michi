@@ -1,6 +1,6 @@
 # michi spec
 
-The technical reference for the `michi` crate — what it does, how it's shaped, and why.
+The technical reference for `michi-core`, michi's sync primitives crate — what it does, how it's shaped, and why.
 
 ## Reading order
 
@@ -34,7 +34,7 @@ New to the crate? Read 01 → 02 → 03 in order — that's the whole mental mod
 **Plan 2 (the async execution layer) doesn't exist as code in this crate — but `pipeline`'s half has landed as its own crate.**
 
 - `pipeline` has a real, tested data type and `render()` in `michi-core` — always compiled.
-- The actual executor now exists too, just not in this crate: `crates/michi-pipeline` ships `execute_pipeline`/`execute_pipeline_parallel`, `CircuitBreaker`, and `CancellationToken`. It depends on `michi-core` (for the `Pipeline` data type) and `michi-resilience` (for retry config) directly — not on the root `michi` facade, and isn't re-exported through it.
+- The actual executor exists too, just not in this crate: `crates/michi-pipeline` ships `execute_pipeline`/`execute_pipeline_parallel`, `CircuitBreaker`, and `CancellationToken`. It depends on `michi-core` (for the `Pipeline` data type and `resilience` retry config) and isn't re-exported through it.
 - `fuzzy`, `cache`, and `cli` don't exist anywhere in the workspace at all — not even as stubs. Earlier placeholder stub files were deliberately deleted; see [`ARCHITECTURE.md`](../../ARCHITECTURE.md).
 - Each remaining piece lands as its own crate when it's actually built, per the same pattern `michi-pipeline` followed.
 - This spec covers Plan 1, the pure-primitives crate, only — `michi-pipeline`'s own API is documented in its own crate, not here.

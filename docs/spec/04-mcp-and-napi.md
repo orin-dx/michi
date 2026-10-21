@@ -7,7 +7,7 @@
 Always compiled — no feature gate, no new dependency in the default build. Owns exactly one thing: turning an already-built `AgentResponse` into the shape MCP's `tools/call` response expects.
 
 ```rust
-// Audience lives in src/audience.rs — not MCP-specific, michi's CLI output
+// Audience lives in michi-core's src/audience.rs — not MCP-specific, michi's CLI output
 // path uses it too (see 03-rust-api.md's render_for()/has_human_content()).
 pub struct ContentBlock {
     pub text: String,
@@ -46,9 +46,9 @@ Under the `serde` feature, `ContentBlock`/`CallToolResult` don't derive `Seriali
 
 ## NAPI npm package — `@orin-dx/michi`
 
-A thin napi-rs wrapper around the same crate, built with the `napi` feature enabled:
+A thin napi-rs wrapper around `michi-core`, built with its `napi` feature enabled:
 
-- Feature-gated `Cargo.toml` with the `napi` feature
+- The `#[napi]` exports live in `crates/michi-core/src/napi.rs`, compiled only with `michi-core`'s `napi` feature; `packages/michi-node` is a `publish = false` cdylib whose `src/lib.rs` is `pub use michi_core::napi::*;`
 - `napi-rs` with `napi-derive` proc-macros — clean Rust in, C-ABI glue and TypeScript types out, generated at compile time
 - Typed `#[napi(object)]` structs (`JsToonValue`, `JsKvItem`, ...) for the dynamic FFI boundary (cell values, recovery params) — kept as tagged Rust enums converted by hand, not `serde_json::Value`. `serde_json` does enter the tree once `napi` is enabled (for `toCallToolResult()`'s typed `structuredContent`), but the two are independent choices — `JsToonValue`/`JsKvItem` stay their own explicit shape because a `Value` would silently accept malformed input instead of matching a documented variant.
 - Platform-aware binary loading via the generated `index.js`
@@ -83,14 +83,14 @@ The fix: store the consuming Rust builder in an `Option` slot, and `take()` it o
 ```rust
 #[napi(js_name = "AgentResponse")]
 pub struct JsAgentResponse {
-    inner: Option<michi::AgentResponse>,
+    inner: Option<michi_core::AgentResponse>,
 }
 
 #[napi]
 impl JsAgentResponse {
     #[napi(constructor)]
     pub fn new(type_name: String) -> Self {
-        Self { inner: Some(michi::AgentResponse::new(type_name)) }
+        Self { inner: Some(michi_core::AgentResponse::new(type_name)) }
     }
 
     /// `&mut self` setter: take the consuming builder out of the Option,
@@ -105,7 +105,7 @@ impl JsAgentResponse {
         let b = self.inner.take()
             .ok_or_else(|| napi::Error::from_reason("response already rendered"))?;
         let field_refs: Vec<&str> = fields.iter().map(String::as_str).collect();
-        let converted = convert_rows(rows);              // JsToonValue → michi::toon::Value
+        let converted = convert_rows(rows);              // JsToonValue → michi_core::toon::Value
         self.inner = Some(b.items(converted, &field_refs));
         Ok(())
     }
@@ -161,7 +161,7 @@ Any `#[napi]` function returning `napi::Result<T>` throws a JS `Error` on `Err`.
 
 ### Numeric boundary
 
-Every JavaScript number that crosses into a rendering or resilience call is validated at the boundary through a newtype in `src/napi/num.rs` before any michi code runs; an out-of-domain value throws a JS `Error` instead of being narrowed. `napi_get_value_double` (a non-coercing read) is used for every converted position, so `napi_get_value_int32`'s `ToInt32` wraparound is never in the path.
+Every JavaScript number that crosses into a rendering or resilience call is validated at the boundary through a newtype in `crates/michi-core/src/napi/num.rs` before any michi code runs; an out-of-domain value throws a JS `Error` instead of being narrowed. `napi_get_value_double` (a non-coercing read) is used for every converted position, so `napi_get_value_int32`'s `ToInt32` wraparound is never in the path.
 
 - `totalCount` (`JsToonOptions.totalCount`, `renderKv`'s `totalCount` parameter, and `AgentResponse.totalCount`) is rejected unless it is a finite, non-negative integer no greater than `Number.MAX_SAFE_INTEGER` (2^53 - 1).
 - `decimalsVal` is rejected unless it is a finite integer in `[0, 20]`.
@@ -214,7 +214,7 @@ napi build --release --cross-compile --target x86_64-unknown-linux-musl
 Today's `.github/workflows/ci.yml` has a `napi` job with a `fail-fast: false` matrix that **builds and tests** four targets on every push: `x86_64-apple-darwin`, `aarch64-apple-darwin`, `x86_64-unknown-linux-gnu`, `x86_64-unknown-linux-musl` (the last cross-compiled via `cargo-zigbuild`).
 
 - `.github/workflows/release.yml` ("Release & Publish") runs on every push to `main`, invoking the `orin-dx/callisto` action with `publish: "true"` — an automated publish pipeline exists.
-- As of this writing, that pipeline has never actually produced a release: neither `michi` on crates.io nor `@orin-dx/michi` on npm exists yet (verified directly against both registries, not assumed). crates.io publish is gated behind at least one real consumer integration test (see [`docs/spec/06-decisions.md`](06-decisions.md)) — the pipeline exists, but the gate condition it's waiting on hasn't been met.
+- As of this writing, that pipeline has never actually produced a release: neither `michi-core`/`michi-pipeline` on crates.io nor `@orin-dx/michi` on npm exists yet (verified directly against both registries, not assumed). crates.io publish is gated behind at least one real consumer integration test (see [`docs/spec/06-decisions.md`](06-decisions.md)) — the pipeline exists, but the gate condition it's waiting on hasn't been met.
 - What callisto's release job actually does internally (version detection, per-platform `.node` artifact assembly, `napi prepublish`) is external to this repo — `orin-dx/callisto`'s own source is the reference, not restated here.
 
 The `version-sync` job already asserts the npm package version equals the crate version on every push/PR (see [05-scope-and-quality.md](05-scope-and-quality.md)) — that check exists today and would gate a publish job once one is built.
@@ -223,7 +223,7 @@ The `version-sync` job already asserts the npm package version equals the crate 
 
 ### TypeScript types (`index.d.ts`)
 
-This is auto-generated, never hand-written — `napi build` regenerates it from the `#[napi]` attributes in `src/napi.rs` every time.
+This is auto-generated, never hand-written — `napi build` regenerates it from the `#[napi]` attributes in `crates/michi-core/src/napi.rs` every time.
 
 - Every object type is `Js`-prefixed, matching its Rust struct name: `JsToonValue`, `JsToonOptions`, `JsKvItem`, `JsRecoveryHint`, `JsContentBlock`, `JsAnnotations`, `JsCallToolResult`.
 - There's no unprefixed `ToonValue`/`CallToolResult`/etc. in the real output, whatever an older sketch of this section might have suggested.
@@ -346,7 +346,7 @@ export type JsAgentResponse = AgentResponse;
 
 </details>
 
-The resilience-, status-, and error-domain surface, added by SPEC-ARCH-004 and the status/error NAPI wrappers — every numeric position here is validated through the newtype kernel in `src/napi/num.rs` per the "Numeric boundary" section below, not left to `ToInt32`/implicit coercion:
+The resilience-, status-, and error-domain surface, added by SPEC-ARCH-004 and the status/error NAPI wrappers — every numeric position here is validated through the newtype kernel in `crates/michi-core/src/napi/num.rs` per the "Numeric boundary" section below, not left to `ToInt32`/implicit coercion:
 
 <details>
 <summary>Full resilience-, error-, and status-domain <code>index.d.ts</code> (56 lines)</summary>

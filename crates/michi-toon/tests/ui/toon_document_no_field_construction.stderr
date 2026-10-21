@@ -1,5 +1,0 @@
-error[E0451]: field `opts` of struct `ToonDocument` is private
- --> tests/ui/toon_document_no_field_construction.rs:6:46
-  |
-6 |     let _direct = michi_toon::ToonDocument { opts: &o };
-  |                                              ^^^^ private field

@@ -28,7 +28,7 @@ Ensure all lints and tests pass cleanly.
 ## Development Rules
 
 - **Zero panics in library code**: Avoid `unwrap()`, `expect()`, or `panic!` in non-test library code.
-- **No `unsafe` outside NAPI glue**: `unsafe` is restricted to `src/napi.rs` for FFI bindings (`#![deny(unsafe_code)]` everywhere else).
+- **No `unsafe` outside NAPI glue**: `unsafe` is restricted to `crates/michi-core/src/napi.rs` for FFI bindings (`unsafe_code = "deny"` workspace-wide everywhere else).
 - **Document public items**: Every `pub` item requires a clear Rustdoc comment.
 - **Pre-allocate string buffers**: Use `String::with_capacity` when building strings.
 - **UTF-8 char safety**: Truncate strings on Unicode scalar boundaries using `floor_char_boundary`.
@@ -36,16 +36,19 @@ Ensure all lints and tests pass cleanly.
 
 ## Codebase Map
 
-| Target Task              | Path / Location               |
-| ------------------------ | ----------------------------- |
-| Inclusion rules          | `PRINCIPLES.md`               |
-| Crate architecture       | `ARCHITECTURE.md`             |
-| Truncation primitives    | `crates/michi-truncate/`      |
-| Resilience & retry math  | `crates/michi-resilience/`    |
-| TOON formatting & parser | `crates/michi-toon/`          |
-| Core AXI types           | `crates/michi-core/`          |
-| NAPI / Node.js bindings  | `packages/michi-node/`        |
-| TOON spec & grammar      | `docs/spec/02-toon-format.md` |
+| Target Task              | Path / Location                               |
+| ------------------------ | --------------------------------------------- |
+| Inclusion rules          | `PRINCIPLES.md`                               |
+| Crate architecture       | `ARCHITECTURE.md`                             |
+| Truncation primitives    | `crates/michi-core/src/truncate.rs`           |
+| Resilience & retry math  | `crates/michi-core/src/resilience.rs`         |
+| TOON formatting & parser | `crates/michi-core/src/toon/`                 |
+| Core AXI types           | `crates/michi-core/src/`                      |
+| Async pipeline execution | `crates/michi-pipeline/`                      |
+| NAPI exports             | `crates/michi-core/src/napi.rs`               |
+| Node.js package shim     | `packages/michi-node/`                        |
+| Tests, benches, examples | `crates/michi-core/{tests,benches,examples}/` |
+| TOON spec & grammar      | `docs/spec/02-toon-format.md`                 |
 
 ## Commit Style
 

@@ -1,23 +1,21 @@
 $schema: "https://moonrepo.dev/schemas/project.json"
 
-# Pin the id: moon otherwise derives it from the directory name, which is not the crate name in a git worktree.
-id: "michi"
+# Pin the id: moon otherwise derives it from the directory name, which differs in a worktree checkout. The root is a
+# virtual Cargo workspace, not a crate; `just lint-affected` lints the whole workspace when this project is affected.
+id: "michi-workspace"
 language: rust
 
 tasks:
   build:
     script: "cargo build --workspace"
     inputs:
-      - "src/**/*"
       - "crates/**/*"
       - "Cargo.toml"
 
   test:
     script: "cargo nextest run --workspace --all-features"
     inputs:
-      - "src/**/*"
       - "crates/**/*"
-      - "tests/**/*"
       - "Cargo.toml"
     deps:
       - build
@@ -25,20 +23,17 @@ tasks:
   lint:
     script: "cargo clippy --workspace --all-features --all-targets -- -D warnings"
     inputs:
-      - "src/**/*"
       - "crates/**/*"
       - "Cargo.toml"
 
   format:
     script: "cargo fmt --all"
     inputs:
-      - "src/**/*"
       - "crates/**/*"
 
   format-check:
     script: "cargo fmt --all --check"
     inputs:
-      - "src/**/*"
       - "crates/**/*"
 
   audit:
@@ -47,22 +42,12 @@ tasks:
       - "Cargo.lock"
       - "Cargo.toml"
 
-  publish:
-    script: "cargo publish -p michi --no-verify"
-    inputs:
-      - "src/**/*"
-      - "Cargo.toml"
-    deps:
-      - "michi-core:publish"
-
   check-wasm:
-    script: "cargo check -p michi-truncate -p michi-resilience -p michi-toon -p michi-core --target wasm32-unknown-unknown"
+    script: "cargo check -p michi-core --target wasm32-unknown-unknown"
     inputs:
       - "crates/**/*"
 
   examples:
-    script: "cargo run --example basic_toon && cargo run --example agent_response && cargo run --example domain_errors"
+    script: "cargo run -p michi-core --example basic_toon && cargo run -p michi-core --example agent_response && cargo run -p michi-core --example domain_errors"
     inputs:
-      - "examples/**/*"
-      - "src/**/*"
       - "crates/**/*"

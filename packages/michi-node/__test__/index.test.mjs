@@ -268,6 +268,16 @@ void describe('toCallToolResult', () => {
     assert.strictEqual(result.content[1].type, 'text')
     assert.deepStrictEqual(result.content[1].annotations.audience, ['user'])
   })
+
+  void it('marks invalid TOON rows as an error on every surface', () => {
+    const r = new AgentResponse('issues')
+    r.items([[{ type: 'int', intVal: 1 }]], ['id', 'state'])
+    const result = r.toCallToolResult()
+    assert.ok(result.content[0].text.startsWith('error: toon_validation_failed\n'), `got: ${result.content[0].text}`)
+    assert.strictEqual(result.isError, true)
+    assert.strictEqual(result.structuredContent.isError, true)
+    assert.ok(r.renderJson().includes('"isError":true'))
+  })
 })
 
 void describe('renderFor / hasHumanContent', () => {

@@ -97,11 +97,13 @@ pub enum ExecutionError {
 }
 
 impl ExecutionError {
-    /// Classifies whether retrying is worthwhile for this error.
+    /// Classifies whether retrying is worthwhile for this error. `Timeout`
+    /// reports `true`, but [`CircuitBreaker::call`] only re-invokes a timed-out
+    /// step that opts in via [`Step::is_idempotent`].
     #[must_use]
     pub fn is_retryable(&self) -> bool {
         match self {
-            Self::Http { status, .. } => michi_resilience::is_retryable_status(*status),
+            Self::Http { status, .. } => michi_core::resilience::is_retryable_status(*status),
             Self::Timeout { .. } => true,
             Self::Failed { retryable, .. } => *retryable,
             Self::CircuitOpen { .. } => true,
@@ -176,23 +178,64 @@ use std::pin::Pin;
 /// `CircuitBreaker::call`, incrementing by 1 on each retry. Object-safe by
 /// construction, so `Vec<Box<dyn Step>>` is usable without an async-trait
 /// dependency.
+///
+/// # Retry eligibility
+///
+/// [`CircuitBreaker::call`] may invoke [`Step::run`] more than once. Which
+/// failures lead to a re-invocation:
+///
+/// - **Errors the step returns itself** (other than a timeout) are retried
+///   exactly when [`ExecutionError::is_retryable`] says so. The step is
+///   classifying its own outcome there (e.g. `Failed { retryable }`, an HTTP
+///   status), so it is responsible for only marking an error retryable when
+///   the attempt had no effect or repeating it is safe.
+/// - **Timeouts are ambiguous outcomes.** When an attempt exceeds the
+///   breaker's per-attempt timeout, its future is dropped mid-flight: it may
+///   already have committed its side effect. The same holds for an
+///   [`ExecutionError::Timeout`] the step returns, directly or wrapped in
+///   [`ExecutionError::StepFailed`]. A timed-out step is re-invoked **only**
+///   if [`Step::is_idempotent`] returns `true`; by default it is not, and the
+///   timeout is returned after the single attempt.
 pub trait Step: Send + Sync {
     /// Runs one attempt of this step.
     fn run<'a>(&'a self, attempt: u32) -> Pin<Box<dyn Future<Output = Result<(), ExecutionError>> + Send + 'a>>;
+
+    /// Whether running this step more than once has the same effect as
+    /// running it once, so the breaker may re-invoke it after an ambiguous
+    /// (timed-out) attempt. Defaults to `false`: a step must opt in to being
+    /// retried after a timeout. See the trait-level "Retry eligibility"
+    /// section.
+    fn is_idempotent(&self) -> bool {
+        false
+    }
 }
 
 /// Adapter produced by [`step_fn`], implementing [`Step`] over an async
 /// closure for callers who don't need custom state.
-pub struct FnStep<F>(F);
+pub struct FnStep<F> {
+    f: F,
+    idempotent: bool,
+}
+
+impl<F> FnStep<F> {
+    /// Declares this closure step idempotent, opting it in to being
+    /// re-invoked after a timed-out attempt (see [`Step::is_idempotent`]).
+    #[must_use]
+    pub fn idempotent(mut self) -> Self {
+        self.idempotent = true;
+        self
+    }
+}
 
 /// Ergonomic adapter from an async closure into a value implementing
-/// [`Step`], for callers who don't need custom state.
+/// [`Step`], for callers who don't need custom state. The returned step is
+/// not idempotent; call [`FnStep::idempotent`] to opt in to timeout retries.
 pub fn step_fn<F, Fut>(f: F) -> FnStep<F>
 where
     F: Fn(u32) -> Fut + Send + Sync,
     Fut: Future<Output = Result<(), ExecutionError>> + Send + 'static,
 {
-    FnStep(f)
+    FnStep { f, idempotent: false }
 }
 
 impl<F, Fut> Step for FnStep<F>
@@ -201,7 +244,21 @@ where
     Fut: Future<Output = Result<(), ExecutionError>> + Send + 'static,
 {
     fn run<'a>(&'a self, attempt: u32) -> Pin<Box<dyn Future<Output = Result<(), ExecutionError>> + Send + 'a>> {
-        Box::pin((self.0)(attempt))
+        Box::pin((self.f)(attempt))
+    }
+
+    fn is_idempotent(&self) -> bool {
+        self.idempotent
+    }
+}
+
+/// Whether `err` is an ambiguous outcome -- the attempt may or may not have
+/// taken effect -- recursing through [`ExecutionError::StepFailed`].
+fn is_ambiguous_outcome(err: &ExecutionError) -> bool {
+    match err {
+        ExecutionError::Timeout { .. } => true,
+        ExecutionError::StepFailed { source, .. } => is_ambiguous_outcome(source),
+        _ => false,
     }
 }
 
@@ -214,7 +271,7 @@ impl From<ExecutionError> for michi_core::DomainError {
                     502..=504 => michi_core::ErrorCode::Unavailable,
                     _ => michi_core::ErrorCode::ExternalFailure,
                 };
-                let retryable = michi_resilience::is_retryable_status(status);
+                let retryable = michi_core::resilience::is_retryable_status(status);
                 let mut domain_err = michi_core::DomainError::new(code, message).retryable(retryable);
                 if let Some(retry_after) = retry_after {
                     domain_err = domain_err.retry_after(retry_after);
@@ -313,7 +370,11 @@ impl StepDependencies {
 /// Returns Some(step_id) for one step id participating in a cycle formed
 /// by deps's edges (including a 1-node self-dependency), or None if the
 /// graph is acyclic. Uses a standard 3-color DFS: White (unvisited), Gray
-/// (on the current recursion stack), Black (fully explored).
+/// (on the current DFS path), Black (fully explored). The traversal is
+/// iterative over an explicit heap-allocated stack, so graph depth is bounded
+/// by memory rather than by the thread's call stack (a recursive version
+/// aborted the process on a 100,000-node cycle). The reported id is the
+/// Gray node a back edge reaches, which always lies on the cycle.
 #[allow(clippy::disallowed_types, reason = "internal DFS coloring scratch state, never rendered as output")]
 fn detect_cycle(deps: &StepDependencies) -> Option<String> {
     #[derive(Clone, Copy, PartialEq)]
@@ -323,44 +384,43 @@ fn detect_cycle(deps: &StepDependencies) -> Option<String> {
         Black,
     }
 
-    fn visit<'a>(node: &'a str, deps: &'a StepDependencies, color: &mut HashMap<&'a str, Color>) -> Option<String> {
-        color.insert(node, Color::Gray);
-        if let Some(prereqs) = deps.edges.get(node) {
-            for prereq in prereqs {
-                let p = prereq.as_str();
-                match color.get(p).copied() {
-                    Some(Color::Gray) => return Some(p.to_string()),
-                    Some(Color::White) | None => {
-                        if color.get(p).copied() == Some(Color::White) {
-                            if let Some(found) = visit(p, deps, color) {
-                                return Some(found);
-                            }
-                        }
-                    }
-                    Some(Color::Black) => {}
-                }
-            }
-        }
-        color.insert(node, Color::Black);
-        None
-    }
-
     let mut color: HashMap<&str, Color> = deps.ids.iter().map(|id| (id.as_str(), Color::White)).collect();
-    for id in &deps.ids {
-        if color.get(id.as_str()).copied() == Some(Color::White) {
-            if let Some(found) = visit(id.as_str(), deps, &mut color) {
-                return Some(found);
+    // Each frame is (node, index of the next prerequisite edge to explore).
+    let mut stack: Vec<(&str, usize)> = Vec::new();
+    for root in &deps.ids {
+        if color.get(root.as_str()).copied() != Some(Color::White) {
+            continue;
+        }
+        color.insert(root.as_str(), Color::Gray);
+        stack.push((root.as_str(), 0));
+        while let Some(frame) = stack.last_mut() {
+            let (node, next) = *frame;
+            let prereq = deps.edges.get(node).and_then(|prereqs| prereqs.get(next));
+            match prereq {
+                Some(prereq) => {
+                    frame.1 += 1;
+                    let p = prereq.as_str();
+                    match color.get(p).copied() {
+                        Some(Color::Gray) => return Some(p.to_string()),
+                        Some(Color::White) => {
+                            color.insert(p, Color::Gray);
+                            stack.push((p, 0));
+                        }
+                        // Black: already fully explored. None: an edge
+                        // endpoint outside the id set, which callers reject
+                        // as UnknownStepId before this runs.
+                        Some(Color::Black) | None => {}
+                    }
+                }
+                None => {
+                    color.insert(node, Color::Black);
+                    stack.pop();
+                }
             }
         }
     }
     None
 }
-
-use std::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering};
-
-const PHASE_CLOSED: u8 = 0;
-const PHASE_OPEN: u8 = 1;
-const PHASE_HALF_OPEN: u8 = 2;
 
 /// The circuit breaker's current phase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -373,19 +433,49 @@ pub enum BreakerPhase {
     HalfOpen,
 }
 
+/// The stored phase. HalfOpen is not stored on its own: an `Open` whose
+/// `open_duration` has elapsed is reported as HalfOpen with no probe
+/// claimed yet, and `Probing` is HalfOpen with the single probe in flight.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StoredPhase {
+    Closed,
+    Open { opened_at_ms: u64 },
+    Probing { opened_at_ms: u64 },
+}
+
+/// Every piece of mutable breaker state, guarded together by one mutex so
+/// phase, probe ownership, the failure count and every transition form a
+/// single state machine. `generation` increments on every phase transition;
+/// each admitted call remembers the generation it was admitted in, and its
+/// outcome is applied only if the breaker is still in that generation.
+#[derive(Debug)]
+struct BreakerState {
+    phase: StoredPhase,
+    consecutive_failures: u32,
+    generation: u64,
+}
+
+/// How a call was admitted by [`CircuitBreaker::admit`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Admission {
+    /// A normal call admitted while Closed, in `generation`.
+    Closed { generation: u64 },
+    /// The single HalfOpen probe, which moved the breaker into `generation`.
+    Probe { generation: u64 },
+}
+
 /// A circuit breaker composing michi-resilience's retry math with
 /// tokio-clock-based async waiting, per-attempt timeout, and
-/// consecutive-failure circuit-opening. Internal state is held in
-/// lock-free atomics so [`CircuitBreaker::phase`] stays synchronous.
+/// consecutive-failure circuit-opening. All mutable state lives behind one
+/// `std::sync::Mutex` that is never held across an `.await` (or while a
+/// step runs), so [`CircuitBreaker::phase`] stays synchronous and every
+/// admission decision and transition is atomic with respect to the others.
 pub struct CircuitBreaker {
-    retry_config: michi_resilience::RetryConfig,
+    retry_config: michi_core::resilience::RetryConfig,
     step_timeout: Duration,
     failure_threshold: u32,
     open_duration: Duration,
-    phase: AtomicU8,
-    opened_at_ms: AtomicU64,
-    consecutive_failures: AtomicU32,
-    half_open_claimed: std::sync::atomic::AtomicBool,
+    state: std::sync::Mutex<BreakerState>,
     epoch: tokio::time::Instant,
 }
 
@@ -394,7 +484,7 @@ impl CircuitBreaker {
     /// floored to 1; `step_timeout`/`open_duration` of `Duration::ZERO` are
     /// each independently floored to `Duration::from_millis(1)`.
     pub fn new(
-        retry_config: michi_resilience::RetryConfig,
+        retry_config: michi_core::resilience::RetryConfig,
         step_timeout: Duration,
         failure_threshold: u32,
         open_duration: Duration,
@@ -407,67 +497,149 @@ impl CircuitBreaker {
             step_timeout,
             failure_threshold,
             open_duration,
-            phase: AtomicU8::new(PHASE_CLOSED),
-            opened_at_ms: AtomicU64::new(0),
-            consecutive_failures: AtomicU32::new(0),
-            half_open_claimed: std::sync::atomic::AtomicBool::new(false),
+            state: std::sync::Mutex::new(BreakerState {
+                phase: StoredPhase::Closed,
+                consecutive_failures: 0,
+                generation: 0,
+            }),
             epoch: tokio::time::Instant::now(),
         }
     }
 
     /// Current phase. Open is derived dynamically: once at least
     /// `open_duration` of tokio virtual time has elapsed since the breaker
-    /// most recently opened, this reports `HalfOpen` even though the stored
-    /// atomic still holds `PHASE_OPEN`.
+    /// most recently opened, this reports `HalfOpen` even before any caller
+    /// has claimed the probe.
     pub fn phase(&self) -> BreakerPhase {
-        let raw = self.phase.load(Ordering::SeqCst);
-        if raw == PHASE_OPEN {
-            let opened_at_ms = self.opened_at_ms.load(Ordering::SeqCst);
-            let elapsed_ms = u64::try_from(self.epoch.elapsed().as_millis()).unwrap_or(u64::MAX);
-            let open_duration_ms = u64::try_from(self.open_duration.as_millis()).unwrap_or(u64::MAX);
-            if elapsed_ms.saturating_sub(opened_at_ms) >= open_duration_ms {
-                return BreakerPhase::HalfOpen;
+        let now_ms = self.now_ms();
+        let state = self.lock_state();
+        match state.phase {
+            StoredPhase::Closed => BreakerPhase::Closed,
+            StoredPhase::Open { opened_at_ms } => {
+                if now_ms.saturating_sub(opened_at_ms) >= self.open_duration_ms() {
+                    BreakerPhase::HalfOpen
+                } else {
+                    BreakerPhase::Open
+                }
             }
-            return BreakerPhase::Open;
-        }
-        match raw {
-            PHASE_HALF_OPEN => BreakerPhase::HalfOpen,
-            _ => BreakerPhase::Closed,
+            StoredPhase::Probing { .. } => BreakerPhase::HalfOpen,
         }
     }
 }
 
 impl CircuitBreaker {
-    fn record_failure(&self) {
-        let count = self.consecutive_failures.fetch_add(1, Ordering::SeqCst) + 1;
-        if count >= self.failure_threshold {
-            self.open_circuit();
+    /// Locks the state. The lock is only ever held for a few non-panicking
+    /// field updates, so a poisoned lock still holds consistent state and is
+    /// recovered rather than propagated.
+    fn lock_state(&self) -> std::sync::MutexGuard<'_, BreakerState> {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn now_ms(&self) -> u64 {
+        u64::try_from(self.epoch.elapsed().as_millis()).unwrap_or(u64::MAX)
+    }
+
+    fn open_duration_ms(&self) -> u64 {
+        u64::try_from(self.open_duration.as_millis()).unwrap_or(u64::MAX)
+    }
+
+    /// Decides, atomically, whether a call may run and in which role.
+    fn admit(&self) -> Result<Admission, ExecutionError> {
+        let now_ms = self.now_ms();
+        let open_duration_ms = self.open_duration_ms();
+        let mut state = self.lock_state();
+        match state.phase {
+            StoredPhase::Closed => Ok(Admission::Closed { generation: state.generation }),
+            StoredPhase::Open { opened_at_ms } => {
+                let since_opened_ms = now_ms.saturating_sub(opened_at_ms);
+                if since_opened_ms >= open_duration_ms {
+                    state.phase = StoredPhase::Probing { opened_at_ms };
+                    state.generation = state.generation.wrapping_add(1);
+                    Ok(Admission::Probe { generation: state.generation })
+                } else {
+                    Err(ExecutionError::CircuitOpen { retry_after_ms: open_duration_ms - since_opened_ms })
+                }
+            }
+            StoredPhase::Probing { .. } => Err(ExecutionError::CircuitOpen { retry_after_ms: open_duration_ms }),
         }
     }
 
-    fn record_success(&self) {
-        self.consecutive_failures.store(0, Ordering::SeqCst);
+    /// Applies an admitted call's call-level outcome. An outcome from a
+    /// generation the breaker has since left is stale and ignored, so it can
+    /// never transition the current state.
+    fn complete(&self, admission: Admission, succeeded: bool) {
+        let now_ms = self.now_ms();
+        let mut state = self.lock_state();
+        match admission {
+            Admission::Closed { generation } => {
+                if state.generation != generation || state.phase != StoredPhase::Closed {
+                    return;
+                }
+                if succeeded {
+                    state.consecutive_failures = 0;
+                } else {
+                    state.consecutive_failures = state.consecutive_failures.saturating_add(1);
+                    if state.consecutive_failures >= self.failure_threshold {
+                        state.phase = StoredPhase::Open { opened_at_ms: now_ms };
+                        state.generation = state.generation.wrapping_add(1);
+                    }
+                }
+            }
+            Admission::Probe { generation } => {
+                if state.generation != generation || !matches!(state.phase, StoredPhase::Probing { .. }) {
+                    return;
+                }
+                if succeeded {
+                    state.phase = StoredPhase::Closed;
+                    state.consecutive_failures = 0;
+                } else {
+                    // Reopens unconditionally, bypassing failure_threshold
+                    // and leaving the counter untouched.
+                    state.phase = StoredPhase::Open { opened_at_ms: now_ms };
+                }
+                state.generation = state.generation.wrapping_add(1);
+            }
+        }
     }
 
-    fn open_circuit(&self) {
-        let elapsed_ms = u64::try_from(self.epoch.elapsed().as_millis()).unwrap_or(u64::MAX);
-        self.opened_at_ms.store(elapsed_ms, Ordering::SeqCst);
-        self.phase.store(PHASE_OPEN, Ordering::SeqCst);
+    /// Releases a probe that ended without an outcome (its step panicked or
+    /// the call future was dropped): the breaker returns to HalfOpen with no
+    /// probe claimed, so the next caller may probe.
+    fn abandon_probe(&self, generation: u64) {
+        let mut state = self.lock_state();
+        if state.generation != generation {
+            return;
+        }
+        if let StoredPhase::Probing { opened_at_ms } = state.phase {
+            state.phase = StoredPhase::Open { opened_at_ms };
+            state.generation = state.generation.wrapping_add(1);
+        }
     }
 }
 
-struct HalfOpenGuard<'a> {
-    claimed: &'a std::sync::atomic::AtomicBool,
+/// Releases probe ownership if the probe call ends without reporting an
+/// outcome (panic or cancellation). Disarmed once the outcome is recorded.
+struct ProbeGuard<'a> {
+    breaker: &'a CircuitBreaker,
+    generation: u64,
+    armed: bool,
 }
 
-impl Drop for HalfOpenGuard<'_> {
+impl Drop for ProbeGuard<'_> {
     fn drop(&mut self) {
-        self.claimed.store(false, Ordering::SeqCst);
+        if self.armed {
+            self.breaker.abandon_probe(self.generation);
+        }
     }
 }
 
 impl CircuitBreaker {
     /// Executes `step`, with behavior depending on [`CircuitBreaker::phase`].
+    /// The phase decision, probe claim, failure count and every transition
+    /// are one atomic state machine; a call's outcome is applied only if the
+    /// breaker has not transitioned since that call was admitted (a call
+    /// admitted while Closed that finishes after the breaker opened, or a
+    /// probe from an earlier HalfOpen window, is ignored).
     ///
     /// While `Open`, returns `Err(ExecutionError::CircuitOpen { retry_after_ms })`
     /// immediately without invoking `step` at all, where `retry_after_ms` is
@@ -479,7 +651,9 @@ impl CircuitBreaker {
     /// `retry_after` or `ExecutionError::CircuitOpen`'s `retry_after_ms`
     /// through when present -- including when either is wrapped inside
     /// `ExecutionError::StepFailed`'s `source`, which is unwrapped
-    /// recursively. Returns immediately on success or
+    /// recursively. A timed-out attempt is retried only if
+    /// [`Step::is_idempotent`] returns `true` (see [`Step`]'s "Retry
+    /// eligibility"). Returns immediately on success or
     /// on a non-retryable error, and returns the last error once
     /// `next_retry_delay` reports exhaustion. On success, resets the
     /// consecutive-failure counter; on a call-level failure (after retries
@@ -490,38 +664,18 @@ impl CircuitBreaker {
     /// closes the circuit and resets the counter, and any failure reopens
     /// the circuit unconditionally, bypassing `failure_threshold`.
     pub async fn call(&self, step: &dyn Step, jitter_seed: f64) -> Result<(), ExecutionError> {
-        let phase = self.phase();
-        if phase == BreakerPhase::Open {
-            let opened_at_ms = self.opened_at_ms.load(Ordering::SeqCst);
-            let elapsed_ms = u64::try_from(self.epoch.elapsed().as_millis()).unwrap_or(u64::MAX);
-            let open_duration_ms = u64::try_from(self.open_duration.as_millis()).unwrap_or(u64::MAX);
-            let since_opened_ms = elapsed_ms.saturating_sub(opened_at_ms);
-            let retry_after_ms = open_duration_ms.saturating_sub(since_opened_ms);
-            return Err(ExecutionError::CircuitOpen { retry_after_ms });
-        }
-        if phase == BreakerPhase::HalfOpen {
-            if self.half_open_claimed.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
-                let open_duration_ms = u64::try_from(self.open_duration.as_millis()).unwrap_or(u64::MAX);
-                return Err(ExecutionError::CircuitOpen { retry_after_ms: open_duration_ms });
-            }
-            let _gate_guard = HalfOpenGuard { claimed: &self.half_open_claimed };
+        let admission = self.admit()?;
+        if let Admission::Probe { generation } = admission {
+            let mut guard = ProbeGuard { breaker: self, generation, armed: true };
             let attempt_result = match tokio::time::timeout(self.step_timeout, step.run(0)).await {
                 Ok(result) => result,
                 Err(_) => Err(ExecutionError::Timeout {
                     elapsed_ms: u64::try_from(self.step_timeout.as_millis()).unwrap_or(u64::MAX),
                 }),
             };
-            return match attempt_result {
-                Ok(()) => {
-                    self.phase.store(PHASE_CLOSED, Ordering::SeqCst);
-                    self.record_success();
-                    Ok(())
-                }
-                Err(err) => {
-                    self.open_circuit();
-                    Err(err)
-                }
-            };
+            guard.armed = false;
+            self.complete(admission, attempt_result.is_ok());
+            return attempt_result;
         }
         let mut attempt = 0u32;
         loop {
@@ -533,22 +687,28 @@ impl CircuitBreaker {
             };
             match attempt_result {
                 Ok(()) => {
-                    self.record_success();
+                    self.complete(admission, true);
                     return Ok(());
                 }
                 Err(err) => {
-                    if !err.is_retryable() {
-                        self.record_failure();
+                    let may_reinvoke = err.is_retryable() && (step.is_idempotent() || !is_ambiguous_outcome(&err));
+                    if !may_reinvoke {
+                        self.complete(admission, false);
                         return Err(err);
                     }
                     let retry_after = retry_after_for(&err);
-                    match michi_resilience::next_retry_delay(&self.retry_config, attempt, jitter_seed, retry_after) {
+                    match michi_core::resilience::next_retry_delay(
+                        &self.retry_config,
+                        attempt,
+                        jitter_seed,
+                        retry_after,
+                    ) {
                         Some(delay) => {
                             tokio::time::sleep(delay).await;
                             attempt += 1;
                         }
                         None => {
-                            self.record_failure();
+                            self.complete(admission, false);
                             return Err(err);
                         }
                     }
@@ -652,7 +812,8 @@ fn propagate_skip(idx: usize, state: &mut [StepRunState], dependents_of: &[Vec<u
 /// starts once every step it depends on has reached a terminal status.
 ///
 /// Every acceptance check runs in a fixed order before any step is
-/// attempted: step-count mismatch, then a duplicate pipeline id, then an
+/// attempted: step-count mismatch, then a duplicate pipeline id (any
+/// repeated `PipelineStep.id`, whether or not an edge mentions it), then an
 /// id-set mismatch or unknown edge endpoint, then a cyclic dependency
 /// (including a 1-node self-dependency).
 ///
@@ -682,23 +843,12 @@ pub async fn execute_pipeline_parallel(
         return Err(ExecutionError::StepCountMismatch { expected: pipeline.steps.len(), got: runners.len() });
     }
 
+    // Every pipeline id must be unique, whether or not an edge mentions it:
+    // ids are the keys dependency resolution and status write-back index by.
     let mut seen_ids: HashSet<&str> = HashSet::new();
-    let mut dup_ids: HashSet<&str> = HashSet::new();
     for step in &pipeline.steps {
         if !seen_ids.insert(step.id.as_str()) {
-            dup_ids.insert(step.id.as_str());
-        }
-    }
-    if !dup_ids.is_empty() {
-        for (dependent, prereqs) in &deps.edges {
-            if dup_ids.contains(dependent.as_str()) {
-                return Err(ExecutionError::DuplicateStepId { step_id: dependent.clone() });
-            }
-            for p in prereqs {
-                if dup_ids.contains(p.as_str()) {
-                    return Err(ExecutionError::DuplicateStepId { step_id: p.clone() });
-                }
-            }
+            return Err(ExecutionError::DuplicateStepId { step_id: step.id.clone() });
         }
     }
 
@@ -819,6 +969,7 @@ pub async fn execute_pipeline_parallel(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::Ordering;
 
     #[test]
     fn cancellation_token_new_starts_not_cancelled() {
@@ -913,11 +1064,11 @@ mod tests {
     fn is_retryable_per_variant() {
         assert_eq!(
             ExecutionError::Http { status: 429, message: "x".into(), retry_after: None }.is_retryable(),
-            michi_resilience::is_retryable_status(429)
+            michi_core::resilience::is_retryable_status(429)
         );
         assert_eq!(
             ExecutionError::Http { status: 400, message: "x".into(), retry_after: None }.is_retryable(),
-            michi_resilience::is_retryable_status(400)
+            michi_core::resilience::is_retryable_status(400)
         );
         assert!(ExecutionError::Timeout { elapsed_ms: 1 }.is_retryable());
         assert!(ExecutionError::Failed { message: "x".into(), retryable: true }.is_retryable());
@@ -1042,7 +1193,7 @@ mod tests {
     #[test]
     fn new_is_infallible_and_fresh_breaker_is_closed() {
         let breaker = CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             std::time::Duration::ZERO,
             u32::MAX,
             std::time::Duration::ZERO,
@@ -1063,7 +1214,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn call_succeeds_in_one_attempt_with_zero_virtual_time() {
         let breaker = CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(1),
             u32::MAX,
             Duration::from_secs(60),
@@ -1109,7 +1260,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn retries_until_success_and_sums_delay() {
         let retry_config =
-            michi_resilience::RetryConfig::new(5, Duration::from_millis(10), Duration::from_secs(1), 0.0);
+            michi_core::resilience::RetryConfig::new(5, Duration::from_millis(10), Duration::from_secs(1), 0.0);
         let breaker =
             CircuitBreaker::new(retry_config.clone(), Duration::from_secs(5), u32::MAX, Duration::from_secs(60));
         let step = FlakyStep { fail_until: 2, calls: std::sync::atomic::AtomicU32::new(0) };
@@ -1119,14 +1270,14 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(step.calls.load(Ordering::SeqCst), 3);
         let expected: Duration =
-            (0..2).filter_map(|a| michi_resilience::next_retry_delay(&retry_config, a, 0.0, None)).sum();
+            (0..2).filter_map(|a| michi_core::resilience::next_retry_delay(&retry_config, a, 0.0, None)).sum();
         assert_eq!(elapsed, expected);
     }
 
     #[tokio::test(start_paused = true)]
     async fn retries_thread_http_retry_after() {
         let retry_config =
-            michi_resilience::RetryConfig::new(5, Duration::from_millis(10), Duration::from_secs(1), 0.0);
+            michi_core::resilience::RetryConfig::new(5, Duration::from_millis(10), Duration::from_secs(1), 0.0);
         let breaker =
             CircuitBreaker::new(retry_config.clone(), Duration::from_secs(5), u32::MAX, Duration::from_secs(60));
         let ra = Duration::from_millis(300);
@@ -1155,14 +1306,14 @@ mod tests {
         let result = breaker.call(&step, 0.0).await;
         let elapsed = before.elapsed();
         assert!(result.is_ok());
-        let expected = michi_resilience::next_retry_delay(&retry_config, 0, 0.0, Some(ra)).unwrap();
+        let expected = michi_core::resilience::next_retry_delay(&retry_config, 0, 0.0, Some(ra)).unwrap();
         assert_eq!(elapsed, expected);
     }
 
     #[tokio::test(start_paused = true)]
     async fn retries_thread_circuit_open_retry_after() {
         let retry_config =
-            michi_resilience::RetryConfig::new(5, Duration::from_millis(10), Duration::from_secs(60), 0.0);
+            michi_core::resilience::RetryConfig::new(5, Duration::from_millis(10), Duration::from_secs(60), 0.0);
         let breaker =
             CircuitBreaker::new(retry_config.clone(), Duration::from_secs(5), u32::MAX, Duration::from_secs(60));
         let ra = Duration::from_millis(30_000);
@@ -1187,7 +1338,7 @@ mod tests {
         let result = breaker.call(&step, 0.0).await;
         let elapsed = before.elapsed();
         assert!(result.is_ok());
-        let expected = michi_resilience::next_retry_delay(&retry_config, 0, 0.0, Some(ra)).unwrap();
+        let expected = michi_core::resilience::next_retry_delay(&retry_config, 0, 0.0, Some(ra)).unwrap();
         assert_eq!(elapsed, expected);
         assert!(elapsed >= ra, "must wait at least the circuit's stated {ra:?} cooldown, waited {elapsed:?}");
     }
@@ -1195,7 +1346,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn retries_thread_step_failed_wrapping_http_retry_after() {
         let retry_config =
-            michi_resilience::RetryConfig::new(5, Duration::from_millis(10), Duration::from_secs(60), 0.0);
+            michi_core::resilience::RetryConfig::new(5, Duration::from_millis(10), Duration::from_secs(60), 0.0);
         let breaker =
             CircuitBreaker::new(retry_config.clone(), Duration::from_secs(5), u32::MAX, Duration::from_secs(60));
         let ra = Duration::from_secs(30);
@@ -1228,7 +1379,7 @@ mod tests {
         let result = breaker.call(&step, 0.0).await;
         let elapsed = before.elapsed();
         assert!(result.is_ok());
-        let expected = michi_resilience::next_retry_delay(&retry_config, 0, 0.0, Some(ra)).unwrap();
+        let expected = michi_core::resilience::next_retry_delay(&retry_config, 0, 0.0, Some(ra)).unwrap();
         assert_eq!(elapsed, expected);
         assert!(elapsed >= ra, "must wait at least the wrapped Http's stated {ra:?} retry_after, waited {elapsed:?}");
     }
@@ -1236,7 +1387,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn retries_thread_step_failed_wrapping_circuit_open_retry_after() {
         let retry_config =
-            michi_resilience::RetryConfig::new(5, Duration::from_millis(10), Duration::from_secs(60), 0.0);
+            michi_core::resilience::RetryConfig::new(5, Duration::from_millis(10), Duration::from_secs(60), 0.0);
         let breaker =
             CircuitBreaker::new(retry_config.clone(), Duration::from_secs(5), u32::MAX, Duration::from_secs(60));
         let ra = Duration::from_millis(30_000);
@@ -1265,7 +1416,7 @@ mod tests {
         let result = breaker.call(&step, 0.0).await;
         let elapsed = before.elapsed();
         assert!(result.is_ok());
-        let expected = michi_resilience::next_retry_delay(&retry_config, 0, 0.0, Some(ra)).unwrap();
+        let expected = michi_core::resilience::next_retry_delay(&retry_config, 0, 0.0, Some(ra)).unwrap();
         assert_eq!(elapsed, expected);
         assert!(
             elapsed >= ra,
@@ -1276,7 +1427,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn exhausts_retries_then_fails() {
         let retry_config =
-            michi_resilience::RetryConfig::new(3, Duration::from_millis(1), Duration::from_millis(10), 0.0);
+            michi_core::resilience::RetryConfig::new(3, Duration::from_millis(1), Duration::from_millis(10), 0.0);
         let breaker = CircuitBreaker::new(retry_config, Duration::from_secs(5), u32::MAX, Duration::from_secs(60));
         let step = AlwaysFailStep { retryable: true, calls: std::sync::atomic::AtomicU32::new(0) };
         let result = breaker.call(&step, 0.0).await;
@@ -1287,7 +1438,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn non_retryable_failure_returns_after_one_attempt_zero_time() {
         let breaker = CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(5),
             u32::MAX,
             Duration::from_secs(60),
@@ -1314,7 +1465,8 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn attempt_exceeding_step_timeout_fails_with_timeout_elapsed_ms() {
         let retry_config =
-            michi_resilience::RetryConfig::try_new(0, Duration::from_millis(1), Duration::from_millis(1), 0.0).unwrap();
+            michi_core::resilience::RetryConfig::try_new(0, Duration::from_millis(1), Duration::from_millis(1), 0.0)
+                .unwrap();
         let breaker = CircuitBreaker::new(retry_config, Duration::from_millis(500), u32::MAX, Duration::from_secs(60));
         let result = breaker.call(&NeverCompletes, 0.0).await;
         match result {
@@ -1326,7 +1478,8 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn zero_step_timeout_floors_to_one_millisecond() {
         let retry_config =
-            michi_resilience::RetryConfig::try_new(0, Duration::from_millis(1), Duration::from_millis(1), 0.0).unwrap();
+            michi_core::resilience::RetryConfig::try_new(0, Duration::from_millis(1), Duration::from_millis(1), 0.0)
+                .unwrap();
         let breaker = CircuitBreaker::new(retry_config, Duration::ZERO, u32::MAX, Duration::from_secs(60));
         let result = breaker.call(&NeverCompletes, 0.0).await;
         match result {
@@ -1339,7 +1492,7 @@ mod tests {
     async fn jitter_seed_forwarded_unmodified_for_non_finite_values() {
         for seed in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 7.5, -3.0] {
             let retry_config =
-                michi_resilience::RetryConfig::new(2, Duration::from_millis(10), Duration::from_secs(1), 0.5);
+                michi_core::resilience::RetryConfig::new(2, Duration::from_millis(10), Duration::from_secs(1), 0.5);
             let breaker =
                 CircuitBreaker::new(retry_config.clone(), Duration::from_secs(5), u32::MAX, Duration::from_secs(60));
             let step = FlakyStep { fail_until: 1, calls: std::sync::atomic::AtomicU32::new(0) };
@@ -1347,7 +1500,7 @@ mod tests {
             let result = breaker.call(&step, seed).await;
             let elapsed = before.elapsed();
             assert!(result.is_ok(), "seed {seed} should not panic or fail construction");
-            let expected = michi_resilience::next_retry_delay(&retry_config, 0, seed, None).unwrap();
+            let expected = michi_core::resilience::next_retry_delay(&retry_config, 0, seed, None).unwrap();
             assert_eq!(elapsed, expected, "seed {seed} elapsed mismatch");
         }
     }
@@ -1355,7 +1508,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn threshold_consecutive_failures_opens_circuit_once_per_call_not_per_attempt() {
         let retry_config =
-            michi_resilience::RetryConfig::new(5, Duration::from_millis(1), Duration::from_millis(10), 0.0);
+            michi_core::resilience::RetryConfig::new(5, Duration::from_millis(1), Duration::from_millis(10), 0.0);
         let breaker = CircuitBreaker::new(retry_config, Duration::from_secs(5), 2, Duration::from_secs(60));
         let step = AlwaysFailStep { retryable: true, calls: std::sync::atomic::AtomicU32::new(0) };
         assert!(breaker.call(&step, 0.0).await.is_err());
@@ -1372,7 +1525,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn zero_failure_threshold_behaves_like_one() {
         let breaker = CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(5),
             0,
             Duration::from_secs(60),
@@ -1385,7 +1538,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn success_resets_counter_so_four_non_consecutive_failures_never_open_a_threshold_three_breaker() {
         let breaker = CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(5),
             3,
             Duration::from_secs(60),
@@ -1407,7 +1560,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn open_circuit_short_circuits_with_exact_retry_after_ms() {
         let breaker = CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(5),
             1,
             Duration::from_secs(10),
@@ -1430,7 +1583,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn phase_transitions_to_half_open_once_open_duration_elapses() {
         let breaker = CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(5),
             1,
             Duration::from_secs(10),
@@ -1449,8 +1602,12 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn zero_open_duration_floors_to_one_millisecond() {
-        let breaker =
-            CircuitBreaker::new(michi_resilience::RetryConfig::default(), Duration::from_secs(5), 1, Duration::ZERO);
+        let breaker = CircuitBreaker::new(
+            michi_core::resilience::RetryConfig::default(),
+            Duration::from_secs(5),
+            1,
+            Duration::ZERO,
+        );
         let fail = AlwaysFailStep { retryable: false, calls: std::sync::atomic::AtomicU32::new(0) };
         assert!(breaker.call(&fail, 0.0).await.is_err());
         assert_eq!(breaker.phase(), BreakerPhase::Open, "0ms elapsed since opening, floored open_duration is 1ms");
@@ -1470,7 +1627,7 @@ mod tests {
         // post-recovery failure only stays Closed if the counter was
         // genuinely reset to 0.
         let breaker = CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(5),
             2,
             Duration::from_secs(10),
@@ -1508,7 +1665,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn half_open_failure_reopens_circuit_with_exactly_one_attempt_no_retries() {
         let retry_config =
-            michi_resilience::RetryConfig::new(5, Duration::from_millis(1), Duration::from_millis(10), 0.0);
+            michi_core::resilience::RetryConfig::new(5, Duration::from_millis(1), Duration::from_millis(10), 0.0);
         let breaker = CircuitBreaker::new(retry_config, Duration::from_secs(5), 1, Duration::from_secs(10));
         let fail = AlwaysFailStep { retryable: false, calls: std::sync::atomic::AtomicU32::new(0) };
         assert!(breaker.call(&fail, 0.0).await.is_err());
@@ -1540,7 +1697,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn only_one_concurrent_half_open_caller_invokes_the_probe() {
         let breaker = std::sync::Arc::new(CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(60),
             1,
             Duration::from_secs(10),
@@ -1585,7 +1742,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn panicking_step_leaves_breaker_state_untouched() {
         let breaker = std::sync::Arc::new(CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(5),
             2,
             Duration::from_secs(60),
@@ -1627,8 +1784,11 @@ mod tests {
         // contract (unconditional reopen, no counter dependency) by reading the
         // private counter directly, documenting that open_circuit() is the
         // intended call, not an accident that happens to also satisfy the tests.
+        // (Since the state-machine rewrite, the probe-failure arm of
+        // CircuitBreaker::complete plays open_circuit()'s role and the
+        // Closed-failure arm plays record_failure()'s; the contract is the same.)
         let breaker = CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(5),
             1,
             Duration::from_secs(10),
@@ -1638,10 +1798,10 @@ mod tests {
         tokio::time::advance(Duration::from_secs(10)).await;
         assert_eq!(breaker.phase(), BreakerPhase::HalfOpen);
 
-        let before = breaker.consecutive_failures.load(Ordering::SeqCst);
+        let before = breaker.lock_state().consecutive_failures;
         assert!(breaker.call(&fail, 0.0).await.is_err());
         assert_eq!(
-            breaker.consecutive_failures.load(Ordering::SeqCst),
+            breaker.lock_state().consecutive_failures,
             before,
             "HalfOpen failure must reopen unconditionally via open_circuit(), not via record_failure()'s threshold check"
         );
@@ -1651,7 +1811,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn gate_admits_a_new_probe_in_each_subsequent_half_open_window() {
         let breaker = CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(60),
             1,
             Duration::from_secs(10),
@@ -1684,7 +1844,7 @@ mod tests {
         // converts that failure mode into a clean, fast assertion failure
         // instead of a hung CI job.
         let retry_config =
-            michi_resilience::RetryConfig::new(3, Duration::from_millis(1), Duration::from_millis(10), 0.0);
+            michi_core::resilience::RetryConfig::new(3, Duration::from_millis(1), Duration::from_millis(10), 0.0);
         let breaker = CircuitBreaker::new(retry_config, Duration::from_secs(5), u32::MAX, Duration::from_secs(60));
         let step = AlwaysFailStep { retryable: true, calls: std::sync::atomic::AtomicU32::new(0) };
         let result = tokio::time::timeout(Duration::from_secs(5), breaker.call(&step, 0.0)).await;
@@ -1694,26 +1854,19 @@ mod tests {
     }
 
     #[test]
-    fn phase_reports_half_open_when_atomic_directly_holds_that_state() {
-        // The `PHASE_HALF_OPEN => BreakerPhase::HalfOpen` arm in phase() is
-        // never reached through this crate's own public API today -- HalfOpen
-        // is always derived dynamically from PHASE_OPEN plus elapsed time
-        // (T18), and nothing currently stores PHASE_HALF_OPEN directly. A
-        // mutation-testing checkpoint confirmed deleting that arm survives
-        // every other test for exactly this reason. It is kept as deliberate,
-        // forward-compatible defensive code (documented at definition site,
-        // T11) rather than dead code to delete, in case a future revision
-        // stores PHASE_HALF_OPEN explicitly (e.g. for cross-call single-trial
-        // enforcement). This white-box test exercises it directly via the
-        // private atomic so the arm has real coverage rather than resting on
-        // an argument about future-proofing alone.
+    fn phase_reports_half_open_while_the_probe_is_claimed_regardless_of_elapsed_time() {
+        // The stored `Probing` phase (the HalfOpen probe is in flight) must
+        // report HalfOpen even when `opened_at_ms` is recent enough that an
+        // unclaimed `Open` would still report Open -- i.e. phase() must not
+        // re-derive HalfOpen from elapsed time for that arm. Set directly so
+        // the arm is covered without an in-flight probe.
         let breaker = CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(5),
             1,
             Duration::from_secs(10),
         );
-        breaker.phase.store(PHASE_HALF_OPEN, Ordering::SeqCst);
+        breaker.lock_state().phase = StoredPhase::Probing { opened_at_ms: 0 };
         assert_eq!(breaker.phase(), BreakerPhase::HalfOpen);
     }
 
@@ -1735,7 +1888,7 @@ mod tests {
     async fn runner_count_greater_than_steps_returns_mismatch_without_mutating_statuses() {
         let mut pipeline = make_pipeline(&["a"]);
         let breaker = CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(5),
             1,
             Duration::from_secs(60),
@@ -1759,7 +1912,7 @@ mod tests {
     async fn runner_count_less_than_steps_returns_mismatch_without_mutating_statuses() {
         let mut pipeline = make_pipeline(&["a", "b"]);
         let breaker = CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(5),
             1,
             Duration::from_secs(60),
@@ -1782,7 +1935,7 @@ mod tests {
     async fn empty_pipeline_and_empty_runners_returns_ok() {
         let mut pipeline = make_pipeline(&[]);
         let breaker = CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(5),
             1,
             Duration::from_secs(60),
@@ -1807,7 +1960,7 @@ mod tests {
     async fn cancellation_observed_mid_run_skips_remaining_steps_and_preserves_earlier_statuses() {
         let mut pipeline = make_pipeline(&["a", "b", "c", "d"]);
         let breaker = CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(5),
             1,
             Duration::from_secs(60),
@@ -1854,7 +2007,7 @@ mod tests {
     async fn precancelled_token_before_any_step_skips_everything_with_zero_invocations() {
         let mut pipeline = make_pipeline(&["a", "b"]);
         let breaker = CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(5),
             1,
             Duration::from_secs(60),
@@ -1890,7 +2043,7 @@ mod tests {
     async fn cancellation_requested_after_the_last_checkpoint_has_passed_does_not_flip_ok_to_cancelled() {
         let mut pipeline = make_pipeline(&["a", "b"]);
         let breaker = CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(5),
             1,
             Duration::from_secs(60),
@@ -1912,7 +2065,7 @@ mod tests {
     async fn zero_step_pipeline_with_precancelled_token_still_returns_cancelled() {
         let mut pipeline = make_pipeline(&[]);
         let breaker = CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(5),
             1,
             Duration::from_secs(60),
@@ -1928,7 +2081,7 @@ mod tests {
     async fn precancelled_token_does_not_preempt_step_count_mismatch() {
         let mut pipeline = make_pipeline(&["a", "b"]);
         let breaker = CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(5),
             1,
             Duration::from_secs(60),
@@ -1962,7 +2115,7 @@ mod tests {
         let notify = std::sync::Arc::new(tokio::sync::Notify::new());
         let mut pipeline = make_pipeline(&["a"]);
         let breaker = CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(3600),
             1,
             Duration::from_secs(60),
@@ -1997,7 +2150,7 @@ mod tests {
     async fn cancel_after_execute_pipeline_returns_does_not_panic_or_mutate() {
         let mut pipeline = make_pipeline(&["a"]);
         let breaker = CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(5),
             1,
             Duration::from_secs(60),
@@ -2055,7 +2208,7 @@ mod tests {
     async fn all_success_pipeline_reports_completed_in_every_render_row() {
         let mut pipeline = make_pipeline(&["fetch", "upload", "notify"]);
         let breaker = CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(5),
             1,
             Duration::from_secs(60),
@@ -2093,7 +2246,7 @@ mod tests {
         // specifically) correctly reports it as failed.
         let mut pipeline = make_pipeline(&["get-completed-orders"]);
         let breaker = CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(5),
             1,
             Duration::from_secs(60),
@@ -2134,7 +2287,7 @@ mod tests {
         let mut pipeline = make_pipeline(&["a", "b"]);
         pipeline.steps[0].status = michi_core::pipeline::StepStatus::Failed;
         let breaker = CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(5),
             1,
             Duration::from_secs(60),
@@ -2168,7 +2321,7 @@ mod tests {
     async fn nth_step_failure_is_fail_fast_with_exact_source_and_statuses() {
         let mut pipeline = make_pipeline(&["a", "b", "c"]);
         let breaker = CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(5),
             u32::MAX,
             Duration::from_secs(10),
@@ -2235,7 +2388,7 @@ mod tests {
             }],
         };
         let breaker = CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(5),
             1,
             Duration::from_secs(60),
@@ -2256,7 +2409,7 @@ mod tests {
     async fn execute_pipeline_never_writes_skipped() {
         let mut pipeline = make_pipeline(&["a", "b"]);
         let breaker = CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(5),
             1,
             Duration::from_secs(10),
@@ -2275,7 +2428,7 @@ mod tests {
     async fn steps_execute_strictly_sequentially_with_a_sleep_window() {
         let mut pipeline = make_pipeline(&["s0", "s1", "s2"]);
         let breaker = CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(5),
             1,
             Duration::from_secs(60),
@@ -2333,7 +2486,7 @@ mod tests {
     async fn jitter_seed_is_identical_across_every_step() {
         let mut pipeline = make_pipeline(&["a", "b", "c"]);
         let retry_config =
-            michi_resilience::RetryConfig::new(1, Duration::from_millis(10), Duration::from_millis(100), 0.5);
+            michi_core::resilience::RetryConfig::new(1, Duration::from_millis(10), Duration::from_millis(100), 0.5);
         let breaker = CircuitBreaker::new(retry_config.clone(), Duration::from_secs(5), 10, Duration::from_secs(60));
 
         struct SeedSpyStep;
@@ -2360,7 +2513,7 @@ mod tests {
         let elapsed = before.elapsed();
         assert!(result.is_ok());
 
-        let per_step_delay = michi_resilience::next_retry_delay(&retry_config, 0, call_seed, None).unwrap();
+        let per_step_delay = michi_core::resilience::next_retry_delay(&retry_config, 0, call_seed, None).unwrap();
         assert_eq!(
             elapsed,
             per_step_delay * 3,
@@ -2372,7 +2525,7 @@ mod tests {
     async fn panicking_kth_step_propagates_and_leaves_correct_partial_state() {
         let pipeline = std::sync::Arc::new(tokio::sync::Mutex::new(make_pipeline(&["a", "b", "c"])));
         let breaker = std::sync::Arc::new(CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(5),
             10,
             Duration::from_secs(60),
@@ -2489,7 +2642,7 @@ mod tests {
         let mut pipeline = make_pipeline(&["a"]);
         let deps = StepDependencies::new(&["a".to_string()]).unwrap();
         let breaker = std::sync::Arc::new(CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(5),
             1,
             Duration::from_secs(60),
@@ -2512,7 +2665,7 @@ mod tests {
         let mut pipeline = make_pipeline(&[]);
         let deps = StepDependencies::new(&[]).unwrap();
         let breaker = std::sync::Arc::new(CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(5),
             1,
             Duration::from_secs(60),
@@ -2530,7 +2683,7 @@ mod tests {
         let mut deps = StepDependencies::new(&ids).unwrap();
         deps.depends_on("b", "a");
         let breaker = std::sync::Arc::new(CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(5),
             1,
             Duration::from_secs(60),
@@ -2555,7 +2708,7 @@ mod tests {
         let ids = vec!["a".to_string(), "c".to_string()];
         let deps = StepDependencies::new(&ids).unwrap();
         let breaker = std::sync::Arc::new(CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(5),
             1,
             Duration::from_secs(60),
@@ -2578,7 +2731,7 @@ mod tests {
         let mut deps = StepDependencies::new(&ids).unwrap();
         deps.depends_on("b", "ghost");
         let breaker = std::sync::Arc::new(CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(5),
             1,
             Duration::from_secs(60),
@@ -2618,7 +2771,7 @@ mod tests {
         let ids = vec!["a".to_string()];
         let deps = StepDependencies::new(&ids).unwrap();
         let breaker = std::sync::Arc::new(CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(5),
             1,
             Duration::from_secs(60),
@@ -2660,7 +2813,7 @@ mod tests {
         deps.depends_on("a", "b");
         deps.depends_on("b", "a");
         let breaker = std::sync::Arc::new(CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(5),
             1,
             Duration::from_secs(60),
@@ -2686,7 +2839,7 @@ mod tests {
         let mut deps = StepDependencies::new(&ids).unwrap();
         deps.depends_on("a", "a");
         let breaker = std::sync::Arc::new(CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(5),
             1,
             Duration::from_secs(60),
@@ -2724,7 +2877,7 @@ mod tests {
         let mut deps = StepDependencies::new(&ids).unwrap();
         deps.depends_on("a", "a");
         let breaker = std::sync::Arc::new(CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(5),
             1,
             Duration::from_secs(60),
@@ -2745,7 +2898,7 @@ mod tests {
         let mut deps = StepDependencies::new(&ids).unwrap();
         deps.depends_on("b", "a");
         let breaker = std::sync::Arc::new(CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(5),
             1,
             Duration::from_secs(60),
@@ -2771,7 +2924,7 @@ mod tests {
         deps.depends_on("a", "b");
         deps.depends_on("b", "a");
         let breaker = std::sync::Arc::new(CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(5),
             1,
             Duration::from_secs(60),
@@ -2793,7 +2946,7 @@ mod tests {
         let ids = vec!["a".to_string(), "b".to_string(), "c".to_string()];
         let deps = StepDependencies::new(&ids).unwrap();
         let breaker = std::sync::Arc::new(CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(5),
             1,
             Duration::from_secs(60),
@@ -2815,7 +2968,7 @@ mod tests {
         let ids = vec!["a".to_string()];
         let deps = StepDependencies::new(&ids).unwrap();
         let breaker = std::sync::Arc::new(CircuitBreaker::new(
-            michi_resilience::RetryConfig::new(0, Duration::from_millis(1), Duration::from_secs(1), 0.0),
+            michi_core::resilience::RetryConfig::new(0, Duration::from_millis(1), Duration::from_secs(1), 0.0),
             Duration::from_secs(5),
             u32::MAX,
             Duration::from_secs(60),
@@ -2838,7 +2991,7 @@ mod tests {
         let mut deps = StepDependencies::new(&ids).unwrap();
         deps.depends_on("b", "a");
         let breaker = std::sync::Arc::new(CircuitBreaker::new(
-            michi_resilience::RetryConfig::new(0, Duration::from_millis(1), Duration::from_secs(1), 0.0),
+            michi_core::resilience::RetryConfig::new(0, Duration::from_millis(1), Duration::from_secs(1), 0.0),
             Duration::from_secs(5),
             u32::MAX,
             Duration::from_secs(60),
@@ -2881,7 +3034,7 @@ mod tests {
         deps.depends_on("b", "a");
         deps.depends_on("c", "b");
         let breaker = std::sync::Arc::new(CircuitBreaker::new(
-            michi_resilience::RetryConfig::new(0, Duration::from_millis(1), Duration::from_secs(1), 0.0),
+            michi_core::resilience::RetryConfig::new(0, Duration::from_millis(1), Duration::from_secs(1), 0.0),
             Duration::from_secs(5),
             u32::MAX,
             Duration::from_secs(60),
@@ -2931,7 +3084,7 @@ mod tests {
         let mut deps = StepDependencies::new(&ids).unwrap();
         deps.depends_on("b", "a");
         let breaker = std::sync::Arc::new(CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(5),
             1,
             Duration::from_secs(60),
@@ -2975,7 +3128,7 @@ mod tests {
         let ids = vec!["x".to_string(), "y".to_string()];
         let deps = StepDependencies::new(&ids).unwrap();
         let breaker = std::sync::Arc::new(CircuitBreaker::new(
-            michi_resilience::RetryConfig::new(0, Duration::from_millis(1), Duration::from_secs(1), 0.0),
+            michi_core::resilience::RetryConfig::new(0, Duration::from_millis(1), Duration::from_secs(1), 0.0),
             Duration::from_secs(5),
             1,
             Duration::from_secs(60),
@@ -2996,7 +3149,7 @@ mod tests {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let mut pipeline = make_pipeline(&["x", "y"]);
         let breaker = CircuitBreaker::new(
-            michi_resilience::RetryConfig::new(0, Duration::from_millis(1), Duration::from_secs(1), 0.0),
+            michi_core::resilience::RetryConfig::new(0, Duration::from_millis(1), Duration::from_secs(1), 0.0),
             Duration::from_secs(5),
             1,
             Duration::from_secs(60),
@@ -3046,7 +3199,7 @@ mod tests {
         let mut deps = StepDependencies::new(&ids).unwrap();
         deps.depends_on("b", "a");
         let breaker = std::sync::Arc::new(CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(5),
             1,
             Duration::from_secs(60),
@@ -3079,7 +3232,7 @@ mod tests {
         deps.depends_on("b", "a1");
         deps.depends_on("b", "a2");
         let breaker = std::sync::Arc::new(CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(5),
             1,
             Duration::from_secs(60),
@@ -3122,7 +3275,7 @@ mod tests {
         deps.depends_on("b", "a1");
         deps.depends_on("b", "a2");
         let breaker = std::sync::Arc::new(CircuitBreaker::new(
-            michi_resilience::RetryConfig::new(0, Duration::from_millis(1), Duration::from_secs(1), 0.0),
+            michi_core::resilience::RetryConfig::new(0, Duration::from_millis(1), Duration::from_secs(1), 0.0),
             Duration::from_secs(3600),
             u32::MAX,
             Duration::from_secs(60),
@@ -3175,7 +3328,7 @@ mod tests {
         deps.depends_on("b", "a");
         deps.depends_on("c", "b");
         let breaker = std::sync::Arc::new(CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(5),
             u32::MAX,
             Duration::from_secs(60),
@@ -3222,7 +3375,7 @@ mod tests {
         let ids = vec!["a".to_string(), "b".to_string()];
         let deps = StepDependencies::new(&ids).unwrap();
         let breaker = std::sync::Arc::new(CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(5),
             u32::MAX,
             Duration::from_secs(60),
@@ -3262,7 +3415,7 @@ mod tests {
         let ids = vec!["a".to_string(), "d".to_string()];
         let deps = StepDependencies::new(&ids).unwrap();
         let breaker = std::sync::Arc::new(CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(60),
             2,
             Duration::from_secs(60),
@@ -3297,7 +3450,7 @@ mod tests {
         let mut deps = StepDependencies::new(&ids).unwrap();
         deps.depends_on("d", "c");
         let breaker = std::sync::Arc::new(CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(60),
             2,
             Duration::from_secs(60),
@@ -3332,7 +3485,7 @@ mod tests {
         let ids = vec!["a".to_string(), "b".to_string()];
         let deps = StepDependencies::new(&ids).unwrap();
         let breaker = std::sync::Arc::new(CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(5),
             1,
             Duration::from_secs(60),
@@ -3372,7 +3525,7 @@ mod tests {
         let mut deps = StepDependencies::new(&ids).unwrap();
         deps.depends_on("b", "a");
         let breaker = std::sync::Arc::new(CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(3600),
             1,
             Duration::from_secs(60),
@@ -3433,7 +3586,7 @@ mod tests {
         let ids = vec!["a".to_string(), "b".to_string()];
         let deps = StepDependencies::new(&ids).unwrap();
         let breaker = std::sync::Arc::new(CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(3600),
             1,
             Duration::from_secs(60),
@@ -3471,7 +3624,7 @@ mod tests {
         let ids = vec!["a".to_string(), "b".to_string()];
         let deps = StepDependencies::new(&ids).unwrap();
         let breaker = std::sync::Arc::new(CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(3600),
             1,
             Duration::from_secs(60),
@@ -3518,7 +3671,7 @@ mod tests {
         let ids = vec!["a".to_string()];
         let deps = StepDependencies::new(&ids).unwrap();
         let breaker = std::sync::Arc::new(CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(5),
             1,
             Duration::from_secs(60),
@@ -3540,7 +3693,7 @@ mod tests {
         let mut deps = StepDependencies::new(&ids).unwrap();
         deps.depends_on("a", "a");
         let breaker = std::sync::Arc::new(CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(5),
             1,
             Duration::from_secs(60),
@@ -3564,7 +3717,7 @@ mod tests {
         let ids = vec!["a".to_string(), "c".to_string()];
         let deps = StepDependencies::new(&ids).unwrap();
         let breaker = std::sync::Arc::new(CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(5),
             1,
             Duration::from_secs(60),
@@ -3586,7 +3739,7 @@ mod tests {
         deps.depends_on("a", "b");
         deps.depends_on("b", "a");
         let breaker = std::sync::Arc::new(CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(5),
             1,
             Duration::from_secs(60),
@@ -3622,7 +3775,7 @@ mod tests {
         let mut deps = StepDependencies::new(&ids).unwrap();
         deps.depends_on("c", "b");
         let breaker = std::sync::Arc::new(CircuitBreaker::new(
-            michi_resilience::RetryConfig::new(0, Duration::from_millis(1), Duration::from_secs(1), 0.0),
+            michi_core::resilience::RetryConfig::new(0, Duration::from_millis(1), Duration::from_secs(1), 0.0),
             Duration::from_secs(3600),
             u32::MAX,
             Duration::from_secs(60),
@@ -3658,7 +3811,7 @@ mod tests {
         let ids = vec!["a".to_string()];
         let deps = StepDependencies::new(&ids).unwrap();
         let breaker = std::sync::Arc::new(CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(5),
             1,
             Duration::from_secs(60),
@@ -3680,7 +3833,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn circuit_open_short_circuit_writes_failed_and_skips_dependent() {
         let breaker = std::sync::Arc::new(CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(5),
             1,
             Duration::from_secs(3600),
@@ -3738,7 +3891,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn half_open_gate_releases_after_probe_panics_and_admits_a_real_subsequent_probe() {
         let breaker = std::sync::Arc::new(CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(60),
             1,
             Duration::from_secs(10),
@@ -3770,7 +3923,7 @@ mod tests {
     async fn execute_pipeline_still_executes_duplicate_ids_without_validation() {
         let mut pipeline = make_pipeline(&["dup", "dup"]);
         let breaker = CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(5),
             1,
             Duration::from_secs(60),
@@ -3819,7 +3972,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn panicking_step_contributes_neither_success_nor_failure_to_the_shared_breaker() {
         let breaker = std::sync::Arc::new(CircuitBreaker::new(
-            michi_resilience::RetryConfig::default(),
+            michi_core::resilience::RetryConfig::default(),
             Duration::from_secs(60),
             2,
             Duration::from_secs(60),
@@ -3862,5 +4015,371 @@ mod tests {
             michi_core::pipeline::StepStatus::Pending,
             "c, a third step never drained before the panic was observed, must also be left untouched"
         );
+    }
+
+    // ---- Regression tests for the 2026-10 defect batch ----
+
+    struct HangingCommit {
+        commits: std::sync::atomic::AtomicU32,
+    }
+    impl Step for HangingCommit {
+        fn run<'a>(&'a self, _attempt: u32) -> Pin<Box<dyn Future<Output = Result<(), ExecutionError>> + Send + 'a>> {
+            Box::pin(async move {
+                self.commits.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_secs(3600)).await;
+                Ok(())
+            })
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn timeout_does_not_reinvoke_a_step_that_has_not_opted_in_to_retries() {
+        let retry_config =
+            michi_core::resilience::RetryConfig::new(1, Duration::from_millis(1), Duration::from_millis(10), 0.0);
+        let breaker = CircuitBreaker::new(retry_config, Duration::from_millis(500), u32::MAX, Duration::from_secs(60));
+        let step = HangingCommit { commits: std::sync::atomic::AtomicU32::new(0) };
+        let result = breaker.call(&step, 0.0).await;
+        assert!(matches!(result, Err(ExecutionError::Timeout { .. })), "expected Timeout, got {result:?}");
+        assert_eq!(
+            step.commits.load(Ordering::SeqCst),
+            1,
+            "a timed-out attempt may already have committed; a step that has not opted in must not be re-invoked"
+        );
+    }
+
+    struct IdempotentHangingCommit {
+        commits: std::sync::atomic::AtomicU32,
+    }
+    impl Step for IdempotentHangingCommit {
+        fn run<'a>(&'a self, _attempt: u32) -> Pin<Box<dyn Future<Output = Result<(), ExecutionError>> + Send + 'a>> {
+            Box::pin(async move {
+                self.commits.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_secs(3600)).await;
+                Ok(())
+            })
+        }
+        fn is_idempotent(&self) -> bool {
+            true
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn timeout_still_retries_a_step_that_opted_in_as_idempotent() {
+        let retry_config =
+            michi_core::resilience::RetryConfig::new(1, Duration::from_millis(1), Duration::from_millis(10), 0.0);
+        let breaker = CircuitBreaker::new(retry_config, Duration::from_millis(500), u32::MAX, Duration::from_secs(60));
+        let step = IdempotentHangingCommit { commits: std::sync::atomic::AtomicU32::new(0) };
+        let result = breaker.call(&step, 0.0).await;
+        assert!(matches!(result, Err(ExecutionError::Timeout { .. })), "expected Timeout, got {result:?}");
+        assert_eq!(step.commits.load(Ordering::SeqCst), 2, "an idempotent step is retried after a timeout");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn step_returned_timeout_is_also_not_retried_unless_idempotent() {
+        let retry_config =
+            michi_core::resilience::RetryConfig::new(1, Duration::from_millis(1), Duration::from_millis(10), 0.0);
+        let breaker = CircuitBreaker::new(retry_config, Duration::from_secs(5), u32::MAX, Duration::from_secs(60));
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let make = |calls: std::sync::Arc<std::sync::atomic::AtomicU32>| {
+            step_fn(move |_attempt: u32| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                async {
+                    Err(ExecutionError::StepFailed {
+                        step_id: "inner".into(),
+                        step_name: "inner".into(),
+                        source: Box::new(ExecutionError::Timeout { elapsed_ms: 7 }),
+                    })
+                }
+            })
+        };
+        assert!(!make(std::sync::Arc::clone(&calls)).is_idempotent(), "step_fn defaults to not idempotent");
+        assert!(breaker.call(&make(std::sync::Arc::clone(&calls)), 0.0).await.is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "wrapped Timeout from a non-idempotent step: one invocation");
+
+        calls.store(0, Ordering::SeqCst);
+        let opted_in = make(std::sync::Arc::clone(&calls)).idempotent();
+        assert!(opted_in.is_idempotent());
+        assert!(breaker.call(&opted_in, 0.0).await.is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "FnStep::idempotent() opts the closure in to timeout retries");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn non_timeout_retryable_errors_still_retry_without_opt_in() {
+        let retry_config =
+            michi_core::resilience::RetryConfig::new(5, Duration::from_millis(10), Duration::from_secs(1), 0.0);
+        let breaker = CircuitBreaker::new(retry_config, Duration::from_secs(5), u32::MAX, Duration::from_secs(60));
+        let step = FlakyStep { fail_until: 2, calls: std::sync::atomic::AtomicU32::new(0) };
+        assert!(!step.is_idempotent());
+        assert!(breaker.call(&step, 0.0).await.is_ok());
+        assert_eq!(step.calls.load(Ordering::SeqCst), 3, "step-classified retryable failures are unaffected");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn parallel_rejects_duplicate_ids_even_when_no_edge_mentions_them() {
+        let mut pipeline = make_pipeline(&["a", "a"]);
+        let deps = StepDependencies::new(&["a".to_string()]).unwrap();
+        let breaker = std::sync::Arc::new(CircuitBreaker::new(
+            michi_core::resilience::RetryConfig::default(),
+            Duration::from_secs(5),
+            1,
+            Duration::from_secs(60),
+        ));
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        struct Spy(std::sync::Arc<std::sync::atomic::AtomicU32>);
+        impl Step for Spy {
+            fn run<'a>(
+                &'a self,
+                _attempt: u32,
+            ) -> Pin<Box<dyn Future<Output = Result<(), ExecutionError>> + Send + 'a>> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async { Ok(()) })
+            }
+        }
+        let runners: Vec<Box<dyn Step>> =
+            vec![Box::new(Spy(std::sync::Arc::clone(&calls))), Box::new(Spy(std::sync::Arc::clone(&calls)))];
+        let result =
+            execute_pipeline_parallel(&mut pipeline, &deps, runners, breaker, 0.0, &CancellationToken::new()).await;
+        match result {
+            Err(ExecutionError::DuplicateStepId { step_id }) => assert_eq!(step_id, "a"),
+            other => panic!("expected DuplicateStepId{{step_id: a}}, got {other:?}"),
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "no step may run once a duplicate id is detected");
+        for step in &pipeline.steps {
+            assert_eq!(step.status, michi_core::pipeline::StepStatus::Pending);
+        }
+    }
+
+    fn large_graph(n: usize, close_cycle: bool) -> StepDependencies {
+        let ids: Vec<String> = (0..n).map(|i| format!("s{i}")).collect();
+        let mut deps = StepDependencies::new(&ids).expect("distinct ids");
+        for i in 1..n {
+            deps.depends_on(&ids[i], &ids[i - 1]);
+        }
+        if close_cycle {
+            deps.depends_on(&ids[0], &ids[n - 1]);
+        }
+        deps
+    }
+
+    #[test]
+    fn detect_cycle_handles_a_100k_node_cycle_without_overflowing_the_stack() {
+        let deps = large_graph(100_000, true);
+        let found = detect_cycle(&deps).expect("a 100k-node ring must be reported as a cycle");
+        assert!(deps.ids.contains(&found), "reported id {found} must be a step id in the cycle");
+    }
+
+    #[test]
+    fn detect_cycle_accepts_a_100k_node_acyclic_chain() {
+        let deps = large_graph(100_000, false);
+        assert_eq!(detect_cycle(&deps), None);
+    }
+
+    struct GatedFailure {
+        release: std::sync::Arc<tokio::sync::Notify>,
+    }
+    impl Step for GatedFailure {
+        fn run<'a>(&'a self, _attempt: u32) -> Pin<Box<dyn Future<Output = Result<(), ExecutionError>> + Send + 'a>> {
+            let release = std::sync::Arc::clone(&self.release);
+            Box::pin(async move {
+                release.notified().await;
+                Err(ExecutionError::Failed { message: "stale".into(), retryable: false })
+            })
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stale_failure_from_before_the_breaker_opened_does_not_reopen_a_recovered_breaker() {
+        let breaker = std::sync::Arc::new(CircuitBreaker::new(
+            michi_core::resilience::RetryConfig::default(),
+            Duration::from_secs(60),
+            1,
+            Duration::from_secs(10),
+        ));
+        // The stale call is admitted while Closed and stays in flight across
+        // the whole Open -> HalfOpen -> Closed cycle below.
+        let release = std::sync::Arc::new(tokio::sync::Notify::new());
+        let stale = {
+            let breaker = std::sync::Arc::clone(&breaker);
+            let step = GatedFailure { release: std::sync::Arc::clone(&release) };
+            tokio::spawn(async move { breaker.call(&step, 0.0).await })
+        };
+        tokio::task::yield_now().await;
+
+        let fail = AlwaysFailStep { retryable: false, calls: std::sync::atomic::AtomicU32::new(0) };
+        assert!(breaker.call(&fail, 0.0).await.is_err());
+        assert_eq!(breaker.phase(), BreakerPhase::Open);
+        tokio::time::advance(Duration::from_secs(10)).await;
+        let probe = CountingStep { calls: std::sync::atomic::AtomicU32::new(0) };
+        assert!(breaker.call(&probe, 0.0).await.is_ok());
+        assert_eq!(breaker.phase(), BreakerPhase::Closed, "the probe succeeded, so the breaker recovered");
+
+        release.notify_one();
+        assert!(stale.await.expect("stale call must not panic").is_err());
+        assert_eq!(
+            breaker.phase(),
+            BreakerPhase::Closed,
+            "a result from a call admitted before the breaker opened must not transition the recovered breaker"
+        );
+    }
+
+    /// Bounded stress test (multi-thread runtime, < 2 s wall clock) for the
+    /// HalfOpen race: a caller whose HalfOpen decision was taken before a
+    /// concurrent probe succeeded must not run a second probe and reopen the
+    /// recovered breaker.
+    #[test]
+    fn half_open_race_stress_recovered_breaker_is_never_reopened_by_a_stale_half_open_decision() {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(4)
+            .enable_time()
+            .build()
+            .expect("multi-thread runtime must build");
+        rt.block_on(async {
+            let breaker = std::sync::Arc::new(CircuitBreaker::new(
+                michi_core::resilience::RetryConfig::try_new(0, Duration::from_millis(1), Duration::from_millis(1), 0.0)
+                    .expect("valid retry config"),
+                Duration::from_secs(60),
+                100,
+                Duration::from_millis(1),
+            ));
+            std::thread::sleep(Duration::from_millis(3));
+            let deadline = std::time::Instant::now() + Duration::from_millis(1000);
+            let mut trial = 0u32;
+            while std::time::Instant::now() < deadline {
+                trial += 1;
+                force_half_open_for_test(&breaker);
+                let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(9));
+                let a = {
+                    let breaker = std::sync::Arc::clone(&breaker);
+                    let barrier = std::sync::Arc::clone(&barrier);
+                    tokio::spawn(async move {
+                        barrier.wait().await;
+                        breaker.call(&AlwaysOk, 0.0).await
+                    })
+                };
+                let mut bs = Vec::new();
+                for _ in 0..8 {
+                    let breaker = std::sync::Arc::clone(&breaker);
+                    let barrier = std::sync::Arc::clone(&barrier);
+                    bs.push(tokio::spawn(async move {
+                        barrier.wait().await;
+                        let fail = AlwaysFailStep { retryable: false, calls: std::sync::atomic::AtomicU32::new(0) };
+                        breaker.call(&fail, 0.0).await
+                    }));
+                }
+                let a_result = a.await.expect("A must not panic");
+                for b in bs {
+                    let _ = b.await.expect("B must not panic");
+                }
+                if a_result.is_ok() {
+                    assert_eq!(
+                        breaker.phase(),
+                        BreakerPhase::Closed,
+                        "trial {trial}: A's probe succeeded and no B can reach failure_threshold=100, so the breaker must stay Closed"
+                    );
+                }
+            }
+        });
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn state_machine_a_stale_half_open_decision_cannot_reopen_a_recovered_breaker() {
+        // Deterministic replay of the reported race by driving admission and
+        // completion directly, in the problematic order.
+        let breaker = CircuitBreaker::new(
+            michi_core::resilience::RetryConfig::default(),
+            Duration::from_secs(60),
+            100,
+            Duration::from_secs(10),
+        );
+        force_half_open_for_test(&breaker);
+        tokio::time::advance(Duration::from_secs(10)).await;
+        assert_eq!(breaker.phase(), BreakerPhase::HalfOpen);
+
+        let a = breaker.admit().expect("first HalfOpen caller claims the probe");
+        assert!(matches!(a, Admission::Probe { .. }));
+        // B arrives while A's probe is in flight: the decision and the claim
+        // are one critical section, so B cannot also become a probe.
+        assert!(matches!(breaker.admit(), Err(ExecutionError::CircuitOpen { retry_after_ms: 10_000 })));
+
+        breaker.complete(a, true);
+        assert_eq!(breaker.phase(), BreakerPhase::Closed);
+
+        // B retries after A's success: it is admitted as a normal Closed call,
+        // never as a second probe, and its failure only counts toward 100.
+        let b = breaker.admit().expect("Closed breaker admits");
+        assert!(matches!(b, Admission::Closed { .. }), "no second probe after recovery, got {b:?}");
+        breaker.complete(b, false);
+        assert_eq!(breaker.phase(), BreakerPhase::Closed);
+        assert_eq!(breaker.lock_state().consecutive_failures, 1);
+
+        // A probe outcome from the finished HalfOpen generation is stale and
+        // must not transition the current state.
+        breaker.complete(a, false);
+        assert_eq!(breaker.phase(), BreakerPhase::Closed, "stale probe failure must be ignored");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn state_machine_stale_closed_outcomes_neither_extend_the_open_window_nor_reset_the_count() {
+        // The failure-count/open interleaving: several calls admitted in the
+        // same Closed generation finish after the breaker has already opened.
+        let breaker = CircuitBreaker::new(
+            michi_core::resilience::RetryConfig::default(),
+            Duration::from_secs(60),
+            2,
+            Duration::from_secs(10),
+        );
+        let c1 = breaker.admit().expect("closed");
+        let c2 = breaker.admit().expect("closed");
+        let c3 = breaker.admit().expect("closed");
+        let c4 = breaker.admit().expect("closed");
+        breaker.complete(c1, false);
+        breaker.complete(c2, false);
+        assert_eq!(breaker.phase(), BreakerPhase::Open, "threshold 2 reached");
+
+        tokio::time::advance(Duration::from_secs(4)).await;
+        breaker.complete(c3, false);
+        breaker.complete(c4, true);
+        match breaker.admit() {
+            Err(ExecutionError::CircuitOpen { retry_after_ms }) => {
+                assert_eq!(retry_after_ms, 6_000, "a stale failure must not re-stamp opened_at")
+            }
+            other => panic!("expected CircuitOpen, got {other:?}"),
+        }
+        assert_eq!(breaker.lock_state().consecutive_failures, 2, "a stale success must not reset the count");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn state_machine_abandoned_probe_only_releases_its_own_generation() {
+        let breaker = CircuitBreaker::new(
+            michi_core::resilience::RetryConfig::default(),
+            Duration::from_secs(60),
+            1,
+            Duration::from_secs(10),
+        );
+        force_half_open_for_test(&breaker);
+        tokio::time::advance(Duration::from_secs(10)).await;
+        let Ok(Admission::Probe { generation: g1 }) = breaker.admit() else {
+            panic!("expected a probe admission");
+        };
+        breaker.abandon_probe(g1);
+        assert_eq!(breaker.phase(), BreakerPhase::HalfOpen, "an abandoned probe frees the slot");
+        let p2 = breaker.admit().expect("a new probe may be claimed");
+        breaker.abandon_probe(g1);
+        assert!(
+            matches!(breaker.admit(), Err(ExecutionError::CircuitOpen { .. })),
+            "releasing a stale generation must not free the current probe's slot"
+        );
+        breaker.complete(p2, true);
+        assert_eq!(breaker.phase(), BreakerPhase::Closed);
+    }
+
+    /// Test-only: puts the breaker into the state it would be in after
+    /// opening at its failure threshold at epoch time 0, so it reports HalfOpen
+    /// once the breaker clock is at least `open_duration` past its epoch.
+    fn force_half_open_for_test(breaker: &CircuitBreaker) {
+        let mut state = breaker.lock_state();
+        state.consecutive_failures = breaker.failure_threshold;
+        state.phase = StoredPhase::Open { opened_at_ms: 0 };
+        state.generation = state.generation.wrapping_add(1);
     }
 }

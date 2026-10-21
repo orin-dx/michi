@@ -55,7 +55,7 @@ pub fn append_hints(out: &mut String, hints: &[Hint]) {
     out.push_str("]:\n");
     for hint in hints {
         out.push_str("  ");
-        out.push_str(hint.as_str());
+        out.push_str(&crate::text::escape_line_breaks(hint.as_str()));
         out.push('\n');
     }
 }
@@ -114,12 +114,12 @@ mod tests {
     }
 
     #[test]
-    fn ac011a_newline_in_hint_passes_through_unstripped() {
+    fn ac011a_newline_in_hint_is_escaped() {
         let hints = [Hint::new("a\nb")];
         let out = render_hints(&hints);
-        assert_eq!(out, "help[1]:\n  a\nb\n");
-        // The embedded \n adds a line, so line count is N+2, not help[N]'s N+1.
-        assert_eq!(out.lines().count(), 3);
+        assert_eq!(out, "help[1]:\n  a\\nb\n");
+        // The \n renders as a visible escape, so line count stays at help[N]'s N+1.
+        assert_eq!(out.lines().count(), 2);
     }
 
     #[test]
@@ -136,12 +136,12 @@ mod tests {
     }
 
     #[test]
-    fn carriage_return_in_hint_passes_through_but_does_not_change_line_count() {
-        // \r alone is not a line separator for str::lines(), so line count
-        // stays at N+1 despite the character passing through unstripped.
+    fn carriage_return_in_hint_is_escaped() {
+        // \r renders as the visible two-character escape, never raw or dropped.
         let hints = [Hint::new("a\rb")];
         let out = render_hints(&hints);
-        assert_eq!(out, "help[1]:\n  a\rb\n");
+        assert_eq!(out, "help[1]:\n  a\\rb\n");
+        assert!(!out.contains('\r'), "no raw CR may survive, got: {out:?}");
         assert_eq!(out.lines().count(), 2);
     }
 }

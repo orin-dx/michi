@@ -24,6 +24,11 @@ test-rust:
 test-rust-all:
     cargo nextest run --workspace --all-features
 
+# Each published crate alone with its default features: a workspace-wide run unifies features across crates.
+test-crates-default:
+    cargo nextest run -p michi-core
+    cargo nextest run -p michi-pipeline
+
 test-rust-release:
     cargo nextest run --workspace --release
 
@@ -51,6 +56,12 @@ lint-affected:
     projects=$(moon query projects --affected 2>/dev/null | jq -r '.projects[].id // empty')
     if [ -z "$projects" ]; then
         echo "No affected crates; skipping lint."
+        exit 0
+    fi
+    # Root-level changes (manifests, toolchain, lint config) affect every crate.
+    if grep -qx michi-workspace <<< "$projects"; then
+        echo "Workspace root affected; linting every crate."
+        cargo clippy --workspace --all-targets --all-features -- -D warnings
         exit 0
     fi
     args=()
@@ -118,7 +129,7 @@ examples:
     moon run :examples
 
 example name:
-    cargo run --example {{name}}
+    cargo run -p michi-core --example {{name}}
 
 snapshots:
     cargo insta review

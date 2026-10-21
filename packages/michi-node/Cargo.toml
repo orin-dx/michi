@@ -1,6 +1,6 @@
 [package]
 name        = "michi-node"
-version     = "0.2.0"
+version.workspace      = true
 publish     = false
 edition.workspace      = true
 rust-version.workspace = true
@@ -19,12 +19,12 @@ ignored = ["napi", "napi-derive"]
 crate-type = ["cdylib"]
 
 [dependencies]
-# `napi` exports themselves live in michi::napi (src/napi.rs) so they can be
+# `napi` exports themselves live in michi_core::napi (crates/michi-core/src/napi.rs) so they can be
 # unit-tested there; this crate only re-exports them (see src/lib.rs). napi/
 # napi-derive are still direct deps (unused in this crate's own source) because
 # the `napi build` CLI's .d.ts/binding-generation detection scans this crate's
 # own Cargo.toml for them and silently skips codegen if they're absent.
-michi       = { path = "../..", features = ["napi"] }
+michi-core  = { workspace = true, features = ["napi"] }
 napi        = { version = "3", features = ["napi6"] }
 napi-derive = { version = "3" }
 

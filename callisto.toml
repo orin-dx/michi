@@ -9,44 +9,26 @@ bump-severity = "patch"
 peer-escalation = true
 preserve-npm-ranges = true
 
-# Rust library crates — published to crates.io.
-# [[package-set]] globs match by package NAME, not directory path, so
-# "crates/*" would never match a package here (none are literally named
-# "crates/..."). Explicit per-crate [[package]] blocks match by path
-# instead, same as the root and michi-node entries below.
+# Rust library crates, published to crates.io.
 [[package]]
-match = "crates/michi-core"
+match = "cargo/michi-core"
 publish-to = ["crates-io"]
 release-trigger = "changeset"
 
 [[package]]
-match = "crates/michi-pipeline"
-publish-to = ["crates-io"]
-release-trigger = "changeset"
-
-[[package]]
-match = "crates/michi-resilience"
-publish-to = ["crates-io"]
-release-trigger = "changeset"
-
-[[package]]
-match = "crates/michi-toon"
-publish-to = ["crates-io"]
-release-trigger = "changeset"
-
-[[package]]
-match = "crates/michi-truncate"
-publish-to = ["crates-io"]
-release-trigger = "changeset"
-
-# Root crate (not captured by any glob)
-[[package]]
-match = "."
+match = "cargo/michi-pipeline"
 publish-to = ["crates-io"]
 release-trigger = "changeset"
 
 # michi-node: NAPI cdylib + npm package
 [[package]]
-match = "packages/michi-node"
+match = "npm/michi-node"
 publish-to = ["npm"]
 release-trigger = "changeset"
+
+# Every michi package ships one version: a change to any of them releases all three.
+
+# Every michi package ships one version: a change to any of them releases all three.
+[[fixed-group]]
+name = "michi"
+members = ["michi-core", "michi-pipeline", "michi-node"]

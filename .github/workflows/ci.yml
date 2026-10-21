@@ -66,8 +66,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: orin-dx/actions/setup-rust@v1.1
       - uses: taiki-e/install-action@nextest
+      - uses: taiki-e/install-action@just
       - run: cargo nextest run --workspace
       - run: cargo nextest run --workspace --all-features
+      # Each published crate on its own, with only its default features. A workspace-wide run unifies features (the
+      # napi shim turns on michi-core's serde), which hid a default-feature failure.
+      - run: just test-crates-default
 
   deny:
     name: Deny

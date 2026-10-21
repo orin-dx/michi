@@ -1,23 +1,27 @@
 # Rust API
 
-## Crate Root (`michi`)
+## Crate Root (`michi_core`)
 
-`michi` is a unified facade crate. It re-exports sub-crates as modules and star-exports `michi-core` directly so all core types are available at the root:
+`michi-core` is the one crate holding every sync primitive. Each primitive is a module (`michi_core::toon`, `michi_core::kv`, `michi_core::truncate`, `michi_core::resilience`, …), and the most-used types are re-exported at the crate root:
 
 ```rust
-pub use michi_core::*;            // DomainError, AgentResponse, KvItem, … at michi::*
-pub use michi_resilience as resilience;   // michi::resilience::RetryConfig, …
-pub use michi_toon as toon;              // michi::toon::ToonOptions, michi::toon::list(), …
-pub use michi_truncate as truncate;      // michi::truncate::truncate(), …
+pub use error::{DomainError, Error, ErrorClass, ErrorCode, Sensitive};
+pub use response::{AgentResponse, OutputFormat};
+pub use kv::{render_kv, KvItem, KvValue};
+// … audience, empty, hints, idempotency, mcp, recovery, status
+pub use resilience::*;            // michi_core::RetryConfig, michi_core::already_done, …
+pub use truncate::*;              // michi_core::truncate(), michi_core::Truncated, …
+
+pub type Result<T> = std::result::Result<T, Error>;
 ```
 
-`michi_resilience::*` is also re-exported from `michi_core`, so `michi::RetryConfig`, `michi::already_done`, etc. are available at the root without the `resilience::` prefix.
+`toon` is not glob-re-exported; its items are reached as `michi_core::toon::ToonOptions`, `michi_core::toon::list()`, and so on. There is no `michi` crate (the name on crates.io belongs to an unrelated project); consumers who prefer `michi::` paths rename the dependency with `michi = { package = "michi-core", version = "0.3" }`.
 
-All sub-crates compile for `wasm32-unknown-unknown` and `wasm32-wasip1` without OS dependencies.
+`michi-core` compiles for `wasm32-unknown-unknown` and `wasm32-wasip1` without OS dependencies.
 
-## `michi-toon` — List Rendering
+## `toon` — List Rendering
 
-`michi-toon` formats tabular lists using Token-Optimized Object Notation (**AXI P1**). Small cell strings (≤ 24 bytes) are stack-inlined via `compact_str::CompactString`.
+`michi_core::toon` formats tabular lists using Token-Optimized Object Notation (**AXI P1**). Small cell strings (≤ 24 bytes) are stack-inlined via `compact_str::CompactString`.
 
 ```rust
 #[non_exhaustive]
@@ -78,7 +82,7 @@ pub fn list<T: serde::Serialize>(
 
 Items are serialized via `serde_json::to_value()` and must produce JSON objects (structs or maps). Non-object items and structural chars in `type_name` or field names return `Err(ToonError)`.
 
-## `michi-core` — High-Level Response Compositor
+## Response Compositor (`error`, `response`, `idempotency`)
 
 ### `DomainError`
 
@@ -157,7 +161,7 @@ impl AgentResponse {
 ### Idempotency
 
 ```rust
-// In michi-core::idempotency (also at michi::PartialSuccess, michi::FailedOp)
+// In michi_core::idempotency (also at michi_core::PartialSuccess, michi_core::FailedOp)
 pub struct PartialSuccess {
     pub completed: Vec<String>,
     pub failed: Vec<FailedOp>,
@@ -175,7 +179,7 @@ pub struct FailedOp {
     pub recovery: Option<RecoveryHint>,
 }
 
-// In michi-resilience (also at michi::already_done, michi::AlreadyDone)
+// In michi_core::resilience (also at michi_core::already_done, michi_core::AlreadyDone)
 pub enum AlreadyDone { Yes { result: String }, No }
 pub fn already_done(stored: Option<String>) -> AlreadyDone;
 pub fn render_already_done(operation: &str, summary: &str, hints: &[String]) -> String;
@@ -186,7 +190,7 @@ impl IdempotencyKey {
 }
 ```
 
-## `michi-truncate` — Char-Boundary Truncation
+## `truncate` — Char-Boundary Truncation
 
 ```rust
 pub struct Truncated {
@@ -204,7 +208,7 @@ pub fn truncate_inline(content: &str, max_chars: usize, hint: &str) -> String;
 
 Truncates strings safely at Unicode scalar boundaries (`floor_char_boundary`) without splitting UTF-8 code points.
 
-## `michi-resilience` — Retry & Idempotency Primitives
+## `resilience` — Retry & Idempotency Primitives
 
 ```rust
 pub struct RetryConfig {

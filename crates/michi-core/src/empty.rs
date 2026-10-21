@@ -4,7 +4,7 @@ use crate::hints::Hint;
 #[must_use]
 pub fn empty_state(type_name: &str) -> String {
     let mut out = String::with_capacity(type_name.len() + 21);
-    out.push_str(type_name);
+    out.push_str(&crate::text::escape_line_breaks(type_name));
     out.push_str("[0]{}:\ntotalCount: 0\n");
     out
 }
@@ -32,16 +32,17 @@ mod tests {
     }
 
     #[test]
-    fn ac003a_newline_in_type_name_passes_through_unstripped() {
+    fn ac003a_newline_in_type_name_is_escaped() {
         let out = empty_state("a\nb");
-        assert_eq!(out, "a\nb[0]{}:\ntotalCount: 0\n");
-        assert_eq!(out.lines().count(), 3);
+        assert_eq!(out, "a\\nb[0]{}:\ntotalCount: 0\n");
+        assert_eq!(out.lines().count(), 2, "the escaped \\n must not inject a line");
     }
 
     #[test]
-    fn carriage_return_in_type_name_passes_through_but_does_not_change_line_count() {
+    fn carriage_return_in_type_name_is_escaped() {
         let out = empty_state("a\rb");
-        assert_eq!(out, "a\rb[0]{}:\ntotalCount: 0\n");
+        assert_eq!(out, "a\\rb[0]{}:\ntotalCount: 0\n");
+        assert!(!out.contains('\r'), "no raw CR may survive, got: {out:?}");
         assert_eq!(out.lines().count(), 2);
     }
 

@@ -369,30 +369,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "88904434abc2901f197fe8cc55f0445e7ded921dba5911dad2e2b39b48e663c4"
 
 [[package]]
-name = "michi"
-version = "0.2.0"
+name = "michi-core"
+version = "0.3.0"
 dependencies = [
+ "compact_str",
  "divan",
  "insta",
- "michi-core",
- "michi-resilience",
- "michi-toon",
- "michi-truncate",
+ "miette",
  "napi",
  "napi-derive",
  "proptest",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "michi-core"
-version = "0.1.1"
-dependencies = [
- "michi-resilience",
- "michi-toon",
- "michi-truncate",
- "miette",
  "schemars",
  "serde",
  "serde_json",
@@ -402,9 +388,9 @@ dependencies = [
 
 [[package]]
 name = "michi-node"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
- "michi",
+ "michi-core",
  "napi",
  "napi-build",
  "napi-derive",
@@ -412,38 +398,11 @@ dependencies = [
 
 [[package]]
 name = "michi-pipeline"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "michi-core",
- "michi-resilience",
  "thiserror",
  "tokio",
-]
-
-[[package]]
-name = "michi-resilience"
-version = "0.1.1"
-dependencies = [
- "trybuild",
-]
-
-[[package]]
-name = "michi-toon"
-version = "0.2.0"
-dependencies = [
- "compact_str",
- "michi-truncate",
- "schemars",
- "serde",
- "serde_json",
- "trybuild",
-]
-
-[[package]]
-name = "michi-truncate"
-version = "0.1.0"
-dependencies = [
- "trybuild",
 ]
 
 [[package]]

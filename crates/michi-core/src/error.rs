@@ -3,7 +3,7 @@ use std::time::Duration;
 use crate::hints::Hint;
 use crate::recovery::RecoveryHint;
 
-/// Classification of a `michi::Error` for routing and display decisions.
+/// Classification of a `crate::Error` for routing and display decisions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[non_exhaustive]
@@ -174,7 +174,7 @@ impl DomainError {
         out.push_str("error: ");
         out.push_str(self.code.label());
         out.push_str("\nmessage: ");
-        out.push_str(&self.message);
+        out.push_str(&crate::text::escape_line_breaks(&self.message));
         out.push_str("\nexit_code: 1\n");
         crate::hints::append_hints(&mut out, &self.hints);
         if let Some(r) = &self.recovery {
@@ -245,7 +245,7 @@ impl DomainError {
         out
     }
 
-    /// Build an MCP [`CallToolResult`] representing this error.
+    /// Build an MCP [`CallToolResult`](crate::mcp::CallToolResult) representing this error.
     ///
     /// Sets `is_error: true`. Text content uses [`DomainError::render()`];
     /// `structured_content` uses [`DomainError::render_json()`].

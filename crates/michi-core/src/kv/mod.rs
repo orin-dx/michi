@@ -33,18 +33,8 @@ pub enum KvValue {
 
 pub(crate) fn push_kv_value(out: &mut String, value: &KvValue) {
     match value {
-        KvValue::Text(s) => {
-            // Strip \n and \r — they break the one-line-per-key KV format
-            if s.contains('\n') || s.contains('\r') {
-                for ch in s.chars() {
-                    if ch != '\n' && ch != '\r' {
-                        out.push(ch);
-                    }
-                }
-            } else {
-                out.push_str(s);
-            }
-        }
+        // Escaped, not stripped: a raw line break would end the one-line-per-key format.
+        KvValue::Text(s) => out.push_str(&crate::text::escape_line_breaks(s)),
         KvValue::Int(n) => {
             let _ = write!(out, "{n}");
         }
@@ -117,13 +107,14 @@ pub fn render_kv(items: &[KvItem], total_count: Option<usize>, hints: &[Hint]) -
     if items.is_empty() {
         return String::new();
     }
-    let max_key_len = items.iter().map(|i| i.key.chars().count()).max().unwrap_or(0);
+    let keys: Vec<std::borrow::Cow<'_, str>> = items.iter().map(|i| crate::text::escape_line_breaks(&i.key)).collect();
+    let max_key_len = keys.iter().map(|k| k.chars().count()).max().unwrap_or(0);
     let capacity = items.len() * (max_key_len + 24) + hints.len() * 50 + 20;
     let mut out = String::with_capacity(capacity);
-    for item in items {
-        out.push_str(&item.key);
+    for (item, key) in items.iter().zip(&keys) {
+        out.push_str(key);
         out.push(':');
-        let pad = max_key_len - item.key.chars().count() + 1;
+        let pad = max_key_len - key.chars().count() + 1;
         for _ in 0..pad {
             out.push(' ');
         }
@@ -158,13 +149,13 @@ mod tests {
         assert_eq!(lines.len(), 1, "newline in value must not break KV format, got:\n{out}");
     }
 
-    // AC-008: \n and \r are both removed entirely (not replaced by a space),
-    // and the surviving characters concatenate directly with no gap.
+    // AC-008: \n and \r are neither emitted raw nor dropped -- each renders as
+    // its visible two-character escape, keeping the value on one line.
     #[test]
-    fn ac008_newline_and_cr_are_removed_not_replaced_and_result_concatenates() {
+    fn ac008_newline_and_cr_in_text_value_are_escaped() {
         let item = KvItem { key: "k".into(), value: KvValue::Text("line1\nline2\rline3".into()) };
         let out = render_kv(&[item], None, &[]);
-        assert_eq!(out, "k: line1line2line3\n");
+        assert_eq!(out, "k: line1\\nline2\\rline3\n");
     }
 
     // AC-011: KvValue::Missing renders as the em-dash character, not empty,

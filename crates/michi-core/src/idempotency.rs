@@ -14,8 +14,8 @@ pub struct FailedOp {
 /// Use this when some steps of a multi-step operation succeeded — the agent
 /// can resume from the checkpoint rather than retrying from scratch.
 ///
-/// For a fully-completed prior call, see [`michi_resilience::AlreadyDone`]
-/// and [`michi_resilience::already_done`].
+/// For a fully-completed prior call, see [`crate::resilience::AlreadyDone`]
+/// and [`crate::resilience::already_done`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct PartialSuccess {
     /// Identifiers of steps that completed successfully.
@@ -67,7 +67,7 @@ impl PartialSuccess {
             out.push_str("]:\n");
             for op in &self.completed {
                 out.push_str("  ");
-                out.push_str(op);
+                out.push_str(&crate::text::escape_line_breaks(op));
                 out.push('\n');
             }
         }
@@ -79,10 +79,10 @@ impl PartialSuccess {
             for f in &self.failed {
                 out.push_str("  ");
                 // operation: conditionally quoted (only when it contains commas/quotes/newlines)
-                out.push_str(michi_toon::escape_value(&f.operation).as_ref());
+                out.push_str(crate::toon::escape_value(&f.operation).as_ref());
                 out.push(',');
                 // reason: always quoted — it is human-readable prose and often contains quotes
-                out.push_str(&michi_toon::escape_value_quoted(&f.reason));
+                out.push_str(&crate::toon::escape_value_quoted(&f.reason));
                 out.push('\n');
             }
         }
@@ -93,7 +93,7 @@ impl PartialSuccess {
             out.push_str("]:\n");
             for op in &self.skipped {
                 out.push_str("  ");
-                out.push_str(op);
+                out.push_str(&crate::text::escape_line_breaks(op));
                 out.push('\n');
             }
         }
@@ -239,17 +239,18 @@ mod tests {
         assert!(out.contains(r#""create_issue, retry 2""#), "operation must be quoted, got: {out}");
     }
 
-    // AC-034: a newline/CR in operation, with no comma or quote present, is
-    // silently stripped (not escaped) and does NOT by itself trigger quoting.
+    // AC-034: a newline/CR in operation, even with no comma or quote present,
+    // triggers quoting and renders as the \n / \r escapes inside the quotes.
     #[test]
-    fn ac034_newline_and_cr_in_operation_are_stripped_without_triggering_quoting() {
+    fn ac034_newline_and_cr_in_operation_are_quoted_and_escaped() {
         let ps = PartialSuccess {
             completed: vec![],
             failed: vec![FailedOp { operation: "step\none\rtwo".into(), reason: "y".into(), recovery: None }],
             skipped: vec![],
         };
         let out = ps.render();
-        assert!(out.contains("  steponetwo,\"y\"\n"), "got: {out}");
+        assert!(out.contains("  \"step\\none\\rtwo\",\"y\"\n"), "got: {out:?}");
+        assert!(!out.contains('\r'), "no raw CR may survive, got: {out:?}");
     }
 
     // AC-035: recovery from a failed op appends a trailing help[] block with

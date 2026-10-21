@@ -1,6 +1,6 @@
 {
   "name": "@orin-dx/michi",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "AXI response primitives for agent-ergonomic tools",
   "main": "index.js",
   "types": "index.d.ts",

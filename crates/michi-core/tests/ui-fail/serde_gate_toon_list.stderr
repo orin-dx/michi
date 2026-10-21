@@ -1,0 +1,13 @@
+error[E0425]: cannot find function `list` in module `michi_core::toon`
+ --> tests/ui-fail/serde_gate_toon_list.rs:3:31
+  |
+3 |     let _ = michi_core::toon::list("t", &[0u8; 0]);
+  |                               ^^^^ not found in `michi_core::toon`
+  |
+note: found an item that was configured out
+ --> src/toon/mod.rs
+  |
+  | #[cfg(feature = "serde")]
+  |       ----------------- the item is gated behind the `serde` feature
+  | pub fn list<T: serde::Serialize>(type_name: impl Into<String>, items: &[T]) -> Result<String, ToonError> {
+  |        ^^^^

@@ -2,12 +2,4 @@ $schema: "https://moonrepo.dev/schemas/project.json"
 
 language: rust
 
-tasks:
-  # build/test/check-wasm intentionally absent -- see .moon/tasks/rust.yml.
-  # (A prior `command:` override here never took effect against the
-  # inherited `script:`-based task, so don't re-add one expecting it to.)
-  publish:
-    deps:
-      - "michi-toon:publish"
-      - "michi-truncate:publish"
-      - "michi-resilience:publish"
+# build/test/check-wasm intentionally absent -- see .moon/tasks/rust.yml.

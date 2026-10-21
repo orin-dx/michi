@@ -72,9 +72,11 @@ A dedicated `recovery[N]:` block, not folded into `help[]` — see [03-rust-api.
 
 ## Escaping
 
-- Values containing commas **must** be quoted
-- Values containing double quotes use a backslash escape: `\"`
-- Embedded newlines and carriage returns are silently stripped, not escaped — TOON has no multi-line cell format
+- Values containing a comma, double quote, newline or carriage return are quoted
+- Inside quotes, `\` starts an escape: `\"` is a double quote, `\\` a backslash, `\n` a newline and `\r` a carriage return. A cell never spans lines and nothing is dropped
+- Unquoted values have no escape syntax: a backslash in an unquoted value is literal
+- Hint lines keep their text, including punctuation; only line breaks are escaped, as `\n` and `\r`
+- Integers above `i64::MAX` (from `u64`/`usize` or serde `list()`) render with their exact digits
 - Null/absent values render as an empty scalar: `val1,,val3`
 - Booleans: `true` / `false`
 - Numbers: unquoted

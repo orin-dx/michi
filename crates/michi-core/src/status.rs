@@ -246,13 +246,14 @@ mod tests {
     }
 
     #[test]
-    fn ac023a_newline_in_item_key_breaks_the_2_plus_n_formula_even_with_hints() {
+    fn ac023a_newline_in_item_key_is_escaped_and_keeps_the_2_plus_n_formula_with_hints() {
         let items = vec![StatusItem { key: "a\nb".into(), value: KvValue::Text("v".into()), health: None }];
         let hints = vec![Hint::new("h1")];
         let resp = StatusResponse::new("tool", "desc", items).with_hints(hints);
         let out = resp.render();
+        assert_eq!(out, "tool:        tool\ndescription: desc\na\\nb:        v\nhelp[1]:\n  h1\n");
         let lines_before_help = out.lines().take_while(|l| !l.starts_with("help[")).count();
-        assert_eq!(lines_before_help, 4, "2 (tool+desc) + 1 item + 1 extra from the embedded \\n, got: {out:?}");
+        assert_eq!(lines_before_help, 3, "2 (tool+desc) + 1 item, the escaped \\n adds no line, got: {out:?}");
     }
 
     #[test]
@@ -272,40 +273,41 @@ mod tests {
     }
 
     #[test]
-    fn ac023b_newline_in_item_key_adds_a_line_beyond_the_2_plus_n_formula() {
+    fn ac023b_newline_in_item_key_is_escaped_and_adds_no_line_beyond_the_2_plus_n_formula() {
         let items = vec![StatusItem { key: "a\nb".into(), value: KvValue::Text("v".into()), health: None }];
         let resp = StatusResponse::new("tool", "desc", items);
         let out = resp.render();
-        assert_eq!(out.lines().count(), 4, "2 (tool+desc) + 1 item + 1 extra from the embedded \\n, got: {out:?}");
+        assert_eq!(out, "tool:        tool\ndescription: desc\na\\nb:        v\n");
+        assert_eq!(out.lines().count(), 3, "2 (tool+desc) + 1 item, the escaped \\n adds no line, got: {out:?}");
     }
 
     #[test]
-    fn ac023_carriage_return_in_item_key_passes_through_but_does_not_change_line_count() {
+    fn ac023_carriage_return_in_item_key_is_escaped() {
         let items = vec![StatusItem { key: "a\rb".into(), value: KvValue::Text("v".into()), health: None }];
         let resp = StatusResponse::new("tool", "desc", items);
         let out = resp.render();
-        assert!(out.contains("a\rb:"), "got: {out:?}");
-        assert_eq!(out.lines().count(), 3, "2 (tool+desc) + 1 item, unchanged by the lone \\r, got: {out:?}");
+        assert_eq!(out, "tool:        tool\ndescription: desc\na\\rb:        v\n");
+        assert!(!out.contains('\r'), "no raw CR may survive, got: {out:?}");
     }
 
     #[test]
-    fn ac023_text_value_with_newline_and_carriage_return_is_stripped_and_preserves_line_count() {
+    fn ac023_text_value_with_newline_and_carriage_return_is_escaped_and_preserves_line_count() {
         let items = vec![StatusItem { key: "k".into(), value: KvValue::Text("a\nb\rc".into()), health: None }];
         let resp = StatusResponse::new("tool", "desc", items);
         let out = resp.render();
-        assert!(out.contains("k:           abc"), "got: {out:?}");
-        assert_eq!(out.lines().count(), 3, "2 (tool+desc) + 1 item, value is stripped so count is unaffected");
+        assert_eq!(out, "tool:        tool\ndescription: desc\nk:           a\\nb\\rc\n");
+        assert_eq!(out.lines().count(), 3, "2 (tool+desc) + 1 item, value is escaped so count is unaffected");
     }
 
     #[test]
-    fn ac022a_tool_name_and_description_newlines_are_stripped() {
+    fn ac022a_tool_name_and_description_newlines_are_escaped() {
         let resp = StatusResponse::new("a\nb", "c\nd", vec![]);
         let out = resp.render();
-        assert_eq!(out, "tool:        ab\ndescription: cd\n");
+        assert_eq!(out, "tool:        a\\nb\ndescription: c\\nd\n");
     }
 
     #[test]
-    fn ac025a_degraded_reason_newline_is_stripped() {
+    fn ac025a_degraded_reason_newline_is_escaped() {
         let items = vec![StatusItem {
             key: "x".into(),
             value: KvValue::Text("v".into()),
@@ -313,12 +315,12 @@ mod tests {
         }];
         let resp = StatusResponse::new("tool", "desc", items);
         let out = resp.render();
-        assert!(out.contains("[DEGRADED: ab]"), "got: {out:?}");
+        assert!(out.contains("[DEGRADED: a\\nb]"), "got: {out:?}");
         assert_eq!(out.lines().count(), 3);
     }
 
     #[test]
-    fn ac026a_error_reason_newline_is_stripped() {
+    fn ac026a_error_reason_newline_is_escaped() {
         let items = vec![StatusItem {
             key: "x".into(),
             value: KvValue::Text("v".into()),
@@ -326,7 +328,7 @@ mod tests {
         }];
         let resp = StatusResponse::new("tool", "desc", items);
         let out = resp.render();
-        assert!(out.contains("[ERROR: ab]"), "got: {out:?}");
+        assert!(out.contains("[ERROR: a\\nb]"), "got: {out:?}");
         assert_eq!(out.lines().count(), 3);
     }
 }

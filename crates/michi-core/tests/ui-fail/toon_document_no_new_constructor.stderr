@@ -1,0 +1,11 @@
+error[E0599]: no associated function or constant named `new` found for struct `ToonDocument<'a>` in the current scope
+ --> tests/ui-fail/toon_document_no_new_constructor.rs:7:52
+  |
+7 |     let _via_new = michi_core::toon::ToonDocument::new(&o);
+  |                                                    ^^^ associated function or constant not found in `ToonDocument<'_>`
+  |
+note: if you're trying to build a new `ToonDocument<'_>`, consider using `ToonDocument::<'a>::validate` which returns `Result<ToonDocument<'_>, ToonError>`
+ --> src/toon/render.rs
+  |
+  |         pub fn validate(opts: &'a crate::toon::ToonOptions) -> Result<Self, crate::toon::ToonError> {
+  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

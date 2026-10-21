@@ -6,7 +6,6 @@ use crate::audience::Audience;
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(into = "ContentBlockWire", from = "ContentBlockWire"))]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub struct ContentBlock {
     /// The block's text content.
@@ -24,6 +23,8 @@ impl ContentBlock {
 
 #[cfg(feature = "serde")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schemars", schemars(rename = "Annotations"))]
 #[serde(rename_all = "camelCase")]
 struct AnnotationsWire {
     audience: Vec<Audience>,
@@ -31,6 +32,8 @@ struct AnnotationsWire {
 
 #[cfg(feature = "serde")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schemars", schemars(rename = "ContentBlock"))]
 struct ContentBlockWire {
     #[serde(rename = "type")]
     kind: String,
@@ -56,7 +59,6 @@ impl From<ContentBlockWire> for ContentBlock {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(into = "CallToolResultWire", from = "CallToolResultWire"))]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub struct CallToolResult {
     /// Text content blocks.
@@ -78,6 +80,8 @@ impl CallToolResult {
 
 #[cfg(feature = "serde")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schemars", schemars(rename = "CallToolResult"))]
 #[serde(rename_all = "camelCase")]
 struct CallToolResultWire {
     content: Vec<ContentBlock>,
@@ -102,6 +106,30 @@ impl From<CallToolResultWire> for CallToolResult {
     fn from(w: CallToolResultWire) -> Self {
         let structured_content = serde_json::to_string(&w.structured_content).unwrap_or_default();
         Self { content: w.content, is_error: w.is_error, structured_content }
+    }
+}
+
+// The schemas describe the wire form (`type`/`annotations.audience`, camelCase keys, parsed JSON
+// `structuredContent`), not the Rust field layout; `schemars` enables `serde` so the wire DTOs always exist.
+#[cfg(feature = "schemars")]
+impl schemars::JsonSchema for ContentBlock {
+    fn schema_name() -> String {
+        ContentBlockWire::schema_name()
+    }
+
+    fn json_schema(generator: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+        ContentBlockWire::json_schema(generator)
+    }
+}
+
+#[cfg(feature = "schemars")]
+impl schemars::JsonSchema for CallToolResult {
+    fn schema_name() -> String {
+        CallToolResultWire::schema_name()
+    }
+
+    fn json_schema(generator: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+        CallToolResultWire::json_schema(generator)
     }
 }
 

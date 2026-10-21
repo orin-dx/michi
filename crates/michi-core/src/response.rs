@@ -1,7 +1,7 @@
 use crate::hints::Hint;
 use crate::kv::KvItem;
 use crate::recovery::RecoveryHint;
-use michi_toon::Value;
+use crate::toon::Value;
 
 /// The serialisation format for `AgentResponse::render`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -126,13 +126,14 @@ impl AgentResponse {
         self
     }
 
-    fn toon_body(&self) -> String {
-        let opts = michi_toon::ToonOptions::new(self.type_name.clone(), self.fields.clone(), self.items.clone())
+    /// The TOON body, and whether it is a validation-failure error block instead of the requested rows.
+    fn toon_body(&self) -> (String, bool) {
+        let opts = crate::toon::ToonOptions::new(self.type_name.clone(), self.fields.clone(), self.items.clone())
             .total_count(self.total_count)
             .max_cell_len(self.truncate_cells_at);
         match opts.validate() {
-            Ok(doc) => doc.render(),
-            Err(e) => format!("error: toon_validation_failed\nmessage: {e}\n"),
+            Ok(doc) => (doc.render(), false),
+            Err(e) => (format!("error: toon_validation_failed\nmessage: {e}\n"), true),
         }
     }
 
@@ -140,10 +141,15 @@ impl AgentResponse {
         crate::kv::render_kv(&self.single_item, self.total_count, &[])
     }
 
-    fn body(&self) -> String {
+    /// The selected body, and whether this response is an error: set by `as_error()` or by a body that failed
+    /// validation. Every output surface reads its error flag from here so text, JSON and MCP never disagree.
+    fn body(&self) -> (String, bool) {
         match self.target {
-            RenderTarget::Toon | RenderTarget::Unset => self.toon_body(),
-            RenderTarget::Kv => self.kv_body(),
+            RenderTarget::Toon | RenderTarget::Unset => {
+                let (body, failed) = self.toon_body();
+                (body, failed || self.is_error)
+            }
+            RenderTarget::Kv => (self.kv_body(), self.is_error),
         }
     }
 
@@ -167,7 +173,7 @@ impl AgentResponse {
     /// Render via the TOON path.
     #[must_use]
     pub fn render_toon(&self) -> String {
-        self.finish_text(&self.toon_body())
+        self.finish_text(&self.toon_body().0)
     }
 
     /// Render via the KV path.
@@ -177,7 +183,14 @@ impl AgentResponse {
     }
 
     fn render_text(&self) -> String {
-        self.finish_text(&self.body())
+        self.finish_text(&self.body().0)
+    }
+
+    /// Whether this response is an error: `as_error()` was called, or the TOON rows failed validation and the body
+    /// is a `toon_validation_failed` error block.
+    #[must_use]
+    pub fn is_error(&self) -> bool {
+        self.body().1
     }
 
     /// Render just the `help[N]:` block for `self.hints`.
@@ -204,8 +217,9 @@ impl AgentResponse {
     /// Build the MCP `CallToolResult` for this response.
     #[must_use]
     pub fn to_call_tool_result(&self) -> crate::mcp::CallToolResult {
+        let (body, is_error) = self.body();
         let mut content = vec![crate::mcp::ContentBlock {
-            text: self.render_text(),
+            text: self.finish_text(&body),
             audience: vec![crate::audience::Audience::Assistant],
         }];
         if let Some(human) = &self.human_content {
@@ -214,22 +228,22 @@ impl AgentResponse {
                 audience: vec![crate::audience::Audience::User],
             });
         }
-        crate::mcp::CallToolResult {
-            content,
-            is_error: self.is_error,
-            structured_content: self.render(OutputFormat::Json),
-        }
+        crate::mcp::CallToolResult { content, is_error, structured_content: self.json_from_body(&body, is_error) }
     }
 
     fn render_json(&self) -> String {
-        let body = self.body();
+        let (body, is_error) = self.body();
+        self.json_from_body(&body, is_error)
+    }
+
+    fn json_from_body(&self, body: &str, is_error: bool) -> String {
         let capacity = body.len()
             + self.hints.iter().map(|h| h.as_str().len() + 16).sum::<usize>()
             + self.recovery.len() * 64
             + 64;
         let mut out = String::with_capacity(capacity);
         out.push_str("{\"body\":");
-        json_string(&mut out, &body);
+        json_string(&mut out, body);
         out.push_str(",\"hints\":[");
         for (i, h) in self.hints.iter().enumerate() {
             if i > 0 {
@@ -261,7 +275,7 @@ impl AgentResponse {
             out.push('}');
         }
         out.push_str("],\"isError\":");
-        out.push_str(if self.is_error { "true" } else { "false" });
+        out.push_str(if is_error { "true" } else { "false" });
         out.push('}');
         out
     }

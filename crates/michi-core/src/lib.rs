@@ -4,7 +4,8 @@
 
 //! # michi-core
 //!
-//! Core AXI response types, AgentResponse builder, Audience routing, and structured diagnostics.
+//! AXI response primitives for agent-ergonomic tools: TOON lists, key-value blocks, hints, structured errors, the
+//! `AgentResponse` builder, truncation and retry policy. Async pipeline execution lives in `michi-pipeline`.
 
 /// Audience routing (`assistant` vs `user`).
 pub mod audience;
@@ -20,16 +21,26 @@ pub mod idempotency;
 pub mod kv;
 /// MCP `CallToolResult` mapping.
 pub mod mcp;
+/// NAPI export surface for the `@orin-dx/michi` npm package.
+#[cfg(feature = "napi")]
+pub mod napi;
 /// Pipeline step definitions and run state.
 pub mod pipeline;
 /// Structured recovery hints (`recovery[]`).
 pub mod recovery;
+/// Retry delay calculation, `Retry-After` parsing and idempotency keys.
+pub mod resilience;
 /// `AgentResponse` builder.
 pub mod response;
 /// Health and status response rendering.
 pub mod status;
 /// No-op telemetry provider.
 pub mod telemetry;
+mod text;
+/// TOON list rendering, the token-optimized list format.
+pub mod toon;
+/// UTF-8 char-boundary-safe truncation.
+pub mod truncate;
 
 pub use audience::Audience;
 pub use empty::{empty_state, empty_state_with_hints};
@@ -42,8 +53,11 @@ pub use recovery::{append_recovery, render_recovery, RecoveryHint};
 pub use response::{AgentResponse, OutputFormat};
 pub use status::{Health, StatusItem, StatusResponse};
 
-pub use michi_resilience::*;
-pub use michi_truncate::*;
+pub use resilience::*;
+pub use truncate::*;
+
+/// Crate-level `Result` alias.
+pub type Result<T> = std::result::Result<T, Error>;
 
 #[cfg(test)]
 mod tests {
