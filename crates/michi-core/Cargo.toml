@@ -30,14 +30,15 @@ napi-derive = { version = "3", optional = true }
 
 [features]
 default  = []
-serde    = ["dep:serde", "dep:serde_json", "compact_str/serde"]
+serde    = ["dep:serde", "dep:serde_json", "serde_json/float_roundtrip", "compact_str/serde"]
 schemars = ["dep:schemars", "serde"]
 miette   = ["dep:miette"]
 napi     = ["dep:napi", "dep:napi-derive", "serde"]
 
 [dev-dependencies]
 serde      = { workspace = true }
-serde_json = { workspace = true }
+# float_roundtrip here too, so the default-feature test build parses fixture floats correctly rounded.
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 divan      = "0.1"
 proptest   = "1"
 insta      = { version = "1", features = ["yaml"] }

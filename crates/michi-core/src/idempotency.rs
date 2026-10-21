@@ -27,87 +27,57 @@ pub struct PartialSuccess {
 }
 
 impl PartialSuccess {
-    /// Render as an agent-readable string: a summary line, one block per
-    /// non-empty outcome category, then any per-op recovery hints folded into
-    /// a trailing `help[]` block.
+    /// Render as a TOON 4.4 root object, with no trailing newline: a quoted summary, one entry per non-empty outcome
+    /// category, then the failed operations' recovery hints as a `recovery[N]{tool,params,reason}:` table (see
+    /// [`crate::recovery::render_recovery`]).
     ///
     /// Format:
     /// ```text
-    /// partial_success: 2 completed, 1 failed, 1 skipped
-    /// completed[2]:
-    ///   create_issue
-    ///   add_label
+    /// partial_success: "2 completed, 1 failed, 1 skipped"
+    /// completed[2]: create_issue,add_label
     /// failed[1]{operation,reason}:
     ///   assign_user,User 'ghost' not found
-    /// skipped[1]:
-    ///   notify_team
-    /// help[1]:
-    ///   assign_user: suggestedParams: { user: alice }
+    /// skipped[1]: notify_team
+    /// recovery[1]{tool,params,reason}:
+    ///   assign_user,"{\"user\":\"alice\"}",null
     /// ```
     ///
-    /// Empty categories are omitted.
+    /// `completed` and `skipped` are inline primitive arrays (§9.1), `failed` a tabular array (§9.3); every string is
+    /// quoted per §7.2. Empty categories are omitted.
     #[must_use]
     pub fn render(&self) -> String {
         let mut out = String::with_capacity(
-            64 + self.completed.iter().map(String::len).sum::<usize>()
+            64 + self.completed.iter().map(|s| s.len() + 1).sum::<usize>()
                 + self.failed.iter().map(|f| f.operation.len() + f.reason.len() + 60).sum::<usize>()
-                + self.skipped.iter().map(String::len).sum::<usize>(),
+                + self.skipped.iter().map(|s| s.len() + 1).sum::<usize>(),
         );
-        out.push_str("partial_success: ");
+        out.push_str("partial_success: \"");
         out.push_str(&self.completed.len().to_string());
         out.push_str(" completed, ");
         out.push_str(&self.failed.len().to_string());
         out.push_str(" failed, ");
         out.push_str(&self.skipped.len().to_string());
-        out.push_str(" skipped\n");
+        out.push_str(" skipped\"");
 
-        if !self.completed.is_empty() {
-            out.push_str("completed[");
-            out.push_str(&self.completed.len().to_string());
-            out.push_str("]:\n");
-            for op in &self.completed {
-                out.push_str("  ");
-                out.push_str(&crate::text::escape_line_breaks(op));
-                out.push('\n');
-            }
-        }
+        push_inline_array(&mut out, "completed", &self.completed);
 
         if !self.failed.is_empty() {
-            out.push_str("failed[");
+            out.push_str("\nfailed[");
             out.push_str(&self.failed.len().to_string());
-            out.push_str("]{operation,reason}:\n");
+            out.push_str("]{operation,reason}:");
             for f in &self.failed {
-                out.push_str("  ");
-                // Both cells follow TOON 4.4 §7.2: quoted only when required (delimiter, colon, quote, leading
-                // hyphen, line break, …), escaped per §7.1.
+                out.push_str("\n  ");
                 out.push_str(&crate::toon::escape_value(&f.operation));
                 out.push(',');
                 out.push_str(&crate::toon::escape_value(&f.reason));
-                out.push('\n');
             }
         }
 
-        if !self.skipped.is_empty() {
-            out.push_str("skipped[");
-            out.push_str(&self.skipped.len().to_string());
-            out.push_str("]:\n");
-            for op in &self.skipped {
-                out.push_str("  ");
-                out.push_str(&crate::text::escape_line_breaks(op));
-                out.push('\n');
-            }
-        }
+        push_inline_array(&mut out, "skipped", &self.skipped);
 
         let recovery_hints: Vec<crate::recovery::RecoveryHint> =
             self.failed.iter().filter_map(|f| f.recovery.clone()).collect();
-        if !recovery_hints.is_empty() {
-            out.push_str("help[");
-            out.push_str(&recovery_hints.len().to_string());
-            out.push_str("]:\n");
-            // Use inner append_recovery_lines (pub(crate)) to avoid the `recovery[N]:` header
-            // that append_recovery would write — the section header here is `help[N]:`.
-            crate::recovery::append_recovery_lines(&mut out, &recovery_hints);
-        }
+        crate::recovery::append_recovery(&mut out, &recovery_hints);
 
         out
     }
@@ -116,6 +86,25 @@ impl PartialSuccess {
     #[must_use]
     pub fn exit_code(&self) -> i32 {
         i32::from(!self.failed.is_empty())
+    }
+}
+
+/// Append `\n{key}[N]: v1,v2` (a TOON 4.4 inline primitive array, §9.1, each value quoted per §7.2); nothing when
+/// `values` is empty.
+fn push_inline_array(out: &mut String, key: &str, values: &[String]) {
+    if values.is_empty() {
+        return;
+    }
+    out.push('\n');
+    out.push_str(key);
+    out.push('[');
+    out.push_str(&values.len().to_string());
+    out.push_str("]: ");
+    for (i, v) in values.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&crate::toon::escape_value(v));
     }
 }
 
@@ -136,13 +125,12 @@ mod tests {
             }],
             skipped: vec!["notify_team".into()],
         };
-        let out = ps.render();
-        assert!(out.starts_with("partial_success: 2 completed, 1 failed, 1 skipped\n"), "got: {out}");
-        assert!(out.contains("completed[2]:\n  create_issue\n  add_label\n"), "got: {out}");
-        assert!(out.contains("failed[1]{operation,reason}:\n  assign_user,User 'ghost' not found\n"), "got: {out}");
-        assert!(out.contains("skipped[1]:\n  notify_team\n"), "got: {out}");
-        assert!(out.contains("help[1]:"), "got: {out}");
-        assert!(out.contains("assign_user: suggestedParams: { user: alice }"), "got: {out}");
+        assert_eq!(
+            ps.render(),
+            "partial_success: \"2 completed, 1 failed, 1 skipped\"\ncompleted[2]: create_issue,add_label\n\
+             failed[1]{operation,reason}:\n  assign_user,User 'ghost' not found\nskipped[1]: notify_team\n\
+             recovery[1]{tool,params,reason}:\n  assign_user,\"{\\\"user\\\":\\\"alice\\\"}\",null"
+        );
     }
 
     #[test]
@@ -160,7 +148,7 @@ mod tests {
     fn ac032_fully_empty_partial_success_has_exact_summary_and_no_sections() {
         let ps = PartialSuccess { completed: vec![], failed: vec![], skipped: vec![] };
         let out = ps.render();
-        assert_eq!(out, "partial_success: 0 completed, 0 failed, 0 skipped\n");
+        assert_eq!(out, "partial_success: \"0 completed, 0 failed, 0 skipped\"");
         assert!(!out.contains("completed["), "got: {out}");
         assert!(!out.contains("failed["), "got: {out}");
         assert!(!out.contains("skipped["), "got: {out}");
@@ -172,7 +160,7 @@ mod tests {
     fn ac033_two_completed_only_has_exact_summary_and_section() {
         let ps = PartialSuccess { completed: vec!["a".into(), "b".into()], failed: vec![], skipped: vec![] };
         let out = ps.render();
-        assert_eq!(out, "partial_success: 2 completed, 0 failed, 0 skipped\ncompleted[2]:\n  a\n  b\n");
+        assert_eq!(out, "partial_success: \"2 completed, 0 failed, 0 skipped\"\ncompleted[2]: a,b");
     }
 
     #[test]
@@ -249,14 +237,14 @@ mod tests {
             skipped: vec![],
         };
         let out = ps.render();
-        assert!(out.contains("  \"step\\none\\rtwo\",y\n"), "got: {out:?}");
+        assert!(out.ends_with("\n  \"step\\none\\rtwo\",y"), "got: {out:?}");
         assert!(!out.contains('\r'), "no raw CR may survive, got: {out:?}");
     }
 
-    // AC-035: recovery from a failed op appends a trailing help[] block with
-    // no duplicate leading "recovery[N]:" header line.
+    // AC-035 (superseded): recovery from a failed op appends one trailing recovery table — the same block as
+    // render_recovery, not a help[] block, since help is the inline array of strings.
     #[test]
-    fn ac035_recovery_help_block_has_no_duplicate_recovery_header() {
+    fn ac035_recovery_hints_render_as_one_recovery_table() {
         let ps = PartialSuccess {
             completed: vec![],
             failed: vec![FailedOp {
@@ -267,7 +255,9 @@ mod tests {
             skipped: vec![],
         };
         let out = ps.render();
-        assert!(out.contains("help[1]:\n  retry_x\n"), "got: {out}");
-        assert!(!out.contains("recovery["), "must not duplicate a recovery[N]: header, got: {out}");
+        let recovery = crate::recovery::render_recovery(&[RecoveryHint::new("retry_x")]);
+        assert!(out.ends_with(&format!("\n{recovery}")), "got: {out}");
+        assert_eq!(out.matches("recovery[").count(), 1, "got: {out}");
+        assert!(!out.contains("help["), "got: {out}");
     }
 }

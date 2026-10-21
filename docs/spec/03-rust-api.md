@@ -7,7 +7,7 @@
 ```rust
 pub use error::{DomainError, Error, ErrorClass, ErrorCode, Sensitive};
 pub use response::{AgentResponse, OutputFormat};
-pub use kv::{render_kv, KvItem, KvValue};
+pub use kv::{render_kv, KvError, KvItem, KvValue};
 // … audience, empty, hints, idempotency, mcp, recovery, status
 pub use resilience::*;            // michi_core::RetryConfig, michi_core::already_done, …
 pub use truncate::*;              // michi_core::truncate(), michi_core::Truncated, …
@@ -42,7 +42,7 @@ impl ToonOptions {
     pub fn max_cell_len(self, len: usize) -> Self;
     pub fn truncation_hint(self, hint: impl Into<String>) -> Self;
     /// Validate structural invariants before rendering.
-    /// Returns Err if type_name is a reserved document key (`totalCount`, `help`),
+    /// Returns Err if type_name is a reserved document key (`totalCount`, `help`, `recovery`),
     /// a field name is repeated, or any row's length differs from fields.len().
     /// Any other name is valid and is quoted per TOON 4.4 §7.3.
     pub fn validate(&self) -> Result<(), ToonError>;
@@ -84,7 +84,7 @@ pub fn list<T: serde::Serialize>(
 ) -> Result<String, ToonError>;
 ```
 
-Items are serialized via `serde_json::to_value()` and must produce JSON objects (structs or maps). Non-object items and a reserved `type_name` (`totalCount`, `help`) return `Err(ToonError)`. A key missing from some items renders as `null` in those rows; nested arrays/objects become their compact JSON text, quoted.
+Items are serialized via `serde_json::to_value()` and must produce JSON objects (structs or maps). Non-object items and a reserved `type_name` (`totalCount`, `help`, `recovery`) return `Err(ToonError)`. A key missing from some items renders as `null` in those rows; nested arrays/objects become their compact JSON text, quoted.
 
 ## Response Compositor (`error`, `response`, `idempotency`)
 
@@ -118,7 +118,7 @@ impl DomainError {
 }
 ```
 
-- `render()` outputs an agent-readable key-value block with exit code, hints, and recovery.
+- `render()` outputs a TOON 4.4 document: `error: <code>`, `message: …` (quoted per §7.2), `exit_code: 1`, then `help[N]: …` and `recovery[1]{tool,params,reason}:` when set. `Error::render()` uses the same shape for every variant (`error: invalid_input` / `error: not_found` for the non-domain variants). See [02-toon-format.md](02-toon-format.md#agent-facing-blocks).
 - `render_github_annotation()` outputs a GitHub Actions annotation (`::error title=code::message`). Newlines and CRs are percent-encoded.
 - `render_json()` outputs a JSON object: `{"isError":true,"error":"...","message":"...","retryable":bool,"hints":[...],"recovery":null|{...}}`.
 - `to_call_tool_result()` builds an MCP `CallToolResult` with `is_error:true` and the rendered JSON as `structured_content`.
@@ -153,7 +153,7 @@ impl AgentResponse {
     pub fn render_toon(&self) -> String;
     /// Reads the KV slot unconditionally, regardless of which builder path was last set.
     pub fn render_kv(&self) -> String;
-    /// Just the `help[N]:` block for `.hint()`/`.hints()`.
+    /// Just the `help[N]: …` document for `.hint()`/`.hints()`.
     pub fn render_hints_only(&self) -> String;
     /// `"user"` falls back to `render(OutputFormat::Text)` when `.human_content()` was never set.
     pub fn render_for(&self, audience: Audience) -> String;
@@ -195,6 +195,34 @@ impl IdempotencyKey {
     pub fn from_hash(operation: &str, data: &[u8]) -> Self;
 }
 ```
+
+### Key-value, hints, recovery and status blocks
+
+Every block renderer returns a finished TOON 4.4 document with no trailing newline; the `append_*` helpers join a block onto a document with one LF. The forms are listed in [02-toon-format.md](02-toon-format.md#agent-facing-blocks).
+
+```rust
+// michi_core::kv
+pub struct KvItem { pub key: String, pub value: KvValue }
+pub enum KvValue { Text(String), Int(i64), Float(f64, u8), Bool(bool), Duration(Duration), Missing }
+#[non_exhaustive]
+pub enum KvError { ReservedKey { key: String }, DuplicateKey { key: String } }
+/// `key: value` lines, then `totalCount` and `help`. Err for a repeated key or a reserved
+/// `totalCount`/`help`/`recovery` key (a duplicate root key, §14.3). Empty items: Ok("").
+pub fn render_kv(items: &[KvItem], total_count: Option<usize>, hints: &[Hint]) -> Result<String, KvError>;
+
+// michi_core::hints
+pub fn render_hints(hints: &[Hint]) -> String;               // help[N]: h1,h2
+pub fn append_hints(out: &mut String, hints: &[Hint]);
+
+// michi_core::recovery
+pub fn render_recovery(hints: &[RecoveryHint]) -> String;    // recovery[N]{tool,params,reason}:
+pub fn append_recovery(out: &mut String, hints: &[RecoveryHint]);
+
+// michi_core::status
+impl StatusResponse { pub fn render(&self) -> String; }      // tool, description, items[N]{key,value,health,reason}:, help
+```
+
+`KvValue::Float(f, decimals)` rounds `f` to `decimals` places and writes the rounded value in canonical TOON number form, so `Float(1.5, 3)` is `1.5`, not `1.500`; `Missing` is `null`; `Duration` is the string `1.5s`. `AgentResponse`'s KV path turns a `KvError` into a `kv_validation_failed` error body and sets `is_error`, like `toon_validation_failed` on the TOON path.
 
 ## `truncate` — Char-Boundary Truncation
 

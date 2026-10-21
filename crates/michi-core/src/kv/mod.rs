@@ -12,41 +12,56 @@ pub struct KvItem {
     pub value: KvValue,
 }
 
-/// A value in a key-value item.
+/// A value in a key-value item, rendered as a TOON 4.4 primitive.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum KvValue {
-    /// UTF-8 text value.
+    /// UTF-8 text value, quoted only when TOON 4.4 §7.2 requires it.
     Text(String),
     /// Signed integer.
     Int(i64),
-    /// Floating-point number, rendered with the given number of decimal places.
+    /// Floating-point number, rounded to the given number of decimal places and then written in canonical TOON
+    /// number form (§2): the decimals bound the precision but never pad (`Float(1.5, 3)` renders `1.5`), and NaN and
+    /// ±Infinity render as `null`.
     Float(f64, u8),
     /// Boolean renders as `true` or `false`.
     Bool(bool),
-    /// Elapsed time, rendered as fractional seconds with one decimal.
+    /// Elapsed time, rendered as the string of fractional seconds with one decimal, e.g. `1.5s`.
     Duration(Duration),
-    /// Absent value, renders as `—` (em dash).
+    /// Absent value, renders as `null`.
     Missing,
 }
 
+/// Append a KV value as a TOON 4.4 primitive token (§2, §3, §7.2).
+///
+/// `Text` is quoted only when §7.2 requires it (line breaks become `\n`/`\r` inside quotes); `Int` and `Bool` are
+/// literal; `Float(f, decimals)` is rounded to `decimals` places and the rounded value is written in canonical number
+/// form; `Duration` is the string `{secs:.1}s`; `Missing` is `null`.
 pub(crate) fn push_kv_value(out: &mut String, value: &KvValue) {
     match value {
-        // Escaped, not stripped: a raw line break would end the one-line-per-key format.
-        KvValue::Text(s) => out.push_str(&crate::text::escape_line_breaks(s)),
+        KvValue::Text(s) => out.push_str(&crate::toon::escape_value(s)),
         KvValue::Int(n) => {
             let _ = write!(out, "{n}");
         }
-        KvValue::Float(f, decimals) => {
-            let _ = write!(out, "{f:.*}", *decimals as usize);
-        }
+        KvValue::Float(f, decimals) => crate::toon::push_f64(out, round_to_decimals(*f, *decimals)),
         KvValue::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
         KvValue::Duration(d) => {
-            let _ = write!(out, "{:.1}s", d.as_secs_f64());
+            let mut secs = String::with_capacity(16);
+            let _ = write!(secs, "{:.1}s", d.as_secs_f64());
+            out.push_str(&crate::toon::escape_value(&secs));
         }
-        KvValue::Missing => out.push('—'),
+        KvValue::Missing => out.push_str("null"),
     }
+}
+
+/// `f` rounded to `decimals` fractional digits by the correctly rounded decimal formatting of `{f:.decimals}`.
+/// Non-finite values pass through unchanged.
+fn round_to_decimals(f: f64, decimals: u8) -> f64 {
+    if !f.is_finite() {
+        return f;
+    }
+    format!("{f:.*}", usize::from(decimals)).parse().unwrap_or(f)
 }
 
 pub(crate) fn json_escape_str(out: &mut String, s: &str) {
@@ -96,180 +111,200 @@ pub(crate) fn kv_value_to_json(out: &mut String, value: &KvValue) {
     }
 }
 
-/// Render a list of key-value pairs as a column-aligned multi-line block.
-///
-/// Key padding uses `chars().count()`, not display width. Keys containing
-/// CJK or other wide Unicode characters will appear misaligned in monospace
-/// terminals. This is acceptable: michi targets agent readability (where
-/// display width is not relevant), not human terminal rendering.
-#[must_use]
-pub fn render_kv(items: &[KvItem], total_count: Option<usize>, hints: &[Hint]) -> String {
-    if items.is_empty() {
-        return String::new();
-    }
-    let keys: Vec<std::borrow::Cow<'_, str>> = items.iter().map(|i| crate::text::escape_line_breaks(&i.key)).collect();
-    let max_key_len = keys.iter().map(|k| k.chars().count()).max().unwrap_or(0);
-    let capacity = items.len() * (max_key_len + 24) + hints.len() * 50 + 20;
-    let mut out = String::with_capacity(capacity);
-    for (item, key) in items.iter().zip(&keys) {
-        out.push_str(key);
-        out.push(':');
-        let pad = max_key_len - key.chars().count() + 1;
-        for _ in 0..pad {
-            out.push(' ');
+/// Root keys michi composes next to a body (a TOON list's type entry or KV items), so a body may not use them: the
+/// document would otherwise hold a duplicate key, which TOON 4.4 §14.3 forbids.
+pub(crate) const RESERVED_ROOT_KEYS: [&str; 3] = ["totalCount", "help", "recovery"];
+
+/// Error returned by [`render_kv`] when the items cannot form a valid TOON document.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum KvError {
+    /// An item key is a root key michi composes next to the items (`totalCount`, `help` or `recovery`). It is
+    /// rejected whether or not that key is present in this document, so validity never depends on the data.
+    #[error("key {key:?} is a reserved document key (totalCount, help, recovery)")]
+    ReservedKey {
+        /// The offending key.
+        key: String,
+    },
+    /// Two items share a key; a TOON object may not repeat a key (§14.3).
+    #[error("key {key:?} appears more than once")]
+    DuplicateKey {
+        /// The offending key.
+        key: String,
+    },
+}
+
+/// Check that `items` can be the fields of a TOON root object next to michi's reserved keys.
+pub(crate) fn validate_keys(items: &[KvItem]) -> Result<(), KvError> {
+    let mut seen = std::collections::HashSet::with_capacity(items.len());
+    for item in items {
+        if RESERVED_ROOT_KEYS.contains(&item.key.as_str()) {
+            return Err(KvError::ReservedKey { key: item.key.clone() });
         }
-        push_kv_value(&mut out, &item.value);
+        if !seen.insert(item.key.as_str()) {
+            return Err(KvError::DuplicateKey { key: item.key.clone() });
+        }
+    }
+    Ok(())
+}
+
+/// Append one `key: value` line (§8), preceded by a LF when `out` is non-empty and does not already end in one.
+pub(crate) fn push_kv_line(out: &mut String, key: &str, value: &KvValue) {
+    if !out.is_empty() && !out.ends_with('\n') {
         out.push('\n');
+    }
+    out.push_str(&crate::toon::escape_key(key));
+    out.push_str(": ");
+    push_kv_value(out, value);
+}
+
+/// Render key-value pairs as a TOON 4.4 root object (§8): one `key: value` line per item, then `totalCount: N` and
+/// the inline `help[N]: …` array when present, with no trailing newline.
+///
+/// Keys are quoted per §7.3 and values written as TOON primitives (see [`KvValue`]). Exactly one space follows each
+/// colon, so values are not column-aligned. Returns the empty string (the empty TOON document) for empty `items`,
+/// ignoring `total_count` and `hints`.
+///
+/// # Errors
+///
+/// [`KvError::ReservedKey`] for an item key `totalCount`, `help` or `recovery`, and [`KvError::DuplicateKey`] for a
+/// repeated key: either would make the document hold a duplicate key (§14.3).
+pub fn render_kv(items: &[KvItem], total_count: Option<usize>, hints: &[Hint]) -> Result<String, KvError> {
+    if items.is_empty() {
+        return Ok(String::new());
+    }
+    validate_keys(items)?;
+    let capacity = items.iter().map(|i| i.key.len() + 24).sum::<usize>() + hints.len() * 50 + 20;
+    let mut out = String::with_capacity(capacity);
+    for item in items {
+        push_kv_line(&mut out, &item.key, &item.value);
     }
     if let Some(total) = total_count {
-        out.push_str("totalCount: ");
+        out.push_str("\ntotalCount: ");
         let _ = write!(out, "{total}");
-        out.push('\n');
     }
     crate::hints::append_hints(&mut out, hints);
-    out
+    Ok(out)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn single_key_needs_no_padding() {
-        let items = vec![KvItem { key: "id".into(), value: KvValue::Int(1) }];
-        assert_eq!(render_kv(&items, None, &[]), "id: 1\n");
-    }
-
-    #[test]
-    fn text_value_with_newline_is_stripped_in_render() {
-        let item = KvItem { key: "msg".into(), value: KvValue::Text("line1\nline2".into()) };
-        let out = render_kv(&[item], None, &[]);
-        // A newline in value must not create extra lines — KV is one-line-per-key
-        let lines: Vec<&str> = out.lines().collect();
-        assert_eq!(lines.len(), 1, "newline in value must not break KV format, got:\n{out}");
-    }
-
-    // AC-008: \n and \r are neither emitted raw nor dropped -- each renders as
-    // its visible two-character escape, keeping the value on one line.
-    #[test]
-    fn ac008_newline_and_cr_in_text_value_are_escaped() {
-        let item = KvItem { key: "k".into(), value: KvValue::Text("line1\nline2\rline3".into()) };
-        let out = render_kv(&[item], None, &[]);
-        assert_eq!(out, "k: line1\\nline2\\rline3\n");
-    }
-
-    // AC-011: KvValue::Missing renders as the em-dash character, not empty,
-    // "null", or "N/A".
-    #[test]
-    fn ac011_missing_renders_as_em_dash() {
+    fn value(v: &KvValue) -> String {
         let mut out = String::new();
-        push_kv_value(&mut out, &KvValue::Missing);
-        assert_eq!(out, "—");
+        push_kv_value(&mut out, v);
+        out
+    }
+
+    fn render(items: &[KvItem]) -> String {
+        render_kv(items, None, &[]).expect("valid items")
+    }
+
+    #[test]
+    fn single_key_renders_one_line_without_trailing_newline() {
+        let items = vec![KvItem { key: "id".into(), value: KvValue::Int(1) }];
+        assert_eq!(render(&items), "id: 1");
+    }
+
+    #[test]
+    fn text_value_with_newline_stays_on_one_line() {
+        let item = KvItem { key: "msg".into(), value: KvValue::Text("line1\nline2".into()) };
+        let out = render(&[item]);
+        assert_eq!(out.lines().count(), 1, "newline in value must not break the one-line-per-key format, got:\n{out}");
+    }
+
+    // AC-008: \n and \r are neither emitted raw nor dropped -- the value is quoted (TOON 4.4 §7.2) and each renders
+    // as its two-character escape (§7.1).
+    #[test]
+    fn ac008_newline_and_cr_in_text_value_are_quoted_and_escaped() {
+        let item = KvItem { key: "k".into(), value: KvValue::Text("line1\nline2\rline3".into()) };
+        assert_eq!(render(&[item]), "k: \"line1\\nline2\\rline3\"");
+    }
+
+    // AC-011: KvValue::Missing renders as the TOON null literal (§2).
+    #[test]
+    fn ac011_missing_renders_as_null() {
+        assert_eq!(value(&KvValue::Missing), "null");
     }
 
     // AC-013: the NaN token is independent of the decimals argument.
     #[test]
     fn ac013_nan_token_is_independent_of_decimals() {
-        let mut two = String::new();
-        push_kv_value(&mut two, &KvValue::Float(f64::NAN, 2));
-        let mut six = String::new();
-        push_kv_value(&mut six, &KvValue::Float(f64::NAN, 6));
-        assert_eq!(two, "NaN");
-        assert_eq!(six, "NaN");
+        assert_eq!(value(&KvValue::Float(f64::NAN, 2)), "null");
+        assert_eq!(value(&KvValue::Float(f64::NAN, 6)), "null");
     }
 
     // AC-046: negative Int renders with a leading minus sign.
     #[test]
     fn ac046_negative_int_renders_with_minus_sign() {
         let items = vec![KvItem { key: "n".into(), value: KvValue::Int(-7) }];
-        assert_eq!(render_kv(&items, None, &[]), "n: -7\n");
+        assert_eq!(render(&items), "n: -7");
     }
 
     // AC-047: Bool renders lowercase and unquoted, both directions.
     #[test]
     fn ac047_bool_renders_lowercase_unquoted() {
-        let mut t = String::new();
-        push_kv_value(&mut t, &KvValue::Bool(true));
-        assert_eq!(t, "true");
-        let mut f = String::new();
-        push_kv_value(&mut f, &KvValue::Bool(false));
-        assert_eq!(f, "false");
+        assert_eq!(value(&KvValue::Bool(true)), "true");
+        assert_eq!(value(&KvValue::Bool(false)), "false");
     }
 
-    // AC-048: Float with real decimal precision (not NaN/Inf) rounds and
-    // truncates trailing digits per the decimals argument. 3.14159 is the
-    // spec's pinned fixture value -- coincidentally pi-adjacent, not an
-    // actual reference to std::f64::consts::PI.
+    // AC-048: Float rounds to the decimals argument. 3.14159 is the spec's pinned fixture value -- coincidentally
+    // pi-adjacent, not an actual reference to std::f64::consts::PI.
     #[test]
     #[allow(clippy::approx_constant)]
     fn ac048_float_renders_with_given_decimal_precision() {
-        let mut two = String::new();
-        push_kv_value(&mut two, &KvValue::Float(3.14159, 2));
-        assert_eq!(two, "3.14");
-        let mut zero = String::new();
-        push_kv_value(&mut zero, &KvValue::Float(3.14159, 0));
-        assert_eq!(zero, "3");
+        assert_eq!(value(&KvValue::Float(3.14159, 2)), "3.14");
+        assert_eq!(value(&KvValue::Float(3.14159, 0)), "3");
     }
 
-    // AC-017: total_count and hints are NOT rendered when items is empty —
-    // not just the trivial all-None/empty case, but with both set.
+    #[test]
+    fn float_decimals_never_pad_with_trailing_zeros() {
+        assert_eq!(value(&KvValue::Float(1.5, 3)), "1.5");
+        assert_eq!(value(&KvValue::Float(2.0, 2)), "2");
+        assert_eq!(value(&KvValue::Float(-0.001, 2)), "0");
+    }
+
+    // AC-017: total_count and hints are NOT rendered when items is empty — not just the trivial all-None/empty case,
+    // but with both set.
     #[test]
     fn ac017_empty_items_ignores_total_count_and_hints() {
-        assert_eq!(render_kv(&[], Some(42), &[Hint::from("x")]), "");
+        assert_eq!(render_kv(&[], Some(42), &[Hint::from("x")]), Ok(String::new()));
     }
 
-    // AC-018: shorter and longer keys' values align to the same char offset.
+    // AC-018 (superseded): values are no longer column-aligned; TOON 4.4 §8/§12 require exactly one space after the
+    // colon whatever the key lengths.
     #[test]
-    fn ac018_value_column_aligns_across_differing_key_lengths() {
+    fn ac018_exactly_one_space_follows_every_colon() {
         let items = vec![
             KvItem { key: "a".into(), value: KvValue::Text("short".into()) },
             KvItem { key: "longer_key".into(), value: KvValue::Text("val".into()) },
         ];
-        let out = render_kv(&items, None, &[]);
-        let lines: Vec<&str> = out.lines().collect();
-        assert_eq!(lines.len(), 2, "got: {out:?}");
-        let offset_of_value = |line: &str, value: &str| line.find(value).expect("value present");
-        let a_offset = offset_of_value(lines[0], "short");
-        let b_offset = offset_of_value(lines[1], "val");
-        assert_eq!(a_offset, b_offset, "value columns must align, got:\n{out}");
-        // The longest key's own line needs zero alignment padding, so its
-        // value-start offset alone proves the separating space exists.
-        assert_eq!(b_offset, "longer_key:".chars().count() + 1, "must include at least one separating space");
+        assert_eq!(render(&items), "a: short\nlonger_key: val");
     }
 
     #[test]
-    fn push_kv_value_float_nan_renders_as_nan_token() {
-        // Plain-text KV is agent-readable text; NaN is an acceptable token here
-        // (unlike JSON where bare NaN is syntactically invalid).
-        let mut out = String::new();
-        push_kv_value(&mut out, &KvValue::Float(f64::NAN, 2));
-        assert_eq!(out, "NaN");
+    fn non_finite_floats_render_as_null() {
+        assert_eq!(value(&KvValue::Float(f64::INFINITY, 0)), "null");
+        assert_eq!(value(&KvValue::Float(f64::NEG_INFINITY, 0)), "null");
     }
 
     #[test]
-    fn push_kv_value_float_inf_renders_as_inf_token() {
-        let mut out = String::new();
-        push_kv_value(&mut out, &KvValue::Float(f64::INFINITY, 0));
-        assert_eq!(out, "inf");
-    }
-
-    #[test]
-    fn push_kv_value_duration_renders_with_one_decimal() {
-        let mut out = String::new();
-        push_kv_value(&mut out, &KvValue::Duration(std::time::Duration::from_millis(1500)));
-        assert_eq!(out, "1.5s");
-    }
-
-    #[test]
-    fn render_kv_empty_items_returns_empty_string() {
-        assert_eq!(render_kv(&[], None, &[]), "");
+    fn duration_renders_with_one_decimal() {
+        assert_eq!(value(&KvValue::Duration(std::time::Duration::from_millis(1500))), "1.5s");
     }
 
     #[test]
     fn render_kv_total_count_appended() {
         let items = vec![KvItem { key: "id".into(), value: KvValue::Int(1) }];
-        let out = render_kv(&items, Some(42), &[]);
-        assert!(out.contains("totalCount: 42\n"), "got: {out}");
+        assert_eq!(render_kv(&items, Some(42), &[]), Ok("id: 1\ntotalCount: 42".to_string()));
+    }
+
+    #[test]
+    fn render_kv_capacity_covers_the_items() {
+        let items = vec![KvItem { key: "id".into(), value: KvValue::Int(1) }];
+        let out = render_kv(&items, None, &[]).expect("valid");
+        assert!(out.capacity() >= "id".len() + 24, "capacity {} too small", out.capacity());
     }
 
     #[test]

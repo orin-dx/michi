@@ -276,7 +276,7 @@ fn s7_2_control_characters_are_quoted() {
 fn s7_2_document_delimiter_is_quoted_and_pipe_is_not() {
     assert_eq!(cell("a,b"), "\"a,b\"");
     assert_eq!(cell("a|b"), "a|b");
-    assert_eq!(render_hints(&[Hint::new("a, b")]), "help[1]: \"a, b\"\n");
+    assert_eq!(render_hints(&[Hint::new("a, b")]), "help[1]: \"a, b\"");
 }
 
 // §7.2 — strings starting with `-` or `#` are quoted; interior ones are not.

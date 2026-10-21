@@ -41,6 +41,44 @@ fn parses_quoted_keys_and_escapes() {
     );
 }
 
+// The non-list blocks (KV, errors, status, recovery, partial success) are root objects mixing primitive fields,
+// inline arrays and tables; the oracle decodes them with their types.
+#[test]
+fn parses_mixed_root_objects_of_the_other_blocks() {
+    let doc = decode(
+        "error: not_found\nmessage: \"a: b\"\nexit_code: 1\ncompleted[2]: a,\"b, c\"\nrecovery[1]{tool,params,reason}:\n  \
+         t,\"{\\\"k\\\":1}\",null",
+    )
+    .unwrap();
+    assert_eq!(doc.get("message"), Some(&Node::Prim(Prim::str("a: b"))));
+    assert_eq!(doc.get("exit_code"), Some(&Node::Prim(Prim::Num("1".into()))));
+    assert_eq!(doc.get("completed"), Some(&Node::Inline(vec![Prim::str("a"), Prim::str("b, c")])));
+    assert_eq!(
+        doc.get("recovery"),
+        Some(&Node::Table {
+            fields: vec!["tool".into(), "params".into(), "reason".into()],
+            rows: vec![vec![Prim::str("t"), Prim::str("{\"k\":1}"), Prim::Null]]
+        })
+    );
+}
+
+// The pre-TOON shapes of those blocks must fail, or the block tests would prove nothing.
+#[test]
+fn rejects_the_legacy_block_formats() {
+    for (bad, why) in [
+        ("id:    1\ntitle: x", "KV column alignment"),
+        ("k: line1\\nline2", "unquoted backslash"),
+        ("recovery[1]:\n  t: suggestedParams: { k: v } — why", "recovery item lines"),
+        ("completed[2]:\n  a\n  b", "bare list item lines"),
+        ("partial_success: 2 completed, 1 failed", "unquoted delimiter in a field value"),
+        ("x: warm  [DEGRADED: slow]", "brackets and colon unquoted"),
+        ("help[1]: a\nhelp[1]: b", "duplicate key from composition"),
+        ("k: v\n", "block trailing newline"),
+    ] {
+        assert!(decode(bad).is_err(), "{why}: {bad:?} must be rejected");
+    }
+}
+
 #[test]
 fn rejects_non_canonical_encoder_output() {
     for (bad, why) in [

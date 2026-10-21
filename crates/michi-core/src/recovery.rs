@@ -133,62 +133,76 @@ impl schemars::JsonSchema for RecoveryHint {
     }
 }
 
-/// Render a list of recovery hints as an agent-readable block.
+/// Render recovery hints as the TOON 4.4 tabular array (§9.3) `recovery[N]{tool,params,reason}:`, one row per hint,
+/// with no trailing newline.
+///
+/// Every hint has the same three primitive fields, so the tabular form is the one TOON prescribes (§1.4): `tool` is
+/// the tool name; `params` is the string holding the parameters' compact JSON object text, exactly the `params` object
+/// of the JSON companions (`{}` when there are none); `reason` is the reason or `null` when absent. Each cell is
+/// quoted per §7.2, so the JSON text is always quoted with its `"` escaped as `\"`, and a line break in any field is an
+/// escape, never a new line. Returns an empty string (the empty document) for an empty slice.
 #[must_use]
 pub fn render_recovery(hints: &[RecoveryHint]) -> String {
     if hints.is_empty() {
         return String::new();
     }
-    let capacity = 16 + hints.len() * 60;
+    let capacity = 40 + hints.len() * 60;
     let mut out = String::with_capacity(capacity);
     append_recovery(&mut out, hints);
     out
 }
 
-/// Append a `recovery[N]:` block to an existing string in-place.
+/// Append the `recovery[N]{tool,params,reason}:` block of [`render_recovery`] to a TOON document in place.
+///
+/// Like [`crate::hints::append_hints`], one LF is inserted first when `out` is non-empty and does not already end in
+/// one, and nothing follows the block. Does nothing for an empty slice.
 pub fn append_recovery(out: &mut String, hints: &[RecoveryHint]) {
     if hints.is_empty() {
         return;
     }
+    crate::hints::start_block(out);
     out.push_str("recovery[");
     out.push_str(&hints.len().to_string());
-    out.push_str("]:\n");
-    append_recovery_lines(out, hints);
+    out.push_str("]{tool,params,reason}:");
+    for hint in hints {
+        out.push_str("\n  ");
+        out.push_str(&crate::toon::escape_value(&hint.tool));
+        out.push(',');
+        out.push_str(&crate::toon::escape_value(&params_json(&hint.params)));
+        out.push(',');
+        match &hint.reason {
+            Some(reason) => out.push_str(&crate::toon::escape_value(reason)),
+            None => out.push_str("null"),
+        }
+    }
 }
 
-pub(crate) fn append_recovery_lines(out: &mut String, hints: &[RecoveryHint]) {
-    for hint in hints {
-        out.push_str("  ");
-        out.push_str(&crate::text::escape_line_breaks(&hint.tool));
-        if !hint.params.is_empty() {
-            out.push_str(": suggestedParams: { ");
-            for (i, (k, v)) in hint.params.iter().enumerate() {
-                if i > 0 {
-                    out.push_str(", ");
-                }
-                out.push_str(&crate::text::escape_line_breaks(k));
-                out.push_str(": ");
-                crate::kv::push_kv_value(out, v);
-            }
-            out.push_str(" }");
+/// The parameters as a compact JSON object, written by the same writer as the JSON companions.
+pub(crate) fn params_json(params: &[(String, KvValue)]) -> String {
+    let mut json = String::with_capacity(2 + params.iter().map(|(k, _)| k.len() + 16).sum::<usize>());
+    json.push('{');
+    for (i, (k, v)) in params.iter().enumerate() {
+        if i > 0 {
+            json.push(',');
         }
-        if let Some(reason) = &hint.reason {
-            out.push_str(" — ");
-            out.push_str(&crate::text::escape_line_breaks(reason));
-        }
-        out.push('\n');
+        crate::kv::json_escape_str(&mut json, k);
+        json.push(':');
+        crate::kv::kv_value_to_json(&mut json, v);
     }
+    json.push('}');
+    json
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    const HEADER: &str = "recovery[1]{tool,params,reason}:\n  ";
+
     #[test]
-    fn hint_with_params_renders_suggested_params() {
+    fn hint_with_params_renders_them_as_quoted_compact_json() {
         let hints = [RecoveryHint::new("assign_user").param("user", KvValue::Text("alice".to_string()))];
-        let out = render_recovery(&hints);
-        assert!(out.contains("assign_user: suggestedParams: { user: alice }"), "got: {out}");
+        assert_eq!(render_recovery(&hints), format!("{HEADER}assign_user,\"{{\\\"user\\\":\\\"alice\\\"}}\",null"));
     }
 
     #[test]
@@ -197,25 +211,24 @@ mod tests {
     }
 
     #[test]
-    fn hint_with_no_params_renders_tool_name_only() {
+    fn hint_with_no_params_has_an_empty_params_object_and_null_reason() {
         let hints = [RecoveryHint::new("retry_upload")];
-        let out = render_recovery(&hints);
-        assert_eq!(out, "recovery[1]:\n  retry_upload\n");
+        assert_eq!(render_recovery(&hints), format!("{HEADER}retry_upload,\"{{}}\",null"));
     }
 
     #[test]
     fn hint_with_reason_but_no_params() {
         let hints = [RecoveryHint::new("reload_cache").reason("cache entry expired")];
-        let out = render_recovery(&hints);
-        assert!(out.contains("reload_cache — cache entry expired"), "got: {out}");
-        assert!(!out.contains("suggestedParams"), "got: {out}");
+        assert_eq!(render_recovery(&hints), format!("{HEADER}reload_cache,\"{{}}\",cache entry expired"));
     }
 
     #[test]
     fn multiple_hints_all_appear() {
         let hints = [RecoveryHint::new("step_a"), RecoveryHint::new("step_b")];
-        let out = render_recovery(&hints);
-        assert_eq!(out, "recovery[2]:\n  step_a\n  step_b\n");
+        assert_eq!(
+            render_recovery(&hints),
+            "recovery[2]{tool,params,reason}:\n  step_a,\"{}\",null\n  step_b,\"{}\",null"
+        );
     }
 
     #[test]
@@ -246,58 +259,62 @@ mod tests {
     }
 
     #[test]
-    fn ac015_multiple_params_are_comma_separated_in_insertion_order() {
+    fn ac015_multiple_params_keep_insertion_order() {
         let hints = [RecoveryHint::new("assign_user")
             .param("user", KvValue::Text("alice".to_string()))
             .param("team", KvValue::Text("backend".to_string()))];
-        let out = render_recovery(&hints);
-        assert!(out.contains("assign_user: suggestedParams: { user: alice, team: backend }"), "got: {out}");
+        assert_eq!(
+            render_recovery(&hints),
+            format!("{HEADER}assign_user,\"{{\\\"user\\\":\\\"alice\\\",\\\"team\\\":\\\"backend\\\"}}\",null")
+        );
     }
 
     #[test]
     fn ac017_params_and_reason_appear_together_params_first() {
         let hints = [RecoveryHint::new("retry").param("attempt", KvValue::Int(2)).reason("transient network error")];
-        let out = render_recovery(&hints);
-        assert_eq!(out, "recovery[1]:\n  retry: suggestedParams: { attempt: 2 } — transient network error\n");
+        assert_eq!(render_recovery(&hints), format!("{HEADER}retry,\"{{\\\"attempt\\\":2}}\",transient network error"));
     }
 
     #[test]
-    fn ac018a_append_recovery_appends_render_recovery_output_in_place() {
+    fn ac018a_append_recovery_starts_a_new_line_after_a_finished_document() {
         let hints = [RecoveryHint::new("step_a"), RecoveryHint::new("step_b")];
+        let mut out = "t: []".to_string();
+        append_recovery(&mut out, &hints);
+        assert_eq!(out, format!("t: []\n{}", render_recovery(&hints)));
         let mut out = "prefix\n".to_string();
         append_recovery(&mut out, &hints);
         assert_eq!(out, format!("prefix\n{}", render_recovery(&hints)));
     }
 
     #[test]
-    fn ac018b_newline_in_tool_or_reason_is_escaped() {
+    fn ac018b_newline_in_tool_or_reason_is_quoted_and_escaped() {
         let hints = [RecoveryHint::new("a\nb").reason("c\nd")];
         let out = render_recovery(&hints);
-        assert_eq!(out, "recovery[1]:\n  a\\nb — c\\nd\n");
+        assert_eq!(out, format!("{HEADER}\"a\\nb\",\"{{}}\",\"c\\nd\""));
         assert_eq!(out.lines().count(), 2, "escaped newlines add no lines beyond the fixed count");
     }
 
     #[test]
-    fn carriage_return_in_tool_or_reason_is_escaped() {
+    fn carriage_return_in_tool_or_reason_is_quoted_and_escaped() {
         let hints = [RecoveryHint::new("a\rb").reason("c\rd")];
         let out = render_recovery(&hints);
-        assert_eq!(out, "recovery[1]:\n  a\\rb — c\\rd\n");
+        assert_eq!(out, format!("{HEADER}\"a\\rb\",\"{{}}\",\"c\\rd\""));
         assert!(!out.contains('\r'), "no raw CR may survive, got: {out:?}");
-        assert_eq!(out.lines().count(), 2);
     }
 
     #[test]
-    fn ac004b_render_recovery_capacity_is_at_least_16_plus_len_times_60() {
+    fn ac004b_render_recovery_capacity_is_at_least_40_plus_len_times_60() {
         let hints = [RecoveryHint::new("a"), RecoveryHint::new("b")];
         let out = render_recovery(&hints);
-        assert!(out.capacity() >= 16 + hints.len() * 60, "capacity {} too small", out.capacity());
+        assert!(out.capacity() >= 40 + hints.len() * 60, "capacity {} too small", out.capacity());
     }
 
+    // A line break in a param key is escaped twice: once by JSON (`\n`), then that backslash by TOON (`\\n`).
     #[test]
     fn ac018c_newline_in_param_key_is_escaped() {
         let hints = [RecoveryHint::new("t").param("k\nz", KvValue::Text("v".to_string()))];
         let out = render_recovery(&hints);
-        assert_eq!(out, "recovery[1]:\n  t: suggestedParams: { k\\nz: v }\n");
+        assert_eq!(out, format!("{HEADER}t,\"{{\\\"k\\\\nz\\\":\\\"v\\\"}}\",null"));
         assert_eq!(out.lines().count(), 2, "the escaped \\n in the param key adds no line");
     }
 
@@ -305,7 +322,7 @@ mod tests {
     fn ac018c_carriage_return_in_param_key_is_escaped() {
         let hints = [RecoveryHint::new("t").param("k\rz", KvValue::Text("v".to_string()))];
         let out = render_recovery(&hints);
-        assert_eq!(out, "recovery[1]:\n  t: suggestedParams: { k\\rz: v }\n");
+        assert_eq!(out, format!("{HEADER}t,\"{{\\\"k\\\\rz\\\":\\\"v\\\"}}\",null"));
         assert!(!out.contains('\r'), "no raw CR may survive, got: {out:?}");
     }
 

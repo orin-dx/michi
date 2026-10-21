@@ -180,7 +180,7 @@ pub fn empty_state(type_name: String) -> String {
     crate::empty::empty_state(&type_name)
 }
 
-/// Render a `help[N]:` hint block.
+/// Render the TOON 4.4 inline array `help[N]: h1,h2` (no trailing newline).
 ///
 /// # Errors
 ///
@@ -194,7 +194,7 @@ pub fn render_hints(hints: Vec<String>) -> napi::Result<String> {
     Ok(crate::hints::render_hints(&h))
 }
 
-/// Append a `help[N]:` block to an existing body string.
+/// Append the `help[N]: …` block to a TOON document: one LF first unless `body` is empty or ends in one.
 ///
 /// # Errors
 ///
@@ -222,7 +222,7 @@ pub struct JsRecoveryHint {
     pub reason: Option<String>,
 }
 
-/// Render recovery hints as a `recovery[N]:` block.
+/// Render recovery hints as the TOON 4.4 table `recovery[N]{tool,params,reason}:` (params `"{}"` here).
 ///
 /// # Errors
 ///
@@ -290,7 +290,12 @@ fn js_kv_value_to_rust(v: JsToonValue) -> napi::Result<crate::kv::KvValue> {
     }
 }
 
-/// Render key-value pairs with aligned columns.
+/// Render key-value pairs as a TOON 4.4 root object: `key: value` lines, then `totalCount` and `help`.
+///
+/// # Errors
+///
+/// Rejects a duplicate key or the reserved keys `totalCount`, `help` and `recovery` (`kv_validation_failed: …`),
+/// and inputs over the caps.
 #[napi(catch_unwind)]
 pub fn render_kv(
     items: Vec<JsKvItem>,
@@ -308,10 +313,11 @@ pub fn render_kv(
         .map(|i| Ok(crate::kv::KvItem { key: i.key, value: js_kv_value_to_rust(i.value)? }))
         .collect::<napi::Result<Vec<_>>>()?;
     let hint_objs: Vec<crate::hints::Hint> = hints.into_iter().map(Into::into).collect();
-    Ok(crate::kv::render_kv(&converted, total_count.map(JsCount::get), &hint_objs))
+    crate::kv::render_kv(&converted, total_count.map(JsCount::get), &hint_objs)
+        .map_err(|e| napi::Error::from_reason(format!("kv_validation_failed: {e}")))
 }
 
-/// Render an explicit `already_done` status block.
+/// Render the TOON 4.4 `already_done` document: `operation`, `status: already_done`, `summary`, `help`.
 #[napi(catch_unwind)]
 pub fn render_already_done(operation: String, summary: String, hints: Vec<String>) -> napi::Result<String> {
     if hints.len() > MAX_HINTS {
@@ -359,7 +365,8 @@ pub fn is_retryable_status(#[napi(ts_arg_type = "number")] status: JsHttpStatus)
     crate::resilience::is_retryable_status(status.get_u16())
 }
 
-/// Render a classified `DomainError` card or GitHub annotation.
+/// Render a classified `DomainError` as a TOON 4.4 document (`error`, `message`, `exit_code`, `help`), or as a
+/// GitHub annotation.
 #[napi(catch_unwind)]
 pub fn render_domain_error(
     code: String,
@@ -409,7 +416,8 @@ pub struct JsStatusItem {
     pub health: Option<String>,
 }
 
-/// Render a P8 content-first orientation response.
+/// Render a P8 content-first orientation response: `tool`, `description`, the TOON 4.4 table
+/// `items[N]{key,value,health,reason}:` and `help`. An item without `health` renders `ok`.
 #[napi(catch_unwind)]
 pub fn render_status(
     tool_name: String,
@@ -909,7 +917,7 @@ mod tests {
         let err = render_toon(opts).expect_err("reserved type_name must be rejected");
         assert_eq!(
             err.reason,
-            "toon_validation_failed: type_name \"help\" is a reserved document key (totalCount, help)"
+            "toon_validation_failed: type_name \"help\" is a reserved document key (totalCount, help, recovery)"
         );
     }
 
@@ -1156,7 +1164,7 @@ mod tests {
         let mut r = JsAgentResponse::new("t".to_string());
         r.kv_items(vec![]).unwrap();
         r.hint("do this".to_string()).unwrap();
-        assert_eq!(r.render_hints_only().unwrap(), "help[1]: do this\n");
+        assert_eq!(r.render_hints_only().unwrap(), "help[1]: do this");
     }
 
     #[test]
@@ -1231,10 +1239,10 @@ mod tests {
     #[test]
     fn append_hints_appends_to_existing_body() {
         let out = append_hints("body\n".to_string(), vec!["do this".to_string()]).expect("valid input");
-        assert_eq!(out, "body\nhelp[1]: do this\n");
+        assert_eq!(out, "body\nhelp[1]: do this");
         // A body without a trailing newline (every michi TOON document) still gets the block on its own line.
         let out = append_hints("t: []".to_string(), vec!["a, b".to_string()]).expect("valid input");
-        assert_eq!(out, "t: []\nhelp[1]: \"a, b\"\n");
+        assert_eq!(out, "t: []\nhelp[1]: \"a, b\"");
     }
 
     #[test]
@@ -1246,7 +1254,7 @@ mod tests {
     fn render_recovery_basic() {
         let hints = vec![JsRecoveryHint { tool: "retry".to_string(), reason: None }];
         let out = render_recovery(hints).expect("valid input");
-        assert!(out.starts_with("recovery[1]:\n  retry"), "got: {out}");
+        assert_eq!(out, "recovery[1]{tool,params,reason}:\n  retry,\"{}\",null");
     }
 
     #[test]
@@ -1360,14 +1368,14 @@ mod tests {
     fn render_already_done_napi_basic() {
         let out = render_already_done("delete_item".into(), "already deleted".into(), vec![]).unwrap();
         assert!(out.contains("operation: delete_item"), "got: {out}");
-        assert!(out.contains("status:    already_done"), "got: {out}");
-        assert!(out.contains("summary:   already deleted"), "got: {out}");
+        assert!(out.contains("status: already_done"), "got: {out}");
+        assert!(out.contains("summary: already deleted"), "got: {out}");
     }
 
     #[test]
     fn render_already_done_napi_with_hints() {
         let out = render_already_done("sync".into(), "done".into(), vec!["use get_status to verify".into()]).unwrap();
-        assert!(out.ends_with("\nhelp[1]: use get_status to verify\n"), "got: {out}");
+        assert!(out.ends_with("\nhelp[1]: use get_status to verify"), "got: {out}");
     }
 
     #[test]
@@ -1382,7 +1390,7 @@ mod tests {
         };
         let out = render_kv(vec![item], None, vec![]).unwrap();
         assert!(out.contains("score:"), "got: {out}");
-        assert!(out.contains("3.141590"), "expected 6 decimal places by default, got: {out}");
+        assert_eq!(out, "score: 3.14159", "rounded to 6 places by default, then canonical (no padding)");
     }
 
     #[test]
@@ -1452,6 +1460,17 @@ mod tests {
     }
 
     #[test]
+    fn render_kv_rejects_duplicate_and_reserved_keys() {
+        let err = render_kv(vec![kv_item("a"), kv_item("a")], None, vec![]).expect_err("duplicate key");
+        assert_eq!(err.reason, "kv_validation_failed: key \"a\" appears more than once");
+        let err = render_kv(vec![kv_item("help")], None, vec![]).expect_err("reserved key");
+        assert_eq!(
+            err.reason,
+            "kv_validation_failed: key \"help\" is a reserved document key (totalCount, help, recovery)"
+        );
+    }
+
+    #[test]
     fn render_status_napi_ok_health() {
         let items = vec![JsStatusItem {
             key: "index".into(),
@@ -1460,7 +1479,7 @@ mod tests {
         }];
         let out = render_status("my-tool".into(), "desc".into(), items, None).unwrap();
         assert!(out.contains("tool:"), "got: {out}");
-        assert!(!out.contains("DEGRADED") && !out.contains("ERROR"), "ok should have no annotation, got: {out}");
+        assert!(out.ends_with("\n  index,ready,ok,null"), "got: {out}");
     }
 
     #[test]
@@ -1471,7 +1490,7 @@ mod tests {
             health: Some("degraded: high latency".into()),
         }];
         let out = render_status("my-tool".into(), "desc".into(), items, None).unwrap();
-        assert!(out.contains("[DEGRADED: high latency]"), "got: {out}");
+        assert!(out.ends_with("\n  cache,warm,degraded,high latency"), "got: {out}");
     }
 
     #[test]
@@ -1482,7 +1501,7 @@ mod tests {
             health: Some("error: connection refused".into()),
         }];
         let out = render_status("my-tool".into(), "desc".into(), items, None).unwrap();
-        assert!(out.contains("[ERROR: connection refused]"), "got: {out}");
+        assert!(out.ends_with("\n  db,down,error,connection refused"), "got: {out}");
     }
 
     #[test]

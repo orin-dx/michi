@@ -48,15 +48,21 @@ help[1]: Run `gh-axi issue view <number>` to view an issue
 
 ## API
 
+Every string these functions return for an agent is a TOON 4.4 document with no trailing newline — lists, key-value blocks, errors, status, recovery hints and help blocks alike.
+
 ### Free functions
 
 | Function | Signature |
 | --- | --- |
 | `renderToon` | `(opts: JsToonOptions) => string` — TOON list rendering |
 | `emptyState` | `(typeName: string) => string` — definitive empty-state block |
-| `renderHints` | `(hints: string[]) => string` — `help[N]:` block |
-| `appendHints` | `(body: string, hints: string[]) => string` — append `help[N]:` to an existing body |
-| `renderRecovery` | `(hints: JsRecoveryHint[]) => string` — `recovery[N]:` block |
+| `renderHints` | `(hints: string[]) => string` — the inline array `help[N]: h1,h2` |
+| `appendHints` | `(body: string, hints: string[]) => string` — append `help[N]: …` to a document, on its own line |
+| `renderRecovery` | `(hints: JsRecoveryHint[]) => string` — the table `recovery[N]{tool,params,reason}:` (`params` is `"{}"` here; an absent reason is `null`) |
+| `renderKv` | `(items: JsKvItem[], totalCount?: number, hints: string[]) => string` — `key: value` lines; throws `kv_validation_failed: …` for a repeated key or a `totalCount`/`help`/`recovery` key |
+| `renderDomainError` | `(code, message, hints, githubAnnotation?) => string` — `error`, `message`, `exit_code`, `help` |
+| `renderStatus` | `(toolName, description, items, hints?) => string` — `tool`, `description`, the table `items[N]{key,value,health,reason}:`, `help` |
+| `renderAlreadyDone` | `(operation, summary, hints) => string` — `operation`, `status: already_done`, `summary`, `help` |
 | `truncate` | `(content: string, maxChars: number, hint: string) => string` — `truncate("a".repeat(200), 50, "full=true")` gives 17 × `a` + `" (183 more chars — use full=true)"`; an empty `hint` drops the `— use …` clause |
 
 ### `AgentResponse` class
@@ -78,7 +84,7 @@ Setters return `void`, not `this`, so call them as sequential statements rather 
 | `.renderToon` | `() => string` — slot-specific, reads only `items`/`fields` |
 | `.renderKv` | `() => string` — slot-specific, reads only `kvItems` |
 | `.renderJson` | `() => string` — compact JSON: `{"body":...,"hints":[...],"recovery":[...],"isError":bool}` |
-| `.renderHintsOnly` | `() => string` — just the `help[N]:` block |
+| `.renderHintsOnly` | `() => string` — just the `help[N]: …` line |
 | `.humanContent` | `(text: string) => void` — attach a `user`-audience companion block for `toCallToolResult()` |
 | `.toCallToolResult` | `() => CallToolResult` — the MCP `tools/call` response shape: `{content, isError, structuredContent}`, with each content block's `annotations.audience` set correctly |
 

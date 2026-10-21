@@ -14,6 +14,7 @@
 mod escape;
 pub(crate) mod render;
 
+pub(crate) use escape::push_f64;
 pub use escape::{escape_key, escape_value, escape_value_quoted};
 pub use render::{ToonDocument, Value};
 
@@ -21,8 +22,8 @@ pub use render::{ToonDocument, Value};
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum ToonError {
-    /// `type_name` is a reserved root key of the list document (`totalCount` or `help`); using it would emit a
-    /// duplicate key, which TOON 4.4 §14.3 forbids. Any other name is valid and is quoted when §7.3 requires.
+    /// `type_name` is a root key michi composes next to a list (`totalCount`, `help` or `recovery`); using it would
+    /// emit a duplicate key, which TOON 4.4 §14.3 forbids. Any other name is valid and is quoted when §7.3 requires.
     InvalidTypeName {
         /// The offending name.
         name: String,
@@ -58,7 +59,7 @@ impl std::fmt::Display for ToonError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InvalidTypeName { name } => {
-                write!(f, "type_name {name:?} is a reserved document key (totalCount, help)")
+                write!(f, "type_name {name:?} is a reserved document key (totalCount, help, recovery)")
             }
             Self::InvalidFieldName { name } => {
                 write!(f, "field {name:?} appears more than once")
@@ -161,7 +162,7 @@ impl ToonOptions {
     /// # Errors
     ///
     /// Returns [`ToonError::InvalidTypeName`] if `type_name` is a reserved
-    /// root key (`totalCount` or `help`), [`ToonError::InvalidFieldName`] if a
+    /// root key (`totalCount`, `help` or `recovery`), [`ToonError::InvalidFieldName`] if a
     /// field name appears more than once, or [`ToonError::RowLengthMismatch`]
     /// if any row's length differs from `fields.len()`.
     pub fn validate(&self) -> Result<ToonDocument<'_>, ToonError> {
@@ -239,7 +240,7 @@ fn json_value_to_toon_value(v: Option<&serde_json::Value>) -> Value {
 /// Returns [`ToonError::InvalidItem`] if an item fails to serialize or does
 /// not produce a JSON object (struct or map required). Returns
 /// [`ToonError::InvalidTypeName`] if `type_name` is a reserved root key
-/// (`totalCount` or `help`).
+/// (`totalCount`, `help` or `recovery`).
 #[cfg(feature = "serde")]
 pub fn list<T: serde::Serialize>(type_name: impl Into<String>, items: &[T]) -> Result<String, ToonError> {
     let type_name = type_name.into();
@@ -407,7 +408,7 @@ mod validate_tests {
     fn error_display_names_the_rule() {
         assert_eq!(
             ToonError::InvalidTypeName { name: "help".into() }.to_string(),
-            "type_name \"help\" is a reserved document key (totalCount, help)"
+            "type_name \"help\" is a reserved document key (totalCount, help, recovery)"
         );
         assert_eq!(ToonError::InvalidFieldName { name: "a".into() }.to_string(), "field \"a\" appears more than once");
     }

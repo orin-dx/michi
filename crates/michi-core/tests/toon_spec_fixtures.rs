@@ -84,7 +84,7 @@ fn list_entry(key: &str, items: &[Json]) -> Result<String, &'static str> {
     if let Some(strings) = items.iter().map(Json::as_str).collect::<Option<Vec<_>>>() {
         let hints: Vec<Hint> = strings.into_iter().map(Hint::new).collect();
         let block = render_hints(&hints);
-        let tail = block.strip_prefix("help").and_then(|b| b.strip_suffix('\n')).expect("help block");
+        let tail = block.strip_prefix("help").expect("help block");
         return Ok(format!("{}{tail}", escape_key(key)));
     }
     if let Some(values) = items.iter().map(prim).collect::<Option<Vec<_>>>() {
@@ -108,12 +108,10 @@ fn list_entry(key: &str, items: &[Json]) -> Result<String, &'static str> {
     Ok(render_toon(&ToonOptions::new(key, fields, rows).max_cell_len(usize::MAX)).expect("renders"))
 }
 
-/// Cases the harness cannot reproduce, with the reason; each one's rule is covered natively in `tests/toon_spec.rs`.
-const HARNESS_LIMITS: &[(&str, &str)] = &[(
-    "primitives#38",
-    "serde_json's default float parser is not correctly rounded (that needs its `float_roundtrip` feature), so the \
-     input 123456789012345680000 parses one ULP off; covered by toon_spec::s2_large_integral_float_uses_closest_shortest_digits",
-)];
+/// Cases the harness cannot reproduce, with the reason; each one's rule must then be covered natively in
+/// `tests/toon_spec.rs`. Empty: `primitives#38` (input 123456789012345680000) needs a correctly rounded float parser,
+/// which michi-core gets from serde_json's `float_roundtrip` feature.
+const HARNESS_LIMITS: &[(&str, &str)] = &[];
 
 #[test]
 fn official_encode_fixtures_in_michis_subset_pass() {
@@ -149,5 +147,5 @@ fn official_encode_fixtures_in_michis_subset_pass() {
         }
     }
     assert!(failures.is_empty(), "{} fixture failures:\n{}", failures.len(), failures.join("\n"));
-    assert!(ran >= 87, "only {ran} in-subset fixtures ran; skipped:\n{}", skipped.join("\n"));
+    assert!(ran >= 88, "only {ran} in-subset fixtures ran; skipped:\n{}", skipped.join("\n"));
 }

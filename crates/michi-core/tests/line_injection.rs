@@ -14,13 +14,38 @@ const INJECTED: &str = "x\nstatus: failed\r";
 const ESCAPED: &str = r"x\nstatus: failed\r";
 
 #[track_caller]
-fn assert_not_injected(out: &str) {
+fn assert_no_new_line(out: &str) {
     assert!(
         !out.lines().any(|l| l.trim_start().starts_with("status: failed")),
         "caller text started a new line:\n{out}"
     );
     assert!(!out.contains('\r'), "raw CR in output:\n{out:?}");
+    // Every block is a TOON 4.4 document, so the strict decoder must accept it.
+    if let Err(e) = support::toon_parser::decode(out) {
+        panic!("not conformant TOON 4.4: {e}\n{out}");
+    }
+}
+
+#[track_caller]
+fn assert_not_injected(out: &str) {
+    assert_no_new_line(out);
     assert!(out.contains(ESCAPED), "line breaks must be escaped, not dropped:\n{out}");
+}
+
+/// A recovery param key or value sits inside the `params` cell's JSON text, so its line breaks are escaped twice
+/// (JSON `\n`, then TOON `\\n`); decoding both layers must give the original text back.
+#[track_caller]
+fn assert_param_round_trips(hint: RecoveryHint, expected_params: serde_json::Value) {
+    let out = render_recovery(&[hint]);
+    assert_no_new_line(&out);
+    let doc = support::toon_parser::decode(&out).expect("conformant");
+    let Some(support::toon_parser::Node::Table { rows, .. }) = doc.get("recovery") else { panic!("{out}") };
+    let support::toon_parser::Prim::Str(params) = &rows[0][1] else { panic!("{out}") };
+    assert_eq!(serde_json::from_str::<serde_json::Value>(params).expect("JSON text"), expected_params);
+}
+
+fn kv(key: &str, value: &str) -> String {
+    render_kv(&[KvItem { key: key.into(), value: KvValue::Text(value.into()) }], None, &[]).expect("valid")
 }
 
 #[test]
@@ -50,14 +75,20 @@ fn unified_error_variants() {
 fn recovery_tool_reason_and_param() {
     assert_not_injected(&render_recovery(&[RecoveryHint::new(INJECTED)]));
     assert_not_injected(&render_recovery(&[RecoveryHint::new("t").reason(INJECTED)]));
-    assert_not_injected(&render_recovery(&[RecoveryHint::new("t").param(INJECTED, KvValue::Text("v".into()))]));
-    assert_not_injected(&render_recovery(&[RecoveryHint::new("t").param("k", KvValue::Text(INJECTED.into()))]));
+    assert_param_round_trips(
+        RecoveryHint::new("t").param(INJECTED, KvValue::Text("v".into())),
+        serde_json::json!({ INJECTED: "v" }),
+    );
+    assert_param_round_trips(
+        RecoveryHint::new("t").param("k", KvValue::Text(INJECTED.into())),
+        serde_json::json!({ "k": INJECTED }),
+    );
 }
 
 #[test]
 fn kv_key_and_value() {
-    assert_not_injected(&render_kv(&[KvItem { key: INJECTED.into(), value: KvValue::Text("v".into()) }], None, &[]));
-    assert_not_injected(&render_kv(&[KvItem { key: "k".into(), value: KvValue::Text(INJECTED.into()) }], None, &[]));
+    assert_not_injected(&kv(INJECTED, "v"));
+    assert_not_injected(&kv("k", INJECTED));
 }
 
 #[test]

@@ -1,9 +1,10 @@
 ---
-source: tests/snapshot_tests.rs
+source: crates/michi-core/tests/snapshot_tests.rs
 expression: resp.render()
 ---
-tool:        my-tool
+tool: my-tool
 description: does things
-index:       ready
-cache:       warm  [DEGRADED: near limit]
-queue:       down  [ERROR: disconnected]
+items[3]{key,value,health,reason}:
+  index,ready,ok,null
+  cache,warm,degraded,near limit
+  queue,down,error,disconnected

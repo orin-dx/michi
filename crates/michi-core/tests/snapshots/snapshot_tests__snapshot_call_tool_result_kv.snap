@@ -1,11 +1,11 @@
 ---
-source: tests/snapshot_tests.rs
+source: crates/michi-core/tests/snapshot_tests.rs
 expression: result
 ---
 CallToolResult {
     content: [
         ContentBlock {
-            text: "id:    abc-123\nstate: open",
+            text: "id: abc-123\nstate: open",
             audience: [
                 Assistant,
             ],
@@ -18,5 +18,5 @@ CallToolResult {
         },
     ],
     is_error: false,
-    structured_content: "{\"body\":\"id:    abc-123\\nstate: open\",\"hints\":[],\"recovery\":[],\"isError\":false}",
+    structured_content: "{\"body\":\"id: abc-123\\nstate: open\",\"hints\":[],\"recovery\":[],\"isError\":false}",
 }

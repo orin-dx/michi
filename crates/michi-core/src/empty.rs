@@ -19,9 +19,6 @@ const EMPTY_TAIL: &str = ": []\ntotalCount: 0";
 pub fn empty_state_with_hints(type_name: &str, hints: &[Hint]) -> String {
     let mut out = empty_state(type_name);
     crate::hints::append_hints(&mut out, hints);
-    if out.ends_with('\n') {
-        out.pop();
-    }
     out
 }
 
@@ -71,7 +68,7 @@ mod tests {
         let out = empty_state_with_hints("issue", &hints);
         assert_eq!(out, "issue: []\ntotalCount: 0\nhelp[2]: first,second");
         let base = empty_state("issue");
-        assert_eq!(format!("{}\n", &out[base.len() + 1..]), crate::hints::render_hints(&hints));
+        assert_eq!(&out[base.len() + 1..], crate::hints::render_hints(&hints));
     }
 
     #[test]

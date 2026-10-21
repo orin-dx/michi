@@ -154,7 +154,7 @@ const out = new AgentResponse("issues")
 
 Any `#[napi]` function returning `napi::Result<T>` throws a JS `Error` on `Err`. Two practices apply here:
 
-- Wrap fallible conversions (row shape mismatches, oversized inputs) in `Result` and surface them as `napi::Error::from_reason(...)`.
+- Wrap fallible conversions (row shape mismatches, oversized inputs) in `Result` and surface them as `napi::Error::from_reason(...)`. Inputs that cannot form a valid TOON document throw with a prefixed message: `toon_validation_failed: …` from `renderToon`, `kv_validation_failed: …` from `renderKv` (a duplicate key, or a reserved `totalCount`/`help`/`recovery` key).
 - Annotate exports that call into non-trivial rendering with `#[napi(catch_unwind)]`.
   - Without it: **a Rust panic crashes the entire Node process** — there's no isolation boundary.
   - With it: a panic becomes a thrown JS `Error` (or a rejected `Promise` for async) instead of process death.
@@ -231,7 +231,7 @@ This is auto-generated, never hand-written — `napi build` regenerates it from 
 What's actually in `packages/michi-node/index.d.ts` today (rendering-domain surface; the resilience-, status-, and error-domain functions follow further down):
 
 <details>
-<summary>Full rendering-domain <code>index.d.ts</code> (110 lines)</summary>
+<summary>Full rendering-domain <code>index.d.ts</code> (118 lines)</summary>
 
 ```typescript
 /** Scalar TOON/KV cell value. Discriminate via `type`. */
@@ -267,9 +267,10 @@ export declare function renderToon(opts: JsToonOptions): string;
  * No `hints` parameter over this boundary — use `appendHints()` to add one. */
 export declare function emptyState(typeName: string): string;
 
-/** Returns an empty string when hints is empty. */
+/** The TOON 4.4 inline array `help[N]: h1,h2` (no trailing newline); an empty string when hints is empty. */
 export declare function renderHints(hints: Array<string>): string;
 
+/** Appends the help block to a TOON document: one LF first unless `body` is empty or already ends in one. */
 export declare function appendHints(body: string, hints: Array<string>): string;
 
 /** Only the inline form crosses the NAPI boundary — unlike Rust's `truncate()`,
@@ -285,6 +286,8 @@ export interface JsRecoveryHint {
   reason?: string;
 }
 
+/** The TOON 4.4 table `recovery[N]{tool,params,reason}:`; params is always `"{}"` over this boundary and an
+ * absent reason is `null`. */
 export declare function renderRecovery(hints: Array<JsRecoveryHint>): string;
 
 export interface JsAnnotations {
@@ -356,7 +359,7 @@ export type JsAgentResponse = AgentResponse;
 The resilience-, status-, and error-domain surface, added by SPEC-ARCH-004 and the status/error NAPI wrappers — every numeric position here is validated through the newtype kernel in `crates/michi-core/src/napi/num.rs` per the "Numeric boundary" section below, not left to `ToInt32`/implicit coercion:
 
 <details>
-<summary>Full resilience-, error-, and status-domain <code>index.d.ts</code> (56 lines)</summary>
+<summary>Full resilience-, error-, and status-domain <code>index.d.ts</code> (57 lines)</summary>
 
 ```typescript
 /** Return `true` if the HTTP status code is conventionally retryable (429, 502, 503, 504). */
@@ -383,14 +386,15 @@ export declare function nextRetryDelay(
 /** Parse an RFC 7231 `Retry-After` header value (delta-seconds or HTTP-date) into seconds. */
 export declare function parseRetryAfter(headerValue: string): number | null;
 
-/** Render an explicit `already_done` status block. */
+/** Render the TOON 4.4 `already_done` document: `operation`, `status: already_done`, `summary`, `help`. */
 export declare function renderAlreadyDone(
   operation: string,
   summary: string,
   hints: Array<string>,
 ): string;
 
-/** Render a classified `DomainError` card, or a GitHub Actions annotation when `githubAnnotation` is true. */
+/** Render a classified `DomainError` as a TOON 4.4 document (`error`, `message`, `exit_code`, `help`), or a GitHub
+ * Actions annotation when `githubAnnotation` is true. */
 export declare function renderDomainError(
   code: string,
   message: string,
@@ -407,7 +411,8 @@ export interface JsStatusItem {
   health?: string;
 }
 
-/** Render a P8 content-first orientation response. */
+/** Render a P8 content-first orientation response: `tool`, `description`, the TOON 4.4 table
+ * `items[N]{key,value,health,reason}:` and `help`. An item without `health` renders `ok`. */
 export declare function renderStatus(
   toolName: string,
   description: string,

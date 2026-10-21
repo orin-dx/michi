@@ -34,15 +34,13 @@ impl std::fmt::Display for Hint {
     }
 }
 
-/// Render a help block from a slice of hints: one line `help[N]: hint1,hint2`, ending in a newline.
+/// Render a help block from a slice of hints: the one-line TOON 4.4 document `help[N]: hint1,hint2`, with no trailing
+/// newline.
 ///
 /// The block is a TOON 4.4 inline primitive array (§9.1), the form §1.4 prescribes for an array of strings. Each hint
 /// is quoted only when §7.2 requires it — notably when it contains a comma (the delimiter), a colon, a quote, a
 /// backslash, a bracket or brace, or a line break, which is written as the escape `\n`/`\r` so a hint never spans
-/// lines. Returns an empty string for an empty slice.
-///
-/// The trailing newline makes this a block for concatenation; the TOON document renderers (`render_toon`,
-/// `empty_state_with_hints`, `AgentResponse`) drop the final newline of the finished document.
+/// lines. Returns an empty string (the empty document) for an empty slice.
 #[must_use]
 pub fn render_hints(hints: &[Hint]) -> String {
     if hints.is_empty() {
@@ -53,15 +51,25 @@ pub fn render_hints(hints: &[Hint]) -> String {
     out
 }
 
-/// Append the help block of [`render_hints`] to an existing string in-place.
+/// Append the help block of [`render_hints`] to a TOON document in place.
 ///
-/// When `out` is non-empty and does not end in a newline (a finished TOON document has none), a newline is inserted
-/// first so the block always starts on its own line. Does nothing for an empty slice.
+/// Every michi renderer returns a finished document without a trailing newline, and the append helpers compose
+/// them: when `out` is non-empty and does not already end in a newline, one LF is inserted first, and nothing follows
+/// the block. The result is a valid TOON document whenever `out` is one without a `help` key. Does nothing for an
+/// empty slice.
 pub fn append_hints(out: &mut String, hints: &[Hint]) {
     append_help_block(out, hints.iter().map(Hint::as_str));
 }
 
-/// Shared writer for every help block: `help[N]: h1,h2` plus a newline, each hint encoded per TOON 4.4 §7.2.
+/// Start a new root-level block in a composed document: one LF unless `out` is empty or already ends in one.
+pub(crate) fn start_block(out: &mut String) {
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
+}
+
+/// Shared writer for every help block: `help[N]: h1,h2` with no trailing newline, each hint encoded per TOON 4.4
+/// §7.2.
 pub(crate) fn append_help_block<'a, I>(out: &mut String, hints: I)
 where
     I: ExactSizeIterator<Item = &'a str>,
@@ -69,9 +77,7 @@ where
     if hints.len() == 0 {
         return;
     }
-    if !out.is_empty() && !out.ends_with('\n') {
-        out.push('\n');
-    }
+    start_block(out);
     out.push_str("help[");
     out.push_str(&hints.len().to_string());
     out.push_str("]: ");
@@ -81,7 +87,6 @@ where
         }
         out.push_str(&crate::toon::escape_value(hint));
     }
-    out.push('\n');
 }
 
 #[cfg(test)]
@@ -91,20 +96,20 @@ mod tests {
     #[test]
     fn single_hint_renders_correctly() {
         let hints = [Hint::new("Call get_item with id=<id>")];
-        assert_eq!(render_hints(&hints), "help[1]: Call get_item with id=<id>\n");
+        assert_eq!(render_hints(&hints), "help[1]: Call get_item with id=<id>");
     }
 
     #[test]
     fn hints_are_quoted_per_toon_string_rules() {
         let hints = [Hint::new("a, b"), Hint::new("key: v"), Hint::new(""), Hint::new("-x"), Hint::new("plain")];
-        assert_eq!(render_hints(&hints), "help[5]: \"a, b\",\"key: v\",\"\",\"-x\",plain\n");
+        assert_eq!(render_hints(&hints), "help[5]: \"a, b\",\"key: v\",\"\",\"-x\",plain");
     }
 
     #[test]
     fn append_hints_starts_a_new_line_after_a_finished_document() {
         let mut out = "t: []".to_string();
         append_hints(&mut out, &[Hint::new("h")]);
-        assert_eq!(out, "t: []\nhelp[1]: h\n");
+        assert_eq!(out, "t: []\nhelp[1]: h");
     }
 
     #[test]
@@ -116,7 +121,7 @@ mod tests {
     fn multiple_hints_all_appear_in_order() {
         let hints = [Hint::new("first"), Hint::new("second"), Hint::new("third")];
         let out = render_hints(&hints);
-        assert_eq!(out, "help[3]: first,second,third\n");
+        assert_eq!(out, "help[3]: first,second,third");
     }
 
     #[test]
@@ -154,7 +159,7 @@ mod tests {
     fn ac011a_newline_in_hint_is_escaped() {
         let hints = [Hint::new("a\nb")];
         let out = render_hints(&hints);
-        assert_eq!(out, "help[1]: \"a\\nb\"\n");
+        assert_eq!(out, "help[1]: \"a\\nb\"");
         // The \n renders as a visible escape inside quotes, so the block stays one line.
         assert_eq!(out.lines().count(), 1);
     }
@@ -177,7 +182,7 @@ mod tests {
         // \r renders as the visible two-character escape, never raw or dropped.
         let hints = [Hint::new("a\rb")];
         let out = render_hints(&hints);
-        assert_eq!(out, "help[1]: \"a\\rb\"\n");
+        assert_eq!(out, "help[1]: \"a\\rb\"");
         assert!(!out.contains('\r'), "no raw CR may survive, got: {out:?}");
         assert_eq!(out.lines().count(), 1);
     }

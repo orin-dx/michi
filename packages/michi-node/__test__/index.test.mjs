@@ -84,8 +84,8 @@ void describe('renderHints', () => {
   void it('renders hint block', () => {
     const out = renderHints(['hint one', 'hint two'])
     // TOON 4.4 inline primitive array; hints are quoted only when §7.2 requires it.
-    assert.strictEqual(out, 'help[2]: hint one,hint two\n')
-    assert.strictEqual(renderHints(['a, b']), 'help[1]: "a, b"\n')
+    assert.strictEqual(out, 'help[2]: hint one,hint two')
+    assert.strictEqual(renderHints(['a, b']), 'help[1]: "a, b"')
   })
 
   void it('returns empty for no hints', () => {
@@ -95,16 +95,16 @@ void describe('renderHints', () => {
 
 void describe('appendHints', () => {
   void it('appends a help block to an existing body', () => {
-    assert.strictEqual(appendHints('body\n', ['do this']), 'body\nhelp[1]: do this\n')
-    assert.strictEqual(appendHints('t: []', ['do this']), 't: []\nhelp[1]: do this\n')
+    assert.strictEqual(appendHints('body\n', ['do this']), 'body\nhelp[1]: do this')
+    assert.strictEqual(appendHints('t: []', ['do this']), 't: []\nhelp[1]: do this')
   })
 })
 
 void describe('renderRecovery', () => {
   void it('renders a recovery block', () => {
-    const out = renderRecovery([{ tool: 'retry', reason: 'rate limited' }])
-    assert.ok(out.startsWith('recovery[1]:\n  retry'))
-    assert.ok(out.includes('rate limited'))
+    // TOON 4.4 tabular array; params is the quoted compact JSON object, an absent reason is null.
+    const out = renderRecovery([{ tool: 'retry', reason: 'rate limited' }, { tool: 'reload' }])
+    assert.strictEqual(out, 'recovery[2]{tool,params,reason}:\n  retry,"{}",rate limited\n  reload,"{}",null')
   })
 })
 
@@ -158,17 +158,34 @@ void describe('standalone helpers', () => {
       1,
       ['hint 1']
     )
-    assert.ok(out.includes('name:'))
-    assert.ok(out.includes('michi'))
-    assert.ok(out.includes('totalCount: 1'))
-    assert.ok(out.includes('help[1]:'))
+    assert.strictEqual(out, 'name: michi\ntotalCount: 1\nhelp[1]: hint 1')
+  })
+
+  void it('renderKv writes TOON primitives: null, canonical rounded floats, quoted strings', () => {
+    const out = renderKv(
+      [
+        { key: 'gone', value: { type: 'null' } },
+        { key: 'score', value: { type: 'float', floatVal: 1.5, decimalsVal: 3 } },
+        { key: 'note', value: { type: 'str', strVal: 'a: b' } },
+      ],
+      null,
+      []
+    )
+    assert.strictEqual(out, 'gone: null\nscore: 1.5\nnote: "a: b"')
+  })
+
+  void it('renderKv rejects a duplicate or reserved key', () => {
+    const k = (key) => ({ key, value: { type: 'null' } })
+    assert.throws(
+      () => renderKv([k('a'), k('a')], null, []),
+      (err) => err.message === 'kv_validation_failed: key "a" appears more than once'
+    )
+    assert.throws(() => renderKv([k('help')], null, []), /kv_validation_failed: key "help" is a reserved document key/)
   })
 
   void it('renderAlreadyDone formats no-op block', () => {
     const out = renderAlreadyDone('create_issue', 'Already exists', ['view issue 42'])
-    assert.ok(out.includes('status:    already_done'))
-    assert.ok(out.includes('summary:   Already exists'))
-    assert.ok(out.includes('help[1]:'))
+    assert.strictEqual(out, 'operation: create_issue\nstatus: already_done\nsummary: Already exists\nhelp[1]: view issue 42')
   })
 
   void it('parseRetryAfter parses integer seconds', () => {
@@ -213,9 +230,8 @@ void describe('standalone helpers', () => {
   })
 
   void it('renderDomainError formats error card and github annotation', () => {
-    const card = renderDomainError('not_found', 'Item not found', ['check ID'])
-    assert.ok(card.includes('error: not_found'))
-    assert.ok(card.includes('message: Item not found'))
+    const card = renderDomainError('not_found', 'Item not found: 42', ['check ID'])
+    assert.strictEqual(card, 'error: not_found\nmessage: "Item not found: 42"\nexit_code: 1\nhelp[1]: check ID')
 
     const gh = renderDomainError('not_found', 'Item not found', [], true)
     assert.strictEqual(gh, '::error title=not_found::Item not found')
@@ -228,9 +244,12 @@ void describe('standalone helpers', () => {
   void it('renderStatus formats orientation block', () => {
     const out = renderStatus('my_tool', 'Does work', [
       { key: 'cache', value: { type: 'str', strVal: 'ready' }, health: 'ok' },
+      { key: 'db', value: { type: 'int', intVal: 3 }, health: 'degraded: slow' },
     ])
-    assert.ok(out.includes('tool:        my_tool'))
-    assert.ok(out.includes('description: Does work'))
+    assert.strictEqual(
+      out,
+      'tool: my_tool\ndescription: Does work\nitems[2]{key,value,health,reason}:\n  cache,ready,ok,null\n  db,3,degraded,slow'
+    )
   })
 })
 
@@ -354,7 +373,7 @@ void describe('int64 boundary (SPEC-NAPI-POINTFIX-001)', () => {
   })
   void it('AC-003 renderKv renders an int beyond i32::MAX losslessly', () => {
     const out = renderKv([{ key: 'id', value: { type: 'int', intVal: 1755000000000 } }], null, [])
-    assert.strictEqual(out, 'id: 1755000000000\n')
+    assert.strictEqual(out, 'id: 1755000000000')
   })
   void it('renderToon rejects a fractional intVal', () => {
     assert.throws(
@@ -384,7 +403,7 @@ void describe('render_toon validate() surfacing (SPEC-NAPI-POINTFIX-001)', () =>
   void it('AC-009b rejects a reserved type_name', () => {
     assert.throws(
       () => renderToon({ typeName: 'help', fields: ['x'], rows: [[{ type: 'str', strVal: 'v' }]], hints: [] }),
-      (err) => err.message === 'toon_validation_failed: type_name "help" is a reserved document key (totalCount, help)'
+      (err) => err.message === 'toon_validation_failed: type_name "help" is a reserved document key (totalCount, help, recovery)'
     )
   })
   void it('AC-010 quotes a field name containing a structural character (TOON 4.4 §7.3)', () => {
@@ -470,8 +489,9 @@ void describe('rejection instead of coercion (SPEC-ARCH-003 AC-009)', () => {
   })
 
   void it('renderKv defaults absent decimalsVal to 6', () => {
-    const out = renderKv([{ key: 'score', value: { type: 'float', floatVal: 1.0 } }], null, [])
-    assert.ok(out.includes('1.000000'), `expected 6 decimal places by default, got: ${out}`)
+    // Rounded to 6 places, then written canonically (TOON 4.4 §2): decimals bound precision, never pad.
+    const out = renderKv([{ key: 'score', value: { type: 'float', floatVal: 1.23456789 } }], null, [])
+    assert.strictEqual(out, 'score: 1.234568')
   })
 })
 

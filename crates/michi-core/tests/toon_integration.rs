@@ -132,7 +132,8 @@ fn hints_field_accepts_hint_type() {
 
 #[test]
 fn crate_root_reexports_are_reachable() {
-    let _: fn(&[michi_core::kv::KvItem], Option<usize>, &[michi_core::Hint]) -> String = michi_core::render_kv;
+    type KvResult = Result<String, michi_core::KvError>;
+    let _: fn(&[michi_core::kv::KvItem], Option<usize>, &[michi_core::Hint]) -> KvResult = michi_core::render_kv;
     let _ = michi_core::empty_state("t");
     let _: fn(Option<String>) -> michi_core::AlreadyDone = michi_core::already_done;
     let _: fn(&str, &str, &[String]) -> String = michi_core::render_already_done;

@@ -41,17 +41,17 @@ fn snapshot_kv_single_item() {
         KvItem { key: "state".into(), value: KvValue::Text("open".into()) },
         KvItem { key: "count".into(), value: KvValue::Int(3) },
     ];
-    insta::assert_snapshot!(render_kv(&items, None, &[]));
+    insta::assert_snapshot!(render_kv(&items, None, &[]).expect("valid items"));
 }
 
 #[test]
-fn snapshot_kv_column_alignment() {
+fn snapshot_kv_mixed_values() {
     let items = vec![
         KvItem { key: "id".into(), value: KvValue::Int(1) },
         KvItem { key: "description".into(), value: KvValue::Text("A longer field value".into()) },
         KvItem { key: "x".into(), value: KvValue::Bool(true) },
     ];
-    insta::assert_snapshot!(render_kv(&items, None, &[]));
+    insta::assert_snapshot!(render_kv(&items, None, &[]).expect("valid items"));
 }
 
 #[test]

@@ -141,9 +141,9 @@ impl std::fmt::Display for Value {
     }
 }
 
-/// Root-object keys a TOON list document may also contain, which a type name therefore must not take: TOON 4.4
-/// §14.3 forbids duplicate sibling keys.
-pub(crate) const RESERVED_TYPE_NAMES: [&str; 2] = ["totalCount", "help"];
+/// Root-object keys michi composes next to a TOON list (`totalCount`, `help`, `recovery`), which a type name therefore
+/// must not take: TOON 4.4 §14.3 forbids duplicate sibling keys.
+pub(crate) const RESERVED_TYPE_NAMES: [&str; 3] = crate::kv::RESERVED_ROOT_KEYS;
 
 /// Append one row cell: §7.2 quoting for strings, §2/§3 canonical numbers, the `null` literal. Only strings are
 /// truncated to `max_cell_len` chars, counted before escaping, with the caller's `hint` (empty: none) in the suffix.
@@ -286,7 +286,7 @@ mod proof {
         /// # Errors
         ///
         /// Returns [`crate::toon::ToonError::InvalidTypeName`] if `type_name`
-        /// is a reserved root key (`totalCount` or `help`),
+        /// is a reserved root key (`totalCount`, `help` or `recovery`),
         /// [`crate::toon::ToonError::InvalidFieldName`] if a field name appears
         /// more than once, or [`crate::toon::ToonError::RowLengthMismatch`] if
         /// any row's length differs from `fields.len()`.
@@ -329,7 +329,9 @@ mod proof {
                 out.push('\n');
             }
             crate::hints::append_help_block(&mut out, opts.hints.iter().map(String::as_str));
-            out.pop();
+            if out.ends_with('\n') {
+                out.pop();
+            }
             out
         }
     }
@@ -611,7 +613,7 @@ mod tests {
 
     #[test]
     fn ac023_reserved_type_names_are_rejected_but_allowed_as_field_names() {
-        for name in ["help", "totalCount"] {
+        for name in ["help", "totalCount", "recovery"] {
             let opts = crate::toon::ToonOptions::new(name, vec![], vec![]);
             let err = crate::toon::render_toon(&opts).unwrap_err();
             assert_eq!(err, crate::toon::ToonError::InvalidTypeName { name: name.to_string() });

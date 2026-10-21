@@ -1,8 +1,8 @@
 ---
-source: tests/snapshot_tests.rs
-expression: "render_kv(&items, None, &[])"
+source: crates/michi-core/tests/snapshot_tests.rs
+expression: "render_kv(&items, None, &[]).expect(\"valid items\")"
 ---
-id:    abc-123
+id: abc-123
 title: Fix login
 state: open
 count: 3

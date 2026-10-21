@@ -4,7 +4,7 @@ TOON (Token-Oriented Object Notation) is the agent-facing list format. It front-
 
 This is the canonical implementation of **AXI Principle 1 (Token-Efficient Output)**. Every token in a response permanently consumes context-window budget, and that cost compounds across turns. TOON skips the braces, quotes, and repeated keys JSON spends on structure the model can already infer positionally — roughly 40% fewer tokens than equivalent JSON for list data.
 
-**Conformance:** `toon-spec: 4.4`. Every TOON document michi emits is valid encoder output under the [TOON specification](https://github.com/toon-format/spec/blob/main/SPEC.md), Version 4.4 (Working Draft, 2026-10-08), with the default options (comma delimiter, 2-space indent). `crates/michi-core/tests/toon_spec.rs` covers each applicable encoder rule by section, and `tests/toon_spec_fixtures.rs` runs the official encode fixtures (vendored in `tests/fixtures/toon-spec/`) that fall inside michi's subset.
+**Conformance:** `toon-spec: 4.4`. Every agent-facing block michi emits — lists, key-value, errors, status, recovery, partial success, already-done, hints — is valid encoder output under the [TOON specification](https://github.com/toon-format/spec/blob/main/SPEC.md), Version 4.4 (Working Draft, 2026-10-08), with the default options (comma delimiter, 2-space indent). `crates/michi-core/tests/toon_spec.rs` covers each applicable encoder rule by section, and `tests/toon_spec_fixtures.rs` runs the official encode fixtures (vendored in `tests/fixtures/toon-spec/`) that fall inside michi's subset.
 
 ## When to use it
 
@@ -15,7 +15,11 @@ JSON repeats field names on every item. Markdown key-value repeats them too — 
 michi emits this subset of TOON 4.4. Lines are separated by LF; the document has no trailing newline, no trailing spaces, no blank lines and no byte-order mark (§12).
 
 ```
-document     ::= list (LF totalcount)? (LF help)?      (a root object, §5)
+document     ::= list (LF totalcount)? (LF help)? (LF recovery)?   (a list document: a root object, §5)
+               | entry (LF entry)*                     (any other block: a root object, unique keys, §14.3)
+entry        ::= key ": " cell | list | inline | recovery   (primitive field §8, arrays §9)
+inline       ::= key "[" count "]: " cell ("," cell)*   (inline primitive array, §9.1)
+recovery     ::= "recovery[" count "]{tool,params,reason}:" (LF row)+   (tabular, §9.3)
 list         ::= key ": []"                            (no rows, §9.1)
                | key "[" count "]:" (LF "  -")+        (rows with zero fields: empty objects, §9.4/§10)
                | key "[" count "]{" fields "}:" (LF row)+   (tabular, §9.3)
@@ -34,7 +38,7 @@ escape       ::= '\\' | '\"' | '\n' | '\r' | '\t' | '\u00' hex hex   (lowercase 
 number       ::= canonical decimal, or exponent form outside 1e-6 <= |n| < 1e21   (§2)
 ```
 
-The type name is the list's key; `totalCount` and `help` are the document's other keys, so they are reserved and rejected as type names (`ToonError::InvalidTypeName`). A repeated field name is rejected too (`ToonError::InvalidFieldName`). Any other name is valid: names outside `^[A-Za-z_][A-Za-z0-9_.]*$` — including the empty name, non-ASCII names and names with spaces or punctuation — are quoted.
+The type name is the list's key; `totalCount`, `help` and `recovery` are the keys michi composes next to it (`AgentResponse` appends `recovery`), so they are reserved and rejected as type names (`ToonError::InvalidTypeName`). A repeated field name is rejected too (`ToonError::InvalidFieldName`). Any other name is valid: names outside `^[A-Za-z_][A-Za-z0-9_.]*$` — including the empty name, non-ASCII names and names with spaces or punctuation — are quoted.
 
 ## Examples
 
@@ -78,11 +82,87 @@ help[1]: Try list_issues with a broader filter
 **Single recovery hint (no list):**
 
 ```
-recovery[1]:
-  create_item: suggestedParams: { project: PROJ, type: Task }
+recovery[1]{tool,params,reason}:
+  create_item,"{\"project\":\"PROJ\",\"type\":\"Task\"}",project is required
 ```
 
-A dedicated `recovery[N]:` block, not folded into `help[]` — see [03-rust-api.md](03-rust-api.md)'s `recovery` section for why. Param values render unquoted in plain-text form; `type` above is `KvValue::Text("Task")`, not a JSON string literal. The recovery block is michi's own line format, not TOON — see [06-decisions.md](06-decisions.md) ("TOON output conforms to TOON 4.4") for which blocks are and are not TOON.
+A dedicated `recovery[N]` table, not folded into `help[]`: hints are strings, recovery hints are records. See [Agent-facing blocks](#agent-facing-blocks) for its columns.
+
+## Agent-facing blocks
+
+Every block michi renders for an agent — not only lists — is a TOON 4.4 root object with the default options, so an agent parses one format. Each renderer returns a finished document with no trailing newline; `append_hints` and `append_recovery` join a block onto a document with exactly one LF (none when the buffer is empty or already ends in one). Composition keeps keys unique: a list's type name and a KV key may not be `totalCount`, `help` or `recovery`, and KV keys may not repeat (`ToonError::InvalidTypeName`, `KvError`). Strings and keys are quoted per [Strings](#strings); numbers follow [Numbers, booleans and null](#numbers-booleans-and-null).
+
+**Key-value (`kv::render_kv`, `AgentResponse` KV path)** — one `key: value` field per item (§8), exactly one space after the colon (no column alignment), then `totalCount` and `help`:
+
+```
+id: abc-123
+title: "Fix login: redirect loop"
+score: 0.25
+wait: 1.5s
+assignee: null
+totalCount: 1
+help[1]: Call update_issue with id=<id>
+```
+
+`KvValue::Text` is a string; `Int` and `Bool` are literals; `Float(f, decimals)` is `f` rounded to `decimals` places, written in canonical form (`Float(1.5, 3)` → `1.5`, NaN → `null`); `Duration` is the string `1.5s`; `Missing` is `null`.
+
+**Recovery hints (`recovery::render_recovery`, appended by `AgentResponse`, `DomainError` and `PartialSuccess`)** — a tabular array (§9.3) with three primitive columns. `params` is the string holding the parameters' compact JSON object, exactly the `params` object of the JSON companions (`"{}"` when empty); `reason` is `null` when absent:
+
+```
+recovery[2]{tool,params,reason}:
+  retry,"{\"attempt\":2}",transient network error
+  reload_cache,"{}",null
+```
+
+**Errors (`DomainError::render`, `Error::render`)**:
+
+```
+error: not_found
+message: "Issue #9999 not found: check the number"
+exit_code: 1
+help[1]: Call list_issues to see available numbers
+recovery[1]{tool,params,reason}:
+  list_issues,"{\"state\":\"open\"}",null
+```
+
+`Error::InvalidInput(m)` and `Error::NotFound(m)` render the same shape with `error: invalid_input` / `error: not_found` and `message: m`. `AgentResponse`'s validation failures are `error: toon_validation_failed` / `error: kv_validation_failed` plus a quoted `message`.
+
+**Status (`StatusResponse::render`)** — item keys are cells of a table, not root keys, so any key is valid; `health` is `ok`, `degraded`, `error`, or `null` for no signal, and `reason` is `null` unless degraded or error:
+
+```
+tool: my-tool
+description: Semantic code search
+items[3]{key,value,health,reason}:
+  index,ready,ok,null
+  cache,warm,degraded,near limit
+  workers,4,null,null
+help[1]: Call get_status for detail
+```
+
+With no items the table is `items: []`.
+
+**Already done (`resilience::render_already_done`)**:
+
+```
+operation: delete_item
+status: already_done
+summary: item 42 was deleted in run abc
+help[1]: Call get_item with id=42 to confirm
+```
+
+**Partial success (`PartialSuccess::render`)** — the summary is a quoted string, `completed`/`skipped` inline arrays (§9.1), `failed` a table; empty categories are omitted:
+
+```
+partial_success: "2 completed, 1 failed, 1 skipped"
+completed[2]: create_issue,add_label
+failed[1]{operation,reason}:
+  assign_user,User 'ghost' not found
+skipped[1]: notify_team
+recovery[1]{tool,params,reason}:
+  assign_user,"{\"user\":\"alice\"}",null
+```
+
+`crates/michi-core/tests/toon_blocks.rs` pins each form and checks every block with the strict validator in `tests/support/toon_parser.rs`. Why each form was chosen: [06-decisions.md](06-decisions.md) ("Every agent-facing block is TOON 4.4").
 
 ## Strings
 

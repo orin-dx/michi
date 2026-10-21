@@ -68,7 +68,7 @@ No async runtime dependency, no tokio, no async-std — every public function is
 - `serde` is opt-in Rust-side ergonomics: `Serialize`/`Deserialize` on the core value types, plus `toon::list()`. See [01-overview-and-setup.md](01-overview-and-setup.md) for the full dependency rationale.
 - `schemars` derives `JsonSchema` on DTO types (`DomainError`, `StatusResponse`, `ToonOptions`, and others) for automatic MCP `outputSchema` generation.
 - `miette` implements `miette::Diagnostic` for `DomainError` to render colorized CLI diagnostic cards.
-- `cli` is **not** a Cargo feature of `michi-core` at all. Terminal-aware rendering (line wrapping, colour codes for the `[DEGRADED: ...]` health signals in `status::StatusResponse`) is out of scope for v1, since michi v1 targets agent consumers only.
+- `cli` is **not** a Cargo feature of `michi-core` at all. Terminal-aware rendering (line wrapping, colour codes for the `degraded`/`error` health signals in `status::StatusResponse`) is out of scope for v1, since michi v1 targets agent consumers only.
 - When that work is actually built, it lands as its own crate, downstream of `pipeline`, rather than a feature flag here — see [ARCHITECTURE.md](../../ARCHITECTURE.md) and [06-decisions.md](06-decisions.md) for the crate-boundary rule and the v2 scope sketch.
 
 ---

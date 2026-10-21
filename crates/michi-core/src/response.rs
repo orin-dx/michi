@@ -151,47 +151,37 @@ impl AgentResponse {
         }
         match opts.validate() {
             Ok(doc) => (doc.render(), false),
-            Err(e) => {
-                let message = e.to_string();
-                (format!("error: toon_validation_failed\nmessage: {}", crate::toon::escape_value(&message)), true)
-            }
+            Err(e) => (validation_error_body("toon_validation_failed", &e.to_string()), true),
         }
     }
 
-    /// The KV block without its trailing newline, so the KV and TOON bodies end the same way.
-    fn kv_body(&self) -> String {
-        let mut body = crate::kv::render_kv(&self.single_item, self.total_count, &[]);
-        if body.ends_with('\n') {
-            body.pop();
+    /// The KV body, and whether it is a validation-failure error block instead of the requested items (a duplicate
+    /// or reserved key, see [`crate::kv::KvError`]).
+    fn kv_body(&self) -> (String, bool) {
+        match crate::kv::render_kv(&self.single_item, self.total_count, &[]) {
+            Ok(body) => (body, false),
+            Err(e) => (validation_error_body("kv_validation_failed", &e.to_string()), true),
         }
-        body
     }
 
     /// The selected body, and whether this response is an error: set by `as_error()` or by a body that failed
     /// validation. Every output surface reads its error flag from here so text, JSON and MCP never disagree.
     fn body(&self) -> (String, bool) {
-        match self.target {
-            RenderTarget::Toon | RenderTarget::Unset => {
-                let (body, failed) = self.toon_body();
-                (body, failed || self.is_error)
-            }
-            RenderTarget::Kv => (self.kv_body(), self.is_error),
-        }
+        let (body, failed) = match self.target {
+            RenderTarget::Toon | RenderTarget::Unset => self.toon_body(),
+            RenderTarget::Kv => self.kv_body(),
+        };
+        (body, failed || self.is_error)
     }
 
-    /// Compose the text document: body, help block, recovery block. Like every michi TOON document it ends without a
-    /// trailing newline (TOON 4.4 §12), whichever blocks are present.
+    /// Compose the text document: body, help block, recovery block. Each part is a TOON 4.4 document without a
+    /// trailing newline and the append helpers join them with one LF, so the result is one root object whose keys
+    /// are unique (the body cannot use `totalCount`, `help` or `recovery`).
     fn finish_text(&self, body: &str) -> String {
         let mut out = String::with_capacity(body.len() + 1 + self.hints.len() * 60 + self.recovery.len() * 80);
         out.push_str(body);
         crate::hints::append_hints(&mut out, &self.hints);
-        if !self.recovery.is_empty() && !out.is_empty() && !out.ends_with('\n') {
-            out.push('\n');
-        }
         crate::recovery::append_recovery(&mut out, &self.recovery);
-        if out.ends_with('\n') {
-            out.pop();
-        }
         out
     }
 
@@ -213,15 +203,15 @@ impl AgentResponse {
     /// Render via the KV path.
     #[must_use]
     pub fn render_kv(&self) -> String {
-        self.finish_text(&self.kv_body())
+        self.finish_text(&self.kv_body().0)
     }
 
     fn render_text(&self) -> String {
         self.finish_text(&self.body().0)
     }
 
-    /// Whether this response is an error: `as_error()` was called, or the TOON rows failed validation and the body
-    /// is a `toon_validation_failed` error block.
+    /// Whether this response is an error: `as_error()` was called, or the TOON rows or KV items failed validation and
+    /// the body is a `toon_validation_failed` or `kv_validation_failed` error block.
     #[must_use]
     pub fn is_error(&self) -> bool {
         self.body().1
@@ -315,6 +305,17 @@ impl AgentResponse {
     }
 }
 
+/// The body that replaces rows or items that cannot form a valid document: `error: <code>` and the quoted message.
+fn validation_error_body(code: &str, message: &str) -> String {
+    let message = crate::toon::escape_value(message);
+    let mut out = String::with_capacity(17 + code.len() + message.len());
+    out.push_str("error: ");
+    out.push_str(code);
+    out.push_str("\nmessage: ");
+    out.push_str(&message);
+    out
+}
+
 fn json_string(out: &mut String, s: &str) {
     crate::kv::json_escape_str(out, s);
 }
@@ -354,8 +355,8 @@ mod tests {
         use crate::kv::{KvItem, KvValue};
         let items = vec![KvItem { key: "id".into(), value: KvValue::Int(1) }];
         let r = AgentResponse::new("t").kv_items(items.clone());
-        // The composed text drops the block's trailing newline, like every michi document (TOON 4.4 §12).
-        assert_eq!(format!("{}\n", r.render(OutputFormat::Text)), crate::kv::render_kv(&items, None, &[]));
+        // Without hints or recovery the composed text is exactly the KV document.
+        assert_eq!(Ok(r.render(OutputFormat::Text)), crate::kv::render_kv(&items, None, &[]));
     }
 
     #[test]
@@ -442,7 +443,8 @@ mod tests {
         let raw = r.render_json();
         let parsed: serde_json::Value = serde_json::from_str(&raw).expect("must be valid JSON");
         assert_eq!(parsed["hints"][0].as_str().unwrap(), "has \"quotes\" and \\backslash\nand newline");
-        assert_eq!(parsed["body"].as_str().unwrap(), "k: body \"quoted\" \\slash");
+        // The body is TOON text: the value is quoted and escaped per §7.1/§7.2, then JSON-escaped as a whole.
+        assert_eq!(parsed["body"].as_str().unwrap(), "k: \"body \\\"quoted\\\" \\\\slash\"");
     }
 
     // AC-009: render_toon()/render_kv() always run their own named path
@@ -464,27 +466,27 @@ mod tests {
         assert_eq!(r.render(OutputFormat::Text), r.render_kv());
     }
 
-    // AC-012: Missing rendered via the AgentResponse Json body is the
-    // em-dash embedded in the body string, not a nested JSON null.
+    // AC-012: Missing rendered via the AgentResponse Json body is the TOON
+    // `null` literal embedded in the body string, not a nested JSON null.
     #[test]
     #[cfg(feature = "serde")]
-    fn ac012_missing_in_kv_items_json_body_is_embedded_em_dash() {
+    fn ac012_missing_in_kv_items_json_body_is_embedded_null_literal() {
         use crate::kv::{KvItem, KvValue};
         let r = AgentResponse::new("t").kv_items(vec![KvItem { key: "k".into(), value: KvValue::Missing }]);
         let parsed: serde_json::Value = serde_json::from_str(&r.render_json()).expect("valid JSON");
-        assert_eq!(parsed["body"].as_str().unwrap(), "k: —");
+        assert_eq!(parsed["body"].as_str().unwrap(), "k: null");
     }
 
-    // AC-014: NaN/Inf/-Inf via the AgentResponse Json body are the literal
-    // tokens embedded in body text, not standalone JSON string values.
+    // AC-014: NaN/Inf/-Inf via the AgentResponse Json body are the TOON
+    // `null` literal (§3) embedded in body text, not standalone JSON values.
     #[test]
     #[cfg(feature = "serde")]
-    fn ac014_float_special_values_in_kv_items_json_body_are_embedded_tokens() {
+    fn ac014_float_special_values_in_kv_items_json_body_are_embedded_null() {
         use crate::kv::{KvItem, KvValue};
         for (value, token) in [
-            (KvValue::Float(f64::NAN, 2), "NaN"),
-            (KvValue::Float(f64::INFINITY, 0), "inf"),
-            (KvValue::Float(f64::NEG_INFINITY, 0), "-inf"),
+            (KvValue::Float(f64::NAN, 2), "null"),
+            (KvValue::Float(f64::INFINITY, 0), "null"),
+            (KvValue::Float(f64::NEG_INFINITY, 0), "null"),
         ] {
             let r = AgentResponse::new("t").kv_items(vec![KvItem { key: "k".into(), value }]);
             let parsed: serde_json::Value = serde_json::from_str(&r.render_json()).expect("valid JSON");

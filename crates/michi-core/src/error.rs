@@ -167,15 +167,13 @@ impl DomainError {
         1
     }
 
-    /// Render to an agent-readable KV block with exit code, hints, and recovery.
+    /// Render as a TOON 4.4 root object, with no trailing newline: `error: <code label>`, `message: …` (quoted per
+    /// §7.2), `exit_code: 1`, then the inline `help[N]: …` array and the `recovery[1]{tool,params,reason}:` table when
+    /// present.
     #[must_use]
     pub fn render(&self) -> String {
-        let mut out = String::with_capacity(64 + self.message.len() + self.hints.len() * 50);
-        out.push_str("error: ");
-        out.push_str(self.code.label());
-        out.push_str("\nmessage: ");
-        out.push_str(&crate::text::escape_line_breaks(&self.message));
-        out.push_str("\nexit_code: 1\n");
+        let mut out = String::with_capacity(96 + self.message.len() + self.hints.len() * 50);
+        push_error_fields(&mut out, self.code.label(), &self.message);
         crate::hints::append_hints(&mut out, &self.hints);
         if let Some(r) = &self.recovery {
             crate::recovery::append_recovery(&mut out, std::slice::from_ref(r));
@@ -273,6 +271,15 @@ impl std::fmt::Display for DomainError {
 
 impl std::error::Error for DomainError {}
 
+/// The fields every rendered error document starts with: `error: <code>`, `message: …`, `exit_code: 1`.
+fn push_error_fields(out: &mut String, code: &str, message: &str) {
+    out.push_str("error: ");
+    out.push_str(code);
+    out.push_str("\nmessage: ");
+    out.push_str(&crate::toon::escape_value(message));
+    out.push_str("\nexit_code: 1");
+}
+
 #[cfg(feature = "miette")]
 impl miette::Diagnostic for DomainError {
     fn code<'a>(&'a self) -> Option<Box<dyn std::fmt::Display + 'a>> {
@@ -306,13 +313,19 @@ pub enum Error {
 }
 
 impl Error {
-    /// Render this error as an agent-readable plain-text string.
+    /// Render this error as a TOON 4.4 document in the shape of [`DomainError::render`]: `Domain` renders its inner
+    /// error; `InvalidInput(m)` and `NotFound(m)` render `error: invalid_input` / `error: not_found`, `message: m`
+    /// (quoted per §7.2) and `exit_code: 1`, with no trailing newline.
     #[must_use]
     pub fn render(&self) -> String {
-        match self {
-            Self::Domain(d) => d.render(),
-            other => format!("error: {}", crate::text::escape_line_breaks(&other.to_string())),
-        }
+        let (code, message) = match self {
+            Self::Domain(d) => return d.render(),
+            Self::InvalidInput(m) => (ErrorCode::InvalidInput.label(), m),
+            Self::NotFound(m) => (ErrorCode::NotFound.label(), m),
+        };
+        let mut out = String::with_capacity(48 + message.len());
+        push_error_fields(&mut out, code, message);
+        out
     }
 
     /// The process exit code to use when this error is fatal.
@@ -379,7 +392,7 @@ mod tests {
     #[test]
     fn invalid_input_renders() {
         let e = Error::InvalidInput("field 'name' is required".into());
-        assert_eq!(e.render(), "error: Invalid input: field 'name' is required");
+        assert_eq!(e.render(), "error: invalid_input\nmessage: field 'name' is required\nexit_code: 1");
     }
 
     #[test]
@@ -389,7 +402,7 @@ mod tests {
         let out = e.render();
         assert_eq!(
             out,
-            "error: not_found\nmessage: Issue #9999 does not exist in this repository\nexit_code: 1\nhelp[1]: Call list_issues to see available numbers\n"
+            "error: not_found\nmessage: Issue #9999 does not exist in this repository\nexit_code: 1\nhelp[1]: Call list_issues to see available numbers"
         );
     }
 
@@ -653,23 +666,29 @@ mod tests {
     #[test]
     fn ac014_render_with_hints_and_recovery_is_exact_literal() {
         let e = DomainError::new(ErrorCode::NotFound, "m").hint("h").recovery(RecoveryHint::new("t"));
-        assert_eq!(e.render(), "error: not_found\nmessage: m\nexit_code: 1\nhelp[1]: h\nrecovery[1]:\n  t\n");
+        assert_eq!(
+            e.render(),
+            "error: not_found\nmessage: m\nexit_code: 1\nhelp[1]: h\nrecovery[1]{tool,params,reason}:\n  t,\"{}\",null"
+        );
     }
 
     #[test]
     fn ac014b_render_with_recovery_and_no_hints_has_no_help_block() {
         let e = DomainError::new(ErrorCode::NotFound, "m").recovery(RecoveryHint::new("t"));
-        assert_eq!(e.render(), "error: not_found\nmessage: m\nexit_code: 1\nrecovery[1]:\n  t\n");
+        assert_eq!(
+            e.render(),
+            "error: not_found\nmessage: m\nexit_code: 1\nrecovery[1]{tool,params,reason}:\n  t,\"{}\",null"
+        );
         assert!(!e.render().contains("help["), "got: {}", e.render());
     }
 
     #[test]
     fn ac015_render_with_no_hints_no_recovery_is_exact_prefix_regardless_of_retry_after() {
         let e = DomainError::new(ErrorCode::NotFound, "m");
-        assert_eq!(e.render(), "error: not_found\nmessage: m\nexit_code: 1\n");
+        assert_eq!(e.render(), "error: not_found\nmessage: m\nexit_code: 1");
 
         let e_with_retry_after = e.retry_after(Duration::from_secs(1));
-        assert_eq!(e_with_retry_after.render(), "error: not_found\nmessage: m\nexit_code: 1\n");
+        assert_eq!(e_with_retry_after.render(), "error: not_found\nmessage: m\nexit_code: 1");
     }
 
     // AC-014/AC-014a/AC-014b/AC-015: every prior exact-literal render()
@@ -681,13 +700,13 @@ mod tests {
     fn ac015_render_with_no_hints_no_recovery_ignores_retryable_true() {
         let e = DomainError::new(ErrorCode::RateLimited, "m");
         assert!(e.retryable, "RateLimited defaults retryable=true");
-        assert_eq!(e.render(), "error: rate_limited\nmessage: m\nexit_code: 1\n");
+        assert_eq!(e.render(), "error: rate_limited\nmessage: m\nexit_code: 1");
     }
 
     #[test]
     fn ac014_render_with_hints_and_recovery_ignores_retryable_true() {
         let e = DomainError::new(ErrorCode::RateLimited, "m").hint("h").recovery(RecoveryHint::new("t"));
-        assert_eq!(e.render(), "error: rate_limited\nmessage: m\nexit_code: 1\nhelp[1]: h\nrecovery[1]:\n  t\n");
+        assert_eq!(e.render(), "error: rate_limited\nmessage: m\nexit_code: 1\nhelp[1]: h\nrecovery[1]{tool,params,reason}:\n  t,\"{}\",null");
     }
 
     #[test]
@@ -801,7 +820,7 @@ mod tests {
     #[test]
     fn ac026_error_not_found_variant_renders_exact_prefix() {
         let e = Error::NotFound("issue 42".into());
-        assert_eq!(e.render(), "error: Not found: issue 42");
+        assert_eq!(e.render(), "error: not_found\nmessage: issue 42\nexit_code: 1");
     }
 
     #[test]
