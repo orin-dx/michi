@@ -3,7 +3,7 @@
   "checkpoint_id": "01M5FZQM5A7J5V6J1HSHJS4TYB",
   "strategy": "manual-commit",
   "branch": "docs/envelope-spec-fsl",
-  "checkpoints_count": 4,
+  "checkpoints_count": 9,
   "files_touched": [
     "CONTRIBUTING.md",
     "PRINCIPLES.md",
@@ -22,6 +22,27 @@
       "compact_transcript": "/0/transcript.jsonl",
       "content_hash": "/0/content_hash.txt",
       "prompt": "/0/prompt.txt"
+    },
+    {
+      "metadata": "/1/metadata.json",
+      "transcript": "/1/full.jsonl",
+      "compact_transcript": "/1/transcript.jsonl",
+      "content_hash": "/1/content_hash.txt",
+      "prompt": "/1/prompt.txt"
     }
-  ]
+  ],
+  "token_usage": {
+    "input_tokens": 0,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 0,
+    "output_tokens": 0,
+    "api_call_count": 0,
+    "subagent_tokens": {
+      "input_tokens": 1318,
+      "cache_creation_tokens": 2373786,
+      "cache_read_tokens": 125370094,
+      "output_tokens": 284108,
+      "api_call_count": 657
+    }
+  }
 }
