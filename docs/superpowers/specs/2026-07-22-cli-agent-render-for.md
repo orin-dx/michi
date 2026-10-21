@@ -1,6 +1,6 @@
 # `render_for(Audience)` — Dual CLI/Agent Output Design
 
-> orin-axi · michi · 2026-07-22
+> orin-dx · michi · 2026-07-22
 
 ## Problem
 

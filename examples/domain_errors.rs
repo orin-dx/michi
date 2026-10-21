@@ -9,7 +9,7 @@ use michi::error::{DomainError, ErrorCode};
 use michi::recovery::RecoveryHint;
 
 fn main() {
-    let err = DomainError::new(ErrorCode::NotFound, "Package '@orin-axi/michi' not found in workspace")
+    let err = DomainError::new(ErrorCode::NotFound, "Package '@orin-dx/michi' not found in workspace")
         .hint("Run `just check-all` to inspect workspace packages")
         .recovery(RecoveryHint::new("list_packages"));
 

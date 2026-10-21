@@ -37,7 +37,7 @@
 
 - `src/` — pure sync rendering library (default features: zero runtime deps)
 - `crates/michi-pipeline/` — async pipeline execution (Plan 2, shipped): `execute_pipeline`/`execute_pipeline_parallel`, `CircuitBreaker`, `CancellationToken`, its own `ExecutionError` (not a `michi_core::Error` variant — see `docs/spec/06-decisions.md`). Depends on `michi-core` + `michi-resilience` + `tokio`; not re-exported through the root `michi` facade, versioned independently.
-- `packages/michi-node/` — thin NAPI cdylib shim, npm package name `@orin-axi/michi`
+- `packages/michi-node/` — thin NAPI cdylib shim, npm package name `@orin-dx/michi`
 - Feature flags: `napi`, `serde` (opt-in Serialize/Deserialize + `toon::list()`), `schemars`, `miette`. Plan 2 execution lands as separate crates when built, never as features here — `pipeline` has shipped this way (see `crates/michi-pipeline/` above); `fuzzy`/`cache`/`cli` remain unbuilt. See `docs/spec/01-overview-and-setup.md`'s Cargo.toml section for the current split.
 - See `docs/superpowers/specs/2026-07-03-michi-design.md` for decisions
 - See `docs/spec/` for full module API reference

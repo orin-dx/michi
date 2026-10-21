@@ -31,7 +31,7 @@ The other three stay out of scope on purpose.
 No protocol knowledge, no async runtime. Pure computation: data in, strings and types out.
 
 - Rust consumers take a direct crates.io or git dependency.
-- TypeScript consumers reach it through the `@orin-axi/michi` npm package.
+- TypeScript consumers reach it through the `@orin-dx/michi` npm package.
 
 ## Why this exists
 
@@ -72,13 +72,13 @@ Any Rust CLI binary
   Full access to every module — no NAPI overhead
 
 Any TypeScript CLI
-  npm dep on @orin-axi/michi
+  npm dep on @orin-dx/michi
   --format toon dispatch calls into the NAPI wrapper
   Same output; the NAPI boundary is transparent
   render_for()/renderFor() picks agent vs. human output
 
 Any TypeScript MCP server
-  npm dep on @orin-axi/michi
+  npm dep on @orin-dx/michi
   Renders TOON for the audience:["assistant"] content block
   Assembles MCP content[] from the returned string
 ```
@@ -189,9 +189,9 @@ michi/                           (workspace root — facade crate)
     proptest_toon.rs, proptest_truncate.rs, proptest_resilience.rs, proptest_mcp.rs
     toon_parser.rs, support/     # test-only TOON parser for round-trip property tests
 
-  packages/michi-node/           # NAPI wrapper (npm: @orin-axi/michi)
+  packages/michi-node/           # NAPI wrapper (npm: @orin-dx/michi)
     Cargo.toml                   # napi feature, napi-rs build
-    package.json                 # name: "@orin-axi/michi"
+    package.json                 # name: "@orin-dx/michi"
     index.js                     # platform binary loader + TS fallback
     index.d.ts                   # TypeScript types (auto-generated)
     src/lib.rs                   # pub use of the root crate's napi::* exports

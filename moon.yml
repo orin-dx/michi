@@ -1,5 +1,7 @@
 $schema: "https://moonrepo.dev/schemas/project.json"
 
+# Pin the id: moon otherwise derives it from the directory name, which is not the crate name in a git worktree.
+id: "michi"
 language: rust
 
 tasks:

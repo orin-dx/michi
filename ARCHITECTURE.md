@@ -15,7 +15,7 @@ michi (workspace root)
 │   ├── michi-core        # Core AXI types: AgentResponse, Audience, Hint, RecoveryHint, DomainError, StatusResponse
 │   └── michi-pipeline    # Async pipeline execution (Plan 2): execute_pipeline, execute_pipeline_parallel, CircuitBreaker, CancellationToken
 ├── michi                 # Facade crate re-exporting all sub-crates (michi-pipeline is NOT re-exported here)
-└── packages/michi-node   # Node.js NAPI binding (@orin-axi/michi)
+└── packages/michi-node   # Node.js NAPI binding (@orin-dx/michi)
 ```
 
 ## Component Overview
@@ -28,7 +28,7 @@ michi (workspace root)
 | `michi-core` | Layer 2 | High-level response DTOs (`AgentResponse`, `DomainError`, `StatusResponse`, `CallToolResult`). | `thiserror` (Optional: `serde`, `schemars`, `miette`) |
 | `michi-pipeline` | Layer 3 | Async execution over `michi-core`'s `Pipeline` data type: sequential `execute_pipeline`, concurrent `execute_pipeline_parallel`, `CircuitBreaker` resilience, cooperative `CancellationToken`. Own `ExecutionError` type, converts into `DomainError` via `From` — not a variant of `michi_core::Error`. Independently versioned, not re-exported through the facade. | `michi-core`, `michi-resilience`, `tokio` |
 | `michi` | Facade | Root re-export facade (`pub use michi_core::*`, `pub use michi_toon::*`, etc.). | `michi-*` workspace crates |
-| `packages/michi-node` | Shim | NAPI C-dylib binding for `@orin-axi/michi`. | `napi`, `napi-derive`, `serde_json` |
+| `packages/michi-node` | Shim | NAPI C-dylib binding for `@orin-dx/michi`. | `napi`, `napi-derive`, `serde_json` |
 
 ## Data Composition & Render Flow
 

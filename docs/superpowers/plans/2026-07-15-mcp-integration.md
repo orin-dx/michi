@@ -147,7 +147,7 @@ start and is the plan that was actually followed.
 - [ ] **Step 1: Add a superseded notice to the top of `01-mvp.md`**
 
 In `docs/projects/01-mvp.md`, immediately after the existing header block (after the `---`
-following `> orin-axi · Draft · June 2026`), insert:
+following `> orin-dx · Draft · June 2026`), insert:
 
 ```markdown
 > **Superseded.** This is an earlier, session-parallelized draft of the same v0.1.0 goal.
@@ -232,7 +232,7 @@ In `packages/michi-node/README.md`, find:
 | `truncate` | `(content: string, maxChars: number, hint: string) => string` |
 
 Full type definitions ship in `index.d.ts`. See the
-[main repo](https://github.com/orin-axi/michi) for the complete primitive set, the TOON
+[main repo](https://github.com/orin-dx/michi) for the complete primitive set, the TOON
 grammar, and the Rust API this wraps.
 ```
 
@@ -273,7 +273,7 @@ as sequential statements, not a chain:
 | `.renderHintsOnly` | `() => string` — just the `help[N]:` block |
 
 Full type definitions ship in `index.d.ts`. See the
-[main repo](https://github.com/orin-axi/michi) for the complete primitive set, the TOON
+[main repo](https://github.com/orin-dx/michi) for the complete primitive set, the TOON
 grammar, and the Rust API this wraps.
 ```
 

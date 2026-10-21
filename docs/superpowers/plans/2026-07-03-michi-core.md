@@ -114,8 +114,8 @@ resolver = "2"
 edition      = "2021"
 rust-version = "1.96"
 license      = "AGPL-3.0-or-later"
-repository   = "https://github.com/orin-axi/michi"
-authors      = ["orin-axi"]
+repository   = "https://github.com/orin-dx/michi"
+authors      = ["orin-dx"]
 
 [workspace.dependencies]
 serde      = { version = "1", features = ["derive"] }
@@ -390,7 +390,7 @@ Expected: error about missing `src/lib.rs` and `packages/michi-node` — that's 
 
 ```bash
 git init
-git remote add origin git@github.com:orin-axi/michi.git
+git remote add origin git@github.com:orin-dx/michi.git
 git add Cargo.toml rust-toolchain.toml build.rs justfile .rustfmt.toml .clippy.toml .typos.toml CLAUDE.md
 git commit -m "chore: repo scaffold — workspace, justfile, tooling config"
 ```
@@ -2706,7 +2706,7 @@ use michi as _;
   "license": "AGPL-3.0-or-later",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/orin-axi/michi.git",
+    "url": "git+https://github.com/orin-dx/michi.git",
     "directory": "packages/michi-node"
   },
   "scripts": {

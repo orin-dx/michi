@@ -11,9 +11,9 @@
 
 AXI response primitives for agent-ergonomic tools — TOON lists, key-value blocks, truncation, structured errors, status, and `help[]` hints.
 
-`michi` is the formatting and response layer for the **orin-axi** suite: it turns structured data into token-efficient, agent-readable text. No CLI framework or async runtime required.
+`michi` is the formatting and response layer for the [Orin DX](https://orin-dx.com) tools: it turns structured data into token-efficient, agent-readable text. No CLI framework or async runtime required.
 
-Available as a Rust crate (`michi`) or a Node.js package (`@orin-axi/michi`).
+Available as a Rust crate (`michi`) or a Node.js package (`@orin-dx/michi`).
 
 For developer docs, start with the [documentation map](docs/README.md).
 
@@ -65,7 +65,7 @@ print!("{}", render_toon(&opts));
 ### TypeScript / Node.js
 
 ```typescript
-import { renderToon } from "@orin-axi/michi";
+import { renderToon } from "@orin-dx/michi";
 
 const out = renderToon({
   typeName: "issues",
@@ -112,7 +112,7 @@ graph LR
     core[michi-core]
     pipeline[michi-pipeline]
     facade[michi]
-    node["@orin-axi/michi"]
+    node["@orin-dx/michi"]
 
     truncate --> core
     resilience --> core
@@ -131,7 +131,7 @@ graph LR
 | `michi-core` | Core AXI response types (`AgentResponse`, `Audience`, `Hint`, `RecoveryHint`, `StatusResponse`, `DomainError`, `CallToolResult`). |
 | `michi-pipeline` | Async pipeline execution: sequential and concurrent step running, circuit breaking, cooperative cancellation. Depends on `tokio`; versioned and released independently of the rest of the workspace. |
 | `michi` | Facade crate re-exporting all sub-crates for convenient top-level access. |
-| `@orin-axi/michi` | Node.js NAPI bindings built with `@napi-rs/cli`. |
+| `@orin-dx/michi` | Node.js NAPI bindings built with `@napi-rs/cli`. |
 
 ## Feature Flags
 

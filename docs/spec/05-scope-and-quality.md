@@ -74,7 +74,7 @@ No async runtime dependency, no tokio, no async-std — every public function is
 ## Versioning and release
 
 - Intended to publish to [crates.io](https://crates.io) as `michi` — not yet published
-- Intended to publish the npm package to [npmjs.com](https://npmjs.com) as `@orin-axi/michi` — not yet published
+- Intended to publish the npm package to [npmjs.com](https://npmjs.com) as `@orin-dx/michi` — not yet published
 - NAPI binary cross-compiled via `cargo-zigbuild`:
   - `darwin-arm64` (`aarch64-apple-darwin`)
   - `linux-x64-musl` (`x86_64-unknown-linux-musl`)
@@ -93,7 +93,7 @@ Format changes are major versions. Treat the rendered string as a contract — t
 
 **Version sync:** the npm package version tracks the crate version exactly.
 
-- A `version-sync` CI job asserts the two are equal on every push/PR, so a `michi` crate at `0.3.1` and the `@orin-axi/michi` npm package at `0.3.1` always describe the same source.
+- A `version-sync` CI job asserts the two are equal on every push/PR, so a `michi` crate at `0.3.1` and the `@orin-dx/michi` npm package at `0.3.1` always describe the same source.
 - `.github/workflows/release.yml` uses Callisto to open version PRs and publish after a verified merge. The first release establishes versioned packages for downstream integration; consumer integration is a post-release validation, not a publication prerequisite (see [ADR 4](../adr/0004-publish-before-consumer-integration.md)).
 - When no native binary matches a consumer's platform, the TypeScript fallback export loads instead.
 

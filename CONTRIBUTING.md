@@ -9,7 +9,7 @@ If you are proposing a new primitive, read [`PRINCIPLES.md`](PRINCIPLES.md) firs
 ## Local Setup
 
 ```bash
-git clone git@github.com:orin-axi/michi.git
+git clone git@github.com:orin-dx/michi.git
 cd michi
 just build
 just test

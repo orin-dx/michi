@@ -14,8 +14,9 @@ resolver = "2"
 edition      = "2021"
 rust-version = "1.96"
 license      = "FSL-1.1-MIT"
-repository   = "https://github.com/orin-axi/michi"
-authors      = ["orin-axi"]
+repository   = "https://github.com/orin-dx/michi"
+authors      = ["Orin DX"]
+homepage     = "https://orin-dx.com/tools/michi/"
 
 [workspace.dependencies]
 thiserror   = "2"
@@ -65,6 +66,7 @@ edition.workspace      = true
 rust-version.workspace = true
 license.workspace      = true
 repository.workspace   = true
+homepage.workspace     = true
 
 [lints]
 workspace = true

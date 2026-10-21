@@ -1,20 +1,20 @@
 # michi
 
-TypeScript/JavaScript bindings for [`michi`](https://github.com/orin-axi/michi) — AXI response primitives for agent-ergonomic tools. Native binary via NAPI-RS: no WASM, no JS reimplementation of the rendering logic.
+TypeScript/JavaScript bindings for [`michi`](https://github.com/orin-dx/michi) — AXI response primitives for agent-ergonomic tools. Native binary via NAPI-RS: no WASM, no JS reimplementation of the rendering logic.
 
 > [!IMPORTANT]\
-> Not yet published to npm. See the [main repo](https://github.com/orin-axi/michi) for building from source in the meantime.
+> Not yet published to npm. See the [main repo](https://github.com/orin-dx/michi) for building from source in the meantime.
 
 ## Install
 
 ```bash
-pnpm add @orin-axi/michi
+pnpm add @orin-dx/michi
 ```
 
 ## Quick start
 
 ```typescript
-import { renderToon } from "@orin-axi/michi";
+import { renderToon } from "@orin-dx/michi";
 
 const out = renderToon({
   typeName: "issues",
@@ -82,7 +82,7 @@ Setters return `void`, not `this`, so call them as sequential statements rather 
 | `.humanContent` | `(text: string) => void` — attach a `user`-audience companion block for `toCallToolResult()` |
 | `.toCallToolResult` | `() => CallToolResult` — the MCP `tools/call` response shape: `{content, isError, structuredContent}`, with each content block's `annotations.audience` set correctly |
 
-Full type definitions ship in `index.d.ts`. See the [main repo](https://github.com/orin-axi/michi) for the complete primitive set, the TOON grammar, and the Rust API this wraps.
+Full type definitions ship in `index.d.ts`. See the [main repo](https://github.com/orin-dx/michi) for the complete primitive set, the TOON grammar, and the Rust API this wraps.
 
 ## Supported platforms
 

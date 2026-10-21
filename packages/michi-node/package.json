@@ -1,5 +1,5 @@
 {
-  "name": "@orin-axi/michi",
+  "name": "@orin-dx/michi",
   "version": "0.2.0",
   "description": "AXI response primitives for agent-ergonomic tools",
   "main": "index.js",
@@ -7,7 +7,7 @@
   "license": "FSL-1.1-MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/orin-axi/michi.git",
+    "url": "git+https://github.com/orin-dx/michi.git",
     "directory": "packages/michi-node"
   },
   "publishConfig": {

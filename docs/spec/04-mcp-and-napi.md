@@ -44,7 +44,7 @@ Under the `serde` feature, `ContentBlock`/`CallToolResult` don't derive `Seriali
 
 ---
 
-## NAPI npm package — `@orin-axi/michi`
+## NAPI npm package — `@orin-dx/michi`
 
 A thin napi-rs wrapper around the same crate, built with the `napi` feature enabled:
 

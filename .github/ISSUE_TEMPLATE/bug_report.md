@@ -11,7 +11,7 @@ assignees: ''
 ## What you expected instead
 
 ## Crate or package involved
-e.g. `michi-toon`, `michi-truncate`, `michi-resilience`, `michi-pipeline`, `@orin-axi/michi`
+e.g. `michi-toon`, `michi-truncate`, `michi-resilience`, `michi-pipeline`, `@orin-dx/michi`
 
 ## Minimal repro
 Input that triggers it, and the code calling into michi — a panic, a bad TOON render, a truncation that splits a UTF-8 boundary, etc.

@@ -359,7 +359,7 @@ Licensing is settled, not open. michi is `FSL-1.1-MIT`, matching Wisp's upper la
 
 ## What this is not
 
-**Not a Wisp type, and not a monokl type.** `Section`, `SectionBody`, `BudgetSummary`, and `ProvenanceBlock` name nothing from either domain, and michi's manifest names neither crate. Any orin-axi tool returning heterogeneous results in one call — a status command reporting several subsystems, a CLI answering a compound query — uses the same envelope, and a tool with one list still writes `items()` and never sees a `Section`.
+**Not a Wisp type, and not a monokl type.** `Section`, `SectionBody`, `BudgetSummary`, and `ProvenanceBlock` name nothing from either domain, and michi's manifest names neither crate. Any orin-dx tool returning heterogeneous results in one call — a status command reporting several subsystems, a CLI answering a compound query — uses the same envelope, and a tool with one list still writes `items()` and never sees a `Section`.
 
 **Not a batch executor.** michi has no async runtime and no scheduler. Dedupe, deadlines, snapshot atomicity, and the budget allocation policy are monokl's `query()`; michi receives the outcome and renders it.
 
