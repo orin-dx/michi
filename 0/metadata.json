@@ -1,0 +1,38 @@
+{
+  "cli_version": "0.11.7-nightly.202610210625.fedd31ca1",
+  "checkpoint_id": "01M5FZQGDWQZC00P8ZZKCF5KDA",
+  "session_id": "01a15ee7-9cc1-7301-a027-522afabdcff4",
+  "strategy": "manual-commit",
+  "created_at": "2026-10-21T19:41:38.826957Z",
+  "branch": "docs/envelope-spec-fsl",
+  "checkpoints_count": 4,
+  "save_step_count": 4,
+  "files_touched": [
+    ".github/actions/setup-callisto/action.yml",
+    ".github/workflows/release.yml",
+    "callisto.toml",
+    "packages/michi-node/package.json"
+  ],
+  "agent": "Codex",
+  "model": "gpt-6-sol",
+  "turn_id": "4f5a65fa3555",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 628225,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 13251072,
+    "output_tokens": 45423,
+    "api_call_count": 145,
+    "subagent_tokens": {
+      "input_tokens": 524565,
+      "cache_creation_tokens": 0,
+      "cache_read_tokens": 9859072,
+      "output_tokens": 61640,
+      "api_call_count": 168
+    },
+    "subagent_tokens_complete": true
+  },
+  "session_metrics": {
+    "turn_count": 4
+  }
+}
