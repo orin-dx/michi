@@ -1,0 +1,15 @@
+{
+  "tool_use_id": "toolu_01PTknj9d7bHeCnD16XdNH51",
+  "agent_id": "a40e3484d716428a9",
+  "subagent_type": "general-purpose",
+  "task_description": "Survey callisto recent patterns",
+  "token_usage": {
+    "input_tokens": 18,
+    "cache_creation_tokens": 60987,
+    "cache_read_tokens": 527614,
+    "output_tokens": 166,
+    "api_call_count": 9
+  },
+  "started_at": "2026-10-21T07:39:28.776036-07:00",
+  "completed_at": "2026-10-21T07:40:54.890311-07:00"
+}

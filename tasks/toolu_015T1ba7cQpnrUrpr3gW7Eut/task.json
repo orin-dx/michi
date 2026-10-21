@@ -1,0 +1,15 @@
+{
+  "tool_use_id": "toolu_015T1ba7cQpnrUrpr3gW7Eut",
+  "agent_id": "adb9c7b5ae06bc9c8",
+  "subagent_type": "general-purpose",
+  "task_description": "Survey caliper recent patterns",
+  "token_usage": {
+    "input_tokens": 10,
+    "cache_creation_tokens": 63557,
+    "cache_read_tokens": 249156,
+    "output_tokens": 59,
+    "api_call_count": 5
+  },
+  "started_at": "2026-10-21T07:39:28.775661-07:00",
+  "completed_at": "2026-10-21T07:40:38.994939-07:00"
+}
