@@ -27,7 +27,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "oxlint --type-aware .",
     "check": "pnpm typecheck && pnpm lint",
-    "prepublishOnly": "napi prepublish -t npm"
+    "prepublishOnly": "napi prepublish -t npm --no-gh-release"
   },
   "devDependencies": {
     "@napi-rs/cli": "^3.0.0",

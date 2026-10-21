@@ -104,8 +104,7 @@ Superseded plans/specs get a notice pointing at what replaced them, not a rewrit
 
 Passing a component's own tests isn't "ready to ship."
 
-- A release gate (e.g. crates.io publish conditioned on a real consumer integration, not just internal completeness) exists for a reason.
-- Treat it as binding until the condition it names is actually met — not as a formality to route around once everything else looks finished.
+- Release checks should cover package contents, compatibility promises, security, and the intended release scope. Consumer integration can be a post-release check when a published package is needed to perform that integration.
 
 ### 6. Invariant enforcement policy
 

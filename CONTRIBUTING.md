@@ -38,6 +38,7 @@ Ensure all lints and tests pass cleanly.
 
 | Target Task              | Path / Location               |
 | ------------------------ | ----------------------------- |
+| Documentation map        | `docs/README.md`               |
 | Inclusion rules          | `PRINCIPLES.md`               |
 | Crate architecture       | `ARCHITECTURE.md`             |
 | Truncation primitives    | `crates/michi-truncate/`      |

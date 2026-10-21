@@ -10,43 +10,39 @@ peer-escalation = true
 preserve-npm-ranges = true
 
 # Rust library crates — published to crates.io.
-# [[package-set]] globs match by package NAME, not directory path, so
-# "crates/*" would never match a package here (none are literally named
-# "crates/..."). Explicit per-crate [[package]] blocks match by path
-# instead, same as the root and michi-node entries below.
 [[package]]
-match = "crates/michi-core"
+match = "cargo/michi-core"
 publish-to = ["crates-io"]
 release-trigger = "changeset"
 
 [[package]]
-match = "crates/michi-pipeline"
+match = "cargo/michi-pipeline"
 publish-to = ["crates-io"]
 release-trigger = "changeset"
 
 [[package]]
-match = "crates/michi-resilience"
+match = "cargo/michi-resilience"
 publish-to = ["crates-io"]
 release-trigger = "changeset"
 
 [[package]]
-match = "crates/michi-toon"
+match = "cargo/michi-toon"
 publish-to = ["crates-io"]
 release-trigger = "changeset"
 
 [[package]]
-match = "crates/michi-truncate"
+match = "cargo/michi-truncate"
 publish-to = ["crates-io"]
 release-trigger = "changeset"
 
-# Root crate (not captured by any glob)
+# Root crate.
 [[package]]
-match = "."
+match = "cargo/michi"
 publish-to = ["crates-io"]
 release-trigger = "changeset"
 
 # michi-node: NAPI cdylib + npm package
 [[package]]
-match = "packages/michi-node"
+match = "npm/michi-node"
 publish-to = ["npm"]
 release-trigger = "changeset"

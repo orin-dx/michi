@@ -78,3 +78,7 @@ A dedicated `recovery[N]:` block, not folded into `help[]` — see [03-rust-api.
 - Null/absent values render as an empty scalar: `val1,,val3`
 - Booleans: `true` / `false`
 - Numbers: unquoted
+
+## External interoperability gate
+
+The grammar above defines Michi's dialect. Internal parser tests do not establish interoperability. Track external comparisons and compatibility claims in the [TOON interoperability research note](../research/toon-interoperability.md).

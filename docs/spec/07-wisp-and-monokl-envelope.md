@@ -1,6 +1,8 @@
 # The Wisp / monokl Response Envelope
 
-What `michi-core` has to add so that **one** `AgentResponse` can carry a monokl batch result or a Wisp briefing: several named sections, one budget report, one provenance record, and per-operation outcomes that keep their position.
+> **Status: Proposed.** This design is not implemented. The inclusion case remains open; see the notes below.
+
+This proposal describes how one `AgentResponse` could carry a monokl batch result or Wisp briefing: named sections, budget and provenance summaries, and index-bearing operation outcomes.
 
 This is the michi half of a contract written down in three places. monokl's `docs/spec/08-library-session-api.md` §7 defines the batch `QueryResponse`; Wisp's `docs/02-architecture-and-contracts.md` §11–§12 defines the MCP surface that renders it; this doc defines what michi must hold for either of them to render through it. Nothing here changes how michi serializes MCP — that part is already right.
 
@@ -351,7 +353,7 @@ Each conversion is a few dozen lines of field copying in a crate that imports co
 
 Wisp's `wisp-output` crate depends on michi through a **local path dependency during coordinated development**, and the publish order runs one way: michi publishes first, and Wisp is not published until michi has a versioned release compatible with Wisp's license and MSRV (Wisp D-006). michi's declared MSRV is `1.96`.
 
-Nothing in Wisp gates a michi release, which is the practical reason the `wisp-contracts` import is gone: michi's manifest now names no crate that has to reach crates.io before michi does. Nor does this relax michi's own publish gate, which earns a crates.io release with a real consumer integration rather than internal completeness ([`PRINCIPLES.md`](../../PRINCIPLES.md), heuristic 5). The integration is real before the release, not after it: this envelope lands in michi → Wisp integrates against the path dependency → the integration is exercised → michi cuts a versioned release → Wisp depends on the release and can itself be published. A tagged git dependency (`michi = { git = "…", tag = "v0.x.y" }`) is the documented interim step if Wisp needs a pinned reference before crates.io.
+Nothing in Wisp gates a Michi release. Michi publishes first so Wisp can integrate against a versioned dependency, then Wisp can publish its own package. A tagged Git dependency (`michi = { git = "…", tag = "v0.x.y" }`) remains useful during coordinated development.
 
 Licensing is settled, not open. michi is `FSL-1.1-MIT`, matching Wisp's upper layers and Lumen, and monokl carries the same license. With all three on `FSL-1.1-MIT`, the FSL-linking-AGPL redistribution conflict this section used to flag no longer exists.
 
