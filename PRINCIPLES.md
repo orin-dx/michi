@@ -15,11 +15,11 @@ It turns already-decided data into agent-readable strings/types. It doesn't deci
 - One established exception: char/byte-level truncation (`truncate`, `ToonOptions::max_cell_len`) — treated as rendering safety, not business logic.
 - **The ceiling:** if a tool's real need is more sophisticated than a generic primitive can serve — a custom ranking algorithm, a heuristic tuned to one tool's data shape — that's a sign the primitive doesn't belong in michi, not a sign to make michi's primitive more complex. See [Split the decision from the signal](#split-the-decision-from-the-signal) for how to resolve this without compromising on either.
 
-### 2. Zero-dep by default, no exceptions
+### 2. Small default dependency set
 
-New dependencies are opt-in behind a Cargo feature, never required in the default build.
+The default build depends only on `thiserror` and `compact_str`. Anything else is opt-in behind a Cargo feature.
 
-- If something's _correct_ implementation needs a mandatory dependency, the fix isn't "make an exception" — redesign around caller-supplied injection (a closure, a trait), or it doesn't belong here.
+- Adding a mandatory dependency needs a recorded decision in `docs/spec/06-decisions.md`. Prefer caller-supplied injection (a closure, a trait) first.
 
 ### 3. Genuinely cross-tool — verified, not assumed
 
@@ -62,7 +62,7 @@ impl<T> TruncationOutcome<T> {
     pub fn hint(&self, guidance: impl Into<String>) -> Option<Hint> { /* ... */ }
 }
 
-// Zero-dep "best practice" strategies michi ships, for the common case:
+// "Best practice" strategies michi ships, with no extra dependencies, for the common case:
 pub fn truncate_by_count<T>(items: Vec<T>, max: usize) -> TruncationOutcome<T>;
 pub fn truncate_by_bytes<T>(items: Vec<T>, max_bytes: usize, size_of: impl Fn(&T) -> usize) -> TruncationOutcome<T>;
 ```

@@ -99,7 +99,7 @@ impl JsAgentResponse {
     #[napi(catch_unwind)]
     pub fn items(
         &mut self,
-        rows: Vec<Vec<JsToonValue>>, // typed cell value, not serde_json::Value — zero-dep boundary
+        rows: Vec<Vec<JsToonValue>>, // typed cell value, not serde_json::Value
         fields: Vec<String>,
     ) -> napi::Result<()> {
         let b = self.inner.take()

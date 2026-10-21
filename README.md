@@ -100,7 +100,7 @@ help[1]:
 
 ## Workspace Architecture
 
-`michi` is organized as a Cargo workspace with two published crates. `michi-core` holds every sync primitive and has zero runtime dependencies beyond `thiserror` and `compact_str` by default; `michi-pipeline` adds async execution on `tokio`. Optional features live on `michi-core`:
+`michi` is organized as a Cargo workspace with two published crates. `michi-core` holds every sync primitive and by default depends only on `thiserror` and `compact_str`; `michi-pipeline` adds async execution on `tokio`. Optional features live on `michi-core`:
 
 ```mermaid
 graph LR
@@ -138,9 +138,8 @@ These are `michi-core` features. The default build (`default = []`) has no runti
 ## Local Development
 
 ```bash
-just check-all   # Run formatting, clippy, WASM check, rustdoc, and test suites
+just check-all   # Run formatting, clippy, rustdoc, and test suites
 just test        # Run Rust tests and Node.js NAPI tests
-just check-wasm  # Verify compilation on wasm32-unknown-unknown
 just bench       # Run Divan performance benchmarks
 ```
 

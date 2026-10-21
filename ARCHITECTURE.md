@@ -99,7 +99,3 @@ The NAPI boundary (`crates/michi-core/src/napi.rs`) has a specific constructor d
 This asymmetry is intentional. The NAPI layer operates in a "be maximally resilient to JS input, fail loudly only for truly unrecoverable cases" mode; the Rust library layer operates in a "signal problems explicitly through types" mode.
 
 **Error output path:** When you hold a `DomainError`, call `domain_error.to_call_tool_result()` directly. Do not wrap it in `AgentResponse::as_error()` — that double-wraps the render and loses the typed `error`/`retryable` fields from `structured_content`. Both `AgentResponse::to_call_tool_result()` and `DomainError::to_call_tool_result()` produce structurally compatible `structured_content` JSON (same top-level keys).
-
-## WASM & Platform Targets
-
-`michi-core` compiles (default features) for `wasm32-unknown-unknown` and `wasm32-wasip1` targets without OS dependencies.

@@ -341,7 +341,7 @@ Each conversion is a few dozen lines of field copying in a crate that imports co
 
 `michi renders a budget; it never computes one` is what makes that split hold. Under monokl `08 §7.5` there are two independent producers of a budget report — `monokl-agent` for the CLI and Wisp's `wisp-context` for a briefing — and michi is the only renderer both share. A renderer needs the numbers, not the allocator that produced them, so the numbers are all the envelope takes.
 
-**No new feature flag.** All six types are built from types michi already owns, so all six are always compiled and gate 2's zero-dep default is untouched — there is no dependency to gate. `render_json()` stays hand-built and `serde_json`-free: michi owns these shapes, so it emits their keys the way it emits every other key today, and the `budget` and `provenance` JSON keys appear in a default build. The `serde` and `schemars` derives ride the existing optional features and add nothing to the default.
+**No new feature flag.** All six types are built from types michi already owns, so all six are always compiled and gate 2's small default dependency set is untouched — there is no dependency to gate. `render_json()` stays hand-built and `serde_json`-free: michi owns these shapes, so it emits their keys the way it emits every other key today, and the `budget` and `provenance` JSON keys appear in a default build. The `serde` and `schemars` derives ride the existing optional features and add nothing to the default.
 
 ## Rules this envelope has to hold
 

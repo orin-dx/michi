@@ -42,11 +42,6 @@ tasks:
       - "Cargo.lock"
       - "Cargo.toml"
 
-  check-wasm:
-    script: "cargo check -p michi-core --target wasm32-unknown-unknown"
-    inputs:
-      - "crates/**/*"
-
   examples:
     script: "cargo run -p michi-core --example basic_toon && cargo run -p michi-core --example agent_response && cargo run -p michi-core --example domain_errors"
     inputs:

@@ -20,7 +20,7 @@ Tool versions are managed by `proto` (`.prototools`). Running `just --list` show
 ## Before Opening a Pull Request
 
 ```bash
-just check-all   # Run formatting checks, clippy, WASM target check, rustdoc, and unit tests
+just check-all   # Run formatting checks, clippy, rustdoc, and unit tests
 ```
 
 Ensure all lints and tests pass cleanly.

@@ -342,7 +342,7 @@ Before the first crates.io publish, the four sync crates (`michi-truncate`, `mic
 
 - **Why one sync crate:** separate crates only contain breaking changes when they version independently, and michi's parts all change at the same fast pre-1.0 pace. Independent versions bought release overhead (cascading bumps across crates on every change) without protecting any consumer.
 - **Build time was not a reason to split:** in a measured clean release build, michi's own crates took about 1.9s of a 3.96s total.
-- **Why `michi-pipeline` stays separate:** the existing dependency-weight rule in "A separate crate is justified by dependency weight and coupling" still applies — it pulls in Tokio, which the zero-dep default build must not. It depends on `michi-core` through an exact `=` version pin so a mixed set never resolves.
+- **Why `michi-pipeline` stays separate:** the existing dependency-weight rule in "A separate crate is justified by dependency weight and coupling" still applies — it pulls in Tokio, which the default build must not. It depends on `michi-core` through an exact `=` version pin so a mixed set never resolves.
 - **When a part splits out again:** only for a heavy dependency, or once it becomes a deliberately stable interface worth versioning on its own. It is then re-exported from `michi-core`, so consumers see no change.
 - **Why no facade:** `michi` on crates.io is taken by an unrelated project, so the published names are `michi-core` and `michi-pipeline`. Consumers who want `use michi::...` rename the dependency: `michi = { package = "michi-core", version = "0.3" }`.
 
@@ -388,3 +388,8 @@ The `schemars` schemas for `ContentBlock` and `CallToolResult` were derived from
 - **Duplicate ids:** `execute_pipeline_parallel` rejects any repeated step id up front. `execute_pipeline` (sequential) still accepts them, as an existing test pins; whether to align it is open.
 - **Breaker state:** phase, probe ownership and failure count are one mutex-guarded state machine with a generation counter. An outcome from a call admitted under an earlier generation is ignored: it cannot reopen a recovered breaker, extend the open window, or reset the failure count. Some breakers (resilience4j) still count late results; michi deliberately does not.
 - **Cycle detection** is iterative, so a 100,000-node graph no longer overflows the stack.
+
+### Resolved 2026-10-21 — No zero-dependency claim, no WASM target
+
+- **Dependencies:** the default build has always depended on `thiserror` and `compact_str`, so "zero-dep by default" was false. `PRINCIPLES.md` gate 2 now states the real rule: a small default set, everything else behind a feature, and a recorded decision for any new mandatory dependency.
+- **WASM:** the `check-wasm` task, its `ci` dependency and the `wasm32-unknown-unknown` toolchain target are removed. No consumer needs a WASM build, and the check cost setup for every contributor. Nothing in `michi-core` depends on the OS, so restoring the check later is a one-line task.

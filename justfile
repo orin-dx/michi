@@ -97,14 +97,12 @@ deny:
 audit:
     moon run :audit
 
-# ── Documentation & WASM Checks ───────────────────────────────────────────
+# ── Documentation Checks ────────────────────────────────────────────────────
 doc: doc-check
 
 doc-check:
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
 
-check-wasm:
-    moon run :check-wasm
 
 # API SemVer check against the last published baseline. Not yet meaningful:
 # michi has never published to crates.io, and the only existing tag
@@ -178,4 +176,4 @@ hooks:
 # ── CI Verification Pipeline ───────────────────────────────────────────────
 check-all: ci
 
-ci: fmt-check lint test test-rust-release audit doc-check check-wasm
+ci: fmt-check lint test test-rust-release audit doc-check

@@ -17,8 +17,6 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 `toon` is not glob-re-exported; its items are reached as `michi_core::toon::ToonOptions`, `michi_core::toon::list()`, and so on. There is no `michi` crate (the name on crates.io belongs to an unrelated project); consumers who prefer `michi::` paths rename the dependency with `michi = { package = "michi-core", version = "0.3" }`.
 
-`michi-core` compiles for `wasm32-unknown-unknown` and `wasm32-wasip1` without OS dependencies.
-
 ## `toon` — List Rendering
 
 `michi_core::toon` formats tabular lists using Token-Optimized Object Notation (**AXI P1**). Small cell strings (≤ 24 bytes) are stack-inlined via `compact_str::CompactString`.

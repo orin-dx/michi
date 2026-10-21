@@ -5,7 +5,7 @@
 //! # Resilience
 //!
 //! Retry configuration, delay calculation, RFC 7231 `Retry-After` parsing,
-//! and FNV-1a idempotency primitives. Zero runtime dependencies.
+//! and FNV-1a idempotency primitives.
 
 use std::time::Duration;
 
