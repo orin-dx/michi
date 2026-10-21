@@ -9,6 +9,9 @@
 
 use std::time::Duration;
 
+mod budget;
+pub use budget::RetryBudget;
+
 /// Configuration for automatic retry behaviour.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
@@ -297,15 +300,16 @@ pub fn already_done(stored: Option<String>) -> AlreadyDone {
     }
 }
 
-/// Render an already-done response.
+/// Render an already-done response as a TOON 4.4 root object, with no trailing newline:
+/// `operation: …`, `status: already_done`, `summary: …`, then the inline `help[N]: …` array when `hints` is non-empty.
+/// `operation` and `summary` are quoted per §7.2.
 #[must_use]
 pub fn render_already_done(operation: &str, summary: &str, hints: &[String]) -> String {
     let mut out = String::with_capacity(64 + operation.len() + summary.len() + hints.len() * 50);
     out.push_str("operation: ");
-    out.push_str(&crate::text::escape_line_breaks(operation));
-    out.push_str("\nstatus:    already_done\nsummary:   ");
-    out.push_str(&crate::text::escape_line_breaks(summary));
-    out.push('\n');
+    out.push_str(&crate::toon::escape_value(operation));
+    out.push_str("\nstatus: already_done\nsummary: ");
+    out.push_str(&crate::toon::escape_value(summary));
     crate::hints::append_help_block(&mut out, hints.iter().map(String::as_str));
     out
 }
@@ -849,19 +853,25 @@ mod tests {
     #[test]
     fn render_already_done_no_hints_format() {
         let out = render_already_done("delete_item", "item 42 was deleted in run abc", &[]);
-        assert_eq!(out, "operation: delete_item\nstatus:    already_done\nsummary:   item 42 was deleted in run abc\n");
+        assert_eq!(out, "operation: delete_item\nstatus: already_done\nsummary: item 42 was deleted in run abc");
     }
 
     #[test]
     fn render_already_done_with_hints() {
         let out = render_already_done("my_op", "did the thing", &["hint one".to_string()]);
-        assert_eq!(out, "operation: my_op\nstatus:    already_done\nsummary:   did the thing\nhelp[1]: hint one\n");
+        assert_eq!(out, "operation: my_op\nstatus: already_done\nsummary: did the thing\nhelp[1]: hint one");
     }
 
     #[test]
     fn render_already_done_multiple_hints() {
         let hints = ["hint a".to_string(), "hint b".to_string()];
         let out = render_already_done("op", "done", &hints);
-        assert_eq!(out, "operation: op\nstatus:    already_done\nsummary:   done\nhelp[2]: hint a,hint b\n");
+        assert_eq!(out, "operation: op\nstatus: already_done\nsummary: done\nhelp[2]: hint a,hint b");
+    }
+
+    #[test]
+    fn render_already_done_quotes_operation_and_summary_per_toon() {
+        let out = render_already_done("op, retry", "done: 3\nitems", &[]);
+        assert_eq!(out, "operation: \"op, retry\"\nstatus: already_done\nsummary: \"done: 3\\nitems\"");
     }
 }

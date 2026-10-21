@@ -1,0 +1,369 @@
+//! Options, the observer, and the `execute`/`resume` entry points.
+
+use std::collections::BTreeMap;
+use std::num::NonZeroUsize;
+use std::sync::Arc;
+use std::time::Duration;
+
+use michi_core::pipeline::{StepStatus, UnknownCause};
+use michi_core::resilience::{RetryBudget, RetryConfig};
+
+use crate::scheduler::{self, Initial};
+use crate::{
+    BreakerRegistry, CancellationToken, ExecutionError, Plan, PlanFingerprint, RunId, RunRecord, StepId, StepRecord,
+};
+
+/// How many steps run at once.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Mode {
+    /// One step at a time, in [`Plan::execution_order`]. Deterministic.
+    #[default]
+    Sequential,
+    /// Up to `max_concurrency` steps at once. Ready steps are dispatched in declaration order while fewer than the
+    /// cap are running.
+    Parallel {
+        /// The most steps running at once.
+        max_concurrency: NonZeroUsize,
+    },
+}
+
+/// What a step failure does to the rest of the run.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FailurePolicy {
+    /// Skip the failed step's transitive dependents; independent branches keep running.
+    #[default]
+    SkipDependents,
+    /// Stop dispatching and cancel running steps (after the cancellation grace period, their attempts are dropped).
+    FailFast,
+}
+
+/// Called synchronously from the scheduler loop as steps start and finish, so callers can persist progress and
+/// rebuild the run with [`RunRecord::from_parts`] after a crash. A closure `Fn(&RunId, &StepRecord)` implements it
+/// (finish events only). Keep it quick: it runs between dispatches.
+///
+/// A panic in an observer method is caught: the run continues, later events are still delivered, and the panic is
+/// counted in [`RunRecord::observer_panics`]. (The process's panic hook still runs, so the default hook prints it.)
+pub trait StepObserver: Send + Sync {
+    /// A step is about to be dispatched. Persist [`StepRecord::in_flight`] here to make a crash mid-step visible.
+    fn on_step_started(&self, run_id: &RunId, step_id: &StepId) {
+        let _ = (run_id, step_id);
+    }
+
+    /// A step reached its terminal status in this run: ran, was skipped, or (on resume) was carried over.
+    fn on_step_finished(&self, run_id: &RunId, record: &StepRecord);
+}
+
+impl<F> StepObserver for F
+where
+    F: Fn(&RunId, &StepRecord) + Send + Sync,
+{
+    fn on_step_finished(&self, run_id: &RunId, record: &StepRecord) {
+        self(run_id, record);
+    }
+}
+
+/// Options for [`execute`]. Every field has a default; builder methods override them.
+#[derive(Clone)]
+pub struct ExecOptions {
+    pub(crate) mode: Mode,
+    pub(crate) failure_policy: FailurePolicy,
+    pub(crate) retry: RetryConfig,
+    pub(crate) attempt_timeout: Duration,
+    pub(crate) step_deadline: Option<Duration>,
+    pub(crate) jitter_seed: f64,
+    pub(crate) cancellation: CancellationToken,
+    pub(crate) cancel_grace: Duration,
+    pub(crate) retry_budget: Option<RetryBudget>,
+    pub(crate) breakers: Option<Arc<BreakerRegistry>>,
+    pub(crate) observer: Option<Arc<dyn StepObserver>>,
+}
+
+impl Default for ExecOptions {
+    fn default() -> Self {
+        Self {
+            mode: Mode::Sequential,
+            failure_policy: FailurePolicy::SkipDependents,
+            retry: RetryConfig::default(),
+            attempt_timeout: Duration::from_secs(30),
+            step_deadline: None,
+            jitter_seed: 0.0,
+            cancellation: CancellationToken::new(),
+            cancel_grace: Duration::from_secs(5),
+            retry_budget: Some(RetryBudget::default()),
+            breakers: None,
+            observer: None,
+        }
+    }
+}
+
+impl std::fmt::Debug for ExecOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExecOptions")
+            .field("mode", &self.mode)
+            .field("failure_policy", &self.failure_policy)
+            .field("retry", &self.retry)
+            .field("attempt_timeout", &self.attempt_timeout)
+            .field("step_deadline", &self.step_deadline)
+            .field("jitter_seed", &self.jitter_seed)
+            .field("cancel_grace", &self.cancel_grace)
+            .field("retry_budget", &self.retry_budget)
+            .field("breakers", &self.breakers.is_some())
+            .field("observer", &self.observer.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+impl ExecOptions {
+    /// The defaults: sequential, skip dependents, `RetryConfig::default()`, 30 s per attempt, no step deadline,
+    /// jitter seed 0, 5 s cancellation grace, `RetryBudget::default()`, no breakers, no observer.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Sequential or parallel scheduling.
+    #[must_use]
+    pub fn mode(mut self, mode: Mode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    /// What a failure does to the rest of the run.
+    #[must_use]
+    pub fn failure_policy(mut self, policy: FailurePolicy) -> Self {
+        self.failure_policy = policy;
+        self
+    }
+
+    /// The retry policy for steps without their own.
+    #[must_use]
+    pub fn retry(mut self, retry: RetryConfig) -> Self {
+        self.retry = retry;
+        self
+    }
+
+    /// The per-attempt timeout for steps without their own. Zero is floored to 1 ms.
+    #[must_use]
+    pub fn attempt_timeout(mut self, timeout: Duration) -> Self {
+        self.attempt_timeout = timeout;
+        self
+    }
+
+    /// A total time bound per step across all attempts and backoff, for steps without their own.
+    #[must_use]
+    pub fn step_deadline(mut self, deadline: Duration) -> Self {
+        self.step_deadline = Some(deadline);
+        self
+    }
+
+    /// The jitter seed in `[0, 1]` passed to `next_retry_delay`. Defaults to 0 (no jitter); pass a random value per
+    /// run to decorrelate retries.
+    #[must_use]
+    pub fn jitter_seed(mut self, seed: f64) -> Self {
+        self.jitter_seed = seed;
+        self
+    }
+
+    /// The caller's cancellation token. The run uses a child of it.
+    #[must_use]
+    pub fn cancellation(mut self, token: CancellationToken) -> Self {
+        self.cancellation = token;
+        self
+    }
+
+    /// How long a running attempt may keep going after cancellation before it is dropped.
+    #[must_use]
+    pub fn cancel_grace(mut self, grace: Duration) -> Self {
+        self.cancel_grace = grace;
+        self
+    }
+
+    /// The per-run retry budget's starting state.
+    #[must_use]
+    pub fn retry_budget(mut self, budget: RetryBudget) -> Self {
+        self.retry_budget = Some(budget);
+        self
+    }
+
+    /// Retries are limited only by each step's retry policy.
+    #[must_use]
+    pub fn no_retry_budget(mut self) -> Self {
+        self.retry_budget = None;
+        self
+    }
+
+    /// The breaker registry. Share one across runs so samples accumulate. Without one, no breaker applies.
+    #[must_use]
+    pub fn breakers(mut self, registry: Arc<BreakerRegistry>) -> Self {
+        self.breakers = Some(registry);
+        self
+    }
+
+    /// The step observer.
+    #[must_use]
+    pub fn observer(mut self, observer: Arc<dyn StepObserver>) -> Self {
+        self.observer = Some(observer);
+        self
+    }
+}
+
+/// What the caller found when checking a step whose outcome was unknown.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verification {
+    /// The effect happened: resume treats the step as `CompletedEarlier`.
+    Applied,
+    /// The effect did not happen: resume runs the step again.
+    NotApplied,
+}
+
+/// Options for [`resume`]: the execution options plus the caller's verdicts on steps whose outcome was unknown.
+#[derive(Debug, Clone, Default)]
+pub struct ResumeOptions {
+    pub(crate) exec: ExecOptions,
+    pub(crate) verified: BTreeMap<StepId, Verification>,
+}
+
+impl ResumeOptions {
+    /// Resume with these execution options and no verdicts.
+    #[must_use]
+    pub fn new(exec: ExecOptions) -> Self {
+        Self { exec, verified: BTreeMap::new() }
+    }
+
+    /// Records what the caller found for a step that is `OutcomeUnknown`, `Panicked` or `Running` in the prior
+    /// record.
+    #[must_use]
+    pub fn verified(mut self, step_id: StepId, verification: Verification) -> Self {
+        self.verified.insert(step_id, verification);
+        self
+    }
+}
+
+/// Why [`resume`] refused to run.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+pub enum ResumeError {
+    /// The plan's structure differs from the plan the record was made with. Start a new run instead.
+    #[error("the plan changed since the run started: record fingerprint {record}, plan fingerprint {plan}")]
+    FingerprintMismatch {
+        /// The record's fingerprint.
+        record: PlanFingerprint,
+        /// The plan's fingerprint.
+        plan: PlanFingerprint,
+    },
+    /// The record has a step the plan does not.
+    #[error("the record has step {step_id}, which the plan does not")]
+    UnknownStep {
+        /// The step id.
+        step_id: StepId,
+    },
+    /// A verdict was given for a step whose outcome is not in doubt.
+    #[error("step {step_id} is {status}, not awaiting verification")]
+    NotAwaitingVerification {
+        /// The step id.
+        step_id: StepId,
+        /// Its status label in the prior record, or `missing`.
+        status: &'static str,
+    },
+}
+
+impl From<ResumeError> for michi_core::DomainError {
+    fn from(err: ResumeError) -> Self {
+        let code = match err {
+            ResumeError::FingerprintMismatch { .. } => michi_core::ErrorCode::Conflict,
+            ResumeError::UnknownStep { .. } | ResumeError::NotAwaitingVerification { .. } => {
+                michi_core::ErrorCode::InvalidInput
+            }
+        };
+        michi_core::DomainError::new(code, err.to_string()).retryable(false)
+    }
+}
+
+/// Runs `plan` under `run_id` and returns what happened to every step. Never fails: a run that happened is a record.
+///
+/// Steps run on a `JoinSet` owned by this call, so none outlives it; dropping the returned future aborts them.
+pub async fn execute(plan: &Plan, run_id: RunId, opts: &ExecOptions) -> RunRecord {
+    let initial = (0..plan.len()).map(|_| Initial::Run).collect();
+    scheduler::run(plan, run_id, opts, initial).await
+}
+
+/// Continues the run in `prior` under its run id, so idempotency keys stay the same.
+///
+/// Refuses, before running anything, a plan whose fingerprint differs from the record's, a record naming a step the
+/// plan lacks, and a verdict for a step that is not awaiting verification. Then: `Completed` and `CompletedEarlier`
+/// steps become `CompletedEarlier` and are not run; `Failed`, `Skipped`, `NotRun`, `Pending` and missing steps run
+/// again; `OutcomeUnknown`, `Panicked` and `Running` steps run again only if the step is [`crate::Replay::Idempotent`]
+/// or the caller verified them as [`Verification::NotApplied`], become `CompletedEarlier` if verified as
+/// [`Verification::Applied`], and otherwise keep their prior record (a `Running` one becomes
+/// `OutcomeUnknown(Interrupted)`).
+///
+/// At least once per step: a step can run again if the process stopped after its effect but before its record was
+/// saved. Not incremental recomputation: a completed step is not re-run because its inputs changed.
+pub async fn resume(prior: &RunRecord, plan: &Plan, opts: &ResumeOptions) -> Result<RunRecord, ResumeError> {
+    if prior.plan_fingerprint() != plan.fingerprint() {
+        return Err(ResumeError::FingerprintMismatch { record: prior.plan_fingerprint(), plan: plan.fingerprint() });
+    }
+    if let Some(unknown) = prior.steps().iter().find(|s| plan.index_of(s.step_id()).is_none()) {
+        return Err(ResumeError::UnknownStep { step_id: unknown.step_id().clone() });
+    }
+    for step_id in opts.verified.keys() {
+        let status = prior.step(step_id).map(StepRecord::status);
+        if !matches!(status, Some(StepStatus::OutcomeUnknown(_) | StepStatus::Panicked | StepStatus::Running)) {
+            return Err(ResumeError::NotAwaitingVerification {
+                step_id: step_id.clone(),
+                status: status.map_or("missing", |s| s.label()),
+            });
+        }
+    }
+    let initial = plan
+        .steps()
+        .iter()
+        .map(|step| {
+            let Some(prev) = prior.step(step.id()) else { return Initial::Run };
+            match prev.status() {
+                StepStatus::Completed | StepStatus::CompletedEarlier => {
+                    Initial::Done(Box::new(carried_over(prev, "completed earlier in this run")))
+                }
+                StepStatus::OutcomeUnknown(_) | StepStatus::Panicked | StepStatus::Running => {
+                    match opts.verified.get(step.id()) {
+                        Some(Verification::Applied) => {
+                            Initial::Done(Box::new(carried_over(prev, "verified as applied by the caller")))
+                        }
+                        Some(Verification::NotApplied) => Initial::Run,
+                        None if step.runner().replay() == crate::Replay::Idempotent => Initial::Run,
+                        None => Initial::Done(Box::new(kept_unresolved(prev))),
+                    }
+                }
+                _ => Initial::Run,
+            }
+        })
+        .collect();
+    Ok(scheduler::run(plan, prior.run_id().clone(), &opts.exec, initial).await)
+}
+
+/// A prior success, carried into the new record as `CompletedEarlier` with its attempts.
+fn carried_over(prev: &StepRecord, reason: &str) -> StepRecord {
+    let mut record = StepRecord::new(prev.step_id().clone(), prev.name().to_string(), StepStatus::CompletedEarlier);
+    record.reason = Some(reason.to_string());
+    record.attempts = prev.attempts().to_vec();
+    record
+}
+
+/// A prior outcome still in doubt, kept as it was (timing cleared). A step left `Running` by a crash becomes
+/// `OutcomeUnknown(Interrupted)`.
+fn kept_unresolved(prev: &StepRecord) -> StepRecord {
+    let mut record = prev.clone();
+    record.started_at = None;
+    record.elapsed = None;
+    if record.status == StepStatus::Running {
+        record.status = StepStatus::OutcomeUnknown(UnknownCause::Interrupted);
+        record.error =
+            Some(ExecutionError::AmbiguousOutcome { source: Box::new(ExecutionError::Interrupted { elapsed_ms: 0 }) });
+        record.reason =
+            Some("in flight when the previous process stopped; verify whether it took effect, then resume".to_string());
+    }
+    record
+}

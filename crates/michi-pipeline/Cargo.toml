@@ -1,6 +1,6 @@
 [package]
 name = "michi-pipeline"
-description = "Async pipeline execution for michi: retries, circuit breaking, and cancellation on Tokio"
+description = "Async pipeline execution for michi: validated step plans, replay-safe retries, keyed circuit breakers, cancellation and resume on Tokio"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -14,8 +14,22 @@ workspace = true
 
 [dependencies]
 michi-core.workspace = true
-tokio = { workspace = true, features = ["time", "rt"] }
+tokio = { workspace = true, features = ["time", "rt", "macros"] }
+# CancellationToken only; wrapped in michi's own newtype so the 0.x type never appears in the public API.
+tokio-util = { version = "0.7.20", default-features = false }
 thiserror.workspace = true
+serde = { workspace = true, optional = true }
+
+[features]
+default = []
+# Serialize/Deserialize for RunRecord, StepRecord, ExecutionError and the ids, so callers can persist records.
+serde = ["dep:serde", "michi-core/serde"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros", "rt", "rt-multi-thread", "sync"] }
+divan = "0.1"
+serde_json = { workspace = true }
+
+[[bench]]
+name    = "scheduler"
+harness = false

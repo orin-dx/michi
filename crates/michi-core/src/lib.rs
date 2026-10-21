@@ -36,7 +36,6 @@ pub mod response;
 pub mod status;
 /// No-op telemetry provider.
 pub mod telemetry;
-mod text;
 /// TOON list rendering, the token-optimized list format.
 pub mod toon;
 /// UTF-8 char-boundary-safe truncation.
@@ -47,7 +46,7 @@ pub use empty::{empty_state, empty_state_with_hints};
 pub use error::{DomainError, Error, ErrorClass, ErrorCode, Sensitive};
 pub use hints::{append_hints, render_hints, Hint};
 pub use idempotency::{FailedOp, PartialSuccess};
-pub use kv::{render_kv, KvItem, KvValue};
+pub use kv::{render_kv, KvError, KvItem, KvValue};
 pub use mcp::{CallToolResult, ContentBlock};
 pub use recovery::{append_recovery, render_recovery, RecoveryHint};
 pub use response::{AgentResponse, OutputFormat};

@@ -11,7 +11,7 @@ michi (workspace root, virtual manifest)
 ├── crates/
 │   ├── michi-core        # Every sync primitive: toon, kv, hints, recovery, empty, error, status, mcp, audience,
 │   │                     #   response (AgentResponse), pipeline (data type), truncate, resilience, telemetry; napi (feature)
-│   └── michi-pipeline    # Async pipeline execution: execute_pipeline, execute_pipeline_parallel, CircuitBreaker, CancellationToken
+│   └── michi-pipeline    # Async pipeline execution: Plan, execute/resume, RunRecord, BreakerRegistry, CancellationToken
 └── packages/michi-node   # Node.js NAPI cdylib (@orin-dx/michi), publish = false
 ```
 
@@ -34,7 +34,7 @@ All three version in lockstep (`[workspace.package] version`), released together
 | Crate / Package | Responsibility | Runtime Dependencies |
 | --- | --- | --- |
 | `michi-core` | All sync AXI primitives. `toon`: TOON list rendering and parsing with stack-inlined `CompactString` cells. `truncate`: UTF-8 char-boundary content truncation (`floor_char_boundary`). `resilience`: retry back-off math, `Retry-After` HTTP date parsing, FNV-1a idempotency keys. Response DTOs: `AgentResponse`, `DomainError`, `StatusResponse`, `CallToolResult`, and the `Pipeline` data type. `resilience::*` and `truncate::*` are re-exported at the crate root. | `thiserror`, `compact_str` (Optional: `serde`, `serde_json`, `schemars`, `miette`, `napi`, `napi-derive`) |
-| `michi-pipeline` | Async execution over `michi-core`'s `Pipeline` data type: sequential `execute_pipeline`, concurrent `execute_pipeline_parallel`, `CircuitBreaker` resilience, cooperative `CancellationToken`. Own `ExecutionError` type, converts into `DomainError` via `From` — not a variant of `michi_core::Error`. | `michi-core`, `tokio`, `thiserror` |
+| `michi-pipeline` | Async execution of a validated `Plan` of steps: one `JoinSet` scheduler (sequential or capped parallel), a returned `RunRecord` whose statuses are `michi-core`'s `StepStatus`, `resume` from a record, a keyed `BreakerRegistry`, a per-run `RetryBudget`, `CancellationToken` and a `StepObserver`. Own `ExecutionError` and `PlanError` types, converting into `DomainError` via `From` — not variants of `michi_core::Error`. See `docs/spec/08-pipeline-execution.md`. | `michi-core`, `tokio`, `tokio-util`, `thiserror` (optional: `serde`) |
 | `packages/michi-node` | NAPI cdylib shim for `@orin-dx/michi`. Not published to crates.io. | `michi-core` (`napi` feature), `napi`, `napi-derive` |
 
 ## Data Composition & Render Flow

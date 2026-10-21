@@ -37,7 +37,7 @@ issues[2]{number,title,state}:
   51812,dark mode request,open
 ```
 
-Output conforms to the [TOON 4.4 specification](https://github.com/toon-format/spec/blob/main/SPEC.md). Values are quoted only when the spec requires it — a delimiter, colon, bracket, quote, line break, or a value that would otherwise read as a number, boolean or `null` — so the common case carries no quoting overhead.
+Output conforms to the [TOON 4.4 specification](https://github.com/toon-format/spec/blob/main/SPEC.md) — every agent-facing block, not just lists: key-value blocks, errors, status, recovery hints and partial-success reports are TOON documents too, so an agent parses one format. Values are quoted only when the spec requires it — a delimiter, colon, bracket, quote, line break, or a value that would otherwise read as a number, boolean or `null` — so the common case carries no quoting overhead.
 
 ## Quick start
 
@@ -117,7 +117,7 @@ graph LR
 | Crate / Package | Description |
 | --- | --- |
 | `michi-core` | All sync AXI primitives: TOON list rendering and parsing (`toon`), key-value blocks, hints, structured errors (`DomainError`), status, recovery hints, MCP `CallToolResult`, the `AgentResponse` builder, UTF-8 char-boundary truncation (`truncate`), and retry/back-off math with `Retry-After` parsing and idempotency keys (`resilience`). |
-| `michi-pipeline` | Async pipeline execution: sequential and concurrent step running, circuit breaking, cooperative cancellation. Depends on `michi-core` and `tokio`. |
+| `michi-pipeline` | Async pipeline execution: a validated step plan run sequentially or with a concurrency cap, a per-step run record with replay-honest statuses, resume, keyed circuit breakers, a retry budget and cancellation. Depends on `michi-core`, `tokio` and `tokio-util`. |
 | `@orin-dx/michi` | Node.js NAPI bindings built with `@napi-rs/cli` from `packages/michi-node`, which re-exports `michi-core`'s `napi` feature surface. |
 
 All three version in lockstep. The crate name `michi` on crates.io belongs to an unrelated project; to write `use michi::...`, rename the dependency in `Cargo.toml`:

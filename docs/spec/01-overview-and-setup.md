@@ -153,7 +153,7 @@ Consumers who want to write `use michi::...` rename the dependency: `michi = { p
 
 `pipeline`/`fuzzy`/`cache`/`cli` **execution** is not a Cargo feature of `michi-core` at all, and never will be.
 
-- That async execution layer (Plan 2) lands as genuinely separate crates when actually built, never as features gated on `michi-core`'s `Cargo.toml`. `pipeline` has landed this way: `crates/michi-pipeline` (sequential `execute_pipeline`, concurrent `execute_pipeline_parallel`, `CircuitBreaker`, `CancellationToken`). `fuzzy`, `cache`, and `cli` remain unbuilt.
+- That async execution layer (Plan 2) lands as genuinely separate crates when actually built, never as features gated on `michi-core`'s `Cargo.toml`. `pipeline` has landed this way: `crates/michi-pipeline` (`Plan`, `execute`/`resume`, `RunRecord`, `BreakerRegistry`, `CancellationToken`; see [08-pipeline-execution.md](08-pipeline-execution.md)). `fuzzy`, `cache`, and `cli` remain unbuilt.
 - `pipeline`'s pure **data model** (`Pipeline`, `PipelineStep`, `StepStatus`, `.render()`) lives in `michi-core` — unconditionally compiled, no feature gate. Orchestration/execution is the separate `michi-pipeline` crate, not a feature of this one. See [ARCHITECTURE.md](../../ARCHITECTURE.md) for the crate-boundary layout and [06-decisions.md](06-decisions.md) for the decision rule behind the split.
 - `serde` isn't part of that Plan 2 set, despite historically sitting next to it in the feature table — it gates `Serialize`/`Deserialize` on Plan 1's own types.
 
@@ -186,6 +186,7 @@ michi/                           (workspace root — virtual manifest, no packag
         recovery.rs              # RecoveryHint, render_recovery()
         resilience.rs            # RetryConfig, next_retry_delay(), parse_retry_after(),
                                   # is_retryable_status(), AlreadyDone, IdempotencyKey
+        resilience/budget.rs     # RetryBudget
         response.rs              # AgentResponse builder, OutputFormat
         status.rs                # StatusItem, StatusResponse, Health
         telemetry/mod.rs         # NoopProvider — zero-cost, always compiled
@@ -205,7 +206,19 @@ michi/                           (workspace root — virtual manifest, no packag
         toon_parser.rs, support/ # test-only TOON parser for round-trip property tests
         ui_fail.rs, ui-fail/     # trybuild compile-fail tests
 
-    michi-pipeline/src/lib.rs    # execute_pipeline(), execute_pipeline_parallel(), CircuitBreaker, CancellationToken
+    michi-pipeline/
+      src/
+        lib.rs                   # crate docs and re-exports
+        id.rs                    # StepId, RunId
+        plan.rs                  # ExecStep, Plan, PlanError, PlanFingerprint
+        step.rs                  # Step, Replay, StepContext, step_fn
+        exec.rs                  # ExecOptions, execute(), resume(), StepObserver
+        scheduler.rs             # the JoinSet scheduler loop and per-step retry loop
+        record.rs                # RunRecord, StepRecord, RunOutcome
+        breaker.rs               # CircuitBreaker, BreakerRegistry
+        cancel.rs, error.rs      # CancellationToken, ExecutionError
+      benches/scheduler.rs       # divan: 500-step plan validation and execution
+      tests/                     # plan, execute, replay, resume, serde
 
   packages/michi-node/           # NAPI wrapper (npm: @orin-dx/michi), publish = false
     Cargo.toml                   # cdylib; depends on michi-core with the napi feature
