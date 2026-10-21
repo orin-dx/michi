@@ -1,0 +1,390 @@
+name: Release
+
+# Callisto's build-matrix release flow for napi platform packages
+# (docs/releasing.md in orin-dx/callisto): a push to main either refreshes the
+# Callisto version PR or, for a merged version PR, runs plan -> build ->
+# execute. Keep this filename: Callisto's recovery docs and coordinator
+# identity name `.github/workflows/callisto-release.yml`.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      release_source_sha:
+        description: 'Merged Callisto version-PR commit to recover; leave empty for the triggering commit.'
+        required: false
+        type: string
+
+permissions: {}
+
+# One group per commit: GitHub replaces a pending run in a shared group, which
+# could silently drop a release merge queued behind an unrelated push.
+concurrency:
+  group: release-${{ github.sha }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  release-candidate:
+    name: Identify a merged Callisto version PR
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      is_release: ${{ steps.decision.outputs.is_release }}
+      release_source_sha: ${{ steps.provenance.outputs.release_source_sha }}
+      orchestration_sha: ${{ steps.provenance.outputs.orchestration_sha }}
+    steps:
+      # Scheduling only: `callisto release plan` verifies the actual
+      # parent-to-merge delta. A release must also be a GitHub-verified merge
+      # of the managed PR, never a direct push.
+      - name: Check release-source provenance
+        id: provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SOURCE_SHA_INPUT: ${{ inputs.release_source_sha }}
+          TRIGGERING_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          release_source_sha="${RELEASE_SOURCE_SHA_INPUT:-$TRIGGERING_SHA}"
+          if [[ ! "$release_source_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::release_source_sha must be exactly 40 lowercase hex characters"
+            exit 1
+          fi
+          resolved_sha=$(gh api "/repos/${GITHUB_REPOSITORY}/commits/${release_source_sha}" --jq '.sha')
+          if [[ "$resolved_sha" != "$release_source_sha" ]]; then
+            echo "::error::release_source_sha does not resolve to that exact commit"
+            exit 1
+          fi
+          # gh rejects --slurp together with --jq, so slurp the pages and filter with jq.
+          prs=$(gh api --paginate --slurp "/repos/${GITHUB_REPOSITORY}/commits/${release_source_sha}/pulls" |
+            jq --arg repo "$GITHUB_REPOSITORY" '[.[][] | select(.merged_at != null and .base.ref == "main" and
+              .head.repo.full_name == $repo and
+              (.head.ref == "callisto/version-packages" or
+               (.head.ref | test("^callisto/version-packages--[0-9a-f]{40}$"))))] | length')
+          verified=$(gh api "/repos/${GITHUB_REPOSITORY}/commits/${release_source_sha}" \
+            --jq '.commit.verification.verified')
+          managed=false
+          if [[ "$prs" == 1 && "$verified" == true ]]; then managed=true; fi
+          {
+            echo "managed=$managed"
+            echo "release_source_sha=$release_source_sha"
+            # The current run coordinates; a recovery never reruns historic workflow code.
+            echo "orchestration_sha=$TRIGGERING_SHA"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.provenance.outputs.managed == 'true'
+        with:
+          ref: ${{ steps.provenance.outputs.release_source_sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      # `release plan --from-release-commit` requires the commit to write its
+      # release decision. A managed PR without one (e.g. a workflow fix merged
+      # from a callisto/ branch) refreshes the version PR instead.
+      - name: Check for a release decision
+        id: decision
+        env:
+          MANAGED: ${{ steps.provenance.outputs.managed }}
+        run: |
+          set -euo pipefail
+          is_release=false
+          if [[ "$MANAGED" == true ]] && git rev-parse --verify --quiet HEAD^ > /dev/null &&
+            git diff-tree --no-commit-id --name-only --diff-filter=AM -r HEAD^ HEAD | grep -qxF .callisto/release-decision.json; then
+            is_release=true
+          fi
+          echo "is_release=$is_release" >> "$GITHUB_OUTPUT"
+
+  version-pr:
+    name: Create or update the Callisto version PR
+    needs: release-candidate
+    if: github.event_name == 'push' && needs.release-candidate.outputs.is_release != 'true'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: callisto-version-pr
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # The default version command (`callisto version`) refreshes lockfiles
+      # and the action appends --emit-decision .callisto/release-decision.json.
+      - uses: orin-dx/callisto/.github/actions/callisto-action@5e8c1696ed08bdef37f2cf6f0ccd6277f1963f8f # callisto@0.11.0
+        with:
+          mode: version-pr
+          version: callisto@0.11.0
+          branch: main
+          release_branch: callisto/version-packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  plan:
+    name: Plan the release from the merged version PR
+    needs: release-candidate
+    if: needs.release-candidate.outputs.is_release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      napi_dir: ${{ steps.matrix.outputs.napi_dir }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.release-candidate.outputs.release_source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: orin-dx/callisto/.github/actions/setup-callisto@5e8c1696ed08bdef37f2cf6f0ccd6277f1963f8f # callisto@0.11.0
+        with:
+          version: callisto@0.11.0
+
+      - name: Plan the release
+        env:
+          RELEASE_SOURCE_SHA: ${{ needs.release-candidate.outputs.release_source_sha }}
+          ORCHESTRATION_SHA: ${{ needs.release-candidate.outputs.orchestration_sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/release-intent"
+          callisto release plan --from-release-commit "$RELEASE_SOURCE_SHA" --decision .callisto/release-decision.json \
+            --orchestration-revision "$ORCHESTRATION_SHA" --artifact-repository "$GITHUB_REPOSITORY" \
+            --out "$RUNNER_TEMP/release-intent/release-intent.json"
+          (cd "$RUNNER_TEMP/release-intent" && shasum -a 256 release-intent.json > release-intent.json.sha256)
+
+      - name: Build the matrix from the intent's napi targets
+        id: matrix
+        run: |
+          set -euo pipefail
+          intent="$RUNNER_TEMP/release-intent/release-intent.json"
+          # This workflow builds napi addons only. Artifact slots or PyPI
+          # publishes need the generated workflow's artifact-manifest path.
+          if ! jq -e '(.artifactSlots // []) == [] and
+            ([.operations[].id.package | select(startswith("pypi/"))] == [])' "$intent" > /dev/null; then
+            echo "::error::the release intent declares artifact slots or PyPI publishes, which this workflow does not build"
+            exit 1
+          fi
+          # Only packages in the release intent: an unrelated addon adds no build.
+          {
+            while IFS= read -r package; do
+              callisto --format json matrix --package "$package"
+            done < <(jq -r '[.operations[].id.package] | unique[]' "$intent")
+          } | jq -s '{platformTargets: (map(.platformTargets) | add // {})}' > "$RUNNER_TEMP/matrix.json"
+          matrix=$(jq -c '[.platformTargets[] | select(.kind == "napi") | .targets[]] | unique_by(.artifactName)' \
+            "$RUNNER_TEMP/matrix.json")
+          # Execute places one package's JS binding; a second addon needs per-package placement.
+          napi_dirs=$(jq -c '[.[].packageDir] | unique' <<< "$matrix")
+          if [[ $(jq length <<< "$napi_dirs") -ne 1 ]]; then
+            echo "::error::expected exactly one napi package directory, got $napi_dirs"
+            exit 1
+          fi
+          {
+            echo "matrix=$matrix"
+            echo "napi_dir=$(jq -r '.[0]' <<< "$napi_dirs")"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-intent
+          path: ${{ runner.temp }}/release-intent
+          if-no-files-found: error
+          retention-days: 7
+
+  build:
+    name: Build ${{ matrix.triple }}
+    needs: [release-candidate, plan]
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: ${{ matrix.hostRunner }}
+    permissions:
+      contents: read
+    env:
+      TRIPLE: ${{ matrix.triple }}
+      USE_CROSS: ${{ matrix.useCross }}
+    defaults:
+      run:
+        working-directory: ${{ matrix.packageDir }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.release-candidate.outputs.release_source_sha }}
+          persist-credentials: false
+
+      - name: Install the Rust target
+        run: rustup target add "$TRIPLE"
+
+      - uses: orin-dx/actions/setup-proto-node-pnpm@2521888266780dabc7f5fd4c32b02d6ab82849db # v1.1
+        with:
+          working-directory: ${{ matrix.packageDir }}
+          cache: 'false'
+
+      - run: pnpm install --frozen-lockfile
+
+      # napi's --cross-compile links non-native Linux targets with cargo-zigbuild.
+      - name: Install zig
+        if: matrix.useCross
+        run: pip install ziglang
+
+      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2
+        if: matrix.useCross
+        with:
+          tool: cargo-zigbuild
+
+      # --output-dir keeps the checkout clean; napi writes the .node file and
+      # the generated index.js/index.d.ts there.
+      - name: Build the napi addon
+        run: |
+          set -euo pipefail
+          args=(--release --target "$TRIPLE" --output-dir "$RUNNER_TEMP/napi-out")
+          if [[ "$USE_CROSS" == true ]]; then args+=(--cross-compile); fi
+          pnpm build "${args[@]}"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: napi-${{ matrix.artifactName }}
+          path: ${{ runner.temp }}/napi-out/*.node
+          if-no-files-found: error
+          retention-days: 7
+
+      # index.js and index.d.ts are gitignored build outputs the npm package ships.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: binding-${{ matrix.artifactName }}
+          path: |
+            ${{ runner.temp }}/napi-out/index.js
+            ${{ runner.temp }}/napi-out/index.d.ts
+          if-no-files-found: error
+          retention-days: 7
+
+  execute:
+    name: Execute the planned release
+    needs: [release-candidate, plan, build]
+    # !cancelled() rather than always(): cancelling the run must stop the one irreversible job.
+    if: >-
+      !cancelled() && needs.plan.result == 'success' && needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: callisto-release-execute
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.release-candidate.outputs.release_source_sha }}
+          fetch-depth: 0
+          # Callisto pushes the release tags from this checkout.
+          persist-credentials: true # zizmor: ignore[artipacked]
+
+      - uses: orin-dx/callisto/.github/actions/setup-callisto@5e8c1696ed08bdef37f2cf6f0ccd6277f1963f8f # callisto@0.11.0
+        with:
+          version: callisto@0.11.0
+
+      - uses: orin-dx/actions/setup-proto-node-pnpm@2521888266780dabc7f5fd4c32b02d6ab82849db # v1.1
+        with:
+          working-directory: ${{ needs.plan.outputs.napi_dir }}
+          cache: 'false'
+
+      - run: pnpm install --frozen-lockfile
+        working-directory: ${{ needs.plan.outputs.napi_dir }}
+
+      # Downloads land under $RUNNER_TEMP: `release execute` requires a clean worktree.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-intent
+          path: ${{ runner.temp }}/release-intent
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: napi-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/napi-artifacts
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: binding-*
+          path: ${{ runner.temp }}/napi-bindings
+
+      # Everything placed here is gitignored, so the checkout stays clean:
+      # the .node files go into the committed npm/<platform> package dirs.
+      - name: Verify the handoff and place the napi artifacts
+        working-directory: ${{ needs.plan.outputs.napi_dir }}
+        run: |
+          set -euo pipefail
+          (cd "$RUNNER_TEMP/release-intent" && shasum -a 256 -c release-intent.json.sha256)
+          bindings=("$RUNNER_TEMP"/napi-bindings/*)
+          for binding in "${bindings[@]}"; do
+            cmp "${bindings[0]}/index.js" "$binding/index.js"
+            cmp "${bindings[0]}/index.d.ts" "$binding/index.d.ts"
+          done
+          cp "${bindings[0]}/index.js" "${bindings[0]}/index.d.ts" .
+          # napi 3.7 joins --output-dir onto the package directory, so pass it relative.
+          pnpm exec napi artifacts --output-dir "$(realpath --relative-to="$PWD" "$RUNNER_TEMP/napi-artifacts")"
+          for manifest in npm/*/package.json; do
+            binary="$(dirname "$manifest")/$(jq -r .main "$manifest")"
+            if [[ ! -f "$binary" ]]; then
+              echo "::error::missing napi artifact $binary"
+              exit 1
+            fi
+          done
+          if [[ -n "$(git status --porcelain)" ]]; then
+            git status --porcelain
+            echo "::error::artifact placement dirtied the release checkout"
+            exit 1
+          fi
+
+      - name: Execute the release
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: 'true'
+          GH_TOKEN: ${{ github.token }}
+          ORCHESTRATION_SHA: ${{ needs.release-candidate.outputs.orchestration_sha }}
+        run: |
+          set -euo pipefail
+          # Callisto hands this config only to its npm publishers; the token
+          # stays an ${NPM_TOKEN} reference, never written to disk.
+          # shellcheck disable=SC2016
+          printf '//registry.npmjs.org/:_authToken=${NPM_TOKEN}\n' > "$RUNNER_TEMP/callisto-npmrc"
+          chmod 600 "$RUNNER_TEMP/callisto-npmrc"
+          export CALLISTO_PUBLISH_NPM_CONFIG="$RUNNER_TEMP/callisto-npmrc"
+          mkdir -p "$RUNNER_TEMP/release-receipt"
+          callisto release execute --intent "$RUNNER_TEMP/release-intent/release-intent.json" \
+            --receipt "$RUNNER_TEMP/release-receipt/release-receipt.json" \
+            --orchestration-revision "$ORCHESTRATION_SHA"
+
+      - name: Summarize the receipt
+        if: always()
+        run: |
+          receipt="$RUNNER_TEMP/release-receipt/release-receipt.json"
+          if [[ -f "$receipt" ]]; then
+            {
+              echo '### Release receipt'
+              echo '```json'
+              cat "$receipt"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          # Per attempt: a re-run keeps each attempt's receipt instead of shadowing it.
+          name: release-receipt-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release-receipt
+          if-no-files-found: ignore
+          retention-days: 30
