@@ -76,15 +76,16 @@ void describe('renderToon', () => {
 void describe('emptyState', () => {
   void it('returns empty block', () => {
     const out = emptyState('issue')
-    assert.strictEqual(out, 'issue[0]{}:\ntotalCount: 0\n')
+    assert.strictEqual(out, 'issue: []\ntotalCount: 0')
   })
 })
 
 void describe('renderHints', () => {
   void it('renders hint block', () => {
     const out = renderHints(['hint one', 'hint two'])
-    assert.ok(out.startsWith('help[2]:'))
-    assert.ok(out.includes('  hint one\n'))
+    // TOON 4.4 inline primitive array; hints are quoted only when §7.2 requires it.
+    assert.strictEqual(out, 'help[2]: hint one,hint two\n')
+    assert.strictEqual(renderHints(['a, b']), 'help[1]: "a, b"\n')
   })
 
   void it('returns empty for no hints', () => {
@@ -94,7 +95,8 @@ void describe('renderHints', () => {
 
 void describe('appendHints', () => {
   void it('appends a help block to an existing body', () => {
-    assert.strictEqual(appendHints('body\n', ['do this']), 'body\nhelp[1]:\n  do this\n')
+    assert.strictEqual(appendHints('body\n', ['do this']), 'body\nhelp[1]: do this\n')
+    assert.strictEqual(appendHints('t: []', ['do this']), 't: []\nhelp[1]: do this\n')
   })
 })
 
@@ -111,9 +113,41 @@ void describe('truncate', () => {
     assert.strictEqual(truncate('hello', 100, 'full=true'), 'hello')
   })
 
-  void it('truncates long content', () => {
+  void it('truncates long content and reports the chars cut', () => {
+    // " (183 more chars — use full=true)" is 33 chars: 17 kept, and 17 + 183 = 200.
     const out = truncate('a'.repeat(200), 50, 'full=true')
-    assert.ok(out.includes('chars truncated'))
+    assert.strictEqual(out, `${'a'.repeat(17)} (183 more chars — use full=true)`)
+  })
+
+  void it('omits the use clause for an empty hint', () => {
+    assert.strictEqual(truncate('a'.repeat(100), 40, ''), `${'a'.repeat(24)} (76 more chars)`)
+  })
+
+  void it('falls back to an ellipsis when the cap is too small for the suffix', () => {
+    assert.strictEqual(truncate('a'.repeat(100), 3, 'x'), 'aa…')
+    assert.strictEqual(truncate('a'.repeat(100), 1, 'x'), '…')
+    assert.strictEqual(truncate('a'.repeat(100), 0, 'x'), '')
+  })
+})
+
+void describe('truncation hint', () => {
+  const longRow = [[{ type: 'str', strVal: 'a'.repeat(500) }]]
+
+  void it('renderToon names no parameter without truncationHint', () => {
+    const out = renderToon({ typeName: 't', fields: ['a'], rows: longRow, hints: [] })
+    assert.strictEqual(out, `t[1]{a}:\n  ${'a'.repeat(183)} (317 more chars)`)
+  })
+
+  void it('renderToon appends the caller truncationHint', () => {
+    const out = renderToon({ typeName: 't', fields: ['a'], rows: longRow, hints: [], truncationHint: 'full=true' })
+    assert.strictEqual(out, `t[1]{a}:\n  ${'a'.repeat(167)} (333 more chars — use full=true)`)
+  })
+
+  void it('AgentResponse.truncationHint passes through to the TOON body', () => {
+    const r = new AgentResponse('t')
+    r.truncationHint('full=true')
+    r.items(longRow, ['a'])
+    assert.strictEqual(r.renderToon(), `t[1]{a}:\n  ${'a'.repeat(167)} (333 more chars — use full=true)`)
   })
 })
 
@@ -312,11 +346,11 @@ void describe('renderFor / hasHumanContent', () => {
 void describe('int64 boundary (SPEC-NAPI-POINTFIX-001)', () => {
   void it('AC-001 renders a positive int beyond i32::MAX losslessly', () => {
     const out = renderToon({ typeName: 't', fields: ['a'], rows: [[{ type: 'int', intVal: 1755000000000 }]], hints: [] })
-    assert.strictEqual(out, 't[1]{a}:\n  1755000000000\n')
+    assert.strictEqual(out, 't[1]{a}:\n  1755000000000')
   })
   void it('AC-002 renders a negative int beyond i32::MIN losslessly', () => {
     const out = renderToon({ typeName: 't', fields: ['a'], rows: [[{ type: 'int', intVal: -1755000000000 }]], hints: [] })
-    assert.strictEqual(out, 't[1]{a}:\n  -1755000000000\n')
+    assert.strictEqual(out, 't[1]{a}:\n  -1755000000000')
   })
   void it('AC-003 renderKv renders an int beyond i32::MAX losslessly', () => {
     const out = renderKv([{ key: 'id', value: { type: 'int', intVal: 1755000000000 } }], null, [])
@@ -343,16 +377,24 @@ void describe('render_toon validate() surfacing (SPEC-NAPI-POINTFIX-001)', () =>
       (err) => err.message === 'toon_validation_failed: row 0 has 2 values but 1 fields declared'
     )
   })
-  void it('AC-009 rejects a type_name containing a structural character', () => {
+  void it('AC-009 quotes a type_name containing a structural character (TOON 4.4 §7.3)', () => {
+    const out = renderToon({ typeName: 'a[b]', fields: ['x'], rows: [[{ type: 'str', strVal: 'v' }]], hints: [] })
+    assert.strictEqual(out, '"a[b]"[1]{x}:\n  v')
+  })
+  void it('AC-009b rejects a reserved type_name', () => {
     assert.throws(
-      () => renderToon({ typeName: 'a[b]', fields: ['x'], rows: [[{ type: 'str', strVal: 'v' }]], hints: [] }),
-      (err) => err.message === 'toon_validation_failed: type_name "a[b]" contains a structural character'
+      () => renderToon({ typeName: 'help', fields: ['x'], rows: [[{ type: 'str', strVal: 'v' }]], hints: [] }),
+      (err) => err.message === 'toon_validation_failed: type_name "help" is a reserved document key (totalCount, help)'
     )
   })
-  void it('AC-010 rejects a field name containing a structural character', () => {
+  void it('AC-010 quotes a field name containing a structural character (TOON 4.4 §7.3)', () => {
+    const out = renderToon({ typeName: 't', fields: ['a,b'], rows: [[{ type: 'str', strVal: 'v' }]], hints: [] })
+    assert.strictEqual(out, 't[1]{"a,b"}:\n  v')
+  })
+  void it('AC-010c rejects a repeated field name', () => {
     assert.throws(
-      () => renderToon({ typeName: 't', fields: ['a,b'], rows: [[{ type: 'str', strVal: 'v' }]], hints: [] }),
-      (err) => err.message === 'toon_validation_failed: field "a,b" contains a structural character'
+      () => renderToon({ typeName: 't', fields: ['a', 'a'], rows: [], hints: [] }),
+      (err) => err.message === 'toon_validation_failed: field "a" appears more than once'
     )
   })
   void it('AC-010b renderToon throws with a toon_validation_failed-prefixed message for row-arity errors', () => {

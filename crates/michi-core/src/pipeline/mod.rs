@@ -55,25 +55,29 @@ pub struct Pipeline {
 }
 
 impl Pipeline {
-    /// Render the pipeline state as a TOON-style list.
+    /// Render the pipeline state as a TOON 4.4 document: `step[N]{id,name,status}:` with one row per step, or
+    /// `step: []` when there are no steps, with no trailing newline. `id` and `name` are quoted when TOON's string
+    /// rules (§7.2) require it.
     #[must_use]
     pub fn render(&self) -> String {
         let n = self.steps.len();
+        if n == 0 {
+            return String::from("step: []");
+        }
         let capacity = 30 + n * 40;
         let mut out = String::with_capacity(capacity);
 
         out.push_str("step[");
         let _ = write!(out, "{n}");
-        out.push_str("]{id,name,status}:\n");
+        out.push_str("]{id,name,status}:");
 
         for step in &self.steps {
-            out.push_str("  ");
+            out.push_str("\n  ");
             out.push_str(&crate::toon::escape_value(&step.id));
             out.push(',');
             out.push_str(&crate::toon::escape_value(&step.name));
             out.push(',');
             out.push_str(step.status.label());
-            out.push('\n');
         }
 
         out
@@ -94,14 +98,14 @@ mod tests {
             ],
         };
         let out = p.render();
-        assert_eq!(out, "step[2]{id,name,status}:\n  fetch,Fetch Data,completed\n  upload,Upload,pending\n");
+        assert_eq!(out, "step[2]{id,name,status}:\n  fetch,Fetch Data,completed\n  upload,Upload,pending");
     }
 
     #[test]
     fn empty_pipeline_renders_zero_steps() {
         let p = Pipeline { id: "empty".into(), steps: vec![] };
         let out = p.render();
-        assert_eq!(out, "step[0]{id,name,status}:\n");
+        assert_eq!(out, "step: []");
     }
 
     #[test]
@@ -110,7 +114,7 @@ mod tests {
             id: "p".into(),
             steps: vec![PipelineStep { id: "build".into(), name: "Build".into(), status: StepStatus::Failed }],
         };
-        assert!(p.render().contains(",failed\n"), "got: {}", p.render());
+        assert!(p.render().ends_with(",failed"), "got: {}", p.render());
     }
 
     #[test]
@@ -119,7 +123,7 @@ mod tests {
             id: "p".into(),
             steps: vec![PipelineStep { id: "lint".into(), name: "Lint".into(), status: StepStatus::Skipped }],
         };
-        assert!(p.render().contains(",skipped\n"), "got: {}", p.render());
+        assert!(p.render().ends_with(",skipped"), "got: {}", p.render());
     }
 
     #[test]
@@ -192,7 +196,7 @@ mod tests {
     fn ac013_distinctive_id_never_appears_in_empty_render_output() {
         let p = Pipeline { id: "zzz-unique-marker-999".into(), steps: vec![] };
         let out = p.render();
-        assert_eq!(out, "step[0]{id,name,status}:\n");
+        assert_eq!(out, "step: []");
         assert!(!out.contains("zzz-unique-marker-999"), "got: {out}");
     }
 
@@ -204,7 +208,7 @@ mod tests {
             id: "p".into(),
             steps: vec![PipelineStep { id: "a,b".into(), name: "A,B Step".into(), status: StepStatus::Pending }],
         };
-        assert_eq!(p.render(), "step[1]{id,name,status}:\n  \"a,b\",\"A,B Step\",pending\n");
+        assert_eq!(p.render(), "step[1]{id,name,status}:\n  \"a,b\",\"A,B Step\",pending");
     }
 
     #[test]
@@ -232,7 +236,7 @@ mod tests {
                 PipelineStep { id: "B".into(), name: "b".into(), status: StepStatus::Completed },
             ],
         };
-        assert_eq!(p.render(), "step[3]{id,name,status}:\n  C,c,completed\n  A,a,completed\n  B,b,completed\n");
+        assert_eq!(p.render(), "step[3]{id,name,status}:\n  C,c,completed\n  A,a,completed\n  B,b,completed");
     }
 
     #[test]
@@ -244,7 +248,7 @@ mod tests {
                 PipelineStep { id: "dup".into(), name: "second".into(), status: StepStatus::Pending },
             ],
         };
-        assert_eq!(p.render(), "step[2]{id,name,status}:\n  dup,first,completed\n  dup,second,pending\n");
+        assert_eq!(p.render(), "step[2]{id,name,status}:\n  dup,first,completed\n  dup,second,pending");
     }
 
     #[test]
@@ -253,7 +257,7 @@ mod tests {
             id: "p".into(),
             steps: vec![PipelineStep { id: String::new(), name: String::new(), status: StepStatus::Pending }],
         };
-        assert_eq!(p.render(), "step[1]{id,name,status}:\n  ,,pending\n");
+        assert_eq!(p.render(), "step[1]{id,name,status}:\n  \"\",\"\",pending");
     }
 
     #[test]
@@ -263,7 +267,7 @@ mod tests {
             id: "p".into(),
             steps: vec![PipelineStep { id, name: "ok".into(), status: StepStatus::Pending }],
         };
-        assert_eq!(p.render(), "step[1]{id,name,status}:\n  \"line1\\nline2\",ok,pending\n");
+        assert_eq!(p.render(), "step[1]{id,name,status}:\n  \"line1\\nline2\",ok,pending");
     }
 
     // AC-025's own text says "id or name" interchangeably, but every fixture
@@ -278,7 +282,7 @@ mod tests {
             id: "p".into(),
             steps: vec![PipelineStep { id: "ok".into(), name, status: StepStatus::Pending }],
         };
-        assert_eq!(p.render(), "step[1]{id,name,status}:\n  ok,\"line1\\nline2\",pending\n");
+        assert_eq!(p.render(), "step[1]{id,name,status}:\n  ok,\"line1\\nline2\",pending");
     }
 
     #[test]
@@ -288,7 +292,7 @@ mod tests {
             id: "p".into(),
             steps: vec![PipelineStep { id, name: "c".into(), status: StepStatus::Pending }],
         };
-        assert_eq!(p.render(), "step[1]{id,name,status}:\n  \"a\\\"b\",c,pending\n");
+        assert_eq!(p.render(), "step[1]{id,name,status}:\n  \"a\\\"b\",c,pending");
     }
 
     #[test]
@@ -331,6 +335,6 @@ mod tests {
             id: "p".into(),
             steps: vec![PipelineStep { id, name: "ok".into(), status: StepStatus::Pending }],
         };
-        assert_eq!(p.render(), "step[1]{id,name,status}:\n  \"line1\\rline2\",ok,pending\n");
+        assert_eq!(p.render(), "step[1]{id,name,status}:\n  \"line1\\rline2\",ok,pending");
     }
 }

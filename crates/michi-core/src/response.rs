@@ -38,6 +38,7 @@ pub struct AgentResponse {
     hints: Vec<Hint>,
     recovery: Vec<RecoveryHint>,
     truncate_cells_at: usize,
+    truncation_hint: Option<String>,
     is_error: bool,
     human_content: Option<String>,
 }
@@ -55,6 +56,7 @@ impl AgentResponse {
             hints: Vec::new(),
             recovery: Vec::new(),
             truncate_cells_at: DEFAULT_TRUNCATE_CELLS,
+            truncation_hint: None,
             is_error: false,
             human_content: None,
         }
@@ -105,10 +107,23 @@ impl AgentResponse {
         self
     }
 
-    /// Set the max cell length before inline truncation on the TOON path.
+    /// Set the max string cell length, in chars, before inline truncation on the TOON path. Default:
+    /// [`DEFAULT_TRUNCATE_CELLS`].
+    ///
+    /// The limit counts characters before TOON escaping and quoting, so a cell that needs quotes or escapes is
+    /// written longer than `limit` (see [`crate::toon::ToonOptions::max_cell_len`]). The KV path is never truncated.
     #[must_use]
     pub fn truncate_cells_at(mut self, limit: usize) -> Self {
         self.truncate_cells_at = limit;
+        self
+    }
+
+    /// Set the caller's instruction for getting a truncated TOON cell in full, appended to the truncation suffix as
+    /// `" — use {hint}"` (see [`crate::toon::ToonOptions::truncation_hint`]). Unset by default: the suffix then only
+    /// reports how many chars were cut, since michi never invents a parameter the tool may not have.
+    #[must_use]
+    pub fn truncation_hint(mut self, hint: impl Into<String>) -> Self {
+        self.truncation_hint = Some(hint.into());
         self
     }
 
@@ -128,17 +143,28 @@ impl AgentResponse {
 
     /// The TOON body, and whether it is a validation-failure error block instead of the requested rows.
     fn toon_body(&self) -> (String, bool) {
-        let opts = crate::toon::ToonOptions::new(self.type_name.clone(), self.fields.clone(), self.items.clone())
+        let mut opts = crate::toon::ToonOptions::new(self.type_name.clone(), self.fields.clone(), self.items.clone())
             .total_count(self.total_count)
             .max_cell_len(self.truncate_cells_at);
+        if let Some(hint) = &self.truncation_hint {
+            opts = opts.truncation_hint(hint.clone());
+        }
         match opts.validate() {
             Ok(doc) => (doc.render(), false),
-            Err(e) => (format!("error: toon_validation_failed\nmessage: {e}\n"), true),
+            Err(e) => {
+                let message = e.to_string();
+                (format!("error: toon_validation_failed\nmessage: {}", crate::toon::escape_value(&message)), true)
+            }
         }
     }
 
+    /// The KV block without its trailing newline, so the KV and TOON bodies end the same way.
     fn kv_body(&self) -> String {
-        crate::kv::render_kv(&self.single_item, self.total_count, &[])
+        let mut body = crate::kv::render_kv(&self.single_item, self.total_count, &[]);
+        if body.ends_with('\n') {
+            body.pop();
+        }
+        body
     }
 
     /// The selected body, and whether this response is an error: set by `as_error()` or by a body that failed
@@ -153,11 +179,19 @@ impl AgentResponse {
         }
     }
 
+    /// Compose the text document: body, help block, recovery block. Like every michi TOON document it ends without a
+    /// trailing newline (TOON 4.4 §12), whichever blocks are present.
     fn finish_text(&self, body: &str) -> String {
-        let mut out = String::with_capacity(body.len() + self.hints.len() * 60 + self.recovery.len() * 80);
+        let mut out = String::with_capacity(body.len() + 1 + self.hints.len() * 60 + self.recovery.len() * 80);
         out.push_str(body);
         crate::hints::append_hints(&mut out, &self.hints);
+        if !self.recovery.is_empty() && !out.is_empty() && !out.ends_with('\n') {
+            out.push('\n');
+        }
         crate::recovery::append_recovery(&mut out, &self.recovery);
+        if out.ends_with('\n') {
+            out.pop();
+        }
         out
     }
 
@@ -293,7 +327,7 @@ mod tests {
     fn items_path_renders_toon() {
         let r = AgentResponse::new("issues").items(vec![vec![Value::Int(1), Value::from("open")]], &["id", "state"]);
         let out = r.render(OutputFormat::Text);
-        assert!(out.starts_with("issues[1]{id,state}:\n  1,open\n"), "got: {out}");
+        assert!(out.starts_with("issues[1]{id,state}:\n  1,open"), "got: {out}");
     }
 
     // AC-001: Unset target (no .items()/.kv_items() call) routes to TOON
@@ -301,7 +335,7 @@ mod tests {
     #[test]
     fn ac001_unset_target_renders_empty_toon_exactly() {
         let r = AgentResponse::new("widget");
-        assert_eq!(r.render(OutputFormat::Text), "widget[0]{}:\n");
+        assert_eq!(r.render(OutputFormat::Text), "widget: []");
     }
 
     // AC-002: the test above (items_path_renders_toon) only checks
@@ -310,7 +344,7 @@ mod tests {
     #[test]
     fn ac002_items_path_renders_exact_toon_literal() {
         let r = AgentResponse::new("issues").items(vec![vec![Value::Int(1), Value::from("open")]], &["id", "state"]);
-        assert_eq!(r.render(OutputFormat::Text), "issues[1]{id,state}:\n  1,open\n");
+        assert_eq!(r.render(OutputFormat::Text), "issues[1]{id,state}:\n  1,open");
     }
 
     // AC-003: render(Text) via kv_items() matches the direct render_kv() call
@@ -320,7 +354,8 @@ mod tests {
         use crate::kv::{KvItem, KvValue};
         let items = vec![KvItem { key: "id".into(), value: KvValue::Int(1) }];
         let r = AgentResponse::new("t").kv_items(items.clone());
-        assert_eq!(r.render(OutputFormat::Text), crate::kv::render_kv(&items, None, &[]));
+        // The composed text drops the block's trailing newline, like every michi document (TOON 4.4 §12).
+        assert_eq!(format!("{}\n", r.render(OutputFormat::Text)), crate::kv::render_kv(&items, None, &[]));
     }
 
     #[test]
@@ -407,7 +442,7 @@ mod tests {
         let raw = r.render_json();
         let parsed: serde_json::Value = serde_json::from_str(&raw).expect("must be valid JSON");
         assert_eq!(parsed["hints"][0].as_str().unwrap(), "has \"quotes\" and \\backslash\nand newline");
-        assert_eq!(parsed["body"].as_str().unwrap(), "k: body \"quoted\" \\slash\n");
+        assert_eq!(parsed["body"].as_str().unwrap(), "k: body \"quoted\" \\slash");
     }
 
     // AC-009: render_toon()/render_kv() always run their own named path
@@ -415,7 +450,7 @@ mod tests {
     #[test]
     fn ac009_render_toon_and_render_kv_diverge_when_only_items_was_set() {
         let r = AgentResponse::new("t").items(vec![vec![Value::from("x")]], &["a"]);
-        assert_eq!(r.render_toon(), "t[1]{a}:\n  x\n");
+        assert_eq!(r.render_toon(), "t[1]{a}:\n  x");
         assert_eq!(r.render_kv(), "");
     }
 
@@ -437,7 +472,7 @@ mod tests {
         use crate::kv::{KvItem, KvValue};
         let r = AgentResponse::new("t").kv_items(vec![KvItem { key: "k".into(), value: KvValue::Missing }]);
         let parsed: serde_json::Value = serde_json::from_str(&r.render_json()).expect("valid JSON");
-        assert_eq!(parsed["body"].as_str().unwrap(), "k: —\n");
+        assert_eq!(parsed["body"].as_str().unwrap(), "k: —");
     }
 
     // AC-014: NaN/Inf/-Inf via the AgentResponse Json body are the literal
@@ -453,7 +488,7 @@ mod tests {
         ] {
             let r = AgentResponse::new("t").kv_items(vec![KvItem { key: "k".into(), value }]);
             let parsed: serde_json::Value = serde_json::from_str(&r.render_json()).expect("valid JSON");
-            assert_eq!(parsed["body"].as_str().unwrap(), format!("k: {token}\n"), "token: {token}");
+            assert_eq!(parsed["body"].as_str().unwrap(), format!("k: {token}"), "token: {token}");
         }
     }
 
@@ -468,7 +503,7 @@ mod tests {
             value: KvValue::Duration(std::time::Duration::from_millis(1500)),
         }]);
         let parsed: serde_json::Value = serde_json::from_str(&r.render_json()).expect("valid JSON");
-        assert_eq!(parsed["body"].as_str().unwrap(), "k: 1.5s\n");
+        assert_eq!(parsed["body"].as_str().unwrap(), "k: 1.5s");
     }
 
     // AC-041 through AC-045: RecoveryHint params through AgentResponse's Json
@@ -553,7 +588,7 @@ mod tests {
 
     #[test]
     fn toon_body_returns_error_on_invalid_type_name() {
-        let r = AgentResponse::new("items[bad]").items(vec![vec![Value::from("x")]], &["name"]);
+        let r = AgentResponse::new("help").items(vec![vec![Value::from("x")]], &["name"]);
         let out = r.render(OutputFormat::Text);
         assert!(out.contains("error:"), "expected error output for invalid type_name, got: {out}");
     }
@@ -563,7 +598,7 @@ mod tests {
     // required prefix.
     #[test]
     fn ac031_invalid_type_name_produces_the_exact_error_prefix() {
-        let r = AgentResponse::new("items[bad]");
+        let r = AgentResponse::new("totalCount");
         let out = r.render(OutputFormat::Text);
         assert!(out.starts_with("error: toon_validation_failed\nmessage: "), "got: {out}");
     }
@@ -574,16 +609,16 @@ mod tests {
     fn ac039_row_length_mismatch_names_indices_and_counts() {
         let r = AgentResponse::new("t").items(vec![vec![Value::Int(1)]], &["a", "b"]);
         let out = r.render(OutputFormat::Text);
-        assert_eq!(out, "error: toon_validation_failed\nmessage: row 0 has 1 values but 2 fields declared\n");
+        assert_eq!(out, "error: toon_validation_failed\nmessage: row 0 has 1 values but 2 fields declared");
     }
 
-    // AC-040: a field name with a structural character (comma) surfaces
-    // InvalidFieldName naming the offending field.
+    // AC-040: a repeated field name surfaces InvalidFieldName naming the offending field; the message is quoted
+    // because it contains `"` (TOON 4.4 §7.2).
     #[test]
     fn ac040_invalid_field_name_names_the_offending_field() {
-        let r = AgentResponse::new("t").items(vec![], &["a,b"]);
+        let r = AgentResponse::new("t").items(vec![], &["a", "a"]);
         let out = r.render(OutputFormat::Text);
-        assert_eq!(out, "error: toon_validation_failed\nmessage: field \"a,b\" contains a structural character\n");
+        assert_eq!(out, "error: toon_validation_failed\nmessage: \"field \\\"a\\\" appears more than once\"");
     }
 
     #[test]
@@ -640,11 +675,18 @@ mod tests {
         let r = AgentResponse::new("t").truncate_cells_at(5).items(vec![vec![Value::from("abcdefghij")]], &["name"]);
         let out = r.render_toon();
         let row_line = out.lines().nth(1).expect("row line present");
-        // Strip exactly the 2-space TOON row indent (not trim_start, which
-        // would also eat the truncation marker's own leading space and
-        // silently undercount when keep_chars == 0).
-        let cell = row_line.strip_prefix("  ").expect("row indent present");
-        assert!(cell.chars().count() <= 5, "cell {} chars, got: {row_line:?}", cell.chars().count());
+        // A 5-char cap cannot hold the suffix, so the cell is 4 kept chars and an ellipsis.
+        assert_eq!(row_line, "  abcd…");
+    }
+
+    #[test]
+    fn truncation_hint_passes_through_to_toon_body() {
+        let rows = vec![vec![Value::from("a".repeat(500))]];
+        let without = AgentResponse::new("t").items(rows.clone(), &["c"]).render_toon();
+        assert_eq!(without, format!("t[1]{{c}}:\n  {} (317 more chars)", "a".repeat(183)));
+        let with = AgentResponse::new("t").truncation_hint("detail=full").items(rows, &["c"]);
+        assert_eq!(with.render_toon(), format!("t[1]{{c}}:\n  {} (335 more chars — use detail=full)", "a".repeat(165)));
+        assert!(with.render(OutputFormat::Json).contains("use detail=full"));
     }
 
     // AC-030: truncate_cells_at has no observable effect on the KV path.
@@ -667,7 +709,7 @@ mod tests {
         let r =
             AgentResponse::new("t").total_count(3).kv_items(vec![KvItem { key: "k".into(), value: KvValue::Int(1) }]);
         let out = r.render_kv();
-        assert!(out.contains("totalCount: 3\n"), "got: {out}");
+        assert!(out.ends_with("totalCount: 3"), "got: {out}");
     }
 
     // AC-052: .total_count() is threaded into the TOON render path via

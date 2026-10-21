@@ -38,7 +38,7 @@ impl PartialSuccess {
     ///   create_issue
     ///   add_label
     /// failed[1]{operation,reason}:
-    ///   assign_user,"User 'ghost' not found"
+    ///   assign_user,User 'ghost' not found
     /// skipped[1]:
     ///   notify_team
     /// help[1]:
@@ -78,11 +78,11 @@ impl PartialSuccess {
             out.push_str("]{operation,reason}:\n");
             for f in &self.failed {
                 out.push_str("  ");
-                // operation: conditionally quoted (only when it contains commas/quotes/newlines)
-                out.push_str(crate::toon::escape_value(&f.operation).as_ref());
+                // Both cells follow TOON 4.4 §7.2: quoted only when required (delimiter, colon, quote, leading
+                // hyphen, line break, …), escaped per §7.1.
+                out.push_str(&crate::toon::escape_value(&f.operation));
                 out.push(',');
-                // reason: always quoted — it is human-readable prose and often contains quotes
-                out.push_str(&crate::toon::escape_value_quoted(&f.reason));
+                out.push_str(&crate::toon::escape_value(&f.reason));
                 out.push('\n');
             }
         }
@@ -139,7 +139,7 @@ mod tests {
         let out = ps.render();
         assert!(out.starts_with("partial_success: 2 completed, 1 failed, 1 skipped\n"), "got: {out}");
         assert!(out.contains("completed[2]:\n  create_issue\n  add_label\n"), "got: {out}");
-        assert!(out.contains("failed[1]{operation,reason}:\n  assign_user,\"User 'ghost' not found\"\n"), "got: {out}");
+        assert!(out.contains("failed[1]{operation,reason}:\n  assign_user,User 'ghost' not found\n"), "got: {out}");
         assert!(out.contains("skipped[1]:\n  notify_team\n"), "got: {out}");
         assert!(out.contains("help[1]:"), "got: {out}");
         assert!(out.contains("assign_user: suggestedParams: { user: alice }"), "got: {out}");
@@ -249,7 +249,7 @@ mod tests {
             skipped: vec![],
         };
         let out = ps.render();
-        assert!(out.contains("  \"step\\none\\rtwo\",\"y\"\n"), "got: {out:?}");
+        assert!(out.contains("  \"step\\none\\rtwo\",y\n"), "got: {out:?}");
         assert!(!out.contains('\r'), "no raw CR may survive, got: {out:?}");
     }
 

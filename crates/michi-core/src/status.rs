@@ -251,7 +251,7 @@ mod tests {
         let hints = vec![Hint::new("h1")];
         let resp = StatusResponse::new("tool", "desc", items).with_hints(hints);
         let out = resp.render();
-        assert_eq!(out, "tool:        tool\ndescription: desc\na\\nb:        v\nhelp[1]:\n  h1\n");
+        assert_eq!(out, "tool:        tool\ndescription: desc\na\\nb:        v\nhelp[1]: h1\n");
         let lines_before_help = out.lines().take_while(|l| !l.starts_with("help[")).count();
         assert_eq!(lines_before_help, 3, "2 (tool+desc) + 1 item, the escaped \\n adds no line, got: {out:?}");
     }

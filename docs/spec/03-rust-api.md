@@ -19,7 +19,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 ## `toon` — List Rendering
 
-`michi_core::toon` formats tabular lists using Token-Optimized Object Notation (**AXI P1**). Small cell strings (≤ 24 bytes) are stack-inlined via `compact_str::CompactString`.
+`michi_core::toon` formats tabular lists using Token-Oriented Object Notation (**AXI P1**). Small cell strings (≤ 24 bytes) are stack-inlined via `compact_str::CompactString`.
 
 ```rust
 #[non_exhaustive]
@@ -29,7 +29,10 @@ pub struct ToonOptions {
     pub rows: Vec<Vec<Value>>,
     pub total_count: Option<usize>,
     pub hints: Vec<String>,
+    /// Max string cell length in chars, counted before escaping/quoting (default 200).
     pub max_cell_len: usize,
+    /// The caller's "get it in full" instruction for the truncation suffix (default None: no `— use …` clause).
+    pub truncation_hint: Option<String>,
 }
 
 impl ToonOptions {
@@ -37,16 +40,19 @@ impl ToonOptions {
     pub fn total_count(self, total: Option<usize>) -> Self;
     pub fn hints(self, hints: Vec<String>) -> Self;
     pub fn max_cell_len(self, len: usize) -> Self;
+    pub fn truncation_hint(self, hint: impl Into<String>) -> Self;
     /// Validate structural invariants before rendering.
-    /// Returns Err if type_name or any field name contains structural chars,
-    /// or if any row's length differs from fields.len().
+    /// Returns Err if type_name is a reserved document key (`totalCount`, `help`),
+    /// a field name is repeated, or any row's length differs from fields.len().
+    /// Any other name is valid and is quoted per TOON 4.4 §7.3.
     pub fn validate(&self) -> Result<(), ToonError>;
 }
 
 pub enum Value {
     Str(compact_str::CompactString),
     Int(i64),
-    Float(f64),
+    UInt(u64),  // From<u64>/From<usize> above i64::MAX; always an exact unquoted number
+    Float(f64), // NaN/±Infinity render as null
     Bool(bool),
     Null,
 }
@@ -78,7 +84,7 @@ pub fn list<T: serde::Serialize>(
 ) -> Result<String, ToonError>;
 ```
 
-Items are serialized via `serde_json::to_value()` and must produce JSON objects (structs or maps). Non-object items and structural chars in `type_name` or field names return `Err(ToonError)`.
+Items are serialized via `serde_json::to_value()` and must produce JSON objects (structs or maps). Non-object items and a reserved `type_name` (`totalCount`, `help`) return `Err(ToonError)`. A key missing from some items renders as `null` in those rows; nested arrays/objects become their compact JSON text, quoted.
 
 ## Response Compositor (`error`, `response`, `idempotency`)
 
@@ -134,8 +140,10 @@ impl AgentResponse {
     /// Replaces the full hint list (contrast `hint()`, which appends).
     pub fn hints(self, hints: Vec<Hint>) -> Self;
     pub fn recovery_hint(self, r: RecoveryHint) -> Self;
-    /// Overrides the default TOON cell truncation limit (200); TOON path only.
+    /// Overrides the default TOON cell truncation limit (200 chars, counted before escaping/quoting); TOON path only.
     pub fn truncate_cells_at(self, limit: usize) -> Self;
+    /// Passed through to `ToonOptions::truncation_hint`; unset by default.
+    pub fn truncation_hint(self, hint: impl Into<String>) -> Self;
     pub fn as_error(self) -> Self;
     pub fn human_content(self, text: impl Into<String>) -> Self;
 
@@ -193,10 +201,11 @@ impl IdempotencyKey {
 ```rust
 pub struct Truncated {
     pub content: String,
+    /// Byte length (not char count) of the input, truncated or not.
     pub original_len: usize,
     pub was_truncated: bool,
-    /// The signal text actually embedded in content (None when not truncated
-    /// or when max_chars was too small to fit any signal).
+    /// The signal embedded at the end of content, leading space stripped: "(N more chars — use hint)",
+    /// "(N more chars)" or "…". None when not truncated or when max_chars is 0.
     pub signal: Option<String>,
 }
 
@@ -204,7 +213,18 @@ pub fn truncate(content: &str, max_chars: usize, hint: &str) -> Truncated;
 pub fn truncate_inline(content: &str, max_chars: usize, hint: &str) -> String;
 ```
 
-Truncates strings safely at Unicode scalar boundaries (`floor_char_boundary`) without splitting UTF-8 code points.
+Truncates strings safely at Unicode scalar boundaries without splitting UTF-8 code points. `max_chars` counts chars, and the result never exceeds it:
+
+| Input     | `max_chars` | `hint`        | `content`                                        |
+| --------- | ----------- | ------------- | ------------------------------------------------ |
+| 200 × `a` | 50          | `"full=true"` | 17 × `a` + `" (183 more chars — use full=true)"` |
+| 100 × `a` | 40          | `""`          | 24 × `a` + `" (76 more chars)"`                  |
+| 100 × `a` | 3           | `"x"`         | `"aa…"`                                          |
+| 100 × `a` | 1 / 0       | any           | `"…"` / `""`                                     |
+
+- The count is the chars **removed** (input chars minus kept chars), sized so the suffix's own digits fit within `max_chars`.
+- The `— use {hint}` clause is the caller's instruction and is omitted when `hint` is empty; michi never supplies one. The `&str` signature stays so the NAPI `truncate(content, maxChars, hint)` export is unchanged.
+- When the suffix plus one kept char does not fit, the result is the first `max_chars - 1` chars and `…`, never a fragment of the suffix. `was_truncated` is still `true`.
 
 ## `resilience` — Retry & Idempotency Primitives
 

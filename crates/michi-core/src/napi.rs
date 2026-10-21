@@ -90,6 +90,10 @@ pub struct JsToonOptions {
     pub total_count: Option<JsCount>,
     /// Agent-facing usage hints. Capped at `MAX_HINTS` entries.
     pub hints: Vec<String>,
+    /// The caller's instruction for getting a truncated cell in full (e.g. `"full=true"`), appended to the
+    /// truncation suffix as `" — use {hint}"`. Omitted: the suffix only reports how many chars were cut.
+    #[napi(js_name = "truncationHint")]
+    pub truncation_hint: Option<String>,
 }
 
 fn js_value_to_rust(v: JsToonValue) -> napi::Result<crate::toon::Value> {
@@ -127,8 +131,9 @@ fn js_value_to_rust(v: JsToonValue) -> napi::Result<crate::toon::Value> {
 /// single JS call force unbounded synchronous allocation on Node's event
 /// loop, which `#[napi(catch_unwind)]` alone does not guard against. Also
 /// returns an error if `ToonOptions::validate()` rejects the input — a row
-/// whose value count differs from `fields.len()`, or a structural character
-/// (`[`, `]`, `{`, `}`, `,`, `\n`, `\r`) in `type_name` or any field name.
+/// whose value count differs from `fields.len()`, a field name repeated in
+/// `fields`, or a reserved `type_name` (`totalCount`, `help`). Any other type
+/// or field name is valid and is quoted when TOON 4.4 §7.3 requires.
 /// The error `reason` is the `ToonError` Display text verbatim.
 #[napi(catch_unwind)]
 pub fn render_toon(opts: JsToonOptions) -> napi::Result<String> {
@@ -159,9 +164,12 @@ pub fn render_toon(opts: JsToonOptions) -> napi::Result<String> {
         rows.push(row.into_iter().map(js_value_to_rust).collect::<napi::Result<Vec<_>>>()?);
     }
 
-    let toon_opts = crate::toon::ToonOptions::new(opts.type_name, opts.fields, rows)
+    let mut toon_opts = crate::toon::ToonOptions::new(opts.type_name, opts.fields, rows)
         .total_count(opts.total_count.map(JsCount::get))
         .hints(opts.hints);
+    if let Some(hint) = opts.truncation_hint {
+        toon_opts = toon_opts.truncation_hint(hint);
+    }
 
     crate::toon::render_toon(&toon_opts).map_err(|e| napi::Error::from_reason(format!("toon_validation_failed: {e}")))
 }
@@ -237,7 +245,9 @@ pub fn render_recovery(hints: Vec<JsRecoveryHint>) -> napi::Result<String> {
     Ok(crate::recovery::render_recovery(&converted))
 }
 
-/// Truncate content to `max_chars` Unicode scalar values with an agent-readable suffix.
+/// Truncate `content` to `maxChars` Unicode scalar values with an agent-readable suffix:
+/// `" ({removed} more chars — use {hint})"`, or `" ({removed} more chars)"` when `hint` is the empty string. A cap
+/// too small for that suffix keeps `maxChars - 1` chars and ends with `…` (`maxChars` 0 returns an empty string).
 #[napi(catch_unwind)]
 #[allow(clippy::needless_pass_by_value)] // napi-derive requires owned String for JS string params
 pub fn truncate(content: String, #[napi(ts_arg_type = "number")] max_chars: JsCount, hint: String) -> String {
@@ -589,6 +599,15 @@ impl JsAgentResponse {
         Ok(())
     }
 
+    /// Set the caller's instruction for getting a truncated TOON cell in full (e.g. `"full=true"`), appended to the
+    /// truncation suffix as `" — use {hint}"`. Not called: the suffix only reports how many chars were cut.
+    #[napi(catch_unwind)]
+    pub fn truncation_hint(&mut self, hint: String) -> napi::Result<()> {
+        let b = self.take()?;
+        self.inner = Some(b.truncation_hint(hint));
+        Ok(())
+    }
+
     /// Mark this response as an error state.
     #[napi(catch_unwind)]
     pub fn as_error(&mut self) -> napi::Result<()> {
@@ -769,6 +788,7 @@ mod tests {
             }]],
             total_count: Some(JsCount::try_from(1.0).expect("1 is a valid count")),
             hints: vec![],
+            truncation_hint: None,
         };
         let out = render_toon(opts).expect("valid input renders");
         assert!(out.starts_with("issue[1]{id}:"));
@@ -782,6 +802,7 @@ mod tests {
             rows: (0..=MAX_ROWS).map(|_| vec![value("null")]).collect(),
             total_count: None,
             hints: vec![],
+            truncation_hint: None,
         };
         assert!(render_toon(opts).is_err());
     }
@@ -794,6 +815,7 @@ mod tests {
             rows: vec![],
             total_count: None,
             hints: vec![],
+            truncation_hint: None,
         };
         // AC-004: exact error message, not just is_err().
         let err = render_toon(opts).expect_err("fields over MAX_FIELDS must be rejected");
@@ -808,6 +830,7 @@ mod tests {
             rows: vec![],
             total_count: None,
             hints: vec!["h".to_string(); MAX_HINTS + 1],
+            truncation_hint: None,
         };
         // AC-005: exact error message, not just is_err().
         let err = render_toon(opts).expect_err("hints over MAX_HINTS must be rejected");
@@ -822,6 +845,7 @@ mod tests {
             rows: vec![(0..=MAX_FIELDS).map(|_| value("null")).collect()],
             total_count: None,
             hints: vec![],
+            truncation_hint: None,
         };
         // AC-007: exact error message, not just is_err().
         let err = render_toon(opts).expect_err("oversized row must be rejected");
@@ -839,9 +863,10 @@ mod tests {
             }]],
             total_count: None,
             hints: vec![],
+            truncation_hint: None,
         };
         let out = render_toon(opts).expect("valid input renders");
-        assert_eq!(out, "t[1]{a}:\n  1755000000000\n");
+        assert_eq!(out, "t[1]{a}:\n  1755000000000");
     }
 
     #[test]
@@ -852,40 +877,72 @@ mod tests {
             rows: vec![vec![JsToonValue { str_val: Some("x".to_string()), ..value("str") }]],
             total_count: None,
             hints: vec![],
+            truncation_hint: None,
         };
         let err = render_toon(opts).expect_err("mismatched row must be rejected");
         assert_eq!(err.reason, "toon_validation_failed: row 0 has 1 values but 2 fields declared");
     }
 
     #[test]
-    fn render_toon_rejects_structural_char_in_type_name() {
+    fn render_toon_quotes_structural_char_in_type_name() {
         let opts = JsToonOptions {
             type_name: "a[b]".to_string(),
             fields: vec!["x".to_string()],
             rows: vec![vec![JsToonValue { str_val: Some("v".to_string()), ..value("str") }]],
             total_count: None,
             hints: vec![],
+            truncation_hint: None,
         };
-        let err = render_toon(opts).expect_err("structural type_name must be rejected");
-        assert_eq!(err.reason, "toon_validation_failed: type_name \"a[b]\" contains a structural character");
+        assert_eq!(render_toon(opts).expect("quoted per TOON 4.4 §7.3"), "\"a[b]\"[1]{x}:\n  v");
     }
 
     #[test]
-    fn render_toon_rejects_structural_char_in_field_name() {
+    fn render_toon_rejects_reserved_type_name() {
+        let opts = JsToonOptions {
+            type_name: "help".to_string(),
+            fields: vec!["x".to_string()],
+            rows: vec![],
+            total_count: None,
+            hints: vec![],
+            truncation_hint: None,
+        };
+        let err = render_toon(opts).expect_err("reserved type_name must be rejected");
+        assert_eq!(
+            err.reason,
+            "toon_validation_failed: type_name \"help\" is a reserved document key (totalCount, help)"
+        );
+    }
+
+    #[test]
+    fn render_toon_quotes_structural_char_in_field_name() {
         let opts = JsToonOptions {
             type_name: "t".to_string(),
             fields: vec!["a,b".to_string()],
             rows: vec![vec![JsToonValue { str_val: Some("v".to_string()), ..value("str") }]],
             total_count: None,
             hints: vec![],
+            truncation_hint: None,
         };
-        let err = render_toon(opts).expect_err("structural field name must be rejected");
-        assert_eq!(err.reason, "toon_validation_failed: field \"a,b\" contains a structural character");
+        assert_eq!(render_toon(opts).expect("quoted per TOON 4.4 §7.3"), "t[1]{\"a,b\"}:\n  v");
+    }
+
+    #[test]
+    fn render_toon_rejects_duplicate_field_name() {
+        let opts = JsToonOptions {
+            type_name: "t".to_string(),
+            fields: vec!["a".to_string(), "a".to_string()],
+            rows: vec![],
+            total_count: None,
+            hints: vec![],
+            truncation_hint: None,
+        };
+        let err = render_toon(opts).expect_err("duplicate field name must be rejected");
+        assert_eq!(err.reason, "toon_validation_failed: field \"a\" appears more than once");
     }
 
     #[test]
     fn empty_state_renders() {
-        assert_eq!(empty_state("issue".to_string()), "issue[0]{}:\ntotalCount: 0\n");
+        assert_eq!(empty_state("issue".to_string()), "issue: []\ntotalCount: 0");
     }
 
     #[test]
@@ -909,6 +966,44 @@ mod tests {
             ),
             "hello"
         );
+    }
+
+    #[test]
+    fn truncate_empty_hint_has_no_use_clause() {
+        let max = JsCount::try_from(40.0).expect("40 is a valid count");
+        assert_eq!(truncate("a".repeat(100), max, String::new()), format!("{} (76 more chars)", "a".repeat(24)));
+        let max = JsCount::try_from(40.0).expect("40 is a valid count");
+        assert_eq!(
+            truncate("a".repeat(100), max, "x".to_string()),
+            format!("{} (84 more chars — use x)", "a".repeat(16))
+        );
+    }
+
+    #[test]
+    fn render_toon_truncation_hint_is_optional() {
+        let long = || vec![vec![JsToonValue { str_val: Some("a".repeat(500)), ..value("str") }]];
+        let opts = |hint: Option<&str>| JsToonOptions {
+            type_name: "t".to_string(),
+            fields: vec!["a".to_string()],
+            rows: long(),
+            total_count: None,
+            hints: vec![],
+            truncation_hint: hint.map(str::to_string),
+        };
+        let out = render_toon(opts(None)).expect("valid input renders");
+        assert_eq!(out, format!("t[1]{{a}}:\n  {} (317 more chars)", "a".repeat(183)));
+        let out = render_toon(opts(Some("full=true"))).expect("valid input renders");
+        assert_eq!(out, format!("t[1]{{a}}:\n  {} (333 more chars — use full=true)", "a".repeat(167)));
+    }
+
+    #[test]
+    fn js_agent_response_truncation_hint_reaches_toon_body() {
+        let mut r = JsAgentResponse::new("t".to_string());
+        r.truncation_hint("full=true".to_string()).expect("fresh builder accepts a hint");
+        r.items(vec![vec![JsToonValue { str_val: Some("a".repeat(500)), ..value("str") }]], vec!["a".to_string()])
+            .expect("valid rows");
+        let out = r.render_toon().expect("renders");
+        assert_eq!(out, format!("t[1]{{a}}:\n  {} (333 more chars — use full=true)", "a".repeat(167)));
     }
 
     #[test]
@@ -1030,7 +1125,7 @@ mod tests {
         .unwrap();
         let toon = r.render_toon().unwrap();
         let kv = r.render_kv().unwrap();
-        assert!(toon.starts_with("issues[1]{id}:\n  1\n"), "got: {toon}");
+        assert_eq!(toon, "issues[1]{id}:\n  1");
         assert_ne!(toon, kv, "render_toon() must not follow the last-called .kvItems()");
     }
 
@@ -1061,7 +1156,7 @@ mod tests {
         let mut r = JsAgentResponse::new("t".to_string());
         r.kv_items(vec![]).unwrap();
         r.hint("do this".to_string()).unwrap();
-        assert_eq!(r.render_hints_only().unwrap(), "help[1]:\n  do this\n");
+        assert_eq!(r.render_hints_only().unwrap(), "help[1]: do this\n");
     }
 
     #[test]
@@ -1136,7 +1231,10 @@ mod tests {
     #[test]
     fn append_hints_appends_to_existing_body() {
         let out = append_hints("body\n".to_string(), vec!["do this".to_string()]).expect("valid input");
-        assert_eq!(out, "body\nhelp[1]:\n  do this\n");
+        assert_eq!(out, "body\nhelp[1]: do this\n");
+        // A body without a trailing newline (every michi TOON document) still gets the block on its own line.
+        let out = append_hints("t: []".to_string(), vec!["a, b".to_string()]).expect("valid input");
+        assert_eq!(out, "t: []\nhelp[1]: \"a, b\"\n");
     }
 
     #[test]
@@ -1269,7 +1367,7 @@ mod tests {
     #[test]
     fn render_already_done_napi_with_hints() {
         let out = render_already_done("sync".into(), "done".into(), vec!["use get_status to verify".into()]).unwrap();
-        assert!(out.contains("help[1]:\n  use get_status to verify\n"), "got: {out}");
+        assert!(out.ends_with("\nhelp[1]: use get_status to verify\n"), "got: {out}");
     }
 
     #[test]
@@ -1311,6 +1409,7 @@ mod tests {
             rows: vec![vec![value("int")]],
             total_count: None,
             hints: vec![],
+            truncation_hint: None,
         };
         let err = render_toon(opts).expect_err("missing intVal must error, not default to 0");
         assert!(err.reason.contains("intVal"), "error should name the missing field, got: {}", err.reason);
@@ -1326,6 +1425,7 @@ mod tests {
             rows: vec![vec![v]],
             total_count: None,
             hints: vec![],
+            truncation_hint: None,
         };
         let err = render_toon(opts).expect_err("unrecognized type must error, not silently discard the payload");
         assert!(err.reason.contains("integer"), "error should name the offending type, got: {}", err.reason);
@@ -1339,6 +1439,7 @@ mod tests {
             rows: vec![vec![value("null")]],
             total_count: None,
             hints: vec![],
+            truncation_hint: None,
         };
         assert!(render_toon(opts).is_ok(), "type \"null\" with no payload is legitimate and must still work");
     }
@@ -1517,6 +1618,7 @@ mod tests {
             rows: (0..MAX_ROWS).map(|_| Vec::new()).collect(),
             total_count: None,
             hints: vec!["h".to_string(); MAX_HINTS],
+            truncation_hint: None,
         };
         match render_toon(opts) {
             Ok(_) => {}

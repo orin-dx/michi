@@ -306,16 +306,7 @@ pub fn render_already_done(operation: &str, summary: &str, hints: &[String]) -> 
     out.push_str("\nstatus:    already_done\nsummary:   ");
     out.push_str(&crate::text::escape_line_breaks(summary));
     out.push('\n');
-    if !hints.is_empty() {
-        out.push_str("help[");
-        out.push_str(&hints.len().to_string());
-        out.push_str("]:\n");
-        for hint in hints {
-            out.push_str("  ");
-            out.push_str(&crate::text::escape_line_breaks(hint));
-            out.push('\n');
-        }
-    }
+    crate::hints::append_help_block(&mut out, hints.iter().map(String::as_str));
     out
 }
 
@@ -864,13 +855,13 @@ mod tests {
     #[test]
     fn render_already_done_with_hints() {
         let out = render_already_done("my_op", "did the thing", &["hint one".to_string()]);
-        assert_eq!(out, "operation: my_op\nstatus:    already_done\nsummary:   did the thing\nhelp[1]:\n  hint one\n");
+        assert_eq!(out, "operation: my_op\nstatus:    already_done\nsummary:   did the thing\nhelp[1]: hint one\n");
     }
 
     #[test]
     fn render_already_done_multiple_hints() {
         let hints = ["hint a".to_string(), "hint b".to_string()];
         let out = render_already_done("op", "done", &hints);
-        assert_eq!(out, "operation: op\nstatus:    already_done\nsummary:   done\nhelp[2]:\n  hint a\n  hint b\n");
+        assert_eq!(out, "operation: op\nstatus:    already_done\nsummary:   done\nhelp[2]: hint a,hint b\n");
     }
 }

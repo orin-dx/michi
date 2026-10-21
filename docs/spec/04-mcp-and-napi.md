@@ -253,6 +253,9 @@ export interface JsToonOptions {
   totalCount?: number;
   /** Required, not optional — pass an empty array for no hints. Capped at MAX_HINTS. */
   hints: Array<string>;
+  /** The caller's instruction for getting a truncated cell in full (e.g. `"full=true"`), appended as
+   * `" — use {hint}"`. Omitted: the suffix only reports how many chars were cut. */
+  truncationHint?: string;
 }
 
 /** Throws if rows/fields/hints, or any row, exceed this module's per-call size
@@ -260,7 +263,7 @@ export interface JsToonOptions {
  * synchronous allocation on a crafted call. */
 export declare function renderToon(opts: JsToonOptions): string;
 
-/** Render a definitive empty-state TOON response: `typeName[0]{}:\ntotalCount: 0\n`.
+/** Render a definitive empty-state TOON response: `typeName: []\ntotalCount: 0` (no trailing newline).
  * No `hints` parameter over this boundary — use `appendHints()` to add one. */
 export declare function emptyState(typeName: string): string;
 
@@ -270,7 +273,9 @@ export declare function renderHints(hints: Array<string>): string;
 export declare function appendHints(body: string, hints: Array<string>): string;
 
 /** Only the inline form crosses the NAPI boundary — unlike Rust's `truncate()`,
- * which returns a richer `Truncated` struct, this returns the final string directly. */
+ * which returns a richer `Truncated` struct, this returns the final string directly.
+ * Suffix: `" ({removed} more chars — use {hint})"`, or `" ({removed} more chars)"` for an
+ * empty `hint`; a cap too small for it gives `maxChars - 1` chars and `…`. */
 export declare function truncate(content: string, maxChars: number, hint: string): string;
 
 export interface JsRecoveryHint {
@@ -318,6 +323,8 @@ export declare class AgentResponse {
   kvItems(items: Array<JsKvItem>): void;
   hint(hint: string): void;
   recoveryHint(tool: string, reason?: string): void;
+  /** Appends `" — use {hint}"` to truncated TOON cells; not called, the suffix only reports the chars cut. */
+  truncationHint(hint: string): void;
   /** Marks this response as an error state, reflected in `renderJson()`'s `isError` field. */
   asError(): void;
   /** Attaches a `user`-audience companion block, included by `toCallToolResult()`

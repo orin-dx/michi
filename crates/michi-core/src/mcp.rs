@@ -36,15 +36,25 @@ struct AnnotationsWire {
 #[cfg_attr(feature = "schemars", schemars(rename = "ContentBlock"))]
 struct ContentBlockWire {
     #[serde(rename = "type")]
-    kind: String,
+    kind: TextKind,
     text: String,
     annotations: AnnotationsWire,
+}
+
+/// The only content type `ContentBlock` models. Any other `type` (e.g. `"image"`) fails to deserialize instead of
+/// silently becoming a text block.
+#[cfg(feature = "serde")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+enum TextKind {
+    #[serde(rename = "text")]
+    Text,
 }
 
 #[cfg(feature = "serde")]
 impl From<ContentBlock> for ContentBlockWire {
     fn from(b: ContentBlock) -> Self {
-        Self { kind: "text".to_string(), text: b.text, annotations: AnnotationsWire { audience: b.audience } }
+        Self { kind: TextKind::Text, text: b.text, annotations: AnnotationsWire { audience: b.audience } }
     }
 }
 
@@ -167,9 +177,11 @@ mod tests {
 
     #[test]
     #[cfg(feature = "serde")]
-    fn ac028a_type_field_is_accepted_and_discarded_not_validated() {
-        let payload = r#"{"type":"image","text":"t","annotations":{"audience":["user"]}}"#;
-        let block: ContentBlock = serde_json::from_str(payload).unwrap();
+    fn ac028a_type_field_must_be_text() {
+        let image = r#"{"type":"image","text":"t","annotations":{"audience":["user"]}}"#;
+        assert!(serde_json::from_str::<ContentBlock>(image).is_err(), "a non-text block must not be coerced to text");
+        let text = r#"{"type":"text","text":"t","annotations":{"audience":["user"]}}"#;
+        let block: ContentBlock = serde_json::from_str(text).unwrap();
         assert_eq!(block, ContentBlock { text: "t".to_string(), audience: vec![Audience::User] });
     }
 

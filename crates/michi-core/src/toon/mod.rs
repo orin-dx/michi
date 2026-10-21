@@ -4,24 +4,31 @@
 
 //! # TOON
 //!
-//! Token-Optimized Object Notation (TOON) format renderer and parser for michi and AXI.
+//! Token-Oriented Object Notation (TOON) renderer for michi and AXI.
+//!
+//! Output conforms to the TOON specification version 4.4 (`toon-spec: 4.4`,
+//! <https://github.com/toon-format/spec>): a list document is a root object holding the list in tabular form
+//! (`type[N]{f1,f2}:` plus one row per line), `type: []` when empty, an optional `totalCount: N` field and an optional
+//! inline `help[N]: …` array, with no trailing newline.
 
 mod escape;
 pub(crate) mod render;
 
-pub use escape::{escape_value, escape_value_quoted};
+pub use escape::{escape_key, escape_value, escape_value_quoted};
 pub use render::{ToonDocument, Value};
 
-/// Error returned by [`ToonOptions::validate()`] when structural invariants are violated.
+/// Error returned by [`ToonOptions::validate()`] when the options cannot form a valid TOON document.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum ToonError {
-    /// `type_name` contains a structural character (`[`, `]`, `{`, `}`, `\n`, `\r`).
+    /// `type_name` is a reserved root key of the list document (`totalCount` or `help`); using it would emit a
+    /// duplicate key, which TOON 4.4 §14.3 forbids. Any other name is valid and is quoted when §7.3 requires.
     InvalidTypeName {
         /// The offending name.
         name: String,
     },
-    /// A field name contains a structural character (`,`, `{`, `}`, `\n`, `\r`).
+    /// A field name appears more than once in `fields`; a repeated field name in one header is invalid TOON (§14.2).
+    /// Any other name is valid and is quoted when §7.3 requires.
     InvalidFieldName {
         /// The offending field name.
         name: String,
@@ -51,10 +58,10 @@ impl std::fmt::Display for ToonError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InvalidTypeName { name } => {
-                write!(f, "type_name {name:?} contains a structural character")
+                write!(f, "type_name {name:?} is a reserved document key (totalCount, help)")
             }
             Self::InvalidFieldName { name } => {
-                write!(f, "field {name:?} contains a structural character")
+                write!(f, "field {name:?} appears more than once")
             }
             Self::RowLengthMismatch { row_index, expected, actual } => {
                 write!(f, "row {row_index} has {actual} values but {expected} fields declared")
@@ -73,25 +80,46 @@ impl std::error::Error for ToonError {}
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub struct ToonOptions {
-    /// Snake_case type name, e.g. `"issue"`, `"component"`.
+    /// Snake_case type name, e.g. `"issue"`, `"component"`: the key of the list entry. Names outside TOON's
+    /// unquoted-key pattern are quoted (§7.3); `totalCount` and `help` are reserved.
     pub type_name: String,
-    /// Ordered field names for the header, e.g. `["number", "title", "state"]`.
+    /// Ordered, distinct field names for the header, e.g. `["number", "title", "state"]`, quoted when §7.3 requires.
+    /// Not emitted when `rows` is empty (an empty list renders as `type: []`).
     pub fields: Vec<String>,
-    /// Rows, each a Vec of values parallel to `fields`.
+    /// Rows, each a Vec of values parallel to `fields`. Rows with zero fields are empty objects and render as bare
+    /// `-` list items, since TOON forbids a tabular form without fields.
     pub rows: Vec<Vec<Value>>,
     /// Total available count (emitted as `totalCount: N` when `Some`).
     pub total_count: Option<usize>,
-    /// Agent-facing usage hints. Emitted as `help[N]:` block when non-empty.
+    /// Agent-facing usage hints. Emitted as the inline array `help[N]: h1,h2` when non-empty.
     pub hints: Vec<String>,
-    /// Max string cell length before inline truncation. Default: 200.
+    /// Max string cell length, in chars, before inline truncation. Default: 200.
+    ///
+    /// The cap counts the cell's characters *before* TOON escaping and quoting: a truncated (or untruncated) cell
+    /// that needs quotes or escapes (§7.1, §7.2) is written longer than `max_cell_len` on the wire. A truncated cell
+    /// ends with `" ({removed} more chars)"`, plus `" — use {hint}"` when [`Self::truncation_hint`] is set, or with
+    /// `…` when the cap is too small for that suffix; see [`crate::truncate::truncate()`].
     pub max_cell_len: usize,
+    /// The caller's instruction for getting a truncated cell in full, e.g. `"full=true"` or `"--no-truncate"`,
+    /// appended to the truncation suffix as `" — use {hint}"`. Default `None`: michi never invents a parameter the
+    /// calling tool may not have, so without a hint the suffix only reports how many chars were cut. An empty string
+    /// is the same as `None`.
+    pub truncation_hint: Option<String>,
 }
 
 impl ToonOptions {
     /// Create a new ToonOptions struct with type_name and fields.
     #[must_use]
     pub fn new(type_name: impl Into<String>, fields: Vec<String>, rows: Vec<Vec<Value>>) -> Self {
-        Self { type_name: type_name.into(), fields, rows, total_count: None, hints: Vec::new(), max_cell_len: 200 }
+        Self {
+            type_name: type_name.into(),
+            fields,
+            rows,
+            total_count: None,
+            hints: Vec::new(),
+            max_cell_len: 200,
+            truncation_hint: None,
+        }
     }
 
     /// Set total count option.
@@ -108,10 +136,19 @@ impl ToonOptions {
         self
     }
 
-    /// Set max cell length option.
+    /// Set the max string cell length in chars, counted before escaping and quoting (see the `max_cell_len` field).
     #[must_use]
     pub fn max_cell_len(mut self, len: usize) -> Self {
         self.max_cell_len = len;
+        self
+    }
+
+    /// Set the caller's instruction appended to a truncated cell's suffix as `" — use {hint}"`, e.g.
+    /// `.truncation_hint("full=true")` gives `" (317 more chars — use full=true)"`. Unset by default, which leaves
+    /// the clause out; an empty hint does the same.
+    #[must_use]
+    pub fn truncation_hint(mut self, hint: impl Into<String>) -> Self {
+        self.truncation_hint = Some(hint.into());
         self
     }
 
@@ -123,10 +160,10 @@ impl ToonOptions {
     ///
     /// # Errors
     ///
-    /// Returns [`ToonError::InvalidTypeName`] if `type_name` contains a
-    /// structural character, [`ToonError::InvalidFieldName`] if any field name
-    /// contains a structural character, or [`ToonError::RowLengthMismatch`] if
-    /// any row's length differs from `fields.len()`.
+    /// Returns [`ToonError::InvalidTypeName`] if `type_name` is a reserved
+    /// root key (`totalCount` or `help`), [`ToonError::InvalidFieldName`] if a
+    /// field name appears more than once, or [`ToonError::RowLengthMismatch`]
+    /// if any row's length differs from `fields.len()`.
     pub fn validate(&self) -> Result<ToonDocument<'_>, ToonError> {
         ToonDocument::validate(self)
     }
@@ -141,13 +178,14 @@ impl Default for ToonOptions {
             total_count: None,
             hints: Vec::new(),
             max_cell_len: 200,
+            truncation_hint: None,
         }
     }
 }
 
 const _: fn(&ToonOptions) -> Result<String, ToonError> = render_toon;
 
-/// Render a TOON document to a string.
+/// Render a TOON 4.4 document to a string (no trailing newline).
 ///
 /// # Errors
 ///
@@ -166,8 +204,8 @@ fn json_value_to_toon_value(v: Option<&serde_json::Value>) -> Value {
             if let Some(i) = n.as_i64() {
                 Value::Int(i)
             } else if let Some(u) = n.as_u64() {
-                // Above i64::MAX: keep the exact digits rather than rounding through f64.
-                Value::from(u)
+                // Above i64::MAX: an exact unsigned number, not rounded through f64.
+                Value::UInt(u)
             } else if let Some(f) = n.as_f64() {
                 Value::Float(f)
             } else {
@@ -186,8 +224,13 @@ fn json_value_to_toon_value(v: Option<&serde_json::Value>) -> Value {
 /// — use only with homogeneous struct slices.
 ///
 /// The header lists every field any item serialized, in first-seen order, so a field skipped on early rows (for
-/// example `#[serde(skip_serializing_if = "Option::is_none")]`) still appears. Rows without that field get an empty
+/// example `#[serde(skip_serializing_if = "Option::is_none")]`) still appears. Rows without that field get a `null`
 /// cell.
+///
+/// Host-type normalization (TOON 4.4 §3): JSON integers map to [`Value::Int`], or [`Value::UInt`] above `i64::MAX`;
+/// other numbers to [`Value::Float`] (and, only with serde_json's `arbitrary_precision`, a number outside both domains
+/// becomes a string of its exact digits); a missing key or JSON `null` to `null`; and a nested array or object to a
+/// string holding its compact JSON text, since michi emits flat tables only.
 ///
 /// Requires the `serde` feature.
 ///
@@ -195,9 +238,8 @@ fn json_value_to_toon_value(v: Option<&serde_json::Value>) -> Value {
 ///
 /// Returns [`ToonError::InvalidItem`] if an item fails to serialize or does
 /// not produce a JSON object (struct or map required). Returns
-/// [`ToonError::InvalidTypeName`] or [`ToonError::InvalidFieldName`] if
-/// `type_name` or a serialized field name contains a structural character
-/// (`[`, `]`, `{`, `}`, `,`, `\n`, `\r`).
+/// [`ToonError::InvalidTypeName`] if `type_name` is a reserved root key
+/// (`totalCount` or `help`).
 #[cfg(feature = "serde")]
 pub fn list<T: serde::Serialize>(type_name: impl Into<String>, items: &[T]) -> Result<String, ToonError> {
     let type_name = type_name.into();
@@ -226,7 +268,7 @@ pub fn list<T: serde::Serialize>(type_name: impl Into<String>, items: &[T]) -> R
     }
     let rows: Vec<Vec<Value>> =
         objects.iter().map(|obj| fields.iter().map(|f| json_value_to_toon_value(obj.get(f))).collect()).collect();
-    let opts = ToonOptions { type_name, fields, rows, total_count: None, hints: Vec::new(), max_cell_len: 200 };
+    let opts = ToonOptions::new(type_name, fields, rows);
     Ok(opts.validate()?.render())
 }
 
@@ -280,127 +322,101 @@ mod auto_trait_tests {
 mod validate_tests {
     use super::*;
 
-    #[test]
-    fn validate_ok_for_valid_options() {
-        let opts = ToonOptions {
-            type_name: "file".into(),
-            fields: vec!["path".into(), "size".into()],
-            rows: vec![vec![Value::from("a.rs"), Value::from(100i64)]],
+    fn opts(type_name: &str, fields: &[&str], rows: Vec<Vec<Value>>) -> ToonOptions {
+        ToonOptions {
+            type_name: type_name.into(),
+            fields: fields.iter().map(|f| (*f).to_string()).collect(),
+            rows,
             hints: vec![],
             max_cell_len: 200,
             total_count: None,
-        };
-        assert!(opts.validate().is_ok());
+            truncation_hint: None,
+        }
     }
 
     #[test]
-    fn validate_rejects_type_name_with_bracket() {
-        let opts = ToonOptions {
-            type_name: "foo[bar".into(),
-            fields: vec![],
-            rows: vec![],
-            hints: vec![],
-            max_cell_len: 200,
-            total_count: None,
-        };
-        assert!(matches!(opts.validate(), Err(ToonError::InvalidTypeName { .. })));
+    fn validate_ok_for_valid_options() {
+        let o = opts("file", &["path", "size"], vec![vec![Value::from("a.rs"), Value::from(100i64)]]);
+        assert!(o.validate().is_ok());
+    }
+
+    #[test]
+    fn structural_characters_in_names_are_valid_and_quoted() {
+        // TOON 4.4 §7.3: any key is encodable; keys outside the unquoted pattern are quoted.
+        let o = opts("foo[bar", &["a,b", "c{d}"], vec![vec![Value::Int(1), Value::Int(2)]]);
+        assert_eq!(render_toon(&o).unwrap(), "\"foo[bar\"[1]{\"a,b\",\"c{d}\"}:\n  1,2");
+    }
+
+    #[test]
+    fn validate_rejects_reserved_type_names() {
+        for name in ["totalCount", "help"] {
+            assert!(matches!(opts(name, &[], vec![]).validate(), Err(ToonError::InvalidTypeName { .. })), "{name}");
+        }
     }
 
     #[test]
     fn ac002_invalid_type_name_error_carries_exact_offending_name() {
-        let opts = ToonOptions {
-            type_name: "foo[bar".into(),
-            fields: vec![],
-            rows: vec![],
-            hints: vec![],
-            max_cell_len: 200,
-            total_count: None,
-        };
-        assert_eq!(opts.validate().unwrap_err(), ToonError::InvalidTypeName { name: "foo[bar".to_string() });
+        assert_eq!(
+            opts("help", &[], vec![]).validate().unwrap_err(),
+            ToonError::InvalidTypeName { name: "help".to_string() }
+        );
     }
 
     #[test]
-    fn validate_rejects_field_with_comma() {
-        let opts = ToonOptions {
-            type_name: "t".into(),
-            fields: vec!["a,b".into()],
-            rows: vec![],
-            hints: vec![],
-            max_cell_len: 200,
-            total_count: None,
-        };
-        assert!(matches!(opts.validate(), Err(ToonError::InvalidFieldName { .. })));
+    fn validate_rejects_duplicate_field() {
+        assert!(matches!(opts("t", &["a", "a"], vec![]).validate(), Err(ToonError::InvalidFieldName { .. })));
     }
 
     #[test]
     fn ac003_type_name_violation_takes_precedence_over_field_name_violation() {
-        let opts = ToonOptions {
-            type_name: "a[b".into(),
-            fields: vec!["x,y".into()],
-            rows: vec![],
-            hints: vec![],
-            max_cell_len: 200,
-            total_count: None,
-        };
-        assert_eq!(opts.validate().unwrap_err(), ToonError::InvalidTypeName { name: "a[b".to_string() });
+        assert_eq!(
+            opts("help", &["x", "x"], vec![]).validate().unwrap_err(),
+            ToonError::InvalidTypeName { name: "help".to_string() }
+        );
     }
 
     #[test]
     fn ac003_invalid_field_name_error_carries_exact_offending_name() {
-        let opts = ToonOptions {
-            type_name: "t".into(),
-            fields: vec!["a,b".into()],
-            rows: vec![],
-            hints: vec![],
-            max_cell_len: 200,
-            total_count: None,
-        };
-        assert_eq!(opts.validate().unwrap_err(), ToonError::InvalidFieldName { name: "a,b".to_string() });
+        assert_eq!(
+            opts("t", &["a", "b", "a"], vec![]).validate().unwrap_err(),
+            ToonError::InvalidFieldName { name: "a".to_string() }
+        );
     }
 
     #[test]
-    fn ac003_multiple_bad_fields_reports_first_in_list_order() {
-        let opts = ToonOptions {
-            type_name: "t".into(),
-            fields: vec!["a,b".into(), "c,d".into()],
-            rows: vec![],
-            hints: vec![],
-            max_cell_len: 200,
-            total_count: None,
-        };
-        assert_eq!(opts.validate().unwrap_err(), ToonError::InvalidFieldName { name: "a,b".to_string() });
+    fn ac003_multiple_duplicates_report_the_first_repeat_in_list_order() {
+        assert_eq!(
+            opts("t", &["c", "d", "d", "c"], vec![]).validate().unwrap_err(),
+            ToonError::InvalidFieldName { name: "d".to_string() }
+        );
     }
 
     #[test]
     fn ac004b_multiple_violations_return_only_the_first_in_fixed_order() {
-        let opts = ToonOptions {
-            type_name: "foo[bar".into(),
-            fields: vec!["a,b".into()],
-            rows: vec![vec![Value::from("x"), Value::from("y")]],
-            hints: vec![],
-            max_cell_len: 200,
-            total_count: None,
-        };
-        assert_eq!(opts.validate().unwrap_err(), ToonError::InvalidTypeName { name: "foo[bar".to_string() });
+        let o = opts("totalCount", &["a", "a"], vec![vec![Value::from("x")]]);
+        assert_eq!(o.validate().unwrap_err(), ToonError::InvalidTypeName { name: "totalCount".to_string() });
     }
 
     #[test]
     fn ac004b_field_name_violation_takes_precedence_over_row_length_violation() {
-        let opts = ToonOptions {
-            type_name: "t".into(),
-            fields: vec!["a,b".into()],
-            rows: vec![vec![Value::from("x"), Value::from("y")]],
-            hints: vec![],
-            max_cell_len: 200,
-            total_count: None,
-        };
-        assert_eq!(opts.validate().unwrap_err(), ToonError::InvalidFieldName { name: "a,b".to_string() });
+        let o = opts("t", &["a", "a"], vec![vec![Value::from("x")]]);
+        assert_eq!(o.validate().unwrap_err(), ToonError::InvalidFieldName { name: "a".to_string() });
+    }
+
+    #[test]
+    fn error_display_names_the_rule() {
+        assert_eq!(
+            ToonError::InvalidTypeName { name: "help".into() }.to_string(),
+            "type_name \"help\" is a reserved document key (totalCount, help)"
+        );
+        assert_eq!(ToonError::InvalidFieldName { name: "a".into() }.to_string(), "field \"a\" appears more than once");
     }
 
     #[test]
     fn ac035_default_renders_exact_empty_document() {
         let opts = ToonOptions::default();
-        assert_eq!(render_toon(&opts).unwrap(), "[0]{}:\n");
+        // The empty type name is the empty key, which TOON 4.4 §7.3 quotes; an empty list is `key: []` (§9.1).
+        assert_eq!(render_toon(&opts).unwrap(), "\"\": []");
         let equivalent = ToonOptions::new(String::new(), Vec::new(), Vec::new());
         assert_eq!(render_toon(&opts).unwrap(), render_toon(&equivalent).unwrap());
     }
@@ -435,28 +451,14 @@ mod validate_tests {
 
     #[test]
     fn validate_rejects_row_length_mismatch() {
-        let opts = ToonOptions {
-            type_name: "t".into(),
-            fields: vec!["a".into()],
-            rows: vec![vec![Value::from("x"), Value::from("y")]],
-            hints: vec![],
-            max_cell_len: 200,
-            total_count: None,
-        };
-        assert!(matches!(opts.validate(), Err(ToonError::RowLengthMismatch { row_index: 0, expected: 1, actual: 2 })));
+        let o = opts("t", &["a"], vec![vec![Value::from("x"), Value::from("y")]]);
+        assert!(matches!(o.validate(), Err(ToonError::RowLengthMismatch { row_index: 0, expected: 1, actual: 2 })));
     }
 
     #[test]
     fn ac004_type_name_violation_takes_precedence_over_row_length_violation() {
-        let opts = ToonOptions {
-            type_name: "a[b".into(),
-            fields: vec!["a".into()],
-            rows: vec![vec![Value::from("x"), Value::from("y")]],
-            hints: vec![],
-            max_cell_len: 200,
-            total_count: None,
-        };
-        assert_eq!(opts.validate().unwrap_err(), ToonError::InvalidTypeName { name: "a[b".to_string() });
+        let o = opts("help", &["a"], vec![vec![Value::from("x"), Value::from("y")]]);
+        assert_eq!(o.validate().unwrap_err(), ToonError::InvalidTypeName { name: "help".to_string() });
     }
 }
 
@@ -479,7 +481,14 @@ mod list_tests {
             .total_count(Some(5))
             .hints(vec!["h".to_string()])
             .max_cell_len(10);
-        assert_eq!(render_toon(&opts).unwrap(), "t[1]{a}:\n   (50 chars\ntotalCount: 5\nhelp[1]:\n  h\n");
+        // A 10-char cap cannot hold the suffix: 9 kept chars and an ellipsis, never a suffix fragment.
+        assert_eq!(render_toon(&opts).unwrap(), "t[1]{a}:\n  aaaaaaaaa…\ntotalCount: 5\nhelp[1]: h");
+
+        // With room for the suffix and a hint: " (44 more chars — use x)" is 24 chars, 6 kept, 6 + 44 = 50.
+        let opts = ToonOptions::new("t", vec!["a".to_string()], vec![vec![Value::from("a".repeat(50))]])
+            .max_cell_len(30)
+            .truncation_hint("x");
+        assert_eq!(render_toon(&opts).unwrap(), "t[1]{a}:\n  aaaaaa (44 more chars — use x)");
     }
 
     #[test]
@@ -505,26 +514,26 @@ mod list_tests {
     }
 
     #[test]
-    fn ac028_missing_key_renders_as_empty_cell() {
+    fn ac028_missing_key_renders_as_null_cell() {
         let result = list("t", &[serde_json::json!({"a": 1, "b": 2}), serde_json::json!({"a": 3})]);
-        assert_eq!(result, Ok("t[2]{a,b}:\n  1,2\n  3,\n".to_string()));
+        assert_eq!(result, Ok("t[2]{a,b}:\n  1,2\n  3,null".to_string()));
     }
 
     #[test]
-    fn ac029_structural_char_in_first_items_key_rejected_before_rendering() {
+    fn ac029_structural_char_in_key_is_quoted() {
         let result = list("t", &[serde_json::json!({"a,b": 1})]);
-        assert_eq!(result, Err(ToonError::InvalidFieldName { name: "a,b".to_string() }));
+        assert_eq!(result, Ok("t[1]{\"a,b\"}:\n  1".to_string()));
     }
 
     #[test]
-    fn ac029_type_name_violation_takes_precedence_over_field_name_violation() {
-        let result = list("t[x", &[serde_json::json!({"a,b": 1})]);
-        assert_eq!(result, Err(ToonError::InvalidTypeName { name: "t[x".to_string() }));
+    fn ac029_reserved_type_name_is_rejected() {
+        let result = list("help", &[serde_json::json!({"a": 1})]);
+        assert_eq!(result, Err(ToonError::InvalidTypeName { name: "help".to_string() }));
     }
 
     #[test]
-    fn ac029_serialization_failure_takes_precedence_over_field_name_violation() {
-        let result = list("t", &[serde_json::json!({"a,b": 1}), serde_json::json!(7)]);
+    fn ac029_serialization_failure_takes_precedence_over_type_name_violation() {
+        let result = list("help", &[serde_json::json!({"a": 1}), serde_json::json!(7)]);
         assert_eq!(
             result,
             Err(ToonError::InvalidItem {
@@ -581,40 +590,47 @@ mod list_tests {
     }
 
     #[test]
-    fn ac038_first_item_empty_later_item_nonempty_fills_an_empty_cell() {
+    fn ac038_first_item_empty_later_item_nonempty_fills_a_null_cell() {
         let result = list("t", &[serde_json::json!({}), serde_json::json!({"k": 1})]);
-        assert_eq!(result, Ok("t[2]{k}:\n  \n  1\n".to_string()));
+        assert_eq!(result, Ok("t[2]{k}:\n  null\n  1".to_string()));
     }
 
     #[test]
     fn ac038_header_is_the_union_of_every_items_keys_in_first_seen_order() {
         let result =
             list("t", &[serde_json::json!({}), serde_json::json!({"k": 1}), serde_json::json!({"a": 1, "b": 2})]);
-        assert_eq!(result, Ok("t[3]{k,a,b}:\n  ,,\n  1,,\n  ,1,2\n".to_string()));
+        assert_eq!(result, Ok("t[3]{k,a,b}:\n  null,null,null\n  1,null,null\n  null,1,2".to_string()));
     }
 
     #[test]
     fn ac039_empty_items_slice_renders_exact_empty_document() {
         let result = list("t", &([] as [serde_json::Value; 0]));
-        assert_eq!(result, Ok("t[0]{}:\n".to_string()));
+        assert_eq!(result, Ok("t: []".to_string()));
     }
 
     #[test]
-    fn ac039_invalid_type_name_rejected_even_with_empty_items_slice() {
-        let result = list("a[b", &([] as [serde_json::Value; 0]));
-        assert_eq!(result, Err(ToonError::InvalidTypeName { name: "a[b".to_string() }));
+    fn ac039_reserved_type_name_rejected_even_with_empty_items_slice() {
+        let result = list("totalCount", &([] as [serde_json::Value; 0]));
+        assert_eq!(result, Err(ToonError::InvalidTypeName { name: "totalCount".to_string() }));
     }
 
     #[test]
-    fn ac040_all_empty_object_items_render_exact_blank_rows() {
+    fn ac040_all_empty_object_items_render_as_bare_list_items() {
+        // TOON 4.4 §9.3/§9.4/§10: empty objects may not be tabular; each is a bare `-` list item.
         let result = list("t", &[serde_json::json!({}), serde_json::json!({})]);
-        assert_eq!(result, Ok("t[2]{}:\n  \n  \n".to_string()));
+        assert_eq!(result, Ok("t[2]:\n  -\n  -".to_string()));
     }
 
     #[test]
-    fn ac040_invalid_type_name_rejected_even_with_all_empty_object_items() {
-        let result = list("a[b", &[serde_json::json!({}), serde_json::json!({})]);
-        assert_eq!(result, Err(ToonError::InvalidTypeName { name: "a[b".to_string() }));
+    fn ac040_reserved_type_name_rejected_even_with_all_empty_object_items() {
+        let result = list("help", &[serde_json::json!({}), serde_json::json!({})]);
+        assert_eq!(result, Err(ToonError::InvalidTypeName { name: "help".to_string() }));
+    }
+
+    #[test]
+    fn nested_values_become_quoted_json_text() {
+        let result = list("t", &[serde_json::json!({"o": {"x": 1}, "a": [1, 2]})]);
+        assert_eq!(result, Ok("t[1]{o,a}:\n  \"{\\\"x\\\":1}\",\"[1,2]\"".to_string()));
     }
 }
 

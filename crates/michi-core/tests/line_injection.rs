@@ -40,6 +40,13 @@ fn domain_error_message_and_hint() {
 }
 
 #[test]
+fn unified_error_variants() {
+    assert_not_injected(&michi_core::Error::InvalidInput(INJECTED.into()).render());
+    assert_not_injected(&michi_core::Error::NotFound(INJECTED.into()).render());
+    assert_not_injected(&michi_core::Error::Domain(DomainError::new(ErrorCode::NotFound, INJECTED)).render());
+}
+
+#[test]
 fn recovery_tool_reason_and_param() {
     assert_not_injected(&render_recovery(&[RecoveryHint::new(INJECTED)]));
     assert_not_injected(&render_recovery(&[RecoveryHint::new("t").reason(INJECTED)]));
@@ -86,10 +93,8 @@ fn toon_hint() {
 #[test]
 fn toon_hint_keeps_ordinary_punctuation() {
     let opts = ToonOptions::new("t", vec![], vec![]).hints(vec!["Call get_issue with id=<id>, then {retry}".into()]);
-    assert_eq!(
-        render_toon(&opts).expect("renders"),
-        "t[0]{}:\nhelp[1]:\n  Call get_issue with id=<id>, then {retry}\n"
-    );
+    // The punctuation is kept verbatim; TOON 4.4 §7.2 requires quoting for the comma and braces, nothing is dropped.
+    assert_eq!(render_toon(&opts).expect("renders"), "t: []\nhelp[1]: \"Call get_issue with id=<id>, then {retry}\"");
 }
 
 #[test]
@@ -98,5 +103,5 @@ fn toon_cell_round_trips_line_breaks() {
     let out = render_toon(&opts).expect("renders");
     assert_not_injected(&out);
     let parsed = support::toon_parser::parse(&out).expect("parses");
-    assert_eq!(parsed.rows[0][0], INJECTED);
+    assert_eq!(parsed.rows[0][0], support::toon_parser::Prim::str(INJECTED));
 }

@@ -150,7 +150,7 @@ Benchmarks live in `crates/michi-core/benches/` and run via `divan`; CI builds t
 **Property tests** (`proptest`, `tests/`):
 
 - `render_toon()` output is grammar-valid for arbitrary string inputs
-- `truncate_inline()` never returns a string longer than `limit + signal_len`
+- `truncate_inline()` never returns a string longer than `limit` chars, suffix included, and its count plus the kept chars equals the input char count
 - TOON round-trip: render → parse (test-only parser) → compare values
 - `parse_retry_after()` never panics on arbitrary strings
 - `next_retry_delay()` always returns a value within `[initial_delay, max_delay]`

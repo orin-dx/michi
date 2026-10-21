@@ -40,11 +40,10 @@ process.stdout.write(out);
 
 ```text
 issues[2]{number,title,state}:
-  51815,[Bug]: Telegram plugin,open
+  51815,"[Bug]: Telegram plugin",open
   51812,dark mode request,open
 totalCount: 8771
-help[1]:
-  Run `gh-axi issue view <number>` to view an issue
+help[1]: Run `gh-axi issue view <number>` to view an issue
 ```
 
 ## API
@@ -58,7 +57,7 @@ help[1]:
 | `renderHints` | `(hints: string[]) => string` — `help[N]:` block |
 | `appendHints` | `(body: string, hints: string[]) => string` — append `help[N]:` to an existing body |
 | `renderRecovery` | `(hints: JsRecoveryHint[]) => string` — `recovery[N]:` block |
-| `truncate` | `(content: string, maxChars: number, hint: string) => string` |
+| `truncate` | `(content: string, maxChars: number, hint: string) => string` — `truncate("a".repeat(200), 50, "full=true")` gives 17 × `a` + `" (183 more chars — use full=true)"`; an empty `hint` drops the `— use …` clause |
 
 ### `AgentResponse` class
 
@@ -74,6 +73,7 @@ Setters return `void`, not `this`, so call them as sequential statements rather 
 | `.kvItems` | `(items: JsKvItem[]) => void` |
 | `.hint` | `(hint: string) => void` |
 | `.recoveryHint` | `(tool: string, reason?: string) => void` |
+| `.truncationHint` | `(hint: string) => void` — the caller's instruction appended to truncated TOON cells as `— use {hint}` (same as `JsToonOptions.truncationHint`); without it the suffix only says how many chars were cut |
 | `.asError` | `() => void` |
 | `.renderToon` | `() => string` — slot-specific, reads only `items`/`fields` |
 | `.renderKv` | `() => string` — slot-specific, reads only `kvItems` |

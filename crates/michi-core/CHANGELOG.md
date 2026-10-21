@@ -7,9 +7,17 @@
 - Line breaks in caller text are written as `\n` / `\r` in every renderer instead of passing through raw (hints, empty-state names, error messages, recovery tool/reason/keys, KV keys, already-done fields, partial-success ids) or being dropped (KV values, status fields, TOON cells). TOON cells containing a line break are quoted. TOON hints keep ordinary punctuation instead of replacing `,` `[` `]` `{` `}` with `_`.
 - `toon::list()` headers are the union of every item's fields in first-seen order; rows missing a field get an empty cell. Before, the first item decided the columns.
 - `AgentResponse`: rows that fail TOON validation set `isError: true` in MCP results and the JSON render, not just in the text body. New `AgentResponse::is_error()`.
-- `Value::from(u64)` / `Value::from(usize)` above `i64::MAX`, and such numbers in `toon::list()`, keep their exact digits (as `Value::Str`) instead of clamping to `i64::MAX` or rounding through `f64`.
+- `Value::from(u64)` / `Value::from(usize)` above `i64::MAX`, and such numbers in `toon::list()`, keep their exact digits (as the new numeric `Value::UInt`, never truncated or quoted) instead of clamping to `i64::MAX` or rounding through `f64`.
 - `RecoveryHint` serializes as `{"tool", "params": {key: value}, "reason"?}`, matching the structured companions; `reason` is omitted when absent.
 - The `schemars` schemas for `ContentBlock`, `CallToolResult` and `RecoveryHint` describe the wire form serde emits. The `schemars` feature now enables `serde`.
+- Deserializing a `RecoveryHint` rejects parameter values it cannot hold exactly (arrays, objects, integers outside `i64`) instead of rewriting them; floats keep their exact value.
+- Deserializing a `ContentBlock` whose `type` is not `"text"` is an error instead of a silent conversion to text.
+- `Error::InvalidInput` / `Error::NotFound` renders escape line breaks like every other renderer.
+- The default build no longer depends on serde: `compact_str`'s serde support is enabled only by the `serde` feature.
+- Truncation reports what was cut: the suffix is `" ({removed} more chars — use {hint})"`, where `removed` is the number of chars cut, instead of `" ({original} chars truncated — use {hint})"`, which reported the original length although some chars remained. An empty hint now drops the `— use …` clause instead of printing `use )`.
+- TOON cells no longer tell agents to use `full=true`, a parameter the calling tool may not have: a truncated cell ends with `" ({removed} more chars)"` unless the caller sets the new `ToonOptions::truncation_hint` / `AgentResponse::truncation_hint` (NAPI: `JsToonOptions.truncationHint`, `AgentResponse.truncationHint()`). Pass `.truncation_hint("full=true")` to keep the old clause.
+- A cap too small for the suffix gives the first `max_chars - 1` chars and `…` (`signal` is `"…"`) instead of a fragment such as `" (500 chars tr"`; a cap of 0 still gives the empty string.
+- Documented that `max_cell_len` / `truncate_cells_at` count chars before TOON escaping and quoting, so a quoted cell can be longer, and that `Truncated::original_len` is a byte length.
 
 ## 0.1.1
 

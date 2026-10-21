@@ -16,7 +16,7 @@ fn renders_basic_list() {
     let out = render_toon(&opts).expect("valid input renders");
     assert_eq!(
         out,
-        "issue[2]{number,title,state}:\n  42,Fix login,open\n  43,Add dark mode,open\ntotalCount: 47\nhelp[1]:\n  Call get_issue with number=<number> for full detail\n"
+        "issue[2]{number,title,state}:\n  42,Fix login,open\n  43,Add dark mode,open\ntotalCount: 47\nhelp[1]: Call get_issue with number=<number> for full detail"
     );
 }
 
@@ -26,7 +26,7 @@ fn renders_empty_state() {
         .total_count(Some(0))
         .hints(vec!["Try list_issues with a broader filter".to_string()]);
     let out = render_toon(&opts).expect("valid input renders");
-    assert_eq!(out, "issue[0]{}:\ntotalCount: 0\nhelp[1]:\n  Try list_issues with a broader filter\n");
+    assert_eq!(out, "issue: []\ntotalCount: 0\nhelp[1]: Try list_issues with a broader filter");
 }
 
 #[test]
@@ -37,10 +37,10 @@ fn escapes_comma_in_value() {
 }
 
 #[test]
-fn null_value_renders_as_empty_field() {
+fn null_value_renders_as_null_literal() {
     let opts = ToonOptions::new("item", vec!["a".into(), "b".into()], vec![vec![Value::Str("x".into()), Value::Null]]);
     let out = render_toon(&opts).expect("valid input renders");
-    assert!(out.contains("  x,\n"));
+    assert!(out.ends_with("\n  x,null"), "got: {out:?}");
 }
 
 #[test]
@@ -51,7 +51,7 @@ fn bool_values_render_as_true_false() {
         vec![vec![Value::Bool(true), Value::Bool(false)]],
     );
     let out = render_toon(&opts).expect("valid input renders");
-    assert!(out.contains("  true,false\n"));
+    assert!(out.ends_with("\n  true,false"), "got: {out:?}");
 }
 
 #[test]
@@ -67,7 +67,7 @@ fn multiple_hints_render_correctly() {
         .total_count(Some(0))
         .hints(vec!["hint one".to_string(), "hint two".to_string()]);
     let out = render_toon(&opts).expect("valid input renders");
-    assert!(out.contains("help[2]:\n  hint one\n  hint two\n"));
+    assert!(out.ends_with("\nhelp[2]: hint one,hint two"), "got: {out:?}");
 }
 
 #[test]
@@ -78,7 +78,7 @@ fn mixed_numeric_row_uses_comma_separators() {
         vec![vec![Value::Int(-7), Value::Float(2.5), Value::Int(0)]],
     );
     let out = render_toon(&opts).expect("valid input renders");
-    assert!(out.contains("  -7,2.5,0\n"), "expected comma-separated numeric row, got: {out}");
+    assert!(out.ends_with("\n  -7,2.5,0"), "expected comma-separated numeric row, got: {out}");
 }
 
 #[test]
@@ -100,7 +100,7 @@ fn quote_in_value_is_escaped() {
 fn newline_in_value_is_quoted_and_escaped() {
     let opts = ToonOptions::new("item", vec!["body".into()], vec![vec![Value::Str("line1\nline2".into())]]);
     let out = render_toon(&opts).expect("valid input renders");
-    assert!(out.contains("  \"line1\\nline2\"\n"), "expected quoted, escaped newline value, got: {out:?}");
+    assert!(out.ends_with("\n  \"line1\\nline2\""), "expected quoted, escaped newline value, got: {out:?}");
     assert_eq!(out.lines().count(), 2, "the escaped newline must not inject a row line, got: {out:?}");
 }
 
@@ -110,9 +110,9 @@ fn long_cell_value_is_truncated_per_max_cell_len() {
     let opts = ToonOptions::new("issue", vec!["title".to_string()], vec![vec![Value::Str(long_title.into())]])
         .max_cell_len(50);
     let out = render_toon(&opts).expect("valid input renders");
-    assert!(out.contains("chars truncated"), "expected truncation signal, got: {out}");
+    // " (267 more chars)" is 17 chars: 33 kept, and 33 + 267 = 300. No hint was given, so no `use` clause.
     let row_line = out.lines().nth(1).expect("row line exists");
-    assert!(row_line.chars().count() <= 50 + 40, "row line too long: {row_line}");
+    assert_eq!(row_line, format!("  {} (267 more chars)", "x".repeat(33)));
 }
 
 #[test]
@@ -120,14 +120,14 @@ fn short_cell_value_is_not_truncated() {
     let opts = ToonOptions::new("issue", vec!["title".to_string()], vec![vec![Value::Str("short".into())]]);
     let out = render_toon(&opts).expect("valid input renders");
     assert!(out.contains("short"));
-    assert!(!out.contains("chars truncated"));
+    assert!(!out.contains("more chars"));
 }
 
 #[test]
 fn hints_field_accepts_hint_type() {
     let opts = ToonOptions::new("issue", vec![], vec![]).hints(vec!["do this".to_string()]);
     let out = render_toon(&opts).expect("valid input renders");
-    assert!(out.contains("help[1]:\n  do this\n"));
+    assert!(out.ends_with("\nhelp[1]: do this"), "got: {out:?}");
 }
 
 #[test]
@@ -163,7 +163,8 @@ fn list_builds_toon_options_from_serializable_struct_slice() {
     let issues = vec![Issue { number: 51815, title: "[Bug]: Telegram plugin".to_string(), state: "open".to_string() }];
     let out = michi_core::toon::list("issues", &issues).expect("list failed");
     assert!(out.starts_with("issues[1]{number,title,state}:\n"), "got: {out}");
-    assert!(out.contains("51815,[Bug]: Telegram plugin,open"), "got: {out}");
+    // The title contains brackets and a colon, so TOON 4.4 §7.2 quotes it.
+    assert!(out.contains("51815,\"[Bug]: Telegram plugin\",open"), "got: {out}");
 }
 
 #[test]
@@ -175,9 +176,8 @@ fn list_handles_empty_slice() {
     }
     let items: Vec<Empty> = vec![];
     let out = michi_core::toon::list("nothing", &items).expect("list failed");
-    // Empty slice: header with 0 rows, no data lines
-    assert!(out.starts_with("nothing[0]"), "got: {out}");
-    assert!(!out.contains('\n') || out.lines().count() <= 1, "got: {out}");
+    // Empty slice: the empty-array form `key: []` (TOON 4.4 §9.1), a single line.
+    assert_eq!(out, "nothing: []");
 }
 
 #[test]
@@ -218,7 +218,7 @@ fn render_toon_is_profile_invariant() {
         vec!["a".to_string(), "b".to_string()],
         vec![vec![Value::from("x"), Value::from("y")]],
     );
-    assert_eq!(render_toon(&valid).unwrap(), "issue[1]{a,b}:\n  x,y\n");
+    assert_eq!(render_toon(&valid).unwrap(), "issue[1]{a,b}:\n  x,y");
 
     let short = ToonOptions::new("issue", vec!["a".to_string(), "b".to_string()], vec![vec![Value::from("x")]]);
     assert_eq!(
@@ -232,16 +232,16 @@ fn render_toon_is_profile_invariant() {
         michi_core::toon::ToonError::RowLengthMismatch { row_index: 0, expected: 1, actual: 2 }
     );
 
-    let bad_type = ToonOptions::new("a[b", vec!["x".to_string()], vec![vec![Value::from("v")]]);
+    let bad_type = ToonOptions::new("help", vec!["x".to_string()], vec![vec![Value::from("v")]]);
     assert_eq!(
         render_toon(&bad_type).unwrap_err(),
-        michi_core::toon::ToonError::InvalidTypeName { name: "a[b".to_string() }
+        michi_core::toon::ToonError::InvalidTypeName { name: "help".to_string() }
     );
 
-    let bad_field = ToonOptions::new("t", vec!["a,b".to_string()], vec![vec![Value::from("v")]]);
+    let bad_field = ToonOptions::new("t", vec!["a".to_string(), "a".to_string()], vec![vec![Value::from("v"); 2]]);
     assert_eq!(
         render_toon(&bad_field).unwrap_err(),
-        michi_core::toon::ToonError::InvalidFieldName { name: "a,b".to_string() }
+        michi_core::toon::ToonError::InvalidFieldName { name: "a".to_string() }
     );
 }
 

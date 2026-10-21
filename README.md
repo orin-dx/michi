@@ -29,15 +29,15 @@ Agents pay for every token they read. Standard JSON lists repeat keys on every s
 ]
 ```
 
-TOON (Token-Optimized Object Notation) states field names once in a tabular header:
+TOON (Token-Oriented Object Notation) states field names once in a tabular header:
 
 ```text
 issues[2]{number,title,state}:
-  51815,[Bug]: Telegram plugin,open
+  51815,"[Bug]: Telegram plugin",open
   51812,dark mode request,open
 ```
 
-Values are quoted only when they contain commas, quotes, or newlines — no quoting overhead on the common case.
+Output conforms to the [TOON 4.4 specification](https://github.com/toon-format/spec/blob/main/SPEC.md). Values are quoted only when the spec requires it — a delimiter, colon, bracket, quote, line break, or a value that would otherwise read as a number, boolean or `null` — so the common case carries no quoting overhead.
 
 ## Quick start
 
@@ -46,18 +46,21 @@ Values are quoted only when they contain commas, quotes, or newlines — no quot
 ```rust
 use michi_core::toon::{render_toon, ToonOptions, Value};
 
-let opts = ToonOptions::new(
-    "issues",
-    vec!["number".to_string(), "title".to_string(), "state".to_string()],
-    vec![
-        vec![Value::Int(51815), Value::from("[Bug]: Telegram plugin"), Value::from("open")],
-        vec![Value::Int(51812), Value::from("dark mode request"), Value::from("open")],
-    ],
-)
-.total_count(Some(8771))
-.hints(vec!["Run `gh-axi issue view <number>` to view an issue".to_string()]);
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let opts = ToonOptions::new(
+        "issues",
+        vec!["number".to_string(), "title".to_string(), "state".to_string()],
+        vec![
+            vec![Value::Int(51815), Value::from("[Bug]: Telegram plugin"), Value::from("open")],
+            vec![Value::Int(51812), Value::from("dark mode request"), Value::from("open")],
+        ],
+    )
+    .total_count(Some(8771))
+    .hints(vec!["Run `gh-axi issue view <number>` to view an issue".to_string()]);
 
-print!("{}", render_toon(&opts)?);
+    print!("{}", render_toon(&opts)?);
+    Ok(())
+}
 ```
 
 ### TypeScript / Node.js
@@ -91,11 +94,10 @@ process.stdout.write(out);
 
 ```text
 issues[2]{number,title,state}:
-  51815,[Bug]: Telegram plugin,open
+  51815,"[Bug]: Telegram plugin",open
   51812,dark mode request,open
 totalCount: 8771
-help[1]:
-  Run `gh-axi issue view <number>` to view an issue
+help[1]: Run `gh-axi issue view <number>` to view an issue
 ```
 
 ## Workspace Architecture

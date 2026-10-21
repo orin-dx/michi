@@ -52,6 +52,14 @@ fn call_tool_result_schema_matches_its_wire_form() {
 }
 
 #[test]
+fn content_block_rejects_a_non_text_type_instead_of_coercing_it() {
+    let json = r#"{"type":"image","text":"x","annotations":{"audience":["user"]}}"#;
+    assert!(serde_json::from_str::<ContentBlock>(json).is_err(), "an image block must not become a text block");
+    let ok = r#"{"type":"text","text":"x","annotations":{"audience":["user"]}}"#;
+    assert!(serde_json::from_str::<ContentBlock>(ok).is_ok());
+}
+
+#[test]
 fn content_block_schema_matches_its_wire_form() {
     let value = serde_json::to_value(ContentBlock::new("t", vec![Audience::User])).expect("serializes");
     let root = serde_json::to_value(schemars::schema_for!(ContentBlock)).expect("schema serializes");

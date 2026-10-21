@@ -34,7 +34,15 @@ impl std::fmt::Display for Hint {
     }
 }
 
-/// Render a `help[N]:` block from a slice of hints.
+/// Render a help block from a slice of hints: one line `help[N]: hint1,hint2`, ending in a newline.
+///
+/// The block is a TOON 4.4 inline primitive array (§9.1), the form §1.4 prescribes for an array of strings. Each hint
+/// is quoted only when §7.2 requires it — notably when it contains a comma (the delimiter), a colon, a quote, a
+/// backslash, a bracket or brace, or a line break, which is written as the escape `\n`/`\r` so a hint never spans
+/// lines. Returns an empty string for an empty slice.
+///
+/// The trailing newline makes this a block for concatenation; the TOON document renderers (`render_toon`,
+/// `empty_state_with_hints`, `AgentResponse`) drop the final newline of the finished document.
 #[must_use]
 pub fn render_hints(hints: &[Hint]) -> String {
     if hints.is_empty() {
@@ -45,19 +53,35 @@ pub fn render_hints(hints: &[Hint]) -> String {
     out
 }
 
-/// Append a `help[N]:` block to an existing string in-place.
+/// Append the help block of [`render_hints`] to an existing string in-place.
+///
+/// When `out` is non-empty and does not end in a newline (a finished TOON document has none), a newline is inserted
+/// first so the block always starts on its own line. Does nothing for an empty slice.
 pub fn append_hints(out: &mut String, hints: &[Hint]) {
-    if hints.is_empty() {
+    append_help_block(out, hints.iter().map(Hint::as_str));
+}
+
+/// Shared writer for every help block: `help[N]: h1,h2` plus a newline, each hint encoded per TOON 4.4 §7.2.
+pub(crate) fn append_help_block<'a, I>(out: &mut String, hints: I)
+where
+    I: ExactSizeIterator<Item = &'a str>,
+{
+    if hints.len() == 0 {
         return;
+    }
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
     }
     out.push_str("help[");
     out.push_str(&hints.len().to_string());
-    out.push_str("]:\n");
-    for hint in hints {
-        out.push_str("  ");
-        out.push_str(&crate::text::escape_line_breaks(hint.as_str()));
-        out.push('\n');
+    out.push_str("]: ");
+    for (i, hint) in hints.enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&crate::toon::escape_value(hint));
     }
+    out.push('\n');
 }
 
 #[cfg(test)]
@@ -67,7 +91,20 @@ mod tests {
     #[test]
     fn single_hint_renders_correctly() {
         let hints = [Hint::new("Call get_item with id=<id>")];
-        assert_eq!(render_hints(&hints), "help[1]:\n  Call get_item with id=<id>\n");
+        assert_eq!(render_hints(&hints), "help[1]: Call get_item with id=<id>\n");
+    }
+
+    #[test]
+    fn hints_are_quoted_per_toon_string_rules() {
+        let hints = [Hint::new("a, b"), Hint::new("key: v"), Hint::new(""), Hint::new("-x"), Hint::new("plain")];
+        assert_eq!(render_hints(&hints), "help[5]: \"a, b\",\"key: v\",\"\",\"-x\",plain\n");
+    }
+
+    #[test]
+    fn append_hints_starts_a_new_line_after_a_finished_document() {
+        let mut out = "t: []".to_string();
+        append_hints(&mut out, &[Hint::new("h")]);
+        assert_eq!(out, "t: []\nhelp[1]: h\n");
     }
 
     #[test]
@@ -79,7 +116,7 @@ mod tests {
     fn multiple_hints_all_appear_in_order() {
         let hints = [Hint::new("first"), Hint::new("second"), Hint::new("third")];
         let out = render_hints(&hints);
-        assert_eq!(out, "help[3]:\n  first\n  second\n  third\n");
+        assert_eq!(out, "help[3]: first,second,third\n");
     }
 
     #[test]
@@ -117,9 +154,9 @@ mod tests {
     fn ac011a_newline_in_hint_is_escaped() {
         let hints = [Hint::new("a\nb")];
         let out = render_hints(&hints);
-        assert_eq!(out, "help[1]:\n  a\\nb\n");
-        // The \n renders as a visible escape, so line count stays at help[N]'s N+1.
-        assert_eq!(out.lines().count(), 2);
+        assert_eq!(out, "help[1]: \"a\\nb\"\n");
+        // The \n renders as a visible escape inside quotes, so the block stays one line.
+        assert_eq!(out.lines().count(), 1);
     }
 
     #[test]
@@ -140,8 +177,8 @@ mod tests {
         // \r renders as the visible two-character escape, never raw or dropped.
         let hints = [Hint::new("a\rb")];
         let out = render_hints(&hints);
-        assert_eq!(out, "help[1]:\n  a\\rb\n");
+        assert_eq!(out, "help[1]: \"a\\rb\"\n");
         assert!(!out.contains('\r'), "no raw CR may survive, got: {out:?}");
-        assert_eq!(out.lines().count(), 2);
+        assert_eq!(out.lines().count(), 1);
     }
 }

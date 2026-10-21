@@ -311,7 +311,7 @@ impl Error {
     pub fn render(&self) -> String {
         match self {
             Self::Domain(d) => d.render(),
-            other => format!("error: {other}"),
+            other => format!("error: {}", crate::text::escape_line_breaks(&other.to_string())),
         }
     }
 
@@ -389,7 +389,7 @@ mod tests {
         let out = e.render();
         assert_eq!(
             out,
-            "error: not_found\nmessage: Issue #9999 does not exist in this repository\nexit_code: 1\nhelp[1]:\n  Call list_issues to see available numbers\n"
+            "error: not_found\nmessage: Issue #9999 does not exist in this repository\nexit_code: 1\nhelp[1]: Call list_issues to see available numbers\n"
         );
     }
 
@@ -653,7 +653,7 @@ mod tests {
     #[test]
     fn ac014_render_with_hints_and_recovery_is_exact_literal() {
         let e = DomainError::new(ErrorCode::NotFound, "m").hint("h").recovery(RecoveryHint::new("t"));
-        assert_eq!(e.render(), "error: not_found\nmessage: m\nexit_code: 1\nhelp[1]:\n  h\nrecovery[1]:\n  t\n");
+        assert_eq!(e.render(), "error: not_found\nmessage: m\nexit_code: 1\nhelp[1]: h\nrecovery[1]:\n  t\n");
     }
 
     #[test]
@@ -687,7 +687,7 @@ mod tests {
     #[test]
     fn ac014_render_with_hints_and_recovery_ignores_retryable_true() {
         let e = DomainError::new(ErrorCode::RateLimited, "m").hint("h").recovery(RecoveryHint::new("t"));
-        assert_eq!(e.render(), "error: rate_limited\nmessage: m\nexit_code: 1\nhelp[1]:\n  h\nrecovery[1]:\n  t\n");
+        assert_eq!(e.render(), "error: rate_limited\nmessage: m\nexit_code: 1\nhelp[1]: h\nrecovery[1]:\n  t\n");
     }
 
     #[test]

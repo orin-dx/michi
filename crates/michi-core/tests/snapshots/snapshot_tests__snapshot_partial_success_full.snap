@@ -7,7 +7,7 @@ completed[2]:
   create_issue
   add_label
 failed[1]{operation,reason}:
-  assign_user,"User 'ghost' not found"
+  assign_user,User 'ghost' not found
 skipped[1]:
   notify_team
 help[1]:

@@ -4,11 +4,13 @@ use crate::kv::KvValue;
 ///
 /// With the `serde` feature it serializes to the same JSON as the structured companions of `AgentResponse` and
 /// `DomainError`: `{"tool": ..., "params": {key: value, ...}, "reason": ...}`, with `reason` omitted when absent and
-/// each parameter as a plain JSON value. Deserializing maps strings to `Text`, integers to `Int`, other numbers to
-/// `Float` (decimal places taken from the number), booleans to `Bool` and `null` to `Missing`.
+/// each parameter as a plain JSON value. Deserializing maps strings to `Text`, integers that fit `i64` to `Int`, other
+/// numbers to `Float` with enough decimal places to reproduce the value exactly, booleans to `Bool` and `null` to
+/// `Missing`. Values `KvValue` cannot hold exactly (arrays, objects, integers outside `i64`) are rejected, never
+/// rewritten.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(into = "RecoveryHintWire", from = "RecoveryHintWire"))]
+#[cfg_attr(feature = "serde", serde(into = "RecoveryHintWire", try_from = "RecoveryHintWire"))]
 pub struct RecoveryHint {
     /// The tool/operation name the agent should call to recover.
     pub tool: String,
@@ -45,6 +47,7 @@ impl RecoveryHint {
 #[cfg_attr(feature = "schemars", schemars(rename = "RecoveryHint"))]
 struct RecoveryHintWire {
     tool: String,
+    #[cfg_attr(feature = "schemars", schemars(schema_with = "param_values_schema"))]
     params: serde_json::Map<String, serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     reason: Option<String>,
@@ -67,33 +70,54 @@ impl From<RecoveryHint> for RecoveryHintWire {
     }
 }
 
+/// Schema for parameter values: the scalar JSON types `json_to_kv_value` accepts.
+#[cfg(feature = "schemars")]
+fn param_values_schema(_: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+    serde_json::from_value(serde_json::json!({
+        "type": "object",
+        "additionalProperties": { "type": ["string", "integer", "number", "boolean", "null"] }
+    }))
+    .unwrap_or(schemars::schema::Schema::Bool(true))
+}
+
 #[cfg(feature = "serde")]
-fn json_to_kv_value(v: serde_json::Value) -> KvValue {
+fn json_to_kv_value(key: &str, v: serde_json::Value) -> Result<KvValue, String> {
     match v {
-        serde_json::Value::Null => KvValue::Missing,
-        serde_json::Value::Bool(b) => KvValue::Bool(b),
-        serde_json::Value::String(s) => KvValue::Text(s),
-        serde_json::Value::Number(n) => match (n.as_i64(), n.as_f64()) {
-            (Some(i), _) => KvValue::Int(i),
-            (None, Some(f)) if n.is_f64() => {
-                let text = n.to_string();
-                let decimals = text.split_once('.').map_or(0, |(_, frac)| frac.len().min(20));
-                KvValue::Float(f, u8::try_from(decimals).unwrap_or(20))
+        serde_json::Value::Null => Ok(KvValue::Missing),
+        serde_json::Value::Bool(b) => Ok(KvValue::Bool(b)),
+        serde_json::Value::String(s) => Ok(KvValue::Text(s)),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Ok(KvValue::Int(i))
+            } else if let (true, Some(f)) = (n.is_f64(), n.as_f64()) {
+                // Rust's `Display` for f64 is the shortest exact representation and never uses an exponent, so its
+                // fractional digits are the decimal places `KvValue::Float` needs to reproduce `f` (1e-6 -> 6).
+                let shortest = f.to_string();
+                let decimals = shortest.split_once('.').map_or(0, |(_, frac)| frac.len());
+                let decimals = u8::try_from(decimals)
+                    .map_err(|_| format!("parameter `{key}`: {n} needs more than 255 decimal places"))?;
+                Ok(KvValue::Float(f, decimals))
+            } else {
+                Err(format!("parameter `{key}`: integer {n} is outside the i64 range"))
             }
-            _ => KvValue::Text(n.to_string()),
-        },
-        other => KvValue::Text(other.to_string()),
+        }
+        serde_json::Value::Array(_) | serde_json::Value::Object(_) => Err(format!(
+            "parameter `{key}`: arrays and objects are not supported; use a string, number, boolean or null"
+        )),
     }
 }
 
 #[cfg(feature = "serde")]
-impl From<RecoveryHintWire> for RecoveryHint {
-    fn from(w: RecoveryHintWire) -> Self {
-        Self {
-            tool: w.tool,
-            params: w.params.into_iter().map(|(k, v)| (k, json_to_kv_value(v))).collect(),
-            reason: w.reason,
-        }
+impl TryFrom<RecoveryHintWire> for RecoveryHint {
+    type Error = String;
+
+    fn try_from(w: RecoveryHintWire) -> Result<Self, Self::Error> {
+        let params = w
+            .params
+            .into_iter()
+            .map(|(k, v)| json_to_kv_value(&k, v).map(|value| (k, value)))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self { tool: w.tool, params, reason: w.reason })
     }
 }
 

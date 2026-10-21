@@ -15,7 +15,11 @@ use std::time::Duration;
 #[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum ExecutionError {
-    /// HTTP-transport failure.
+    /// HTTP-transport failure. A step reports the server's status as-is;
+    /// see [`Step`]'s "Replay safety" for what each retryable status means.
+    /// When [`CircuitBreaker::call`] returns a bare 502 or 504, the step was
+    /// idempotent, so replaying it is safe; for a non-idempotent step the
+    /// breaker wraps these in [`ExecutionError::AmbiguousOutcome`] instead.
     #[error("http {status}: {message}")]
     Http {
         /// HTTP status code returned by the failed request.
@@ -25,7 +29,11 @@ pub enum ExecutionError {
         /// Server-supplied retry delay, if the caller already parsed one.
         retry_after: Option<Duration>,
     },
-    /// A step attempt exceeded its configured timeout.
+    /// A step attempt exceeded its configured timeout. A timeout is an
+    /// ambiguous outcome: the attempt may already have committed. When
+    /// [`CircuitBreaker::call`] returns a bare `Timeout`, the step was
+    /// idempotent; for a non-idempotent step it is wrapped in
+    /// [`ExecutionError::AmbiguousOutcome`] instead.
     #[error("step timed out after {elapsed_ms}ms")]
     Timeout {
         /// Milliseconds elapsed before the attempt was aborted.
@@ -94,12 +102,70 @@ pub enum ExecutionError {
     /// step.
     #[error("pipeline execution cancelled")]
     Cancelled,
+    /// A non-idempotent step ended in an ambiguous outcome -- a timeout, or
+    /// HTTP 502/504, directly or wrapped in [`ExecutionError::StepFailed`] --
+    /// so the operation may or may not have completed. Produced only by
+    /// [`CircuitBreaker::call`], which never re-invokes the step in this case.
+    /// Never retryable: the caller must first verify whether the operation
+    /// completed, because replaying it could repeat its side effect.
+    #[error("outcome unknown, the operation may have completed: {source}")]
+    AmbiguousOutcome {
+        /// The ambiguous error the step's last attempt produced.
+        source: Box<ExecutionError>,
+    },
+}
+
+/// Hint attached to the [`michi_core::DomainError`] converted from an
+/// [`ExecutionError::AmbiguousOutcome`].
+const VERIFY_BEFORE_RETRY_HINT: &str = "verify whether the operation completed before retrying; \
+     the step is not idempotent, so a blind retry could repeat its side effect";
+
+/// How a failed attempt's outcome bears on replaying it. See [`Step`]'s
+/// "Replay safety" section.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReplayClass {
+    /// The step was never invoked (circuit open, cancelled). Safe to try again.
+    NotExecuted,
+    /// The request was not processed (HTTP 429/503), or the step itself
+    /// classified its failure as retryable. Retried per `is_retryable`.
+    Rejected,
+    /// The attempt may have committed (timeout, HTTP 502/504). Re-invoked only
+    /// for an idempotent step.
+    Ambiguous,
+    /// Anything else: retrying would not change the result.
+    Definitive,
+}
+
+/// Classifies an error by replay safety, recursing through
+/// [`ExecutionError::StepFailed`].
+fn replay_class(err: &ExecutionError) -> ReplayClass {
+    match err {
+        ExecutionError::CircuitOpen { .. } | ExecutionError::Cancelled => ReplayClass::NotExecuted,
+        ExecutionError::Http { status: 429 | 503, .. } => ReplayClass::Rejected,
+        ExecutionError::Http { status: 502 | 504, .. }
+        | ExecutionError::Timeout { .. }
+        | ExecutionError::AmbiguousOutcome { .. } => ReplayClass::Ambiguous,
+        ExecutionError::Failed { retryable: true, .. } => ReplayClass::Rejected,
+        ExecutionError::StepFailed { source, .. } => replay_class(source),
+        ExecutionError::Http { .. }
+        | ExecutionError::Failed { .. }
+        | ExecutionError::StepCountMismatch { .. }
+        | ExecutionError::UnknownStepId { .. }
+        | ExecutionError::DuplicateStepId { .. }
+        | ExecutionError::CyclicDependency { .. } => ReplayClass::Definitive,
+    }
 }
 
 impl ExecutionError {
-    /// Classifies whether retrying is worthwhile for this error. `Timeout`
-    /// reports `true`, but [`CircuitBreaker::call`] only re-invokes a timed-out
-    /// step that opts in via [`Step::is_idempotent`].
+    /// Whether replaying the failed operation is both worthwhile and safe.
+    ///
+    /// HTTP 429/502/503/504, `Timeout`, `CircuitOpen` and `Failed { retryable:
+    /// true }` report `true`; [`ExecutionError::AmbiguousOutcome`] reports
+    /// `false`. An error returned by [`CircuitBreaker::call`] (or by
+    /// [`execute_pipeline`]/[`execute_pipeline_parallel`], wrapped in
+    /// `StepFailed`) already reflects the step's [`Step::is_idempotent`]: an
+    /// ambiguous outcome of a non-idempotent step comes back as
+    /// `AmbiguousOutcome`, so this is `false` for it.
     #[must_use]
     pub fn is_retryable(&self) -> bool {
         match self {
@@ -113,6 +179,7 @@ impl ExecutionError {
             Self::DuplicateStepId { .. } => false,
             Self::CyclicDependency { .. } => false,
             Self::Cancelled => false,
+            Self::AmbiguousOutcome { .. } => false,
         }
     }
 }
@@ -131,7 +198,8 @@ fn retry_after_for(err: &ExecutionError) -> Option<Duration> {
         | ExecutionError::UnknownStepId { .. }
         | ExecutionError::DuplicateStepId { .. }
         | ExecutionError::CyclicDependency { .. }
-        | ExecutionError::Cancelled => None,
+        | ExecutionError::Cancelled
+        | ExecutionError::AmbiguousOutcome { .. } => None,
     }
 }
 
@@ -179,32 +247,46 @@ use std::pin::Pin;
 /// construction, so `Vec<Box<dyn Step>>` is usable without an async-trait
 /// dependency.
 ///
-/// # Retry eligibility
+/// # Replay safety
 ///
-/// [`CircuitBreaker::call`] may invoke [`Step::run`] more than once. Which
-/// failures lead to a re-invocation:
+/// [`CircuitBreaker::call`] may invoke [`Step::run`] more than once. Every
+/// failed attempt is classified by whether it could have taken effect, and
+/// one rule decides both whether the breaker re-invokes the step and whether
+/// the returned error tells an outer caller it may replay the operation
+/// ([`ExecutionError::is_retryable`] and the converted
+/// [`michi_core::DomainError`]'s `retryable` flag):
 ///
-/// - **Errors the step returns itself** (other than a timeout) are retried
-///   exactly when [`ExecutionError::is_retryable`] says so. The step is
-///   classifying its own outcome there (e.g. `Failed { retryable }`, an HTTP
-///   status), so it is responsible for only marking an error retryable when
-///   the attempt had no effect or repeating it is safe.
-/// - **Timeouts are ambiguous outcomes.** When an attempt exceeds the
-///   breaker's per-attempt timeout, its future is dropped mid-flight: it may
-///   already have committed its side effect. The same holds for an
-///   [`ExecutionError::Timeout`] the step returns, directly or wrapped in
-///   [`ExecutionError::StepFailed`]. A timed-out step is re-invoked **only**
-///   if [`Step::is_idempotent`] returns `true`; by default it is not, and the
-///   timeout is returned after the single attempt.
+/// - **Not executed** -- the step was never invoked (circuit open,
+///   cancelled). Safe to try again.
+/// - **Rejected** -- the server says the request was not processed: HTTP
+///   429 or 503. Also `Failed { retryable: true }`, where the step itself
+///   vouches that the attempt had no effect or repeating it is safe. Retried
+///   per the breaker's retry policy, for every step.
+/// - **Ambiguous** -- the attempt may have committed: a timeout (the
+///   breaker's own per-attempt timeout, which drops the attempt mid-flight,
+///   or an [`ExecutionError::Timeout`] the step returns), or HTTP 502 or 504
+///   -- directly or wrapped in [`ExecutionError::StepFailed`]. Re-invoked
+///   **only** if [`Step::is_idempotent`] returns `true`. For a
+///   non-idempotent step (the default) the breaker runs it once and returns
+///   [`ExecutionError::AmbiguousOutcome`], which is not retryable and tells
+///   the agent to verify whether the operation completed.
+/// - **Definitive** -- everything else (other 4xx, 500, `Failed { retryable:
+///   false }`): returned without a retry.
+///
+/// A step classifies its own outcome when it returns an error, so it must
+/// classify honestly: a step that may have committed its side effect must
+/// not report HTTP 429 or 503 (or `Failed { retryable: true }`), since those
+/// mean "not processed" and are retried even for a non-idempotent step.
+/// Report 502, 504 or a timeout instead, or a non-retryable error.
 pub trait Step: Send + Sync {
     /// Runs one attempt of this step.
     fn run<'a>(&'a self, attempt: u32) -> Pin<Box<dyn Future<Output = Result<(), ExecutionError>> + Send + 'a>>;
 
     /// Whether running this step more than once has the same effect as
     /// running it once, so the breaker may re-invoke it after an ambiguous
-    /// (timed-out) attempt. Defaults to `false`: a step must opt in to being
-    /// retried after a timeout. See the trait-level "Retry eligibility"
-    /// section.
+    /// attempt (timeout, HTTP 502/504) and report such an outcome as
+    /// retryable. Defaults to `false`: a step must opt in. See the
+    /// trait-level "Replay safety" section.
     fn is_idempotent(&self) -> bool {
         false
     }
@@ -219,7 +301,7 @@ pub struct FnStep<F> {
 
 impl<F> FnStep<F> {
     /// Declares this closure step idempotent, opting it in to being
-    /// re-invoked after a timed-out attempt (see [`Step::is_idempotent`]).
+    /// re-invoked after an ambiguous attempt (see [`Step::is_idempotent`]).
     #[must_use]
     pub fn idempotent(mut self) -> Self {
         self.idempotent = true;
@@ -229,7 +311,8 @@ impl<F> FnStep<F> {
 
 /// Ergonomic adapter from an async closure into a value implementing
 /// [`Step`], for callers who don't need custom state. The returned step is
-/// not idempotent; call [`FnStep::idempotent`] to opt in to timeout retries.
+/// not idempotent; call [`FnStep::idempotent`] to opt in to retries after an
+/// ambiguous outcome.
 pub fn step_fn<F, Fut>(f: F) -> FnStep<F>
 where
     F: Fn(u32) -> Fut + Send + Sync,
@@ -252,13 +335,21 @@ where
     }
 }
 
-/// Whether `err` is an ambiguous outcome -- the attempt may or may not have
-/// taken effect -- recursing through [`ExecutionError::StepFailed`].
-fn is_ambiguous_outcome(err: &ExecutionError) -> bool {
-    match err {
-        ExecutionError::Timeout { .. } => true,
-        ExecutionError::StepFailed { source, .. } => is_ambiguous_outcome(source),
-        _ => false,
+/// Whether the breaker may re-invoke `step` after `err`: the error must be
+/// retryable, and an ambiguous one only for an idempotent step.
+fn may_reinvoke(step: &dyn Step, err: &ExecutionError) -> bool {
+    err.is_retryable() && (step.is_idempotent() || replay_class(err) != ReplayClass::Ambiguous)
+}
+
+/// The error [`CircuitBreaker::call`] returns for `step`'s final failed
+/// attempt: an ambiguous outcome of a non-idempotent step that still claims
+/// to be retryable is wrapped in [`ExecutionError::AmbiguousOutcome`], so the
+/// outward guidance matches the breaker's own refusal to re-invoke it.
+fn finalize_error(step: &dyn Step, err: ExecutionError) -> ExecutionError {
+    if !step.is_idempotent() && err.is_retryable() && replay_class(&err) == ReplayClass::Ambiguous {
+        ExecutionError::AmbiguousOutcome { source: Box::new(err) }
+    } else {
+        err
     }
 }
 
@@ -293,13 +384,18 @@ impl From<ExecutionError> for michi_core::DomainError {
             .retryable(true)
             .retry_after(std::time::Duration::from_millis(retry_after_ms)),
             ExecutionError::StepFailed { step_id, step_name, source } => {
-                let inner: michi_core::DomainError = (*source).into();
-                let message = format!("step {step_id} ({step_name}) failed: {}", inner.message);
-                let mut domain_err = michi_core::DomainError::new(inner.code, message).retryable(inner.retryable);
-                if let Some(retry_after) = inner.retry_after {
-                    domain_err = domain_err.retry_after(retry_after);
-                }
-                domain_err
+                // Keeps the inner code, retryable flag, retry_after, hints and
+                // recovery; only the message gains the step prefix.
+                let mut inner: michi_core::DomainError = (*source).into();
+                inner.message = format!("step {step_id} ({step_name}) failed: {}", inner.message);
+                inner
+            }
+            ExecutionError::AmbiguousOutcome { source } => {
+                let mut inner: michi_core::DomainError = (*source).into();
+                inner.message = format!("outcome unknown, the operation may have completed: {}", inner.message);
+                inner.retryable = false;
+                inner.retry_after = None;
+                inner.hint(VERIFY_BEFORE_RETRY_HINT)
             }
             ExecutionError::StepCountMismatch { expected, got } => michi_core::DomainError::new(
                 michi_core::ErrorCode::InvalidInput,
@@ -651,18 +747,25 @@ impl CircuitBreaker {
     /// `retry_after` or `ExecutionError::CircuitOpen`'s `retry_after_ms`
     /// through when present -- including when either is wrapped inside
     /// `ExecutionError::StepFailed`'s `source`, which is unwrapped
-    /// recursively. A timed-out attempt is retried only if
-    /// [`Step::is_idempotent`] returns `true` (see [`Step`]'s "Retry
-    /// eligibility"). Returns immediately on success or
-    /// on a non-retryable error, and returns the last error once
-    /// `next_retry_delay` reports exhaustion. On success, resets the
-    /// consecutive-failure counter; on a call-level failure (after retries
-    /// are exhausted or the error is non-retryable), increments the counter
-    /// once and opens the circuit at `failure_threshold`.
+    /// recursively. Which failures are retried follows [`Step`]'s "Replay
+    /// safety" rule: an ambiguous outcome (timeout, HTTP 502/504) is retried
+    /// only if [`Step::is_idempotent`] returns `true`, while HTTP 429/503 and
+    /// other retryable errors are retried for every step. Returns
+    /// immediately on success or on an error it will not retry, and returns
+    /// the last error once `next_retry_delay` reports exhaustion. On success,
+    /// resets the consecutive-failure counter; on a call-level failure (after
+    /// retries are exhausted or the error is not retried), increments the
+    /// counter once and opens the circuit at `failure_threshold`.
     ///
     /// While `HalfOpen`, runs `step` exactly once with no retries: success
     /// closes the circuit and resets the counter, and any failure reopens
     /// the circuit unconditionally, bypassing `failure_threshold`.
+    ///
+    /// The returned error carries the same replay rule outward: if the last
+    /// attempt of a non-idempotent step ended in an ambiguous outcome, it is
+    /// wrapped in [`ExecutionError::AmbiguousOutcome`], which is not
+    /// retryable. A bare `Timeout` or HTTP 502/504 is returned only for an
+    /// idempotent step, and stays retryable.
     pub async fn call(&self, step: &dyn Step, jitter_seed: f64) -> Result<(), ExecutionError> {
         let admission = self.admit()?;
         if let Admission::Probe { generation } = admission {
@@ -675,7 +778,7 @@ impl CircuitBreaker {
             };
             guard.armed = false;
             self.complete(admission, attempt_result.is_ok());
-            return attempt_result;
+            return attempt_result.map_err(|err| finalize_error(step, err));
         }
         let mut attempt = 0u32;
         loop {
@@ -691,10 +794,9 @@ impl CircuitBreaker {
                     return Ok(());
                 }
                 Err(err) => {
-                    let may_reinvoke = err.is_retryable() && (step.is_idempotent() || !is_ambiguous_outcome(&err));
-                    if !may_reinvoke {
+                    if !may_reinvoke(step, &err) {
                         self.complete(admission, false);
-                        return Err(err);
+                        return Err(finalize_error(step, err));
                     }
                     let retry_after = retry_after_for(&err);
                     match michi_core::resilience::next_retry_delay(
@@ -709,7 +811,7 @@ impl CircuitBreaker {
                         }
                         None => {
                             self.complete(admission, false);
-                            return Err(err);
+                            return Err(finalize_error(step, err));
                         }
                     }
                 }
@@ -720,6 +822,17 @@ impl CircuitBreaker {
 
 /// Runs the steps of `pipeline` sequentially in declaration order through
 /// `breaker`, writing each step's real outcome into `PipelineStep.status`.
+/// `runners[i]` runs `pipeline.steps[i]`.
+///
+/// Acceptance checks run before any step is attempted and leave every
+/// status untouched on failure: step-count mismatch, then a duplicate step
+/// id ([`ExecutionError::DuplicateStepId`]).
+///
+/// Every run starts by resetting each status to `Pending`, so statuses from
+/// an earlier run of the same pipeline never survive. Each step that runs is
+/// written `Completed` or `Failed`; the first failure stops the run and every
+/// later step is written `Skipped`, as is every step not yet started when
+/// cancellation is observed.
 pub async fn execute_pipeline(
     pipeline: &mut michi_core::pipeline::Pipeline,
     runners: Vec<Box<dyn Step>>,
@@ -729,6 +842,17 @@ pub async fn execute_pipeline(
 ) -> Result<(), ExecutionError> {
     if runners.len() != pipeline.steps.len() {
         return Err(ExecutionError::StepCountMismatch { expected: pipeline.steps.len(), got: runners.len() });
+    }
+
+    let mut seen_ids: HashSet<&str> = HashSet::new();
+    for step in &pipeline.steps {
+        if !seen_ids.insert(step.id.as_str()) {
+            return Err(ExecutionError::DuplicateStepId { step_id: step.id.clone() });
+        }
+    }
+
+    for step in pipeline.steps.iter_mut() {
+        step.status = michi_core::pipeline::StepStatus::Pending;
     }
 
     if cancellation.is_cancelled() {
@@ -746,12 +870,15 @@ pub async fn execute_pipeline(
             return Err(ExecutionError::Cancelled);
         }
         let outcome = breaker.call(runner.as_ref(), jitter_seed).await;
-        let step = &mut pipeline.steps[idx];
         match outcome {
             Ok(()) => {
-                step.status = michi_core::pipeline::StepStatus::Completed;
+                pipeline.steps[idx].status = michi_core::pipeline::StepStatus::Completed;
             }
             Err(err) => {
+                for later in pipeline.steps[idx + 1..].iter_mut() {
+                    later.status = michi_core::pipeline::StepStatus::Skipped;
+                }
+                let step = &mut pipeline.steps[idx];
                 step.status = michi_core::pipeline::StepStatus::Failed;
                 return Err(ExecutionError::StepFailed {
                     step_id: step.id.clone(),
@@ -1469,9 +1596,13 @@ mod tests {
                 .unwrap();
         let breaker = CircuitBreaker::new(retry_config, Duration::from_millis(500), u32::MAX, Duration::from_secs(60));
         let result = breaker.call(&NeverCompletes, 0.0).await;
+        // A non-idempotent step's timeout is wrapped as an ambiguous outcome.
         match result {
-            Err(ExecutionError::Timeout { elapsed_ms }) => assert_eq!(elapsed_ms, 500),
-            other => panic!("expected Timeout, got {other:?}"),
+            Err(ExecutionError::AmbiguousOutcome { source }) => match *source {
+                ExecutionError::Timeout { elapsed_ms } => assert_eq!(elapsed_ms, 500),
+                other => panic!("expected AmbiguousOutcome{{source: Timeout}}, got {other:?}"),
+            },
+            other => panic!("expected AmbiguousOutcome{{source: Timeout}}, got {other:?}"),
         }
     }
 
@@ -1482,9 +1613,13 @@ mod tests {
                 .unwrap();
         let breaker = CircuitBreaker::new(retry_config, Duration::ZERO, u32::MAX, Duration::from_secs(60));
         let result = breaker.call(&NeverCompletes, 0.0).await;
+        // A non-idempotent step's timeout is wrapped as an ambiguous outcome.
         match result {
-            Err(ExecutionError::Timeout { elapsed_ms }) => assert_eq!(elapsed_ms, 1),
-            other => panic!("expected Timeout, got {other:?}"),
+            Err(ExecutionError::AmbiguousOutcome { source }) => match *source {
+                ExecutionError::Timeout { elapsed_ms } => assert_eq!(elapsed_ms, 1),
+                other => panic!("expected AmbiguousOutcome{{source: Timeout}}, got {other:?}"),
+            },
+            other => panic!("expected AmbiguousOutcome{{source: Timeout}}, got {other:?}"),
         }
     }
 
@@ -2369,7 +2504,11 @@ mod tests {
         }
         assert_eq!(pipeline.steps[0].status, michi_core::pipeline::StepStatus::Completed);
         assert_eq!(pipeline.steps[1].status, michi_core::pipeline::StepStatus::Failed);
-        assert_eq!(pipeline.steps[2].status, michi_core::pipeline::StepStatus::Pending);
+        assert_eq!(
+            pipeline.steps[2].status,
+            michi_core::pipeline::StepStatus::Skipped,
+            "a step after the failure did not run, so it is Skipped"
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -3160,10 +3299,13 @@ mod tests {
         ];
         let result = execute_pipeline(&mut pipeline, runners, &breaker, 0.0, &CancellationToken::new()).await;
         match result {
-            Err(ExecutionError::StepFailed { source, .. }) => {
-                assert!(matches!(*source, ExecutionError::Timeout { .. }), "expected Timeout, got {source:?}");
-            }
-            other => panic!("expected StepFailed{{source: Timeout}}, got {other:?}"),
+            Err(ExecutionError::StepFailed { source, .. }) => match *source {
+                ExecutionError::AmbiguousOutcome { source } => {
+                    assert!(matches!(*source, ExecutionError::Timeout { .. }), "expected Timeout, got {source:?}");
+                }
+                other => panic!("expected AmbiguousOutcome{{source: Timeout}}, got {other:?}"),
+            },
+            other => panic!("expected StepFailed{{source: AmbiguousOutcome}}, got {other:?}"),
         }
     }
 
@@ -3919,25 +4061,6 @@ mod tests {
         );
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn execute_pipeline_still_executes_duplicate_ids_without_validation() {
-        let mut pipeline = make_pipeline(&["dup", "dup"]);
-        let breaker = CircuitBreaker::new(
-            michi_core::resilience::RetryConfig::default(),
-            Duration::from_secs(5),
-            1,
-            Duration::from_secs(60),
-        );
-        let runners: Vec<Box<dyn Step>> = (0..2)
-            .map(|_| Box::new(CountingStep { calls: std::sync::atomic::AtomicU32::new(0) }) as Box<dyn Step>)
-            .collect();
-        let result = execute_pipeline(&mut pipeline, runners, &breaker, 0.0, &CancellationToken::new()).await;
-        assert!(result.is_ok(), "execute_pipeline must still accept duplicate ids with no validation, got {result:?}");
-        for step in &pipeline.steps {
-            assert_eq!(step.status, michi_core::pipeline::StepStatus::Completed);
-        }
-    }
-
     #[test]
     fn execute_pipeline_signature_includes_trailing_cancellation_token() {
         #[allow(dead_code)]
@@ -4039,7 +4162,12 @@ mod tests {
         let breaker = CircuitBreaker::new(retry_config, Duration::from_millis(500), u32::MAX, Duration::from_secs(60));
         let step = HangingCommit { commits: std::sync::atomic::AtomicU32::new(0) };
         let result = breaker.call(&step, 0.0).await;
-        assert!(matches!(result, Err(ExecutionError::Timeout { .. })), "expected Timeout, got {result:?}");
+        match result {
+            Err(ExecutionError::AmbiguousOutcome { source }) => {
+                assert!(matches!(*source, ExecutionError::Timeout { .. }), "expected Timeout, got {source:?}");
+            }
+            other => panic!("expected AmbiguousOutcome{{source: Timeout}}, got {other:?}"),
+        }
         assert_eq!(
             step.commits.load(Ordering::SeqCst),
             1,
@@ -4371,6 +4499,252 @@ mod tests {
         );
         breaker.complete(p2, true);
         assert_eq!(breaker.phase(), BreakerPhase::Closed);
+    }
+
+    // ---- Replay-safety rule and sequential run-state regression tests ----
+
+    /// Commits a side effect (increments `commits`) and then reports `status`,
+    /// modelling a request that reached the server but whose response was
+    /// lost or rejected after the write.
+    struct CommitThenHttp {
+        status: u16,
+        idempotent: bool,
+        commits: std::sync::atomic::AtomicU32,
+    }
+    impl Step for CommitThenHttp {
+        fn run<'a>(&'a self, _attempt: u32) -> Pin<Box<dyn Future<Output = Result<(), ExecutionError>> + Send + 'a>> {
+            self.commits.fetch_add(1, Ordering::SeqCst);
+            let status = self.status;
+            Box::pin(async move { Err(ExecutionError::Http { status, message: "x".into(), retry_after: None }) })
+        }
+        fn is_idempotent(&self) -> bool {
+            self.idempotent
+        }
+    }
+
+    fn commit_then_http(status: u16, idempotent: bool) -> CommitThenHttp {
+        CommitThenHttp { status, idempotent, commits: std::sync::atomic::AtomicU32::new(0) }
+    }
+
+    fn one_retry_breaker() -> CircuitBreaker {
+        let retry_config =
+            michi_core::resilience::RetryConfig::new(1, Duration::from_millis(1), Duration::from_millis(10), 0.0);
+        CircuitBreaker::new(retry_config, Duration::from_millis(500), u32::MAX, Duration::from_secs(60))
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn gateway_502_and_504_do_not_reinvoke_a_non_idempotent_step() {
+        for status in [502, 504] {
+            let breaker = one_retry_breaker();
+            let step = commit_then_http(status, false);
+            assert!(breaker.call(&step, 0.0).await.is_err());
+            assert_eq!(
+                step.commits.load(Ordering::SeqCst),
+                1,
+                "HTTP {status} is ambiguous (the request may have committed); a non-idempotent step runs once"
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn gateway_502_and_504_still_retry_an_idempotent_step() {
+        for status in [502, 504] {
+            let breaker = one_retry_breaker();
+            let step = commit_then_http(status, true);
+            assert!(breaker.call(&step, 0.0).await.is_err());
+            assert_eq!(step.commits.load(Ordering::SeqCst), 2, "HTTP {status}: an idempotent step is retried");
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rejected_429_and_503_still_retry_a_default_step() {
+        for status in [429, 503] {
+            let breaker = one_retry_breaker();
+            let step = commit_then_http(status, false);
+            assert!(breaker.call(&step, 0.0).await.is_err());
+            assert_eq!(
+                step.commits.load(Ordering::SeqCst),
+                2,
+                "HTTP {status} means \"not processed\", so even a non-idempotent step is retried"
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn ambiguous_outcome_of_a_non_idempotent_step_is_reported_as_not_retryable() {
+        // The breaker's own timeout.
+        let breaker = one_retry_breaker();
+        let hanging = HangingCommit { commits: std::sync::atomic::AtomicU32::new(0) };
+        let timeout_err = breaker.call(&hanging, 0.0).await.expect_err("times out");
+        // Step-returned 504 and 502.
+        let gw504 = one_retry_breaker().call(&commit_then_http(504, false), 0.0).await.expect_err("504");
+        let gw502 = one_retry_breaker().call(&commit_then_http(502, false), 0.0).await.expect_err("502");
+
+        for err in [timeout_err, gw504, gw502] {
+            assert!(matches!(err, ExecutionError::AmbiguousOutcome { .. }), "got {err:?}");
+            assert!(!err.is_retryable(), "replaying a non-idempotent ambiguous outcome is unsafe: {err:?}");
+            let d: michi_core::DomainError = err.into();
+            assert!(!d.retryable, "DomainError must not advertise a retry: {d:?}");
+            assert!(
+                d.hints.iter().any(|h| h.as_str().contains("verify whether the operation completed")),
+                "DomainError must tell the agent to verify before retrying: {d:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn ambiguous_outcome_variant_conversion_keeps_code_and_drops_retry_guidance() {
+        let err = ExecutionError::AmbiguousOutcome {
+            source: Box::new(ExecutionError::Http {
+                status: 504,
+                message: "gateway timeout".into(),
+                retry_after: Some(Duration::from_secs(3)),
+            }),
+        };
+        assert!(!err.is_retryable());
+        assert_eq!(replay_class(&err), ReplayClass::Ambiguous);
+        let d: michi_core::DomainError = err.into();
+        assert_eq!(d.code, michi_core::ErrorCode::Unavailable, "the inner error's code is kept");
+        assert!(!d.retryable);
+        assert_eq!(d.retry_after, None, "a non-retryable error must not suggest a retry delay");
+        assert_eq!(d.message, "outcome unknown, the operation may have completed: gateway timeout");
+        assert_eq!(d.hints.len(), 1);
+        assert_eq!(d.hints[0].as_str(), VERIFY_BEFORE_RETRY_HINT);
+    }
+
+    #[test]
+    fn replay_class_covers_each_outcome() {
+        let http = |status| ExecutionError::Http { status, message: "x".into(), retry_after: None };
+        assert_eq!(replay_class(&ExecutionError::CircuitOpen { retry_after_ms: 1 }), ReplayClass::NotExecuted);
+        assert_eq!(replay_class(&ExecutionError::Cancelled), ReplayClass::NotExecuted);
+        assert_eq!(replay_class(&http(429)), ReplayClass::Rejected);
+        assert_eq!(replay_class(&http(503)), ReplayClass::Rejected);
+        assert_eq!(replay_class(&http(502)), ReplayClass::Ambiguous);
+        assert_eq!(replay_class(&http(504)), ReplayClass::Ambiguous);
+        assert_eq!(replay_class(&ExecutionError::Timeout { elapsed_ms: 1 }), ReplayClass::Ambiguous);
+        assert_eq!(
+            replay_class(&ExecutionError::StepFailed {
+                step_id: "s".into(),
+                step_name: "s".into(),
+                source: Box::new(http(504)),
+            }),
+            ReplayClass::Ambiguous
+        );
+        assert_eq!(replay_class(&http(500)), ReplayClass::Definitive);
+        assert_eq!(replay_class(&http(400)), ReplayClass::Definitive);
+        assert_eq!(
+            replay_class(&ExecutionError::Failed { message: "x".into(), retryable: false }),
+            ReplayClass::Definitive
+        );
+        assert_eq!(
+            replay_class(&ExecutionError::Failed { message: "x".into(), retryable: true }),
+            ReplayClass::Rejected
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn half_open_probe_reports_an_ambiguous_outcome_of_a_non_idempotent_step_as_not_retryable() {
+        let breaker = one_retry_breaker();
+        force_half_open_for_test(&breaker);
+        tokio::time::advance(Duration::from_secs(60)).await;
+        assert_eq!(breaker.phase(), BreakerPhase::HalfOpen);
+        let step = commit_then_http(504, false);
+        let err = breaker.call(&step, 0.0).await.expect_err("504");
+        assert!(matches!(err, ExecutionError::AmbiguousOutcome { .. }), "got {err:?}");
+        assert!(!err.is_retryable());
+        assert_eq!(step.commits.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn ambiguous_outcome_reported_through_execute_pipeline_is_not_retryable() {
+        let breaker = one_retry_breaker();
+        let mut pipeline = make_pipeline(&["write"]);
+        let runners: Vec<Box<dyn Step>> = vec![Box::new(commit_then_http(504, false))];
+        let err =
+            execute_pipeline(&mut pipeline, runners, &breaker, 0.0, &CancellationToken::new()).await.expect_err("504");
+        assert!(matches!(err, ExecutionError::StepFailed { .. }), "got {err:?}");
+        assert!(!err.is_retryable(), "the outer caller must not replay the pipeline: {err:?}");
+        let d: michi_core::DomainError = err.into();
+        assert!(!d.retryable);
+        assert!(d.hints.iter().any(|h| h.as_str().contains("verify whether the operation completed")), "{d:?}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn ambiguous_outcome_of_an_idempotent_step_stays_retryable() {
+        let timeout_err = one_retry_breaker()
+            .call(&IdempotentHangingCommit { commits: std::sync::atomic::AtomicU32::new(0) }, 0.0)
+            .await
+            .expect_err("times out");
+        assert!(matches!(timeout_err, ExecutionError::Timeout { .. }), "got {timeout_err:?}");
+        let gw504 = one_retry_breaker().call(&commit_then_http(504, true), 0.0).await.expect_err("504");
+        assert!(matches!(gw504, ExecutionError::Http { status: 504, .. }), "got {gw504:?}");
+        for err in [timeout_err, gw504] {
+            assert!(err.is_retryable(), "an idempotent step may be replayed: {err:?}");
+            let d: michi_core::DomainError = err.into();
+            assert!(d.retryable);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn execute_pipeline_resets_stale_statuses_and_skips_steps_after_a_failure() {
+        let mut pipeline = make_pipeline(&["a", "b"]);
+        for step in &mut pipeline.steps {
+            step.status = michi_core::pipeline::StepStatus::Completed;
+        }
+        let breaker = CircuitBreaker::new(
+            michi_core::resilience::RetryConfig::default(),
+            Duration::from_secs(5),
+            u32::MAX,
+            Duration::from_secs(60),
+        );
+        let second = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let second_for_step = std::sync::Arc::clone(&second);
+        let runners: Vec<Box<dyn Step>> = vec![
+            Box::new(AlwaysFailStep { retryable: false, calls: std::sync::atomic::AtomicU32::new(0) }),
+            Box::new(step_fn(move |_attempt: u32| {
+                second_for_step.fetch_add(1, Ordering::SeqCst);
+                async { Ok(()) }
+            })),
+        ];
+        let result = execute_pipeline(&mut pipeline, runners, &breaker, 0.0, &CancellationToken::new()).await;
+        assert!(matches!(result, Err(ExecutionError::StepFailed { .. })), "got {result:?}");
+        assert_eq!(second.load(Ordering::SeqCst), 0, "b never runs after a fails");
+        let statuses: Vec<_> = pipeline.steps.iter().map(|s| s.status).collect();
+        assert_eq!(
+            statuses,
+            vec![michi_core::pipeline::StepStatus::Failed, michi_core::pipeline::StepStatus::Skipped],
+            "a stale Completed from an earlier run must not survive for a step that did not run"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn execute_pipeline_rejects_duplicate_ids_before_running_anything() {
+        let mut pipeline = make_pipeline(&["dup", "dup"]);
+        let breaker = CircuitBreaker::new(
+            michi_core::resilience::RetryConfig::default(),
+            Duration::from_secs(5),
+            1,
+            Duration::from_secs(60),
+        );
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let runners: Vec<Box<dyn Step>> = (0..2)
+            .map(|_| {
+                let calls = std::sync::Arc::clone(&calls);
+                Box::new(step_fn(move |_attempt: u32| {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    async { Ok(()) }
+                })) as Box<dyn Step>
+            })
+            .collect();
+        let result = execute_pipeline(&mut pipeline, runners, &breaker, 0.0, &CancellationToken::new()).await;
+        match result {
+            Err(ExecutionError::DuplicateStepId { step_id }) => assert_eq!(step_id, "dup"),
+            other => panic!("expected DuplicateStepId{{step_id: dup}}, got {other:?}"),
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "no step may run once a duplicate id is detected");
+        for step in &pipeline.steps {
+            assert_eq!(step.status, michi_core::pipeline::StepStatus::Pending, "statuses are left untouched");
+        }
     }
 
     /// Test-only: puts the breaker into the state it would be in after

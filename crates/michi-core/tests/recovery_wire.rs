@@ -47,6 +47,31 @@ fn wire_form_round_trips_text_int_bool_and_missing() {
     assert_eq!(serde_json::from_str::<RecoveryHint>(&json).expect("deserializes"), hint);
 }
 
+#[test]
+fn small_and_fractional_floats_round_trip_exactly() {
+    for json in [
+        r#"{"tool":"t","params":{"x":0.000001}}"#,
+        r#"{"tool":"t","params":{"x":1e-6}}"#,
+        r#"{"tool":"t","params":{"x":2.5}}"#,
+    ] {
+        let hint: RecoveryHint = serde_json::from_str(json).expect("deserializes");
+        let back = serde_json::to_value(&hint).expect("serializes");
+        let original: serde_json::Value = serde_json::from_str(json).expect("json");
+        assert_eq!(back["params"]["x"].as_f64(), original["params"]["x"].as_f64(), "value changed for {json}: {back}");
+    }
+}
+
+#[test]
+fn values_the_model_cannot_represent_are_rejected_not_rewritten() {
+    for json in [
+        r#"{"tool":"t","params":{"x":[1,2]}}"#,
+        r#"{"tool":"t","params":{"x":{"a":1}}}"#,
+        r#"{"tool":"t","params":{"x":9223372036854775808}}"#,
+    ] {
+        assert!(serde_json::from_str::<RecoveryHint>(json).is_err(), "must reject, not coerce: {json}");
+    }
+}
+
 #[cfg(feature = "schemars")]
 #[test]
 fn schema_describes_the_wire_form() {
