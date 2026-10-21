@@ -1,6 +1,6 @@
 # Decisions
 
-Why things are the way they are. If a choice in the code looks arbitrary, the reasoning is probably here.
+This file tracks open questions and API-shape rationale. Workspace-level decisions are indexed in [`docs/adr/`](../adr/README.md); current behavior is specified in the relevant API reference.
 
 ## Open questions
 
@@ -10,22 +10,17 @@ Tracked by what they block, not by sequence number — "Q1/Q2/Q3" reads too easi
 
 **Blocks:** recommending TOON as the default for MCP consumers
 
-- AXI benchmarks the token-efficiency gains at the CLI/MCP level, but not the downstream LLM retrieval accuracy of TOON vs. Markdown-KV for list data.
-- Before treating TOON as universally superior for the `audience: ["assistant"]` surface, run a retrieval accuracy experiment: same list data, TOON vs. Markdown-KV, a retrieval task, across a few model sizes.
-- If Markdown-KV wins on accuracy despite the higher token cost, the right call for MCP consumers may be Markdown-KV even for lists.
-- The crate ships either way — the open question is which format callers should default to.
+Token savings have been measured; retrieval accuracy has not. The comparison method and decision scope are in the [research note](../research/toon-retrieval-accuracy.md).
 
-### Open until a real integration exists — crates.io publish readiness
+### Open until two consumers agree — measurement-basis rendering
 
-**Blocks:** crates.io release
+**Blocks:** a shared rendering primitive for measured and modeled values
 
-For external Rust binaries to depend on `michi`:
+ProjectAtlas distinguishes observed values, deterministic derivations, and modeled counterfactuals. Lumen may need the same distinction. This supports investigation, not a new Michi domain type.
 
-- **(a) crates.io publish** — cleanest for public consumers once the API is stable.
-- **(b) git dep with tag** — `michi = { git = "https://github.com/orin-axi/michi", tag = "v0.x.y" }`, good for early adopters before crates.io publish.
-- **(c) private cargo registry** — overhead not worth it.
+First test whether the proposed `ProvenanceBlock` and ordinary section fields express this clearly; see [the envelope proposal](07-wisp-and-monokl-envelope.md). Add a `MeasurementBasis`/`Measured<T>` API only when two real consumers need the same wire contract and the design passes the five gates in `PRINCIPLES.md`. Michi renders the basis; callers decide whether a value is observed, derived, or modeled.
 
-**Recommendation:** (b) during development, (a) at first stable release. crates.io publish is gated behind at least one real consumer integration test.
+This question adds no production dependency. External telemetry or TOON crates remain evaluation/dev dependencies unless an implementation spec proves otherwise.
 
 ### Deferred to v2 — `cli` feature scope
 

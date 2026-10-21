@@ -2,6 +2,8 @@
 
 The technical reference for the `michi` crate — what it does, how it's shaped, and why.
 
+See the [documentation map](../README.md) for the role of this reference and related design records.
+
 ## Reading order
 
 | Doc | Covers |
@@ -11,23 +13,26 @@ The technical reference for the `michi` crate — what it does, how it's shaped,
 | [03-rust-api.md](03-rust-api.md) | Every module: `toon`, `kv`, `hints`, `truncate`, `empty`, `error`, `idempotency`, `resilience`, `status`, `recovery`, `response` |
 | [04-mcp-and-napi.md](04-mcp-and-napi.md) | The `mcp` module, the NAPI/npm boundary, and the builder-across-FFI problem |
 | [05-scope-and-quality.md](05-scope-and-quality.md) | What's formalized vs. what stays in your app, feature flags, versioning, performance, testing |
-| [06-decisions.md](06-decisions.md) | Open questions and the reasoning behind everything that isn't obvious from the code |
-| [07-wisp-and-monokl-envelope.md](07-wisp-and-monokl-envelope.md) | The multi-section envelope Wisp briefings and monokl batch results need: `Section`, michi's own `BudgetSummary` and `ProvenanceBlock` slots, index-bearing per-op outcomes, `structuredContent` and `outputSchema` |
+| [06-decisions.md](06-decisions.md) | Open questions and API design rationale |
 
-New to the crate? Read 01 → 02 → 03 in order — that's the whole mental model. 04–07 are reference, read as needed.
+New to the crate? Read 01 → 02 → 03 in order. Read 04–06 as needed.
+
+## Proposed designs
+
+These documents describe possible future work, not available APIs.
+
+| Doc | Covers |
+| --- | --- |
+| [07-wisp-and-monokl-envelope.md](07-wisp-and-monokl-envelope.md) | Multi-section response envelope for Wisp and monokl; inclusion case remains open |
 
 ## Known gaps
 
-**TOON vs. Markdown-KV retrieval accuracy hasn't been measured.**
+**TOON vs. Markdown-KV retrieval accuracy hasn't been measured.** See [the research note](../research/toon-retrieval-accuracy.md).
 
-- The token-count win is real.
-- Whether it holds up on retrieval accuracy across model sizes is untested.
-- See [06-decisions.md](06-decisions.md).
+**No external consumer has integrated against a published Michi version yet.** The initial release provides that version; downstream integration is the next validation step (see [ADR 4](../adr/0004-publish-before-consumer-integration.md)).
 
-**No real consumer depends on michi yet.** crates.io publish is gated on a count, not a roster: at least one consumer outside this repository integrating against a tagged commit, whichever lands first (see [05-scope-and-quality.md](05-scope-and-quality.md) for current status). Consumers are not enumerated in advance and the gate does not name them.
-
-- What an integration needs from michi is specified in [07-wisp-and-monokl-envelope.md](07-wisp-and-monokl-envelope.md): repeatable sections, a `BudgetSummary` slot, a `ProvenanceBlock` slot, index-bearing per-op outcomes, and the extended `structuredContent`/`outputSchema`. None of it is built yet. All of it is michi's own types — michi takes no dependency on any consumer to hold them.
-- The gate runs one way. **michi publishes first.** No consumer's own publish proceeds until michi has a **versioned release** it can depend on, for any consumer using a local path dependency during coordinated development; the integration that earns michi's publish is exercised against that path dependency before the release, not after it. Nothing in michi's manifest waits on a consumer's crate. A tagged git dependency is the documented interim step.
+- [07-wisp-and-monokl-envelope.md](07-wisp-and-monokl-envelope.md) is a proposal for one possible integration; none of its APIs are built yet.
+- A consumer may use a tagged Git dependency during development, then validate against the published crate. Any issues can inform a follow-up release.
 
 **`cli` isn't a Cargo feature of this crate at all.** Reserved name for future terminal-aware rendering, in a separate crate, not implemented.
 
@@ -44,3 +49,5 @@ New to the crate? Read 01 → 02 → 03 in order — that's the whole mental mod
 - [`../../PRINCIPLES.md`](../../PRINCIPLES.md) — what belongs in michi and why, plus how work here gets done
 - [`../../ARCHITECTURE.md`](../../ARCHITECTURE.md) — the design in prose, one level up from this spec's API detail
 - [`../../CONTRIBUTING.md`](../../CONTRIBUTING.md) — how to actually send a PR
+- [`../adr/README.md`](../adr/README.md) — durable architectural decisions
+- [`../research/README.md`](../research/README.md) — open questions that need evidence
