@@ -1,5 +1,14 @@
 # michi-node
 
+## 0.3.0
+
+- Versions in lockstep with the `michi-core` and `michi-pipeline` crates (0.3.0); the exports now come from `michi-core`'s `napi` feature.
+- Every rendered string is TOON 4.4: empty lists render `key: []`, null cells `null`, empty strings `""`, help blocks inline (`help[N]: a,b`), KV/error/status/recovery blocks as TOON, and no output ends with a newline. See `crates/michi-core/CHANGELOG.md` for the full list.
+- `renderToon`/`AgentResponse` quote, escape and canonicalize values per the spec; integers above `Number.MAX_SAFE_INTEGER` are not affected (inputs are validated JS safe integers).
+- An `AgentResponse` whose rows fail validation now reports `isError: true` in `toCallToolResult()` and `renderJson()`.
+- Truncated cells say how many characters were cut and no longer suggest `full=true`; pass the new `JsToonOptions.truncationHint` / `AgentResponse.truncationHint()` to add your own instruction.
+- `renderKv` throws `kv_validation_failed: …` for duplicate or reserved keys (`totalCount`, `help`, `recovery`).
+
 ## 0.2.0
 
 - Every numeric argument crossing the NAPI boundary is now validated through a dedicated newtype (`JsCount`, `JsInt`, `JsRanged`/`JsDecimals`/`JsRetryCount`/`JsHttpStatus`, `JsFloat`, `JsUnitInterval`, `JsDelayMillis`) instead of ad hoc per-call-site coercion. Generated TypeScript signatures are unchanged (still plain `number`), but out-of-domain values that were previously silently coerced now throw:
