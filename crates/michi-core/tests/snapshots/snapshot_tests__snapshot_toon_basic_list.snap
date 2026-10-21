@@ -1,0 +1,10 @@
+---
+source: tests/snapshot_tests.rs
+expression: render_toon(&opts).unwrap()
+---
+issue[3]{number,title,state}:
+  42,Fix login redirect,open
+  43,Add dark mode,open
+  44,"Update deps, bump major",closed
+totalCount: 47
+help[2]: Call get_issue with number=<number> for full detail,Call list_issues with state=open to filter

@@ -7,7 +7,7 @@
 Always compiled — no feature gate, no new dependency in the default build. Owns exactly one thing: turning an already-built `AgentResponse` into the shape MCP's `tools/call` response expects.
 
 ```rust
-// Audience lives in src/audience.rs — not MCP-specific, michi's CLI output
+// Audience lives in michi-core's src/audience.rs — not MCP-specific, michi's CLI output
 // path uses it too (see 03-rust-api.md's render_for()/has_human_content()).
 pub struct ContentBlock {
     pub text: String,
@@ -46,9 +46,9 @@ Under the `serde` feature, `ContentBlock`/`CallToolResult` don't derive `Seriali
 
 ## NAPI npm package — `@orin-dx/michi`
 
-A thin napi-rs wrapper around the same crate, built with the `napi` feature enabled:
+A thin napi-rs wrapper around `michi-core`, built with its `napi` feature enabled:
 
-- Feature-gated `Cargo.toml` with the `napi` feature
+- The `#[napi]` exports live in `crates/michi-core/src/napi.rs`, compiled only with `michi-core`'s `napi` feature; `packages/michi-node` is a `publish = false` cdylib whose `src/lib.rs` is `pub use michi_core::napi::*;`
 - `napi-rs` with `napi-derive` proc-macros — clean Rust in, C-ABI glue and TypeScript types out, generated at compile time
 - Typed `#[napi(object)]` structs (`JsToonValue`, `JsKvItem`, ...) for the dynamic FFI boundary (cell values, recovery params) — kept as tagged Rust enums converted by hand, not `serde_json::Value`. `serde_json` does enter the tree once `napi` is enabled (for `toCallToolResult()`'s typed `structuredContent`), but the two are independent choices — `JsToonValue`/`JsKvItem` stay their own explicit shape because a `Value` would silently accept malformed input instead of matching a documented variant.
 - Platform-aware binary loading via the generated `index.js`
@@ -83,14 +83,14 @@ The fix: store the consuming Rust builder in an `Option` slot, and `take()` it o
 ```rust
 #[napi(js_name = "AgentResponse")]
 pub struct JsAgentResponse {
-    inner: Option<michi::AgentResponse>,
+    inner: Option<michi_core::AgentResponse>,
 }
 
 #[napi]
 impl JsAgentResponse {
     #[napi(constructor)]
     pub fn new(type_name: String) -> Self {
-        Self { inner: Some(michi::AgentResponse::new(type_name)) }
+        Self { inner: Some(michi_core::AgentResponse::new(type_name)) }
     }
 
     /// `&mut self` setter: take the consuming builder out of the Option,
@@ -99,13 +99,13 @@ impl JsAgentResponse {
     #[napi(catch_unwind)]
     pub fn items(
         &mut self,
-        rows: Vec<Vec<JsToonValue>>, // typed cell value, not serde_json::Value — zero-dep boundary
+        rows: Vec<Vec<JsToonValue>>, // typed cell value, not serde_json::Value
         fields: Vec<String>,
     ) -> napi::Result<()> {
         let b = self.inner.take()
             .ok_or_else(|| napi::Error::from_reason("response already rendered"))?;
         let field_refs: Vec<&str> = fields.iter().map(String::as_str).collect();
-        let converted = convert_rows(rows);              // JsToonValue → michi::toon::Value
+        let converted = convert_rows(rows);              // JsToonValue → michi_core::toon::Value
         self.inner = Some(b.items(converted, &field_refs));
         Ok(())
     }
@@ -154,14 +154,14 @@ const out = new AgentResponse("issues")
 
 Any `#[napi]` function returning `napi::Result<T>` throws a JS `Error` on `Err`. Two practices apply here:
 
-- Wrap fallible conversions (row shape mismatches, oversized inputs) in `Result` and surface them as `napi::Error::from_reason(...)`.
+- Wrap fallible conversions (row shape mismatches, oversized inputs) in `Result` and surface them as `napi::Error::from_reason(...)`. Inputs that cannot form a valid TOON document throw with a prefixed message: `toon_validation_failed: …` from `renderToon`, `kv_validation_failed: …` from `renderKv` (a duplicate key, or a reserved `totalCount`/`help`/`recovery` key).
 - Annotate exports that call into non-trivial rendering with `#[napi(catch_unwind)]`.
   - Without it: **a Rust panic crashes the entire Node process** — there's no isolation boundary.
   - With it: a panic becomes a thrown JS `Error` (or a rejected `Promise` for async) instead of process death.
 
 ### Numeric boundary
 
-Every JavaScript number that crosses into a rendering or resilience call is validated at the boundary through a newtype in `src/napi/num.rs` before any michi code runs; an out-of-domain value throws a JS `Error` instead of being narrowed. `napi_get_value_double` (a non-coercing read) is used for every converted position, so `napi_get_value_int32`'s `ToInt32` wraparound is never in the path.
+Every JavaScript number that crosses into a rendering or resilience call is validated at the boundary through a newtype in `crates/michi-core/src/napi/num.rs` before any michi code runs; an out-of-domain value throws a JS `Error` instead of being narrowed. `napi_get_value_double` (a non-coercing read) is used for every converted position, so `napi_get_value_int32`'s `ToInt32` wraparound is never in the path.
 
 - `totalCount` (`JsToonOptions.totalCount`, `renderKv`'s `totalCount` parameter, and `AgentResponse.totalCount`) is rejected unless it is a finite, non-negative integer no greater than `Number.MAX_SAFE_INTEGER` (2^53 - 1).
 - `decimalsVal` is rejected unless it is a finite integer in `[0, 20]`.
@@ -202,13 +202,13 @@ CI builds three NAPI targets: `aarch64-apple-darwin` and `x86_64-unknown-linux-g
 
 `.github/workflows/release.yml` uses Callisto 0.10. Ordinary pushes to `main` create or update a version PR when changesets are present. A verified merge of that managed PR builds all three targets, collects and checks their artifacts, then runs Callisto's release action. The npm package's `prepublishOnly` publishes the platform packages; Callisto owns GitHub releases and tags.
 
-The pipeline has not produced a release yet. The first release establishes the published versions for downstream integration; consumer integration follows publication (see [ADR 4](../adr/0004-publish-before-consumer-integration.md)). The `version-sync` CI job checks that the npm and root Cargo versions match.
+The pipeline has not produced a release yet: neither `michi-core`/`michi-pipeline` on crates.io nor `@orin-dx/michi` on npm exists. The three packages ship one version through the Callisto fixed group, and the first release establishes the published versions for downstream integration; consumer integration follows publication (see [ADR 4](../adr/0004-publish-before-consumer-integration.md)). The `version-sync` CI job checks that the npm package version matches the workspace version in the root `Cargo.toml`.
 
 **Windows is a non-goal for v1.** michi's agent consumers (MCP servers, CLIs invoked by coding agents) run on Linux and macOS hosts; a `windows-x64` target would add `cargo-xwin` tooling and another CI lane for no current consumer. Nothing blocks adding it later.
 
 ### TypeScript types (`index.d.ts`)
 
-This is auto-generated, never hand-written — `napi build` regenerates it from the `#[napi]` attributes in `src/napi.rs` every time.
+This is auto-generated, never hand-written — `napi build` regenerates it from the `#[napi]` attributes in `crates/michi-core/src/napi.rs` every time.
 
 - Every object type is `Js`-prefixed, matching its Rust struct name: `JsToonValue`, `JsToonOptions`, `JsKvItem`, `JsRecoveryHint`, `JsContentBlock`, `JsAnnotations`, `JsCallToolResult`.
 - There's no unprefixed `ToonValue`/`CallToolResult`/etc. in the real output, whatever an older sketch of this section might have suggested.
@@ -216,7 +216,7 @@ This is auto-generated, never hand-written — `napi build` regenerates it from 
 What's actually in `packages/michi-node/index.d.ts` today (rendering-domain surface; the resilience-, status-, and error-domain functions follow further down):
 
 <details>
-<summary>Full rendering-domain <code>index.d.ts</code> (110 lines)</summary>
+<summary>Full rendering-domain <code>index.d.ts</code> (118 lines)</summary>
 
 ```typescript
 /** Scalar TOON/KV cell value. Discriminate via `type`. */
@@ -238,6 +238,9 @@ export interface JsToonOptions {
   totalCount?: number;
   /** Required, not optional — pass an empty array for no hints. Capped at MAX_HINTS. */
   hints: Array<string>;
+  /** The caller's instruction for getting a truncated cell in full (e.g. `"full=true"`), appended as
+   * `" — use {hint}"`. Omitted: the suffix only reports how many chars were cut. */
+  truncationHint?: string;
 }
 
 /** Throws if rows/fields/hints, or any row, exceed this module's per-call size
@@ -245,17 +248,20 @@ export interface JsToonOptions {
  * synchronous allocation on a crafted call. */
 export declare function renderToon(opts: JsToonOptions): string;
 
-/** Render a definitive empty-state TOON response: `typeName[0]{}:\ntotalCount: 0\n`.
+/** Render a definitive empty-state TOON response: `typeName: []\ntotalCount: 0` (no trailing newline).
  * No `hints` parameter over this boundary — use `appendHints()` to add one. */
 export declare function emptyState(typeName: string): string;
 
-/** Returns an empty string when hints is empty. */
+/** The TOON 4.4 inline array `help[N]: h1,h2` (no trailing newline); an empty string when hints is empty. */
 export declare function renderHints(hints: Array<string>): string;
 
+/** Appends the help block to a TOON document: one LF first unless `body` is empty or already ends in one. */
 export declare function appendHints(body: string, hints: Array<string>): string;
 
 /** Only the inline form crosses the NAPI boundary — unlike Rust's `truncate()`,
- * which returns a richer `Truncated` struct, this returns the final string directly. */
+ * which returns a richer `Truncated` struct, this returns the final string directly.
+ * Suffix: `" ({removed} more chars — use {hint})"`, or `" ({removed} more chars)"` for an
+ * empty `hint`; a cap too small for it gives `maxChars - 1` chars and `…`. */
 export declare function truncate(content: string, maxChars: number, hint: string): string;
 
 export interface JsRecoveryHint {
@@ -265,6 +271,8 @@ export interface JsRecoveryHint {
   reason?: string;
 }
 
+/** The TOON 4.4 table `recovery[N]{tool,params,reason}:`; params is always `"{}"` over this boundary and an
+ * absent reason is `null`. */
 export declare function renderRecovery(hints: Array<JsRecoveryHint>): string;
 
 export interface JsAnnotations {
@@ -303,6 +311,8 @@ export declare class AgentResponse {
   kvItems(items: Array<JsKvItem>): void;
   hint(hint: string): void;
   recoveryHint(tool: string, reason?: string): void;
+  /** Appends `" — use {hint}"` to truncated TOON cells; not called, the suffix only reports the chars cut. */
+  truncationHint(hint: string): void;
   /** Marks this response as an error state, reflected in `renderJson()`'s `isError` field. */
   asError(): void;
   /** Attaches a `user`-audience companion block, included by `toCallToolResult()`
@@ -331,10 +341,10 @@ export type JsAgentResponse = AgentResponse;
 
 </details>
 
-The resilience-, status-, and error-domain surface, added by SPEC-ARCH-004 and the status/error NAPI wrappers — every numeric position here is validated through the newtype kernel in `src/napi/num.rs` per the "Numeric boundary" section below, not left to `ToInt32`/implicit coercion:
+The resilience-, status-, and error-domain surface, added by SPEC-ARCH-004 and the status/error NAPI wrappers — every numeric position here is validated through the newtype kernel in `crates/michi-core/src/napi/num.rs` per the "Numeric boundary" section below, not left to `ToInt32`/implicit coercion:
 
 <details>
-<summary>Full resilience-, error-, and status-domain <code>index.d.ts</code> (56 lines)</summary>
+<summary>Full resilience-, error-, and status-domain <code>index.d.ts</code> (57 lines)</summary>
 
 ```typescript
 /** Return `true` if the HTTP status code is conventionally retryable (429, 502, 503, 504). */
@@ -361,14 +371,15 @@ export declare function nextRetryDelay(
 /** Parse an RFC 7231 `Retry-After` header value (delta-seconds or HTTP-date) into seconds. */
 export declare function parseRetryAfter(headerValue: string): number | null;
 
-/** Render an explicit `already_done` status block. */
+/** Render the TOON 4.4 `already_done` document: `operation`, `status: already_done`, `summary`, `help`. */
 export declare function renderAlreadyDone(
   operation: string,
   summary: string,
   hints: Array<string>,
 ): string;
 
-/** Render a classified `DomainError` card, or a GitHub Actions annotation when `githubAnnotation` is true. */
+/** Render a classified `DomainError` as a TOON 4.4 document (`error`, `message`, `exit_code`, `help`), or a GitHub
+ * Actions annotation when `githubAnnotation` is true. */
 export declare function renderDomainError(
   code: string,
   message: string,
@@ -385,7 +396,8 @@ export interface JsStatusItem {
   health?: string;
 }
 
-/** Render a P8 content-first orientation response. */
+/** Render a P8 content-first orientation response: `tool`, `description`, the TOON 4.4 table
+ * `items[N]{key,value,health,reason}:` and `help`. An item without `health` renders `ok`. */
 export declare function renderStatus(
   toolName: string,
   description: string,

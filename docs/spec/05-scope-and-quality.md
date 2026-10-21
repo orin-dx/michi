@@ -52,13 +52,15 @@
 
 ## Feature flags
 
+All feature flags live on `michi-core` (`crates/michi-core/Cargo.toml`):
+
 ```toml
 [features]
 default  = []
-napi     = ["dep:napi", "dep:napi-derive", "dep:serde_json", "michi-core/serde"]
-serde    = ["michi-core/serde", "michi-toon/serde"]
-schemars = ["michi-core/schemars", "michi-toon/schemars"]
-miette   = ["michi-core/miette"]
+serde    = ["dep:serde", "dep:serde_json"]
+schemars = ["dep:schemars"]
+miette   = ["dep:miette"]
+napi     = ["dep:napi", "dep:napi-derive", "serde"]
 ```
 
 No async runtime dependency, no tokio, no async-std — every public function is sync.
@@ -66,14 +68,14 @@ No async runtime dependency, no tokio, no async-std — every public function is
 - `serde` is opt-in Rust-side ergonomics: `Serialize`/`Deserialize` on the core value types, plus `toon::list()`. See [01-overview-and-setup.md](01-overview-and-setup.md) for the full dependency rationale.
 - `schemars` derives `JsonSchema` on DTO types (`DomainError`, `StatusResponse`, `ToonOptions`, and others) for automatic MCP `outputSchema` generation.
 - `miette` implements `miette::Diagnostic` for `DomainError` to render colorized CLI diagnostic cards.
-- `cli` is **not** a Cargo feature of this crate at all. Terminal-aware rendering (line wrapping, colour codes for the `[DEGRADED: ...]` health signals in `status::StatusResponse`) is out of scope for v1, since michi v1 targets agent consumers only.
+- `cli` is **not** a Cargo feature of `michi-core` at all. Terminal-aware rendering (line wrapping, colour codes for the `degraded`/`error` health signals in `status::StatusResponse`) is out of scope for v1, since michi v1 targets agent consumers only.
 - When that work is actually built, it lands as its own crate, downstream of `pipeline`, rather than a feature flag here — see [ARCHITECTURE.md](../../ARCHITECTURE.md) and [06-decisions.md](06-decisions.md) for the crate-boundary rule and the v2 scope sketch.
 
 ---
 
 ## Versioning and release
 
-- Intended to publish to [crates.io](https://crates.io) as `michi` — not yet published
+- Intended to publish to [crates.io](https://crates.io) as two crates, `michi-core` and `michi-pipeline` — not yet published. The name `michi` on crates.io belongs to an unrelated project
 - Intended to publish the npm package to [npmjs.com](https://npmjs.com) as `@orin-dx/michi` — not yet published
 - NAPI binary cross-compiled via `cargo-zigbuild`:
   - `darwin-arm64` (`aarch64-apple-darwin`)
@@ -91,9 +93,9 @@ Format changes are major versions. Treat the rendered string as a contract — t
 
 **MSRV policy:** `rust-version = "1.96"` is the declared minimum. A bump happens only when a needed language or `std` feature requires it, gets recorded in the CHANGELOG, and counts as a **minor** bump — never a patch.
 
-**Version sync:** the npm package version tracks the crate version exactly.
+**Version sync:** `michi-core`, `michi-pipeline`, and the npm package share one version (`[workspace.package] version` in the root `Cargo.toml`), released in lockstep as a Callisto fixed group named `michi`. `michi-pipeline` depends on `michi-core` through an exact `=` pin, so a mixed set never resolves.
 
-- A `version-sync` CI job asserts the two are equal on every push/PR, so a `michi` crate at `0.3.1` and the `@orin-dx/michi` npm package at `0.3.1` always describe the same source.
+- A `version-sync` CI job asserts the npm package version equals the workspace version on every push/PR, so `michi-core` at `0.3.1` and the `@orin-dx/michi` npm package at `0.3.1` always describe the same source.
 - `.github/workflows/release.yml` uses Callisto to open version PRs and publish after a verified merge. The first release establishes versioned packages for downstream integration; consumer integration is a post-release validation, not a publication prerequisite (see [ADR 4](../adr/0004-publish-before-consumer-integration.md)).
 - When no native binary matches a consumer's platform, the TypeScript fallback export loads instead.
 
@@ -124,7 +126,7 @@ Format changes are major versions. Treat the rendered string as a contract — t
 - `AgentResponse` is `Send + Sync` (all fields owned, no interior mutability).
 - The NAPI wrapper uses napi-rs's safe threading model.
 
-Benchmarks run via `divan`, in CI, on any PR touching `src/`.
+Benchmarks live in `crates/michi-core/benches/` and run via `divan`; CI builds them on every push/PR (`cargo bench --no-run --workspace`).
 
 ---
 
@@ -148,7 +150,7 @@ Benchmarks run via `divan`, in CI, on any PR touching `src/`.
 **Property tests** (`proptest`, `tests/`):
 
 - `render_toon()` output is grammar-valid for arbitrary string inputs
-- `truncate_inline()` never returns a string longer than `limit + signal_len`
+- `truncate_inline()` never returns a string longer than `limit` chars, suffix included, and its count plus the kept chars equals the input char count
 - TOON round-trip: render → parse (test-only parser) → compare values
 - `parse_retry_after()` never panics on arbitrary strings
 - `next_retry_delay()` always returns a value within `[initial_delay, max_delay]`

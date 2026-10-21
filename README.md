@@ -13,7 +13,7 @@ AXI response primitives for agent-ergonomic tools — TOON lists, key-value bloc
 
 `michi` is the formatting and response layer for the [Orin DX](https://orin-dx.com) tools: it turns structured data into token-efficient, agent-readable text. No CLI framework or async runtime required.
 
-Available as a Rust crate (`michi`) or a Node.js package (`@orin-dx/michi`).
+Available as Rust crates (`michi-core`, plus `michi-pipeline` for async execution) or a Node.js package (`@orin-dx/michi`).
 
 For developer docs, start with the [documentation map](docs/README.md).
 
@@ -31,35 +31,38 @@ Agents pay for every token they read. Standard JSON lists repeat keys on every s
 ]
 ```
 
-TOON (Token-Optimized Object Notation) states field names once in a tabular header:
+TOON (Token-Oriented Object Notation) states field names once in a tabular header:
 
 ```text
 issues[2]{number,title,state}:
-  51815,[Bug]: Telegram plugin,open
+  51815,"[Bug]: Telegram plugin",open
   51812,dark mode request,open
 ```
 
-Values are quoted only when they contain commas, quotes, or newlines — no quoting overhead on the common case.
+Output conforms to the [TOON 4.4 specification](https://github.com/toon-format/spec/blob/main/SPEC.md) — every agent-facing block, not just lists: key-value blocks, errors, status, recovery hints and partial-success reports are TOON documents too, so an agent parses one format. Values are quoted only when the spec requires it — a delimiter, colon, bracket, quote, line break, or a value that would otherwise read as a number, boolean or `null` — so the common case carries no quoting overhead.
 
 ## Quick start
 
 ### Rust
 
 ```rust
-use michi::toon::{render_toon, ToonOptions, Value};
+use michi_core::toon::{render_toon, ToonOptions, Value};
 
-let opts = ToonOptions::new(
-    "issues",
-    vec!["number".to_string(), "title".to_string(), "state".to_string()],
-    vec![
-        vec![Value::Int(51815), Value::from("[Bug]: Telegram plugin"), Value::from("open")],
-        vec![Value::Int(51812), Value::from("dark mode request"), Value::from("open")],
-    ],
-)
-.total_count(Some(8771))
-.hints(vec!["Run `gh-axi issue view <number>` to view an issue".to_string()]);
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let opts = ToonOptions::new(
+        "issues",
+        vec!["number".to_string(), "title".to_string(), "state".to_string()],
+        vec![
+            vec![Value::Int(51815), Value::from("[Bug]: Telegram plugin"), Value::from("open")],
+            vec![Value::Int(51812), Value::from("dark mode request"), Value::from("open")],
+        ],
+    )
+    .total_count(Some(8771))
+    .hints(vec!["Run `gh-axi issue view <number>` to view an issue".to_string()]);
 
-print!("{}", render_toon(&opts));
+    print!("{}", render_toon(&opts)?);
+    Ok(())
+}
 ```
 
 ### TypeScript / Node.js
@@ -93,45 +96,37 @@ process.stdout.write(out);
 
 ```text
 issues[2]{number,title,state}:
-  51815,[Bug]: Telegram plugin,open
+  51815,"[Bug]: Telegram plugin",open
   51812,dark mode request,open
 totalCount: 8771
-help[1]:
-  Run `gh-axi issue view <number>` to view an issue
+help[1]: Run `gh-axi issue view <number>` to view an issue
 ```
 
 ## Workspace Architecture
 
-`michi` is organized as a Cargo workspace: zero-dependency primitive crates by default, `michi-pipeline` as the one exception (it needs `tokio` for async execution), plus optional feature flags on the facade crate:
+`michi` is organized as a Cargo workspace with two published crates. `michi-core` holds every sync primitive and by default depends only on `thiserror` and `compact_str`; `michi-pipeline` adds async execution on `tokio`. Optional features live on `michi-core`:
 
 ```mermaid
 graph LR
-    truncate[michi-truncate]
-    resilience[michi-resilience]
-    toon[michi-toon]
     core[michi-core]
     pipeline[michi-pipeline]
-    facade[michi]
     node["@orin-dx/michi"]
 
-    truncate --> core
-    resilience --> core
-    toon --> core
-    core --> facade
     core --> pipeline
-    resilience --> pipeline
-    facade --> node
+    core -- napi feature --> node
 ```
 
-| Crate / Module | Description |
+| Crate / Package | Description |
 | --- | --- |
-| `michi-truncate` | UTF-8 char-boundary safe string truncation (`floor_char_boundary`). Zero runtime dependencies. |
-| `michi-resilience` | Exponential back-off math, RFC 7231 `Retry-After` header parser, and FNV-1a idempotency keys. |
-| `michi-toon` | TOON list renderer and parser powered by `compact_str::CompactString`. Includes direct `serde::Serializer`. |
-| `michi-core` | Core AXI response types (`AgentResponse`, `Audience`, `Hint`, `RecoveryHint`, `StatusResponse`, `DomainError`, `CallToolResult`). |
-| `michi-pipeline` | Async pipeline execution: sequential and concurrent step running, circuit breaking, cooperative cancellation. Depends on `tokio`; versioned and released independently of the rest of the workspace. |
-| `michi` | Facade crate re-exporting all sub-crates for convenient top-level access. |
-| `@orin-dx/michi` | Node.js NAPI bindings built with `@napi-rs/cli`. |
+| `michi-core` | All sync AXI primitives: TOON list rendering and parsing (`toon`), key-value blocks, hints, structured errors (`DomainError`), status, recovery hints, MCP `CallToolResult`, the `AgentResponse` builder, UTF-8 char-boundary truncation (`truncate`), and retry/back-off math with `Retry-After` parsing and idempotency keys (`resilience`). |
+| `michi-pipeline` | Async pipeline execution: a validated step plan run sequentially or with a concurrency cap, a per-step run record with replay-honest statuses, resume, keyed circuit breakers, a retry budget and cancellation. Depends on `michi-core`, `tokio` and `tokio-util`. |
+| `@orin-dx/michi` | Node.js NAPI bindings built with `@napi-rs/cli` from `packages/michi-node`, which re-exports `michi-core`'s `napi` feature surface. |
+
+All three version in lockstep. The crate name `michi` on crates.io belongs to an unrelated project; to write `use michi::...`, rename the dependency in `Cargo.toml`:
+
+```toml
+michi = { package = "michi-core", version = "0.3" }
+```
 
 ## Feature Flags
 
@@ -142,14 +137,13 @@ graph LR
 | `miette` | `miette` | Implements `miette::Diagnostic` for `DomainError` to render colorized CLI diagnostic cards. |
 | `napi` | `napi`, `napi-derive`, `serde_json` | Enables Node.js native addon compilation. |
 
-The default build (`default = []`) has zero runtime dependencies beyond `thiserror`.
+These are `michi-core` features. The default build (`default = []`) has no runtime dependencies beyond `thiserror` and `compact_str`.
 
 ## Local Development
 
 ```bash
-just check-all   # Run formatting, clippy, WASM check, rustdoc, and test suites
+just check-all   # Run formatting, clippy, rustdoc, and test suites
 just test        # Run Rust tests and Node.js NAPI tests
-just check-wasm  # Verify compilation on wasm32-unknown-unknown
 just bench       # Run Divan performance benchmarks
 ```
 

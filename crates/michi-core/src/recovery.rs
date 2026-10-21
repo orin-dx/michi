@@ -1,9 +1,16 @@
 use crate::kv::KvValue;
 
 /// A structured recovery hint for an agent encountering an error.
+///
+/// With the `serde` feature it serializes to the same JSON as the structured companions of `AgentResponse` and
+/// `DomainError`: `{"tool": ..., "params": {key: value, ...}, "reason": ...}`, with `reason` omitted when absent and
+/// each parameter as a plain JSON value. Deserializing maps strings to `Text`, integers that fit `i64` to `Int`, other
+/// numbers to `Float` with enough decimal places to reproduce the value exactly, booleans to `Bool` and `null` to
+/// `Missing`. Values `KvValue` cannot hold exactly (arrays, objects, integers outside `i64`) are rejected, never
+/// rewritten.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "serde", serde(into = "RecoveryHintWire", try_from = "RecoveryHintWire"))]
 pub struct RecoveryHint {
     /// The tool/operation name the agent should call to recover.
     pub tool: String,
@@ -34,62 +41,168 @@ impl RecoveryHint {
     }
 }
 
-/// Render a list of recovery hints as an agent-readable block.
+#[cfg(feature = "serde")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schemars", schemars(rename = "RecoveryHint"))]
+struct RecoveryHintWire {
+    tool: String,
+    #[cfg_attr(feature = "schemars", schemars(schema_with = "param_values_schema"))]
+    params: serde_json::Map<String, serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+}
+
+#[cfg(feature = "serde")]
+impl From<RecoveryHint> for RecoveryHintWire {
+    fn from(h: RecoveryHint) -> Self {
+        let params = h
+            .params
+            .iter()
+            .map(|(k, v)| {
+                // Same writer as the hand-built companions, so the two shapes cannot drift.
+                let mut json = String::new();
+                crate::kv::kv_value_to_json(&mut json, v);
+                (k.clone(), serde_json::from_str(&json).unwrap_or(serde_json::Value::String(json)))
+            })
+            .collect();
+        Self { tool: h.tool, params, reason: h.reason }
+    }
+}
+
+/// Schema for parameter values: the scalar JSON types `json_to_kv_value` accepts.
+#[cfg(feature = "schemars")]
+fn param_values_schema(_: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+    serde_json::from_value(serde_json::json!({
+        "type": "object",
+        "additionalProperties": { "type": ["string", "integer", "number", "boolean", "null"] }
+    }))
+    .unwrap_or(schemars::schema::Schema::Bool(true))
+}
+
+#[cfg(feature = "serde")]
+fn json_to_kv_value(key: &str, v: serde_json::Value) -> Result<KvValue, String> {
+    match v {
+        serde_json::Value::Null => Ok(KvValue::Missing),
+        serde_json::Value::Bool(b) => Ok(KvValue::Bool(b)),
+        serde_json::Value::String(s) => Ok(KvValue::Text(s)),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Ok(KvValue::Int(i))
+            } else if let (true, Some(f)) = (n.is_f64(), n.as_f64()) {
+                // Rust's `Display` for f64 is the shortest exact representation and never uses an exponent, so its
+                // fractional digits are the decimal places `KvValue::Float` needs to reproduce `f` (1e-6 -> 6).
+                let shortest = f.to_string();
+                let decimals = shortest.split_once('.').map_or(0, |(_, frac)| frac.len());
+                let decimals = u8::try_from(decimals)
+                    .map_err(|_| format!("parameter `{key}`: {n} needs more than 255 decimal places"))?;
+                Ok(KvValue::Float(f, decimals))
+            } else {
+                Err(format!("parameter `{key}`: integer {n} is outside the i64 range"))
+            }
+        }
+        serde_json::Value::Array(_) | serde_json::Value::Object(_) => Err(format!(
+            "parameter `{key}`: arrays and objects are not supported; use a string, number, boolean or null"
+        )),
+    }
+}
+
+#[cfg(feature = "serde")]
+impl TryFrom<RecoveryHintWire> for RecoveryHint {
+    type Error = String;
+
+    fn try_from(w: RecoveryHintWire) -> Result<Self, Self::Error> {
+        let params = w
+            .params
+            .into_iter()
+            .map(|(k, v)| json_to_kv_value(&k, v).map(|value| (k, value)))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self { tool: w.tool, params, reason: w.reason })
+    }
+}
+
+// The schema describes the wire form above, not the Rust field layout.
+#[cfg(feature = "schemars")]
+impl schemars::JsonSchema for RecoveryHint {
+    fn schema_name() -> String {
+        RecoveryHintWire::schema_name()
+    }
+
+    fn json_schema(generator: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+        RecoveryHintWire::json_schema(generator)
+    }
+}
+
+/// Render recovery hints as the TOON 4.4 tabular array (§9.3) `recovery[N]{tool,params,reason}:`, one row per hint,
+/// with no trailing newline.
+///
+/// Every hint has the same three primitive fields, so the tabular form is the one TOON prescribes (§1.4): `tool` is
+/// the tool name; `params` is the string holding the parameters' compact JSON object text, exactly the `params` object
+/// of the JSON companions (`{}` when there are none); `reason` is the reason or `null` when absent. Each cell is
+/// quoted per §7.2, so the JSON text is always quoted with its `"` escaped as `\"`, and a line break in any field is an
+/// escape, never a new line. Returns an empty string (the empty document) for an empty slice.
 #[must_use]
 pub fn render_recovery(hints: &[RecoveryHint]) -> String {
     if hints.is_empty() {
         return String::new();
     }
-    let capacity = 16 + hints.len() * 60;
+    let capacity = 40 + hints.len() * 60;
     let mut out = String::with_capacity(capacity);
     append_recovery(&mut out, hints);
     out
 }
 
-/// Append a `recovery[N]:` block to an existing string in-place.
+/// Append the `recovery[N]{tool,params,reason}:` block of [`render_recovery`] to a TOON document in place.
+///
+/// Like [`crate::hints::append_hints`], one LF is inserted first when `out` is non-empty and does not already end in
+/// one, and nothing follows the block. Does nothing for an empty slice.
 pub fn append_recovery(out: &mut String, hints: &[RecoveryHint]) {
     if hints.is_empty() {
         return;
     }
+    crate::hints::start_block(out);
     out.push_str("recovery[");
     out.push_str(&hints.len().to_string());
-    out.push_str("]:\n");
-    append_recovery_lines(out, hints);
+    out.push_str("]{tool,params,reason}:");
+    for hint in hints {
+        out.push_str("\n  ");
+        out.push_str(&crate::toon::escape_value(&hint.tool));
+        out.push(',');
+        out.push_str(&crate::toon::escape_value(&params_json(&hint.params)));
+        out.push(',');
+        match &hint.reason {
+            Some(reason) => out.push_str(&crate::toon::escape_value(reason)),
+            None => out.push_str("null"),
+        }
+    }
 }
 
-pub(crate) fn append_recovery_lines(out: &mut String, hints: &[RecoveryHint]) {
-    for hint in hints {
-        out.push_str("  ");
-        out.push_str(&hint.tool);
-        if !hint.params.is_empty() {
-            out.push_str(": suggestedParams: { ");
-            for (i, (k, v)) in hint.params.iter().enumerate() {
-                if i > 0 {
-                    out.push_str(", ");
-                }
-                out.push_str(k);
-                out.push_str(": ");
-                crate::kv::push_kv_value(out, v);
-            }
-            out.push_str(" }");
+/// The parameters as a compact JSON object, written by the same writer as the JSON companions.
+pub(crate) fn params_json(params: &[(String, KvValue)]) -> String {
+    let mut json = String::with_capacity(2 + params.iter().map(|(k, _)| k.len() + 16).sum::<usize>());
+    json.push('{');
+    for (i, (k, v)) in params.iter().enumerate() {
+        if i > 0 {
+            json.push(',');
         }
-        if let Some(reason) = &hint.reason {
-            out.push_str(" — ");
-            out.push_str(reason);
-        }
-        out.push('\n');
+        crate::kv::json_escape_str(&mut json, k);
+        json.push(':');
+        crate::kv::kv_value_to_json(&mut json, v);
     }
+    json.push('}');
+    json
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    const HEADER: &str = "recovery[1]{tool,params,reason}:\n  ";
+
     #[test]
-    fn hint_with_params_renders_suggested_params() {
+    fn hint_with_params_renders_them_as_quoted_compact_json() {
         let hints = [RecoveryHint::new("assign_user").param("user", KvValue::Text("alice".to_string()))];
-        let out = render_recovery(&hints);
-        assert!(out.contains("assign_user: suggestedParams: { user: alice }"), "got: {out}");
+        assert_eq!(render_recovery(&hints), format!("{HEADER}assign_user,\"{{\\\"user\\\":\\\"alice\\\"}}\",null"));
     }
 
     #[test]
@@ -98,25 +211,24 @@ mod tests {
     }
 
     #[test]
-    fn hint_with_no_params_renders_tool_name_only() {
+    fn hint_with_no_params_has_an_empty_params_object_and_null_reason() {
         let hints = [RecoveryHint::new("retry_upload")];
-        let out = render_recovery(&hints);
-        assert_eq!(out, "recovery[1]:\n  retry_upload\n");
+        assert_eq!(render_recovery(&hints), format!("{HEADER}retry_upload,\"{{}}\",null"));
     }
 
     #[test]
     fn hint_with_reason_but_no_params() {
         let hints = [RecoveryHint::new("reload_cache").reason("cache entry expired")];
-        let out = render_recovery(&hints);
-        assert!(out.contains("reload_cache — cache entry expired"), "got: {out}");
-        assert!(!out.contains("suggestedParams"), "got: {out}");
+        assert_eq!(render_recovery(&hints), format!("{HEADER}reload_cache,\"{{}}\",cache entry expired"));
     }
 
     #[test]
     fn multiple_hints_all_appear() {
         let hints = [RecoveryHint::new("step_a"), RecoveryHint::new("step_b")];
-        let out = render_recovery(&hints);
-        assert_eq!(out, "recovery[2]:\n  step_a\n  step_b\n");
+        assert_eq!(
+            render_recovery(&hints),
+            "recovery[2]{tool,params,reason}:\n  step_a,\"{}\",null\n  step_b,\"{}\",null"
+        );
     }
 
     #[test]
@@ -147,74 +259,76 @@ mod tests {
     }
 
     #[test]
-    fn ac015_multiple_params_are_comma_separated_in_insertion_order() {
+    fn ac015_multiple_params_keep_insertion_order() {
         let hints = [RecoveryHint::new("assign_user")
             .param("user", KvValue::Text("alice".to_string()))
             .param("team", KvValue::Text("backend".to_string()))];
-        let out = render_recovery(&hints);
-        assert!(out.contains("assign_user: suggestedParams: { user: alice, team: backend }"), "got: {out}");
+        assert_eq!(
+            render_recovery(&hints),
+            format!("{HEADER}assign_user,\"{{\\\"user\\\":\\\"alice\\\",\\\"team\\\":\\\"backend\\\"}}\",null")
+        );
     }
 
     #[test]
     fn ac017_params_and_reason_appear_together_params_first() {
         let hints = [RecoveryHint::new("retry").param("attempt", KvValue::Int(2)).reason("transient network error")];
-        let out = render_recovery(&hints);
-        assert_eq!(out, "recovery[1]:\n  retry: suggestedParams: { attempt: 2 } — transient network error\n");
+        assert_eq!(render_recovery(&hints), format!("{HEADER}retry,\"{{\\\"attempt\\\":2}}\",transient network error"));
     }
 
     #[test]
-    fn ac018a_append_recovery_appends_render_recovery_output_in_place() {
+    fn ac018a_append_recovery_starts_a_new_line_after_a_finished_document() {
         let hints = [RecoveryHint::new("step_a"), RecoveryHint::new("step_b")];
+        let mut out = "t: []".to_string();
+        append_recovery(&mut out, &hints);
+        assert_eq!(out, format!("t: []\n{}", render_recovery(&hints)));
         let mut out = "prefix\n".to_string();
         append_recovery(&mut out, &hints);
         assert_eq!(out, format!("prefix\n{}", render_recovery(&hints)));
     }
 
     #[test]
-    fn ac018b_newline_in_tool_or_reason_passes_through_unstripped() {
+    fn ac018b_newline_in_tool_or_reason_is_quoted_and_escaped() {
         let hints = [RecoveryHint::new("a\nb").reason("c\nd")];
         let out = render_recovery(&hints);
-        assert_eq!(out, "recovery[1]:\n  a\nb — c\nd\n");
-        assert_eq!(out.lines().count(), 4, "two embedded newlines add two extra lines beyond the fixed count");
+        assert_eq!(out, format!("{HEADER}\"a\\nb\",\"{{}}\",\"c\\nd\""));
+        assert_eq!(out.lines().count(), 2, "escaped newlines add no lines beyond the fixed count");
     }
 
     #[test]
-    fn carriage_return_in_tool_or_reason_passes_through_but_does_not_change_line_count() {
+    fn carriage_return_in_tool_or_reason_is_quoted_and_escaped() {
         let hints = [RecoveryHint::new("a\rb").reason("c\rd")];
         let out = render_recovery(&hints);
-        assert_eq!(out, "recovery[1]:\n  a\rb — c\rd\n");
-        assert_eq!(out.lines().count(), 2);
+        assert_eq!(out, format!("{HEADER}\"a\\rb\",\"{{}}\",\"c\\rd\""));
+        assert!(!out.contains('\r'), "no raw CR may survive, got: {out:?}");
     }
 
     #[test]
-    fn ac004b_render_recovery_capacity_is_at_least_16_plus_len_times_60() {
+    fn ac004b_render_recovery_capacity_is_at_least_40_plus_len_times_60() {
         let hints = [RecoveryHint::new("a"), RecoveryHint::new("b")];
         let out = render_recovery(&hints);
-        assert!(out.capacity() >= 16 + hints.len() * 60, "capacity {} too small", out.capacity());
+        assert!(out.capacity() >= 40 + hints.len() * 60, "capacity {} too small", out.capacity());
     }
 
+    // A line break in a param key is escaped twice: once by JSON (`\n`), then that backslash by TOON (`\\n`).
     #[test]
-    fn ac018c_newline_in_param_key_passes_through_unstripped() {
+    fn ac018c_newline_in_param_key_is_escaped() {
         let hints = [RecoveryHint::new("t").param("k\nz", KvValue::Text("v".to_string()))];
         let out = render_recovery(&hints);
-        assert_eq!(out, "recovery[1]:\n  t: suggestedParams: { k\nz: v }\n");
-        assert_eq!(out.lines().count(), 3, "one extra line from the embedded \\n in the param key");
+        assert_eq!(out, format!("{HEADER}t,\"{{\\\"k\\\\nz\\\":\\\"v\\\"}}\",null"));
+        assert_eq!(out.lines().count(), 2, "the escaped \\n in the param key adds no line");
     }
 
     #[test]
-    fn ac018c_carriage_return_in_param_key_passes_through_but_does_not_change_line_count() {
+    fn ac018c_carriage_return_in_param_key_is_escaped() {
         let hints = [RecoveryHint::new("t").param("k\rz", KvValue::Text("v".to_string()))];
         let out = render_recovery(&hints);
-        assert_eq!(out, "recovery[1]:\n  t: suggestedParams: { k\rz: v }\n");
-        assert_eq!(out.lines().count(), 2, "unchanged by the lone \\r");
+        assert_eq!(out, format!("{HEADER}t,\"{{\\\"k\\\\rz\\\":\\\"v\\\"}}\",null"));
+        assert!(!out.contains('\r'), "no raw CR may survive, got: {out:?}");
     }
 
     #[test]
     #[cfg(feature = "serde")]
-    fn ac037b_serializes_with_null_for_unset_reason_and_no_rename() {
-        assert_eq!(
-            serde_json::to_string(&RecoveryHint::new("t")).unwrap(),
-            "{\"tool\":\"t\",\"params\":[],\"reason\":null}"
-        );
+    fn ac037b_serializes_params_as_an_object_and_omits_an_unset_reason() {
+        assert_eq!(serde_json::to_string(&RecoveryHint::new("t")).unwrap(), "{\"tool\":\"t\",\"params\":{}}");
     }
 }

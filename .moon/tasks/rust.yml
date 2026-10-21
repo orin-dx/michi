@@ -1,6 +1,6 @@
 # Global tasks inherited by every Rust crate in the workspace.
 #
-# build/test/lint/format/format-check/check-wasm are NOT defined here on
+# build/test/lint/format/format-check are NOT defined here on
 # purpose: a per-crate `cargo <cmd> -p $crate` fan-out serializes behind
 # Cargo's shared target/ file lock (measured: 116s vs. 17.5s for one
 # workspace-wide invocation). Those live once, workspace-wide, in root

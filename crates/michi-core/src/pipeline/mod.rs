@@ -1,30 +1,116 @@
 use std::fmt::Write as _;
 
 /// Status of an individual pipeline step.
+///
+/// Each terminal status maps to one recovery action an agent can take; see `docs/spec/08-pipeline-execution.md`.
+/// Only [`StepStatus::Completed`] and [`StepStatus::CompletedEarlier`] count as success.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[non_exhaustive]
 pub enum StepStatus {
-    /// Step completed successfully.
-    Completed,
-    /// Step was skipped.
-    Skipped,
-    /// Step failed.
-    Failed,
-    /// Step has not been attempted yet.
+    /// Not started yet.
     Pending,
+    /// In flight. A finished run never reports it; it appears in records persisted while a run was in progress.
+    Running,
+    /// Ran and succeeded in this run.
+    Completed,
+    /// Succeeded in an earlier attempt of the same run and was not re-run on resume.
+    CompletedEarlier,
+    /// Ran and failed: definitively, or with an error that is safe to replay.
+    Failed,
+    /// Ran, but whether it took effect is unknown. Verify before running it again.
+    OutcomeUnknown(UnknownCause),
+    /// Never took effect, for the given reason.
+    Skipped(SkipReason),
+    /// Never invoked, for the given reason.
+    NotRun(NotRunReason),
+    /// The step's own code panicked: a harness failure, distinct from an error the step returned.
+    Panicked,
+}
+
+/// Why a step was skipped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+#[non_exhaustive]
+pub enum SkipReason {
+    /// A prerequisite did not complete.
+    PrerequisiteFailed,
+    /// The run was cancelled before this step took effect.
+    Cancelled,
+}
+
+/// Why a step was never invoked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+#[non_exhaustive]
+pub enum NotRunReason {
+    /// Its circuit breaker was open.
+    CircuitOpen,
+}
+
+/// Why a step's outcome is unknown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+#[non_exhaustive]
+pub enum UnknownCause {
+    /// An attempt timed out.
+    Timeout,
+    /// A gateway reported HTTP 502 or 504.
+    Gateway,
+    /// The run was cancelled while the step was in flight and the attempt was dropped.
+    Cancelled,
+    /// The step was in flight when the process running it stopped.
+    Interrupted,
 }
 
 impl StepStatus {
-    /// The short label string used in rendered output.
+    /// The snake_case status label used in rendered output, without its reason.
     #[must_use]
     pub fn label(&self) -> &'static str {
         match self {
-            Self::Completed => "completed",
-            Self::Skipped => "skipped",
-            Self::Failed => "failed",
             Self::Pending => "pending",
+            Self::Running => "running",
+            Self::Completed => "completed",
+            Self::CompletedEarlier => "completed_earlier",
+            Self::Failed => "failed",
+            Self::OutcomeUnknown(_) => "outcome_unknown",
+            Self::Skipped(_) => "skipped",
+            Self::NotRun(_) => "not_run",
+            Self::Panicked => "panicked",
         }
+    }
+
+    /// The snake_case reason label for statuses that carry one, `None` otherwise.
+    #[must_use]
+    pub fn reason(&self) -> Option<&'static str> {
+        match self {
+            Self::Skipped(SkipReason::PrerequisiteFailed) => Some("prerequisite_failed"),
+            Self::Skipped(SkipReason::Cancelled) | Self::OutcomeUnknown(UnknownCause::Cancelled) => Some("cancelled"),
+            Self::NotRun(NotRunReason::CircuitOpen) => Some("circuit_open"),
+            Self::OutcomeUnknown(UnknownCause::Timeout) => Some("timeout"),
+            Self::OutcomeUnknown(UnknownCause::Gateway) => Some("gateway"),
+            Self::OutcomeUnknown(UnknownCause::Interrupted) => Some("interrupted"),
+            Self::Pending
+            | Self::Running
+            | Self::Completed
+            | Self::CompletedEarlier
+            | Self::Failed
+            | Self::Panicked => None,
+        }
+    }
+
+    /// Whether the step succeeded: [`StepStatus::Completed`] or [`StepStatus::CompletedEarlier`].
+    #[must_use]
+    pub fn is_success(&self) -> bool {
+        matches!(self, Self::Completed | Self::CompletedEarlier)
     }
 }
 
@@ -55,25 +141,31 @@ pub struct Pipeline {
 }
 
 impl Pipeline {
-    /// Render the pipeline state as a TOON-style list.
+    /// Render the pipeline state as a TOON 4.4 document: `step[N]{id,name,status,reason}:` with one row per step, or
+    /// `step: []` when there are no steps, with no trailing newline. `status` is [`StepStatus::label`] and `reason`
+    /// is [`StepStatus::reason`] or `null`. `id` and `name` are quoted when TOON's string rules (§7.2) require it.
     #[must_use]
     pub fn render(&self) -> String {
         let n = self.steps.len();
-        let capacity = 30 + n * 40;
+        if n == 0 {
+            return String::from("step: []");
+        }
+        let capacity = 40 + n * 48;
         let mut out = String::with_capacity(capacity);
 
         out.push_str("step[");
         let _ = write!(out, "{n}");
-        out.push_str("]{id,name,status}:\n");
+        out.push_str("]{id,name,status,reason}:");
 
         for step in &self.steps {
-            out.push_str("  ");
-            out.push_str(&michi_toon::escape_value(&step.id));
+            out.push_str("\n  ");
+            out.push_str(&crate::toon::escape_value(&step.id));
             out.push(',');
-            out.push_str(&michi_toon::escape_value(&step.name));
+            out.push_str(&crate::toon::escape_value(&step.name));
             out.push(',');
             out.push_str(step.status.label());
-            out.push('\n');
+            out.push(',');
+            out.push_str(step.status.reason().unwrap_or("null"));
         }
 
         out
@@ -94,14 +186,17 @@ mod tests {
             ],
         };
         let out = p.render();
-        assert_eq!(out, "step[2]{id,name,status}:\n  fetch,Fetch Data,completed\n  upload,Upload,pending\n");
+        assert_eq!(
+            out,
+            "step[2]{id,name,status,reason}:\n  fetch,Fetch Data,completed,null\n  upload,Upload,pending,null"
+        );
     }
 
     #[test]
     fn empty_pipeline_renders_zero_steps() {
         let p = Pipeline { id: "empty".into(), steps: vec![] };
         let out = p.render();
-        assert_eq!(out, "step[0]{id,name,status}:\n");
+        assert_eq!(out, "step: []");
     }
 
     #[test]
@@ -110,16 +205,20 @@ mod tests {
             id: "p".into(),
             steps: vec![PipelineStep { id: "build".into(), name: "Build".into(), status: StepStatus::Failed }],
         };
-        assert!(p.render().contains(",failed\n"), "got: {}", p.render());
+        assert!(p.render().ends_with(",failed,null"), "got: {}", p.render());
     }
 
     #[test]
     fn skipped_step_label() {
         let p = Pipeline {
             id: "p".into(),
-            steps: vec![PipelineStep { id: "lint".into(), name: "Lint".into(), status: StepStatus::Skipped }],
+            steps: vec![PipelineStep {
+                id: "lint".into(),
+                name: "Lint".into(),
+                status: StepStatus::Skipped(SkipReason::PrerequisiteFailed),
+            }],
         };
-        assert!(p.render().contains(",skipped\n"), "got: {}", p.render());
+        assert!(p.render().ends_with(",skipped,prerequisite_failed"), "got: {}", p.render());
     }
 
     #[test]
@@ -133,21 +232,27 @@ mod tests {
         assert!(!out.contains("a,b,A,B"), "raw commas must not appear unescaped, got: {out}");
     }
 
-    // AC-001: an exhaustive match with exactly these 4 arms and no wildcard
-    // compiles today; adding a 5th variant would break this (non_exhaustive
+    // AC-001: an exhaustive match with exactly these 9 arms and no wildcard
+    // compiles today; adding a variant would break this (non_exhaustive
     // only blocks exhaustive matching from OUTSIDE the crate — see AC-003's
     // trybuild fixture for that half).
     #[test]
-    fn ac001_step_status_has_exactly_four_variants() {
+    fn ac001_step_status_has_exactly_nine_variants() {
         fn all_variants(s: StepStatus) -> &'static str {
             match s {
-                StepStatus::Completed => "completed",
-                StepStatus::Skipped => "skipped",
-                StepStatus::Failed => "failed",
                 StepStatus::Pending => "pending",
+                StepStatus::Running => "running",
+                StepStatus::Completed => "completed",
+                StepStatus::CompletedEarlier => "completed_earlier",
+                StepStatus::Failed => "failed",
+                StepStatus::OutcomeUnknown(_) => "outcome_unknown",
+                StepStatus::Skipped(_) => "skipped",
+                StepStatus::NotRun(_) => "not_run",
+                StepStatus::Panicked => "panicked",
             }
         }
         assert_eq!(all_variants(StepStatus::Completed), "completed");
+        assert_eq!(all_variants(StepStatus::Panicked), StepStatus::Panicked.label());
     }
 
     #[test]
@@ -166,7 +271,7 @@ mod tests {
 
     #[test]
     fn ac005_skipped_label_is_exact() {
-        assert_eq!(StepStatus::Skipped.label(), "skipped");
+        assert_eq!(StepStatus::Skipped(SkipReason::Cancelled).label(), "skipped");
     }
 
     #[test]
@@ -192,7 +297,7 @@ mod tests {
     fn ac013_distinctive_id_never_appears_in_empty_render_output() {
         let p = Pipeline { id: "zzz-unique-marker-999".into(), steps: vec![] };
         let out = p.render();
-        assert_eq!(out, "step[0]{id,name,status}:\n");
+        assert_eq!(out, "step: []");
         assert!(!out.contains("zzz-unique-marker-999"), "got: {out}");
     }
 
@@ -204,7 +309,7 @@ mod tests {
             id: "p".into(),
             steps: vec![PipelineStep { id: "a,b".into(), name: "A,B Step".into(), status: StepStatus::Pending }],
         };
-        assert_eq!(p.render(), "step[1]{id,name,status}:\n  \"a,b\",\"A,B Step\",pending\n");
+        assert_eq!(p.render(), "step[1]{id,name,status,reason}:\n  \"a,b\",\"A,B Step\",pending,null");
     }
 
     #[test]
@@ -232,7 +337,10 @@ mod tests {
                 PipelineStep { id: "B".into(), name: "b".into(), status: StepStatus::Completed },
             ],
         };
-        assert_eq!(p.render(), "step[3]{id,name,status}:\n  C,c,completed\n  A,a,completed\n  B,b,completed\n");
+        assert_eq!(
+            p.render(),
+            "step[3]{id,name,status,reason}:\n  C,c,completed,null\n  A,a,completed,null\n  B,b,completed,null"
+        );
     }
 
     #[test]
@@ -244,7 +352,10 @@ mod tests {
                 PipelineStep { id: "dup".into(), name: "second".into(), status: StepStatus::Pending },
             ],
         };
-        assert_eq!(p.render(), "step[2]{id,name,status}:\n  dup,first,completed\n  dup,second,pending\n");
+        assert_eq!(
+            p.render(),
+            "step[2]{id,name,status,reason}:\n  dup,first,completed,null\n  dup,second,pending,null"
+        );
     }
 
     #[test]
@@ -253,17 +364,17 @@ mod tests {
             id: "p".into(),
             steps: vec![PipelineStep { id: String::new(), name: String::new(), status: StepStatus::Pending }],
         };
-        assert_eq!(p.render(), "step[1]{id,name,status}:\n  ,,pending\n");
+        assert_eq!(p.render(), "step[1]{id,name,status,reason}:\n  \"\",\"\",pending,null");
     }
 
     #[test]
-    fn ac025_embedded_newline_in_id_is_silently_stripped_not_escaped() {
+    fn ac025_embedded_newline_in_id_is_quoted_and_escaped() {
         let id: String = ['l', 'i', 'n', 'e', '1', '\n', 'l', 'i', 'n', 'e', '2'].into_iter().collect();
         let p = Pipeline {
             id: "p".into(),
             steps: vec![PipelineStep { id, name: "ok".into(), status: StepStatus::Pending }],
         };
-        assert_eq!(p.render(), "step[1]{id,name,status}:\n  line1line2,ok,pending\n");
+        assert_eq!(p.render(), "step[1]{id,name,status,reason}:\n  \"line1\\nline2\",ok,pending,null");
     }
 
     // AC-025's own text says "id or name" interchangeably, but every fixture
@@ -272,13 +383,13 @@ mod tests {
     // identically on both fields in render(), so this closes that
     // family-sibling gap without a new criterion ID.
     #[test]
-    fn ac025_embedded_newline_in_name_is_also_silently_stripped_not_escaped() {
+    fn ac025_embedded_newline_in_name_is_also_quoted_and_escaped() {
         let name: String = ['l', 'i', 'n', 'e', '1', '\n', 'l', 'i', 'n', 'e', '2'].into_iter().collect();
         let p = Pipeline {
             id: "p".into(),
             steps: vec![PipelineStep { id: "ok".into(), name, status: StepStatus::Pending }],
         };
-        assert_eq!(p.render(), "step[1]{id,name,status}:\n  ok,line1line2,pending\n");
+        assert_eq!(p.render(), "step[1]{id,name,status,reason}:\n  ok,\"line1\\nline2\",pending,null");
     }
 
     #[test]
@@ -288,7 +399,7 @@ mod tests {
             id: "p".into(),
             steps: vec![PipelineStep { id, name: "c".into(), status: StepStatus::Pending }],
         };
-        assert_eq!(p.render(), "step[1]{id,name,status}:\n  \"a\\\"b\",c,pending\n");
+        assert_eq!(p.render(), "step[1]{id,name,status,reason}:\n  \"a\\\"b\",c,pending,null");
     }
 
     #[test]
@@ -325,12 +436,12 @@ mod tests {
     }
 
     #[test]
-    fn ac030_embedded_carriage_return_in_id_is_silently_stripped_not_escaped() {
+    fn ac030_embedded_carriage_return_in_id_is_quoted_and_escaped() {
         let id: String = ['l', 'i', 'n', 'e', '1', '\r', 'l', 'i', 'n', 'e', '2'].into_iter().collect();
         let p = Pipeline {
             id: "p".into(),
             steps: vec![PipelineStep { id, name: "ok".into(), status: StepStatus::Pending }],
         };
-        assert_eq!(p.render(), "step[1]{id,name,status}:\n  line1line2,ok,pending\n");
+        assert_eq!(p.render(), "step[1]{id,name,status,reason}:\n  \"line1\\rline2\",ok,pending,null");
     }
 }

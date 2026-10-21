@@ -1,9 +1,0 @@
----
-source: tests/snapshot_tests.rs
-expression: resp.render()
----
-tool:        my-tool
-description: does things
-index:       ready
-cache:       warm  [DEGRADED: near limit]
-queue:       down  [ERROR: disconnected]

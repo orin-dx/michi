@@ -1,8 +1,0 @@
----
-source: tests/snapshot_tests.rs
-expression: "render_kv(&items, None, &[])"
----
-id:    abc-123
-title: Fix login
-state: open
-count: 3

@@ -1,8 +1,0 @@
----
-source: tests/snapshot_tests.rs
-expression: out
----
-issue[0]{}:
-totalCount: 0
-help[1]:
-  Try list_issues with a broader filter

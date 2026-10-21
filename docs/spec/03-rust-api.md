@@ -1,23 +1,25 @@
 # Rust API
 
-## Crate Root (`michi`)
+## Crate Root (`michi_core`)
 
-`michi` is a unified facade crate. It re-exports sub-crates as modules and star-exports `michi-core` directly so all core types are available at the root:
+`michi-core` is the one crate holding every sync primitive. Each primitive is a module (`michi_core::toon`, `michi_core::kv`, `michi_core::truncate`, `michi_core::resilience`, …), and the most-used types are re-exported at the crate root:
 
 ```rust
-pub use michi_core::*;            // DomainError, AgentResponse, KvItem, … at michi::*
-pub use michi_resilience as resilience;   // michi::resilience::RetryConfig, …
-pub use michi_toon as toon;              // michi::toon::ToonOptions, michi::toon::list(), …
-pub use michi_truncate as truncate;      // michi::truncate::truncate(), …
+pub use error::{DomainError, Error, ErrorClass, ErrorCode, Sensitive};
+pub use response::{AgentResponse, OutputFormat};
+pub use kv::{render_kv, KvError, KvItem, KvValue};
+// … audience, empty, hints, idempotency, mcp, recovery, status
+pub use resilience::*;            // michi_core::RetryConfig, michi_core::already_done, …
+pub use truncate::*;              // michi_core::truncate(), michi_core::Truncated, …
+
+pub type Result<T> = std::result::Result<T, Error>;
 ```
 
-`michi_resilience::*` is also re-exported from `michi_core`, so `michi::RetryConfig`, `michi::already_done`, etc. are available at the root without the `resilience::` prefix.
+`toon` is not glob-re-exported; its items are reached as `michi_core::toon::ToonOptions`, `michi_core::toon::list()`, and so on. There is no `michi` crate (the name on crates.io belongs to an unrelated project); consumers who prefer `michi::` paths rename the dependency with `michi = { package = "michi-core", version = "0.3" }`.
 
-All sub-crates compile for `wasm32-unknown-unknown` and `wasm32-wasip1` without OS dependencies.
+## `toon` — List Rendering
 
-## `michi-toon` — List Rendering
-
-`michi-toon` formats tabular lists using Token-Optimized Object Notation (**AXI P1**). Small cell strings (≤ 24 bytes) are stack-inlined via `compact_str::CompactString`.
+`michi_core::toon` formats tabular lists using Token-Oriented Object Notation (**AXI P1**). Small cell strings (≤ 24 bytes) are stack-inlined via `compact_str::CompactString`.
 
 ```rust
 #[non_exhaustive]
@@ -27,7 +29,10 @@ pub struct ToonOptions {
     pub rows: Vec<Vec<Value>>,
     pub total_count: Option<usize>,
     pub hints: Vec<String>,
+    /// Max string cell length in chars, counted before escaping/quoting (default 200).
     pub max_cell_len: usize,
+    /// The caller's "get it in full" instruction for the truncation suffix (default None: no `— use …` clause).
+    pub truncation_hint: Option<String>,
 }
 
 impl ToonOptions {
@@ -35,16 +40,19 @@ impl ToonOptions {
     pub fn total_count(self, total: Option<usize>) -> Self;
     pub fn hints(self, hints: Vec<String>) -> Self;
     pub fn max_cell_len(self, len: usize) -> Self;
+    pub fn truncation_hint(self, hint: impl Into<String>) -> Self;
     /// Validate structural invariants before rendering.
-    /// Returns Err if type_name or any field name contains structural chars,
-    /// or if any row's length differs from fields.len().
+    /// Returns Err if type_name is a reserved document key (`totalCount`, `help`, `recovery`),
+    /// a field name is repeated, or any row's length differs from fields.len().
+    /// Any other name is valid and is quoted per TOON 4.4 §7.3.
     pub fn validate(&self) -> Result<(), ToonError>;
 }
 
 pub enum Value {
     Str(compact_str::CompactString),
     Int(i64),
-    Float(f64),
+    UInt(u64),  // From<u64>/From<usize> above i64::MAX; always an exact unquoted number
+    Float(f64), // NaN/±Infinity render as null
     Bool(bool),
     Null,
 }
@@ -76,9 +84,9 @@ pub fn list<T: serde::Serialize>(
 ) -> Result<String, ToonError>;
 ```
 
-Items are serialized via `serde_json::to_value()` and must produce JSON objects (structs or maps). Non-object items and structural chars in `type_name` or field names return `Err(ToonError)`.
+Items are serialized via `serde_json::to_value()` and must produce JSON objects (structs or maps). Non-object items and a reserved `type_name` (`totalCount`, `help`, `recovery`) return `Err(ToonError)`. A key missing from some items renders as `null` in those rows; nested arrays/objects become their compact JSON text, quoted.
 
-## `michi-core` — High-Level Response Compositor
+## Response Compositor (`error`, `response`, `idempotency`)
 
 ### `DomainError`
 
@@ -110,7 +118,7 @@ impl DomainError {
 }
 ```
 
-- `render()` outputs an agent-readable key-value block with exit code, hints, and recovery.
+- `render()` outputs a TOON 4.4 document: `error: <code>`, `message: …` (quoted per §7.2), `exit_code: 1`, then `help[N]: …` and `recovery[1]{tool,params,reason}:` when set. `Error::render()` uses the same shape for every variant (`error: invalid_input` / `error: not_found` for the non-domain variants). See [02-toon-format.md](02-toon-format.md#agent-facing-blocks).
 - `render_github_annotation()` outputs a GitHub Actions annotation (`::error title=code::message`). Newlines and CRs are percent-encoded.
 - `render_json()` outputs a JSON object: `{"isError":true,"error":"...","message":"...","retryable":bool,"hints":[...],"recovery":null|{...}}`.
 - `to_call_tool_result()` builds an MCP `CallToolResult` with `is_error:true` and the rendered JSON as `structured_content`.
@@ -132,8 +140,10 @@ impl AgentResponse {
     /// Replaces the full hint list (contrast `hint()`, which appends).
     pub fn hints(self, hints: Vec<Hint>) -> Self;
     pub fn recovery_hint(self, r: RecoveryHint) -> Self;
-    /// Overrides the default TOON cell truncation limit (200); TOON path only.
+    /// Overrides the default TOON cell truncation limit (200 chars, counted before escaping/quoting); TOON path only.
     pub fn truncate_cells_at(self, limit: usize) -> Self;
+    /// Passed through to `ToonOptions::truncation_hint`; unset by default.
+    pub fn truncation_hint(self, hint: impl Into<String>) -> Self;
     pub fn as_error(self) -> Self;
     pub fn human_content(self, text: impl Into<String>) -> Self;
 
@@ -143,7 +153,7 @@ impl AgentResponse {
     pub fn render_toon(&self) -> String;
     /// Reads the KV slot unconditionally, regardless of which builder path was last set.
     pub fn render_kv(&self) -> String;
-    /// Just the `help[N]:` block for `.hint()`/`.hints()`.
+    /// Just the `help[N]: …` document for `.hint()`/`.hints()`.
     pub fn render_hints_only(&self) -> String;
     /// `"user"` falls back to `render(OutputFormat::Text)` when `.human_content()` was never set.
     pub fn render_for(&self, audience: Audience) -> String;
@@ -157,7 +167,7 @@ impl AgentResponse {
 ### Idempotency
 
 ```rust
-// In michi-core::idempotency (also at michi::PartialSuccess, michi::FailedOp)
+// In michi_core::idempotency (also at michi_core::PartialSuccess, michi_core::FailedOp)
 pub struct PartialSuccess {
     pub completed: Vec<String>,
     pub failed: Vec<FailedOp>,
@@ -175,7 +185,7 @@ pub struct FailedOp {
     pub recovery: Option<RecoveryHint>,
 }
 
-// In michi-resilience (also at michi::already_done, michi::AlreadyDone)
+// In michi_core::resilience (also at michi_core::already_done, michi_core::AlreadyDone)
 pub enum AlreadyDone { Yes { result: String }, No }
 pub fn already_done(stored: Option<String>) -> AlreadyDone;
 pub fn render_already_done(operation: &str, summary: &str, hints: &[String]) -> String;
@@ -186,15 +196,44 @@ impl IdempotencyKey {
 }
 ```
 
-## `michi-truncate` — Char-Boundary Truncation
+### Key-value, hints, recovery and status blocks
+
+Every block renderer returns a finished TOON 4.4 document with no trailing newline; the `append_*` helpers join a block onto a document with one LF. The forms are listed in [02-toon-format.md](02-toon-format.md#agent-facing-blocks).
+
+```rust
+// michi_core::kv
+pub struct KvItem { pub key: String, pub value: KvValue }
+pub enum KvValue { Text(String), Int(i64), Float(f64, u8), Bool(bool), Duration(Duration), Missing }
+#[non_exhaustive]
+pub enum KvError { ReservedKey { key: String }, DuplicateKey { key: String } }
+/// `key: value` lines, then `totalCount` and `help`. Err for a repeated key or a reserved
+/// `totalCount`/`help`/`recovery` key (a duplicate root key, §14.3). Empty items: Ok("").
+pub fn render_kv(items: &[KvItem], total_count: Option<usize>, hints: &[Hint]) -> Result<String, KvError>;
+
+// michi_core::hints
+pub fn render_hints(hints: &[Hint]) -> String;               // help[N]: h1,h2
+pub fn append_hints(out: &mut String, hints: &[Hint]);
+
+// michi_core::recovery
+pub fn render_recovery(hints: &[RecoveryHint]) -> String;    // recovery[N]{tool,params,reason}:
+pub fn append_recovery(out: &mut String, hints: &[RecoveryHint]);
+
+// michi_core::status
+impl StatusResponse { pub fn render(&self) -> String; }      // tool, description, items[N]{key,value,health,reason}:, help
+```
+
+`KvValue::Float(f, decimals)` rounds `f` to `decimals` places and writes the rounded value in canonical TOON number form, so `Float(1.5, 3)` is `1.5`, not `1.500`; `Missing` is `null`; `Duration` is the string `1.5s`. `AgentResponse`'s KV path turns a `KvError` into a `kv_validation_failed` error body and sets `is_error`, like `toon_validation_failed` on the TOON path.
+
+## `truncate` — Char-Boundary Truncation
 
 ```rust
 pub struct Truncated {
     pub content: String,
+    /// Byte length (not char count) of the input, truncated or not.
     pub original_len: usize,
     pub was_truncated: bool,
-    /// The signal text actually embedded in content (None when not truncated
-    /// or when max_chars was too small to fit any signal).
+    /// The signal embedded at the end of content, leading space stripped: "(N more chars — use hint)",
+    /// "(N more chars)" or "…". None when not truncated or when max_chars is 0.
     pub signal: Option<String>,
 }
 
@@ -202,9 +241,20 @@ pub fn truncate(content: &str, max_chars: usize, hint: &str) -> Truncated;
 pub fn truncate_inline(content: &str, max_chars: usize, hint: &str) -> String;
 ```
 
-Truncates strings safely at Unicode scalar boundaries (`floor_char_boundary`) without splitting UTF-8 code points.
+Truncates strings safely at Unicode scalar boundaries without splitting UTF-8 code points. `max_chars` counts chars, and the result never exceeds it:
 
-## `michi-resilience` — Retry & Idempotency Primitives
+| Input     | `max_chars` | `hint`        | `content`                                        |
+| --------- | ----------- | ------------- | ------------------------------------------------ |
+| 200 × `a` | 50          | `"full=true"` | 17 × `a` + `" (183 more chars — use full=true)"` |
+| 100 × `a` | 40          | `""`          | 24 × `a` + `" (76 more chars)"`                  |
+| 100 × `a` | 3           | `"x"`         | `"aa…"`                                          |
+| 100 × `a` | 1 / 0       | any           | `"…"` / `""`                                     |
+
+- The count is the chars **removed** (input chars minus kept chars), sized so the suffix's own digits fit within `max_chars`.
+- The `— use {hint}` clause is the caller's instruction and is omitted when `hint` is empty; michi never supplies one. The `&str` signature stays so the NAPI `truncate(content, maxChars, hint)` export is unchanged.
+- When the suffix plus one kept char does not fit, the result is the first `max_chars - 1` chars and `…`, never a fragment of the suffix. `was_truncated` is still `true`.
+
+## `resilience` — Retry & Idempotency Primitives
 
 ```rust
 pub struct RetryConfig {

@@ -1,16 +1,16 @@
 use crate::hints::Hint;
-use crate::kv::{KvItem, KvValue};
+use crate::kv::KvValue;
 
 /// Health classification for an individual status item.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub enum Health {
-    /// Operating normally — no annotation shown.
+    /// Operating normally — renders health `ok` and reason `null`.
     Ok,
-    /// Degraded but still serving; carries a short reason.
+    /// Degraded but still serving; carries a short reason. Renders health `degraded`.
     Degraded(String),
-    /// Not serving; carries a short reason.
+    /// Not serving; carries a short reason. Renders health `error`.
     Error(String),
 }
 
@@ -22,7 +22,7 @@ pub struct StatusItem {
     pub key: String,
     /// The component's actual value.
     pub value: KvValue,
-    /// Optional health signal.
+    /// Optional health signal; `None` renders health and reason as `null`.
     pub health: Option<Health>,
 }
 
@@ -54,129 +54,110 @@ impl StatusResponse {
         self
     }
 
-    /// Render this status response as an agent-readable string.
+    /// Render this status response as a TOON 4.4 document, with no trailing newline:
+    ///
+    /// ```text
+    /// tool: my-tool
+    /// description: does things
+    /// items[2]{key,value,health,reason}:
+    ///   index,ready,ok,null
+    ///   cache,warm,degraded,near limit
+    /// help[1]: Call get_status for detail
+    /// ```
+    ///
+    /// `items` is a tabular array (§9.3), `items: []` when there are none. `health` is `ok`, `degraded`, `error`, or
+    /// `null` when the item carries no health signal; `reason` is the degraded/error reason, `null` otherwise. Item
+    /// keys are cells, not root keys, so any key — even a repeated one — keeps the document valid. Every string is
+    /// quoted per §7.2 and the value is a TOON primitive (see [`KvValue`]).
     #[must_use]
     pub fn render(&self) -> String {
-        let mut kv_items = Vec::with_capacity(self.items.len() + 2);
-        kv_items.push(KvItem { key: "tool".to_string(), value: KvValue::Text(self.tool_name.clone()) });
-        kv_items.push(KvItem { key: "description".to_string(), value: KvValue::Text(self.description.clone()) });
-        for item in &self.items {
-            let annotated = match &item.health {
-                None | Some(Health::Ok) => item.value.clone(),
-                Some(Health::Degraded(reason)) => annotate(&item.value, "DEGRADED", reason),
-                Some(Health::Error(reason)) => annotate(&item.value, "ERROR", reason),
-            };
-            kv_items.push(KvItem { key: item.key.clone(), value: annotated });
+        let capacity = 48
+            + self.tool_name.len()
+            + self.description.len()
+            + self.items.iter().map(|i| i.key.len() + 32).sum::<usize>()
+            + self.hints.len() * 50;
+        let mut out = String::with_capacity(capacity);
+        out.push_str("tool: ");
+        out.push_str(&crate::toon::escape_value(&self.tool_name));
+        out.push_str("\ndescription: ");
+        out.push_str(&crate::toon::escape_value(&self.description));
+        if self.items.is_empty() {
+            out.push_str("\nitems: []");
+        } else {
+            out.push_str("\nitems[");
+            out.push_str(&self.items.len().to_string());
+            out.push_str("]{key,value,health,reason}:");
+            for item in &self.items {
+                out.push_str("\n  ");
+                out.push_str(&crate::toon::escape_value(&item.key));
+                out.push(',');
+                crate::kv::push_kv_value(&mut out, &item.value);
+                let (health, reason) = match &item.health {
+                    None => ("null", None),
+                    Some(Health::Ok) => ("ok", None),
+                    Some(Health::Degraded(reason)) => ("degraded", Some(reason)),
+                    Some(Health::Error(reason)) => ("error", Some(reason)),
+                };
+                out.push(',');
+                out.push_str(health);
+                out.push(',');
+                match reason {
+                    Some(reason) => out.push_str(&crate::toon::escape_value(reason)),
+                    None => out.push_str("null"),
+                }
+            }
         }
-        crate::kv::render_kv(&kv_items, None, &self.hints)
+        crate::hints::append_hints(&mut out, &self.hints);
+        out
     }
-}
-
-fn annotate(value: &KvValue, label: &str, reason: &str) -> KvValue {
-    let mut display = String::new();
-    crate::kv::push_kv_value(&mut display, value);
-    KvValue::Text(format!("{display}  [{label}: {reason}]"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    const HEAD: &str = "tool: tool\ndescription: desc\nitems[1]{key,value,health,reason}:\n  ";
+
+    fn one(key: &str, value: KvValue, health: Option<Health>) -> String {
+        StatusResponse::new("tool", "desc", vec![StatusItem { key: key.into(), value, health }]).render()
+    }
+
     #[test]
     fn tool_and_description_lead_the_output() {
         let resp = StatusResponse::new("my-search-tool", "Semantic code search and symbol analysis", vec![]);
         let out = resp.render();
         assert!(
-            out.starts_with("tool:        my-search-tool\ndescription: Semantic code search and symbol analysis\n"),
+            out.starts_with("tool: my-search-tool\ndescription: Semantic code search and symbol analysis\n"),
             "got: {out}"
         );
     }
 
     #[test]
-    fn empty_items_renders_only_tool_and_description() {
-        let resp = StatusResponse::new("tool-x", "does things", vec![]);
-        let out = resp.render();
-        let lines: Vec<&str> = out.lines().collect();
-        assert_eq!(lines.len(), 2, "only tool + description lines, got: {out}");
+    fn empty_items_renders_tool_description_and_an_empty_items_array() {
+        let out = StatusResponse::new("tool-x", "does things", vec![]).render();
+        assert_eq!(out, "tool: tool-x\ndescription: does things\nitems: []");
     }
 
     #[test]
-    fn health_ok_produces_no_annotation() {
-        let resp = StatusResponse::new(
-            "tool",
-            "desc",
-            vec![StatusItem { key: "index".into(), value: KvValue::Text("ready".into()), health: Some(Health::Ok) }],
-        );
-        let out = resp.render();
-        assert!(!out.contains("DEGRADED") && !out.contains("ERROR"), "Ok should add no annotation, got: {out}");
+    fn health_ok_renders_ok_with_null_reason() {
+        let out = one("index", KvValue::Text("ready".into()), Some(Health::Ok));
+        assert_eq!(out, format!("{HEAD}index,ready,ok,null"));
     }
 
     #[test]
-    fn health_degraded_annotation_appears() {
-        let resp = StatusResponse::new(
-            "tool",
-            "desc",
-            vec![StatusItem {
-                key: "cache".into(),
-                value: KvValue::Text("warm".into()),
-                health: Some(Health::Degraded("slow eviction".into())),
-            }],
-        );
-        let out = resp.render();
-        assert!(out.contains("[DEGRADED: slow eviction]"), "got: {out}");
+    fn health_degraded_renders_its_reason() {
+        let out = one("cache", KvValue::Text("warm".into()), Some(Health::Degraded("slow eviction".into())));
+        assert_eq!(out, format!("{HEAD}cache,warm,degraded,slow eviction"));
     }
 
     #[test]
-    fn ac025_degraded_suffix_has_exactly_two_leading_spaces() {
-        let resp = StatusResponse::new(
-            "tool",
-            "desc",
-            vec![StatusItem {
-                key: "cache".into(),
-                value: KvValue::Text("warm".into()),
-                health: Some(Health::Degraded("slow eviction".into())),
-            }],
-        );
-        let out = resp.render();
-        let line = out.lines().find(|l| l.starts_with("cache:")).expect("cache line present");
-        assert!(line.ends_with("  [DEGRADED: slow eviction]"), "got: {line:?}");
-        assert!(!line.ends_with("   [DEGRADED: slow eviction]"), "three spaces, got: {line:?}");
+    fn health_error_renders_its_reason() {
+        let out = one("db", KvValue::Text("unreachable".into()), Some(Health::Error("connection refused".into())));
+        assert_eq!(out, format!("{HEAD}db,unreachable,error,connection refused"));
     }
 
     #[test]
-    fn health_error_annotation_appears() {
-        let resp = StatusResponse::new(
-            "tool",
-            "desc",
-            vec![StatusItem {
-                key: "db".into(),
-                value: KvValue::Text("unreachable".into()),
-                health: Some(Health::Error("connection refused".into())),
-            }],
-        );
-        let out = resp.render();
-        assert!(out.contains("[ERROR: connection refused]"), "got: {out}");
-    }
-
-    #[test]
-    fn ac026_error_suffix_has_exactly_two_leading_spaces() {
-        let resp = StatusResponse::new(
-            "tool",
-            "desc",
-            vec![StatusItem {
-                key: "db".into(),
-                value: KvValue::Text("unreachable".into()),
-                health: Some(Health::Error("connection refused".into())),
-            }],
-        );
-        let out = resp.render();
-        let line = out.lines().find(|l| l.starts_with("db:")).expect("db line present");
-        assert!(line.ends_with("  [ERROR: connection refused]"), "got: {line:?}");
-        assert!(!line.ends_with("   [ERROR: connection refused]"), "three spaces, got: {line:?}");
-    }
-
-    #[test]
-    fn multiple_items_all_appear() {
+    fn multiple_items_all_appear_in_order() {
         let resp = StatusResponse::new(
             "tool",
             "desc",
@@ -185,9 +166,10 @@ mod tests {
                 StatusItem { key: "beta".into(), value: KvValue::Int(2), health: None },
             ],
         );
-        let out = resp.render();
-        assert!(out.contains("alpha:"), "got: {out}");
-        assert!(out.contains("beta:"), "got: {out}");
+        assert_eq!(
+            resp.render(),
+            "tool: tool\ndescription: desc\nitems[2]{key,value,health,reason}:\n  alpha,1,null,null\n  beta,2,null,null"
+        );
     }
 
     #[test]
@@ -213,8 +195,9 @@ mod tests {
         assert!(with.items.is_empty());
     }
 
+    // AC-023 (superseded): 3 lines (tool, description, items header) plus one row per item.
     #[test]
-    fn ac023_line_count_is_2_plus_n_with_default_hints() {
+    fn ac023_line_count_is_3_plus_n_with_default_hints() {
         for n in 0..=3 {
             let items: Vec<StatusItem> = (0..n)
                 .map(|i| StatusItem {
@@ -223,110 +206,69 @@ mod tests {
                     health: None,
                 })
                 .collect();
-            let resp = StatusResponse::new("tool", "desc", items);
-            let out = resp.render();
-            assert_eq!(out.lines().count(), 2 + n, "n={n}, got: {out:?}");
+            let out = StatusResponse::new("tool", "desc", items).render();
+            assert_eq!(out.lines().count(), 3 + n, "n={n}, got: {out:?}");
         }
     }
 
     #[test]
-    fn ac023a_with_hints_appends_append_hints_block_after_the_2_plus_n_lines() {
-        let items = vec![StatusItem { key: "k".into(), value: KvValue::Int(1), health: None }];
+    fn ac023a_with_hints_appends_the_help_block_on_its_own_line() {
+        let items = || vec![StatusItem { key: "k".into(), value: KvValue::Int(1), health: None }];
         let hints = vec![Hint::new("h1"), Hint::new("h2")];
-        let resp = StatusResponse::new("tool", "desc", items).with_hints(hints.clone());
-        let out = resp.render();
-        let no_hints = StatusResponse::new(
-            "tool",
-            "desc",
-            vec![StatusItem { key: "k".into(), value: KvValue::Int(1), health: None }],
-        )
-        .render();
-        assert!(out.starts_with(&no_hints), "got: {out:?}");
-        assert_eq!(&out[no_hints.len()..], crate::hints::render_hints(&hints));
+        let out = StatusResponse::new("tool", "desc", items()).with_hints(hints.clone()).render();
+        let no_hints = StatusResponse::new("tool", "desc", items()).render();
+        assert_eq!(out, format!("{no_hints}\n{}", crate::hints::render_hints(&hints)));
     }
 
     #[test]
-    fn ac023a_newline_in_item_key_breaks_the_2_plus_n_formula_even_with_hints() {
-        let items = vec![StatusItem { key: "a\nb".into(), value: KvValue::Text("v".into()), health: None }];
-        let hints = vec![Hint::new("h1")];
-        let resp = StatusResponse::new("tool", "desc", items).with_hints(hints);
-        let out = resp.render();
-        let lines_before_help = out.lines().take_while(|l| !l.starts_with("help[")).count();
-        assert_eq!(lines_before_help, 4, "2 (tool+desc) + 1 item + 1 extra from the embedded \\n, got: {out:?}");
+    fn ac023a_newline_in_item_key_is_quoted_and_escaped() {
+        let out = one("a\nb", KvValue::Text("v".into()), None);
+        assert_eq!(out, format!("{HEAD}\"a\\nb\",v,null,null"));
+        assert_eq!(out.lines().count(), 4, "the escaped \\n adds no line, got: {out:?}");
+    }
+
+    // AC-024 (superseded): `Health::Ok` renders `ok`; `None` renders `null` — the item carries no health signal.
+    #[test]
+    fn ac024_health_ok_and_none_are_distinct() {
+        assert_eq!(one("x", KvValue::Int(1), Some(Health::Ok)), format!("{HEAD}x,1,ok,null"));
+        assert_eq!(one("x", KvValue::Int(1), None), format!("{HEAD}x,1,null,null"));
     }
 
     #[test]
-    fn ac024_health_ok_renders_byte_identical_to_health_none() {
-        let ok_item = StatusItem { key: "x".into(), value: KvValue::Int(1), health: Some(Health::Ok) };
-        let none_item = StatusItem { key: "x".into(), value: KvValue::Int(1), health: None };
-        let ok_out = StatusResponse::new("tool", "desc", vec![ok_item]).render();
-        let none_out = StatusResponse::new("tool", "desc", vec![none_item]).render();
-        assert_eq!(ok_out, none_out);
+    fn ac024_value_text_containing_bracket_literal_is_quoted_not_mistaken_for_health() {
+        let out = one("x", KvValue::Text("[DEGRADED: fake]".into()), None);
+        assert_eq!(out, format!("{HEAD}x,\"[DEGRADED: fake]\",null,null"));
     }
 
     #[test]
-    fn ac024_value_text_containing_bracket_literal_is_not_mistaken_for_a_real_annotation() {
-        let item = StatusItem { key: "x".into(), value: KvValue::Text("[DEGRADED: fake]".into()), health: None };
-        let out = StatusResponse::new("tool", "desc", vec![item]).render();
-        assert_eq!(out, "tool:        tool\ndescription: desc\nx:           [DEGRADED: fake]\n");
+    fn ac023_carriage_return_in_item_key_is_escaped() {
+        let out = one("a\rb", KvValue::Text("v".into()), None);
+        assert_eq!(out, format!("{HEAD}\"a\\rb\",v,null,null"));
+        assert!(!out.contains('\r'), "no raw CR may survive, got: {out:?}");
     }
 
     #[test]
-    fn ac023b_newline_in_item_key_adds_a_line_beyond_the_2_plus_n_formula() {
-        let items = vec![StatusItem { key: "a\nb".into(), value: KvValue::Text("v".into()), health: None }];
-        let resp = StatusResponse::new("tool", "desc", items);
-        let out = resp.render();
-        assert_eq!(out.lines().count(), 4, "2 (tool+desc) + 1 item + 1 extra from the embedded \\n, got: {out:?}");
+    fn ac023_text_value_with_newline_and_carriage_return_is_escaped() {
+        let out = one("k", KvValue::Text("a\nb\rc".into()), None);
+        assert_eq!(out, format!("{HEAD}k,\"a\\nb\\rc\",null,null"));
+        assert_eq!(out.lines().count(), 4);
     }
 
     #[test]
-    fn ac023_carriage_return_in_item_key_passes_through_but_does_not_change_line_count() {
-        let items = vec![StatusItem { key: "a\rb".into(), value: KvValue::Text("v".into()), health: None }];
-        let resp = StatusResponse::new("tool", "desc", items);
-        let out = resp.render();
-        assert!(out.contains("a\rb:"), "got: {out:?}");
-        assert_eq!(out.lines().count(), 3, "2 (tool+desc) + 1 item, unchanged by the lone \\r, got: {out:?}");
+    fn ac022a_tool_name_and_description_newlines_are_escaped() {
+        let out = StatusResponse::new("a\nb", "c\nd", vec![]).render();
+        assert_eq!(out, "tool: \"a\\nb\"\ndescription: \"c\\nd\"\nitems: []");
     }
 
     #[test]
-    fn ac023_text_value_with_newline_and_carriage_return_is_stripped_and_preserves_line_count() {
-        let items = vec![StatusItem { key: "k".into(), value: KvValue::Text("a\nb\rc".into()), health: None }];
-        let resp = StatusResponse::new("tool", "desc", items);
-        let out = resp.render();
-        assert!(out.contains("k:           abc"), "got: {out:?}");
-        assert_eq!(out.lines().count(), 3, "2 (tool+desc) + 1 item, value is stripped so count is unaffected");
+    fn ac025a_degraded_reason_newline_is_escaped() {
+        let out = one("x", KvValue::Text("v".into()), Some(Health::Degraded("a\nb".into())));
+        assert_eq!(out, format!("{HEAD}x,v,degraded,\"a\\nb\""));
     }
 
     #[test]
-    fn ac022a_tool_name_and_description_newlines_are_stripped() {
-        let resp = StatusResponse::new("a\nb", "c\nd", vec![]);
-        let out = resp.render();
-        assert_eq!(out, "tool:        ab\ndescription: cd\n");
-    }
-
-    #[test]
-    fn ac025a_degraded_reason_newline_is_stripped() {
-        let items = vec![StatusItem {
-            key: "x".into(),
-            value: KvValue::Text("v".into()),
-            health: Some(Health::Degraded("a\nb".into())),
-        }];
-        let resp = StatusResponse::new("tool", "desc", items);
-        let out = resp.render();
-        assert!(out.contains("[DEGRADED: ab]"), "got: {out:?}");
-        assert_eq!(out.lines().count(), 3);
-    }
-
-    #[test]
-    fn ac026a_error_reason_newline_is_stripped() {
-        let items = vec![StatusItem {
-            key: "x".into(),
-            value: KvValue::Text("v".into()),
-            health: Some(Health::Error("a\nb".into())),
-        }];
-        let resp = StatusResponse::new("tool", "desc", items);
-        let out = resp.render();
-        assert!(out.contains("[ERROR: ab]"), "got: {out:?}");
-        assert_eq!(out.lines().count(), 3);
+    fn ac026a_error_reason_newline_is_escaped() {
+        let out = one("x", KvValue::Text("v".into()), Some(Health::Error("a\nb".into())));
+        assert_eq!(out, format!("{HEAD}x,v,error,\"a\\nb\""));
     }
 }

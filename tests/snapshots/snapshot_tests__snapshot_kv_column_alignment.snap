@@ -1,7 +1,0 @@
----
-source: tests/snapshot_tests.rs
-expression: "render_kv(&items, None, &[])"
----
-id:          1
-description: A longer field value
-x:           true

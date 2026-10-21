@@ -9,7 +9,7 @@ bump-severity = "patch"
 peer-escalation = true
 preserve-npm-ranges = true
 
-# Rust library crates — published to crates.io.
+# Rust library crates, published to crates.io.
 [[package]]
 match = "cargo/michi-core"
 publish-to = ["crates-io"]
@@ -20,29 +20,13 @@ match = "cargo/michi-pipeline"
 publish-to = ["crates-io"]
 release-trigger = "changeset"
 
-[[package]]
-match = "cargo/michi-resilience"
-publish-to = ["crates-io"]
-release-trigger = "changeset"
-
-[[package]]
-match = "cargo/michi-toon"
-publish-to = ["crates-io"]
-release-trigger = "changeset"
-
-[[package]]
-match = "cargo/michi-truncate"
-publish-to = ["crates-io"]
-release-trigger = "changeset"
-
-# Root crate.
-[[package]]
-match = "cargo/michi"
-publish-to = ["crates-io"]
-release-trigger = "changeset"
-
 # michi-node: NAPI cdylib + npm package
 [[package]]
 match = "npm/michi-node"
 publish-to = ["npm"]
 release-trigger = "changeset"
+
+# Every michi package ships one version: a change to any of them releases all three.
+[[fixed-group]]
+name = "michi"
+members = ["michi-core", "michi-pipeline", "michi-node"]

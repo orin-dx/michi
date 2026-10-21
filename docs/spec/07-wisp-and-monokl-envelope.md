@@ -21,7 +21,7 @@ This is the michi half of a contract written down in three places. monokl's `doc
 
 `items()` (line 65) sets `target = RenderTarget::Toon`; `kv_items()` (line 81) sets `Kv`; `body()` (line 143) dispatches on `target`, so `render()` reads whichever setter ran last. Calling both silently drops one. A ten-operation batch is not expressible: nine sections disappear with no error and no signal that they existed.
 
-The truncation model has the same shape problem one level down. `truncate_cells_at` clamps a cell. `michi_truncate::Truncated { content, original_len, was_truncated, signal }` describes a string. Neither describes a response. The only envelope-level "there is more" signal is `total_count: Option<usize>` — a bare integer with no per-section breakdown, no relation to a budget, and no way to say why anything was dropped. monokl's `BudgetReport` would have to be flattened into free-text `hint()` calls to reach the agent at all.
+The truncation model has the same shape problem one level down. `truncate_cells_at` clamps a cell. `michi_core::truncate::Truncated { content, original_len, was_truncated, signal }` describes a string. Neither describes a response. The only envelope-level "there is more" signal is `total_count: Option<usize>` — a bare integer with no per-section breakdown, no relation to a budget, and no way to say why anything was dropped. monokl's `BudgetReport` would have to be flattened into free-text `hint()` calls to reach the agent at all.
 
 ## What gets added
 
@@ -49,7 +49,7 @@ pub struct Section {
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum SectionBody {
-    /// A uniform list. Rendered through `michi_toon::ToonOptions`, per-cell truncation applied.
+    /// A uniform list. Rendered through `michi_core::toon::ToonOptions`, per-cell truncation applied.
     Toon { fields: Vec<String>, rows: Vec<Vec<Value>> },
     /// A single receipt or a small set of labelled scalars.
     Kv(Vec<KvItem>),
@@ -268,7 +268,13 @@ skipped[1]{index,operation,reason}:
       "truncated": true
     }
   ],
-  "budget": { "tokensUsed": 7412, "bytesUsed": 31208, "maxTokens": 8000, "truncated": true, "sections": [] },
+  "budget": {
+    "tokensUsed": 7412,
+    "bytesUsed": 31208,
+    "maxTokens": 8000,
+    "truncated": true,
+    "sections": []
+  },
   "provenance": {
     "entries": [{ "label": "analyzer", "value": "rust-analyzer@0.3.2" }],
     "fingerprint": "b3f1c0d2e4a58691"
@@ -337,7 +343,7 @@ Each conversion is a few dozen lines of field copying in a crate that imports co
 
 `michi renders a budget; it never computes one` is what makes that split hold. Under monokl `08 §7.5` there are two independent producers of a budget report — `monokl-agent` for the CLI and Wisp's `wisp-context` for a briefing — and michi is the only renderer both share. A renderer needs the numbers, not the allocator that produced them, so the numbers are all the envelope takes.
 
-**No new feature flag.** All six types are built from types michi already owns, so all six are always compiled and gate 2's zero-dep default is untouched — there is no dependency to gate. `render_json()` stays hand-built and `serde_json`-free: michi owns these shapes, so it emits their keys the way it emits every other key today, and the `budget` and `provenance` JSON keys appear in a default build. The `serde` and `schemars` derives ride the existing optional features and add nothing to the default.
+**No new feature flag.** All six types are built from types michi already owns, so all six are always compiled and gate 2's small default dependency set is untouched — there is no dependency to gate. `render_json()` stays hand-built and `serde_json`-free: michi owns these shapes, so it emits their keys the way it emits every other key today, and the `budget` and `provenance` JSON keys appear in a default build. The `serde` and `schemars` derives ride the existing optional features and add nothing to the default.
 
 ## Rules this envelope has to hold
 
@@ -353,7 +359,7 @@ Each conversion is a few dozen lines of field copying in a crate that imports co
 
 Wisp's `wisp-output` crate depends on michi through a **local path dependency during coordinated development**, and the publish order runs one way: michi publishes first, and Wisp is not published until michi has a versioned release compatible with Wisp's license and MSRV (Wisp D-006). michi's declared MSRV is `1.96`.
 
-Nothing in Wisp gates a Michi release. Michi publishes first so Wisp can integrate against a versioned dependency, then Wisp can publish its own package. A tagged Git dependency (`michi = { git = "…", tag = "v0.x.y" }`) remains useful during coordinated development.
+Nothing in Wisp gates a michi release, and no consumer integration gates it either (see [ADR 4](../adr/0004-publish-before-consumer-integration.md)). michi publishes first so Wisp can integrate against a versioned dependency, then Wisp can publish its own package. A tagged Git dependency (`michi-core = { git = "…", tag = "v0.x.y" }`) remains useful during coordinated development.
 
 Licensing is settled, not open. michi is `FSL-1.1-MIT`, matching Wisp's upper layers and Lumen, and monokl carries the same license. With all three on `FSL-1.1-MIT`, the FSL-linking-AGPL redistribution conflict this section used to flag no longer exists.
 

@@ -1,6 +1,6 @@
 # Overview & Setup
 
-michi is a Rust crate of pure agentic response primitives — the formatting and signaling conventions that make tools ergonomic for LLM agents, regardless of protocol or language.
+michi is a Rust library (`michi-core`) of pure agentic response primitives — the formatting and signaling conventions that make tools ergonomic for LLM agents, regardless of protocol or language.
 
 ## What it is
 
@@ -67,8 +67,8 @@ Non-agentic tools — build scripts, infrastructure CLIs — never touch michi. 
 
 ```
 Any Rust CLI binary
-  Cargo.toml dep on michi (crates.io or git)
-  Render --format toon via michi::render_toon()
+  Cargo.toml dep on michi-core (crates.io or git)
+  Render --format toon via michi_core::toon::render_toon()
   Full access to every module — no NAPI overhead
 
 Any TypeScript CLI
@@ -85,61 +85,75 @@ Any TypeScript MCP server
 
 ## Cargo.toml
 
-`michi` is a Cargo **workspace**, not a single crate — split from an original monolithic crate on 2026-08-04 into purpose-built sub-crates (see [ARCHITECTURE.md](../../ARCHITECTURE.md) for the full component table and the rationale). The root `Cargo.toml`:
+`michi` is a Cargo **workspace** with a virtual root manifest — there is no root package and no `michi` facade crate (the `michi` name on crates.io belongs to an unrelated project). It publishes two crates, `michi-core` and `michi-pipeline`, plus the npm package built from `packages/michi-node` (see [ARCHITECTURE.md](../../ARCHITECTURE.md) for the full component table, and [06-decisions.md](06-decisions.md) for why there are two crates and one version). The root `Cargo.toml`:
 
 ```toml
 [workspace]
 members  = [
-  ".",
-  "crates/michi-truncate",
-  "crates/michi-resilience",
-  "crates/michi-toon",
   "crates/michi-core",
   "crates/michi-pipeline",
-  "packages/michi-node",
+  "packages/michi-node"
 ]
+resolver = "2"
+
+[workspace.package]
+# One version for every crate: Callisto releases michi-core, michi-pipeline and the npm package as a fixed group.
+version      = "0.3.0"
 
 [workspace.dependencies]
+# Exact pin: workspace crates release in lockstep, so a mixed set must never resolve.
+michi-core  = { path = "crates/michi-core", version = "=0.3.0" }
 thiserror   = "2"
 compact_str = "0.8"
 serde       = { version = "1.0.228", features = ["derive"] }
 serde_json  = { version = "1.0.150", features = ["preserve_order"] }
 schemars    = "0.8"
 miette      = "7"
+tokio = { version = "1", features = ["time"] }
+```
 
+`crates/michi-core/Cargo.toml`, where every feature flag lives:
+
+```toml
 [package]
-name = "michi"
-version = "0.1.0"
+name = "michi-core"
+version.workspace = true
+
+[dependencies]
+compact_str = { workspace = true, features = ["serde"] }
+thiserror.workspace = true
+
+serde      = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+schemars   = { workspace = true, optional = true }
+miette     = { workspace = true, optional = true }
+
+# napi feature
+napi        = { version = "3", features = ["napi6", "serde-json"], optional = true }
+napi-derive = { version = "3", optional = true }
 
 [features]
 default  = []
-napi     = ["dep:napi", "dep:napi-derive", "dep:serde_json", "michi-core/serde"]
-serde    = ["michi-core/serde", "michi-toon/serde"]
-schemars = ["michi-core/schemars", "michi-toon/schemars"]
-miette   = ["michi-core/miette"]
-
-[dependencies]
-michi-truncate   = { path = "crates/michi-truncate", version = "0.1.0" }
-michi-resilience = { path = "crates/michi-resilience", version = "0.1.0" }
-michi-toon       = { path = "crates/michi-toon", version = "0.1.0" }
-michi-core       = { path = "crates/michi-core", version = "0.1.0" }
-napi        = { version = "3", features = ["napi6", "serde-json"], optional = true }
-napi-derive = { version = "3", optional = true }
-serde_json  = { workspace = true, optional = true }
+serde    = ["dep:serde", "dep:serde_json"]
+schemars = ["dep:schemars"]
+miette   = ["dep:miette"]
+napi     = ["dep:napi", "dep:napi-derive", "serde"]
 ```
 
-(Elided: `[profile.release]`/`[profile.bench]`, `[dev-dependencies]`, `[[bench]]` entries — see the real file for those.)
+(Elided: the remaining `[workspace.package]` metadata, `[profile.release]`/`[profile.bench]`, `[workspace.lints]`, `[dev-dependencies]`, `[[bench]]` entries — see the real files for those.)
 
-Default features add zero runtime dependencies beyond the four workspace sub-crates, each of which is itself zero-dep by default.
+Default features add no runtime dependencies beyond `thiserror` and `compact_str`.
 
-- `serde_json` only enters the root crate's tree through `napi` (typed `structuredContent`, wire-conformant MCP types) or the `serde` feature chain — never both unconditionally, never with neither enabled. (`michi-toon` unconditionally enables `compact_str`'s own `serde` Cargo feature regardless of michi's `serde` feature, so `serde` the _crate_ is transitively present in the default dependency graph even though no default-feature type derives `Serialize`/`Deserialize` — see `crates/michi-toon/Cargo.toml`.)
+- `serde_json` only enters `michi-core`'s tree through `napi` (typed `structuredContent`, wire-conformant MCP types) or the `serde` feature — never unconditionally. (`michi-core` unconditionally enables `compact_str`'s own `serde` Cargo feature regardless of its own `serde` feature, so `serde` the _crate_ is transitively present in the default dependency graph even though no default-feature type derives `Serialize`/`Deserialize` — see `crates/michi-core/Cargo.toml`.)
 - `kv::KvValue` fills the role `serde_json::Value` would have for every consumer who doesn't opt in, at zero dependency cost.
 - `preserve_order` keeps `toon::list()`'s field order matching each struct's declared order instead of alphabetizing it.
-- `schemars` derives `JsonSchema` on DTO types; `miette` implements `miette::Diagnostic` for `DomainError`. Neither existed at the time this doc was first written — both are now real, shipped features.
+- `schemars` derives `JsonSchema` on DTO types; `miette` implements `miette::Diagnostic` for `DomainError`.
 
-`pipeline`/`fuzzy`/`cache`/`cli` **execution** is not a Cargo feature of this crate at all, and never will be.
+Consumers who want to write `use michi::...` rename the dependency: `michi = { package = "michi-core", version = "0.3" }`.
 
-- That async execution layer (Plan 2) lands as genuinely separate crates when actually built, never as features gated on michi's own `Cargo.toml`. `pipeline` has landed this way: `crates/michi-pipeline` (sequential `execute_pipeline`, concurrent `execute_pipeline_parallel`, `CircuitBreaker`, `CancellationToken`). `fuzzy`, `cache`, and `cli` remain unbuilt.
+`pipeline`/`fuzzy`/`cache`/`cli` **execution** is not a Cargo feature of `michi-core` at all, and never will be.
+
+- That async execution layer (Plan 2) lands as genuinely separate crates when actually built, never as features gated on `michi-core`'s `Cargo.toml`. `pipeline` has landed this way: `crates/michi-pipeline` (`Plan`, `execute`/`resume`, `RunRecord`, `BreakerRegistry`, `CancellationToken`; see [08-pipeline-execution.md](08-pipeline-execution.md)). `fuzzy`, `cache`, and `cli` remain unbuilt.
 - `pipeline`'s pure **data model** (`Pipeline`, `PipelineStep`, `StepStatus`, `.render()`) lives in `michi-core` — unconditionally compiled, no feature gate. Orchestration/execution is the separate `michi-pipeline` crate, not a feature of this one. See [ARCHITECTURE.md](../../ARCHITECTURE.md) for the crate-boundary layout and [06-decisions.md](06-decisions.md) for the decision rule behind the split.
 - `serde` isn't part of that Plan 2 set, despite historically sitting next to it in the feature table — it gates `Serialize`/`Deserialize` on Plan 1's own types.
 
@@ -148,52 +162,70 @@ Default features add zero runtime dependencies beyond the four workspace sub-cra
 ## Crate layout
 
 ```
-michi/                           (workspace root — facade crate)
+michi/                           (workspace root — virtual manifest, no package)
   Cargo.toml
-  src/
-    lib.rs                       # pub use of every sub-crate's public surface
-    napi.rs                      # #[napi] exports (napi feature only)
-    napi/
-      num.rs                     # JsRanged/JsFloat/JsCount/... numeric-boundary newtype kernel
 
   crates/
-    michi-truncate/src/lib.rs    # Truncated, truncate(), truncate_inline() — zero-dep
-    michi-resilience/src/lib.rs  # RetryConfig, next_retry_delay(), parse_retry_after(),
-                                  # is_retryable_status(), AlreadyDone, IdempotencyKey
-    michi-toon/src/
-      lib.rs                     # ToonOptions, Value, ToonError, list() (serde feature)
-      escape.rs                  # comma/quote/newline escaping, header-token sanitizing
-      render.rs                  # string assembly with pre-allocated capacity
-    michi-core/src/
-      lib.rs                     # re-exports; depends on the three crates above + thiserror
-      audience.rs                # Audience — always compiled
-      empty.rs                   # empty_state(), empty_state_with_hints()
-      error.rs                   # Error, ErrorCode, DomainError, ErrorClass, Sensitive<T>
-      hints.rs                   # Hint, render_hints(), append_hints()
-      idempotency.rs             # FailedOp, PartialSuccess — NOT idempotency keys/already-done
-                                  # (that's michi-resilience::AlreadyDone/already_done(); the
+    michi-core/
+      Cargo.toml
+      src/
+        lib.rs                   # module declarations, root re-exports (incl. resilience::*, truncate::*), Result<T>
+        audience.rs              # Audience — always compiled
+        empty.rs                 # empty_state(), empty_state_with_hints()
+        error.rs                 # Error, ErrorCode, DomainError, ErrorClass, Sensitive<T>
+        hints.rs                 # Hint, render_hints(), append_hints()
+        idempotency.rs           # FailedOp, PartialSuccess — NOT idempotency keys/already-done
+                                  # (that's resilience::AlreadyDone/already_done(); the
                                   # module name is a known, tracked naming staleness)
-      kv/mod.rs                  # render_kv(), KvItem, KvValue
-      mcp.rs                     # ContentBlock, CallToolResult — always compiled
-      pipeline/mod.rs            # Pipeline, PipelineStep, StepStatus — data model + render only
-      recovery.rs                # RecoveryHint, render_recovery()
-      response.rs                # AgentResponse builder, OutputFormat
-      status.rs                  # StatusItem, StatusResponse, Health
-      telemetry/mod.rs           # NoopProvider — zero-cost, always compiled
+        kv/mod.rs                # render_kv(), KvItem, KvValue
+        mcp.rs                   # ContentBlock, CallToolResult — always compiled
+        napi.rs                  # #[napi] exports (napi feature only)
+        napi/
+          num.rs                 # JsRanged/JsFloat/JsCount/... numeric-boundary newtype kernel
+        pipeline/mod.rs          # Pipeline, PipelineStep, StepStatus — data model + render only
+        recovery.rs              # RecoveryHint, render_recovery()
+        resilience.rs            # RetryConfig, next_retry_delay(), parse_retry_after(),
+                                  # is_retryable_status(), AlreadyDone, IdempotencyKey
+        resilience/budget.rs     # RetryBudget
+        response.rs              # AgentResponse builder, OutputFormat
+        status.rs                # StatusItem, StatusResponse, Health
+        telemetry/mod.rs         # NoopProvider — zero-cost, always compiled
+        toon/
+          mod.rs                 # ToonOptions, ToonError, render_toon(), list() (serde feature)
+          escape.rs              # comma/quote/newline escaping, header-token sanitizing
+          render.rs              # Value, ToonDocument; string assembly with pre-allocated capacity
+        truncate.rs              # Truncated, truncate(), truncate_inline()
+      benches/
+        toon_render.rs, kv_render.rs
+      examples/
+        basic_toon.rs, agent_response.rs, domain_errors.rs   # cargo run -p michi-core --example <name>
+      tests/
+        toon_integration.rs, kv_integration.rs, napi_num_reuse.rs
+        snapshot_tests.rs        # insta snapshots
+        proptest_toon.rs, proptest_truncate.rs, proptest_resilience.rs, proptest_mcp.rs
+        toon_parser.rs, support/ # test-only TOON parser for round-trip property tests
+        ui_fail.rs, ui-fail/     # trybuild compile-fail tests
 
-  benches/
-    toon_render.rs, kv_render.rs
-  tests/
-    toon_integration.rs, kv_integration.rs, napi_num_reuse.rs
-    snapshot_tests.rs            # insta snapshots
-    proptest_toon.rs, proptest_truncate.rs, proptest_resilience.rs, proptest_mcp.rs
-    toon_parser.rs, support/     # test-only TOON parser for round-trip property tests
+    michi-pipeline/
+      src/
+        lib.rs                   # crate docs and re-exports
+        id.rs                    # StepId, RunId
+        plan.rs                  # ExecStep, Plan, PlanError, PlanFingerprint
+        step.rs                  # Step, Replay, StepContext, step_fn
+        exec.rs                  # ExecOptions, execute(), resume(), StepObserver
+        scheduler.rs             # the JoinSet scheduler loop and per-step retry loop
+        record.rs                # RunRecord, StepRecord, RunOutcome
+        breaker.rs               # CircuitBreaker, BreakerRegistry
+        cancel.rs, error.rs      # CancellationToken, ExecutionError
+      benches/scheduler.rs       # divan: 500-step plan validation and execution
+      tests/                     # plan, execute, replay, resume, serde
 
-  packages/michi-node/           # NAPI wrapper (npm: @orin-dx/michi)
-    Cargo.toml                   # napi feature, napi-rs build
+  packages/michi-node/           # NAPI wrapper (npm: @orin-dx/michi), publish = false
+    Cargo.toml                   # cdylib; depends on michi-core with the napi feature
+    build.rs                     # napi-build setup
     package.json                 # name: "@orin-dx/michi"
     index.js                     # platform binary loader + TS fallback
     index.d.ts                   # TypeScript types (auto-generated)
-    src/lib.rs                   # pub use of the root crate's napi::* exports
+    src/lib.rs                   # pub use michi_core::napi::*;
     __test__/                    # node:test NAPI integration tests
 ```

@@ -1,0 +1,7 @@
+---
+source: tests/snapshot_tests.rs
+expression: out
+---
+issue: []
+totalCount: 0
+help[2]: Try list_issues with state=open,Try list_issues with a different label

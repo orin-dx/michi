@@ -14,3 +14,4 @@ Use `Proposed` while a decision is under review and `Accepted` once it is implem
 | [0002](0002-consumer-integration-before-crates-io.md) | Require an external consumer integration before the first crates.io release. | Superseded by ADR 4 |
 | [0003](0003-fsl-1-1-mit-license.md) | License the workspace under FSL-1.1-MIT. | Accepted |
 | [0004](0004-publish-before-consumer-integration.md) | Publish an initial version before requiring downstream integration. | Accepted |
+| [0005](0005-two-crates-one-version.md) | Publish `michi-core` and `michi-pipeline` on one version; no facade. Amends ADR 1's dependency detail. | Accepted |

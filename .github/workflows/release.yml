@@ -40,9 +40,10 @@ jobs:
           RELEASE_SOURCE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          prs=$(gh api --paginate --slurp "/repos/${GITHUB_REPOSITORY}/commits/${RELEASE_SOURCE_SHA}/pulls" \
-            --jq '[.[][] | select(.merged_at != null and .base.ref == "main" and
-              .head.repo.full_name == "'"${GITHUB_REPOSITORY}"'" and
+          # gh rejects --slurp together with --jq, so slurp the pages and filter with jq.
+          prs=$(gh api --paginate --slurp "/repos/${GITHUB_REPOSITORY}/commits/${RELEASE_SOURCE_SHA}/pulls" |
+            jq --arg repo "$GITHUB_REPOSITORY" '[.[][] | select(.merged_at != null and .base.ref == "main" and
+              .head.repo.full_name == $repo and
               (.head.ref == "callisto/version-packages" or
                (.head.ref | test("^callisto/version-packages--[0-9a-f]{40}$"))))] | length')
           verified=$(gh api "/repos/${GITHUB_REPOSITORY}/commits/${RELEASE_SOURCE_SHA}" \

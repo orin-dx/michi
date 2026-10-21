@@ -8,7 +8,7 @@ Which shapes in Michi's documented TOON dialect can be exchanged with independen
 
 ## Evidence so far
 
-Michi's tests parse Michi's own output. That checks internal consistency, not interoperability. Michi strips embedded newlines; another implementation may escape them. See [`michi-toon/src/escape.rs`](../../crates/michi-toon/src/escape.rs).
+Michi's tests parse Michi's own output. That checks internal consistency, not interoperability. Michi now targets TOON 4.4 and runs its official encode fixtures (`crates/michi-core/tests/toon_spec_fixtures.rs`), which covers encoder conformance; whether independent decoders accept the output is still untested. See [`toon/escape.rs`](../../crates/michi-core/src/toon/escape.rs).
 
 ## Method
 

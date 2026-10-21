@@ -6,7 +6,6 @@ use crate::audience::Audience;
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(into = "ContentBlockWire", from = "ContentBlockWire"))]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub struct ContentBlock {
     /// The block's text content.
@@ -24,6 +23,8 @@ impl ContentBlock {
 
 #[cfg(feature = "serde")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schemars", schemars(rename = "Annotations"))]
 #[serde(rename_all = "camelCase")]
 struct AnnotationsWire {
     audience: Vec<Audience>,
@@ -31,17 +32,29 @@ struct AnnotationsWire {
 
 #[cfg(feature = "serde")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schemars", schemars(rename = "ContentBlock"))]
 struct ContentBlockWire {
     #[serde(rename = "type")]
-    kind: String,
+    kind: TextKind,
     text: String,
     annotations: AnnotationsWire,
+}
+
+/// The only content type `ContentBlock` models. Any other `type` (e.g. `"image"`) fails to deserialize instead of
+/// silently becoming a text block.
+#[cfg(feature = "serde")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+enum TextKind {
+    #[serde(rename = "text")]
+    Text,
 }
 
 #[cfg(feature = "serde")]
 impl From<ContentBlock> for ContentBlockWire {
     fn from(b: ContentBlock) -> Self {
-        Self { kind: "text".to_string(), text: b.text, annotations: AnnotationsWire { audience: b.audience } }
+        Self { kind: TextKind::Text, text: b.text, annotations: AnnotationsWire { audience: b.audience } }
     }
 }
 
@@ -56,7 +69,6 @@ impl From<ContentBlockWire> for ContentBlock {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(into = "CallToolResultWire", from = "CallToolResultWire"))]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub struct CallToolResult {
     /// Text content blocks.
@@ -78,6 +90,8 @@ impl CallToolResult {
 
 #[cfg(feature = "serde")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schemars", schemars(rename = "CallToolResult"))]
 #[serde(rename_all = "camelCase")]
 struct CallToolResultWire {
     content: Vec<ContentBlock>,
@@ -102,6 +116,30 @@ impl From<CallToolResultWire> for CallToolResult {
     fn from(w: CallToolResultWire) -> Self {
         let structured_content = serde_json::to_string(&w.structured_content).unwrap_or_default();
         Self { content: w.content, is_error: w.is_error, structured_content }
+    }
+}
+
+// The schemas describe the wire form (`type`/`annotations.audience`, camelCase keys, parsed JSON
+// `structuredContent`), not the Rust field layout; `schemars` enables `serde` so the wire DTOs always exist.
+#[cfg(feature = "schemars")]
+impl schemars::JsonSchema for ContentBlock {
+    fn schema_name() -> String {
+        ContentBlockWire::schema_name()
+    }
+
+    fn json_schema(generator: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+        ContentBlockWire::json_schema(generator)
+    }
+}
+
+#[cfg(feature = "schemars")]
+impl schemars::JsonSchema for CallToolResult {
+    fn schema_name() -> String {
+        CallToolResultWire::schema_name()
+    }
+
+    fn json_schema(generator: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+        CallToolResultWire::json_schema(generator)
     }
 }
 
@@ -139,9 +177,11 @@ mod tests {
 
     #[test]
     #[cfg(feature = "serde")]
-    fn ac028a_type_field_is_accepted_and_discarded_not_validated() {
-        let payload = r#"{"type":"image","text":"t","annotations":{"audience":["user"]}}"#;
-        let block: ContentBlock = serde_json::from_str(payload).unwrap();
+    fn ac028a_type_field_must_be_text() {
+        let image = r#"{"type":"image","text":"t","annotations":{"audience":["user"]}}"#;
+        assert!(serde_json::from_str::<ContentBlock>(image).is_err(), "a non-text block must not be coerced to text");
+        let text = r#"{"type":"text","text":"t","annotations":{"audience":["user"]}}"#;
+        let block: ContentBlock = serde_json::from_str(text).unwrap();
         assert_eq!(block, ContentBlock { text: "t".to_string(), audience: vec![Audience::User] });
     }
 

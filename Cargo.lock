@@ -36,6 +36,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4388bee8683e3d04af747c73422af53102d2bd24d9eadb6cbc100baef4b43f8"
 
 [[package]]
+name = "bytes"
+version = "1.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
+
+[[package]]
 name = "castaway"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -369,30 +375,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "88904434abc2901f197fe8cc55f0445e7ded921dba5911dad2e2b39b48e663c4"
 
 [[package]]
-name = "michi"
-version = "0.2.0"
+name = "michi-core"
+version = "0.3.0"
 dependencies = [
+ "compact_str",
  "divan",
  "insta",
- "michi-core",
- "michi-resilience",
- "michi-toon",
- "michi-truncate",
+ "miette",
  "napi",
  "napi-derive",
  "proptest",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "michi-core"
-version = "0.1.1"
-dependencies = [
- "michi-resilience",
- "michi-toon",
- "michi-truncate",
- "miette",
  "schemars",
  "serde",
  "serde_json",
@@ -402,9 +394,9 @@ dependencies = [
 
 [[package]]
 name = "michi-node"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
- "michi",
+ "michi-core",
  "napi",
  "napi-build",
  "napi-derive",
@@ -412,38 +404,15 @@ dependencies = [
 
 [[package]]
 name = "michi-pipeline"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
+ "divan",
  "michi-core",
- "michi-resilience",
- "thiserror",
- "tokio",
-]
-
-[[package]]
-name = "michi-resilience"
-version = "0.1.1"
-dependencies = [
- "trybuild",
-]
-
-[[package]]
-name = "michi-toon"
-version = "0.2.0"
-dependencies = [
- "compact_str",
- "michi-truncate",
- "schemars",
  "serde",
  "serde_json",
- "trybuild",
-]
-
-[[package]]
-name = "michi-truncate"
-version = "0.1.0"
-dependencies = [
- "trybuild",
+ "thiserror",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -922,6 +891,19 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.3",
+]
+
+[[package]]
+name = "tokio-util"
+version = "0.7.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e464cf451ba96ebfc6f9b6542f17ee8b8956e33f1e40d9690624e59d7a7f8a4b"
+dependencies = [
+ "bytes",
+ "futures-core",
+ "futures-sink",
+ "pin-project-lite",
+ "tokio",
 ]
 
 [[package]]

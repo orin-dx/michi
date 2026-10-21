@@ -1,6 +1,6 @@
 # michi spec
 
-The technical reference for the `michi` crate — what it does, how it's shaped, and why.
+The technical reference for `michi-core`, michi's sync primitives crate — what it does, how it's shaped, and why.
 
 See the [documentation map](../README.md) for the role of this reference and related design records.
 
@@ -10,12 +10,13 @@ See the [documentation map](../README.md) for the role of this reference and rel
 | --- | --- |
 | [01-overview-and-setup.md](01-overview-and-setup.md) | What michi is, why it exists, what's deliberately out of scope, who consumes it, `Cargo.toml`, crate layout |
 | [02-toon-format.md](02-toon-format.md) | The TOON grammar — the agent-facing list format |
-| [03-rust-api.md](03-rust-api.md) | Every module: `toon`, `kv`, `hints`, `truncate`, `empty`, `error`, `idempotency`, `resilience`, `status`, `recovery`, `response` |
+| [03-rust-api.md](03-rust-api.md) | Every `michi-core` module: `toon`, `kv`, `hints`, `truncate`, `empty`, `error`, `idempotency`, `resilience`, `status`, `recovery`, `response` |
 | [04-mcp-and-napi.md](04-mcp-and-napi.md) | The `mcp` module, the NAPI/npm boundary, and the builder-across-FFI problem |
 | [05-scope-and-quality.md](05-scope-and-quality.md) | What's formalized vs. what stays in your app, feature flags, versioning, performance, testing |
 | [06-decisions.md](06-decisions.md) | Open questions and API design rationale |
+| [08-pipeline-execution.md](08-pipeline-execution.md) | `michi-pipeline`: step plans, the replay rule, the status model, the run record, scheduling, cancellation, keyed breakers, the retry budget, the observer and resume |
 
-New to the crate? Read 01 → 02 → 03 in order. Read 04–06 as needed.
+New to the crate? Read 01 → 02 → 03 in order — that's the whole mental model. Read 04–06 and 08 as needed.
 
 ## Proposed designs
 
@@ -23,7 +24,7 @@ These documents describe possible future work, not available APIs.
 
 | Doc | Covers |
 | --- | --- |
-| [07-wisp-and-monokl-envelope.md](07-wisp-and-monokl-envelope.md) | Multi-section response envelope for Wisp and monokl; inclusion case remains open |
+| [07-wisp-and-monokl-envelope.md](07-wisp-and-monokl-envelope.md) | Multi-section response envelope for Wisp and monokl: `Section`, michi's own `BudgetSummary` and `ProvenanceBlock` slots, index-bearing per-op outcomes, `structuredContent` and `outputSchema`; inclusion case remains open |
 
 ## Known gaps
 
@@ -39,10 +40,10 @@ These documents describe possible future work, not available APIs.
 **Plan 2 (the async execution layer) doesn't exist as code in this crate — but `pipeline`'s half has landed as its own crate.**
 
 - `pipeline` has a real, tested data type and `render()` in `michi-core` — always compiled.
-- The actual executor now exists too, just not in this crate: `crates/michi-pipeline` ships `execute_pipeline`/`execute_pipeline_parallel`, `CircuitBreaker`, and `CancellationToken`. It depends on `michi-core` (for the `Pipeline` data type) and `michi-resilience` (for retry config) directly — not on the root `michi` facade, and isn't re-exported through it.
+- The actual executor exists too, just not in this crate: `crates/michi-pipeline` ships `Plan`, `execute`/`resume` returning a `RunRecord`, a keyed `BreakerRegistry` and `CancellationToken`. It depends on `michi-core` (for `StepStatus`, the `Pipeline` view and `resilience` retry config and budget) and isn't re-exported through it.
 - `fuzzy`, `cache`, and `cli` don't exist anywhere in the workspace at all — not even as stubs. Earlier placeholder stub files were deliberately deleted; see [`ARCHITECTURE.md`](../../ARCHITECTURE.md).
 - Each remaining piece lands as its own crate when it's actually built, per the same pattern `michi-pipeline` followed.
-- This spec covers Plan 1, the pure-primitives crate, only — `michi-pipeline`'s own API is documented in its own crate, not here.
+- 01–06 cover Plan 1, the pure-primitives crate, and 07 proposes an extension to it; `michi-pipeline`'s API is [08-pipeline-execution.md](08-pipeline-execution.md).
 
 ## Companion docs
 

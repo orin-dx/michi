@@ -35,14 +35,18 @@
 
 ## Architecture
 
-- `src/` — pure sync rendering library (default features: zero runtime deps)
-- `crates/michi-pipeline/` — async pipeline execution (Plan 2, shipped): `execute_pipeline`/`execute_pipeline_parallel`, `CircuitBreaker`, `CancellationToken`, its own `ExecutionError` (not a `michi_core::Error` variant — see `docs/spec/06-decisions.md`). Depends on `michi-core` + `michi-resilience` + `tokio`; not re-exported through the root `michi` facade, versioned independently.
-- `packages/michi-node/` — thin NAPI cdylib shim, npm package name `@orin-dx/michi`
-- Feature flags: `napi`, `serde` (opt-in Serialize/Deserialize + `toon::list()`), `schemars`, `miette`. Plan 2 execution lands as separate crates when built, never as features here — `pipeline` has shipped this way (see `crates/michi-pipeline/` above); `fuzzy`/`cache`/`cli` remain unbuilt. See `docs/spec/01-overview-and-setup.md`'s Cargo.toml section for the current split.
+- Virtual Cargo workspace: the root `Cargo.toml` has no `[package]`; `[workspace.package] version` is the one version every crate shares (Callisto fixed group `michi`, lockstep releases)
+- `crates/michi-core/` — pure sync rendering library, every primitive (default features: only `thiserror` + `compact_str`). Integration tests, divan benches and examples live in `crates/michi-core/{tests,benches,examples}` (`cargo run -p michi-core --example basic_toon`)
+- `crates/michi-pipeline/` — async pipeline execution (Plan 2, shipped): validated `Plan` of `ExecStep`s, `execute`/`resume` returning a `RunRecord`, keyed `BreakerRegistry`, retry budget, `CancellationToken` (wraps tokio-util), `StepObserver`, its own `ExecutionError` (not a `michi_core::Error` variant — see `docs/spec/06-decisions.md`). API: `docs/spec/08-pipeline-execution.md`. Depends on `michi-core` (exact `=` version pin) + `tokio` + `tokio-util`; not re-exported through `michi-core`.
+- `packages/michi-node/` — thin NAPI cdylib shim (`publish = false`), npm package name `@orin-dx/michi`; the exports themselves live in `crates/michi-core/src/napi.rs` behind michi-core's `napi` feature and are re-exported via `pub use michi_core::napi::*;`
+- Published crates: `michi-core` and `michi-pipeline` only. There is no `michi` crate (the name on crates.io belongs to an unrelated project)
+- Feature flags (on `michi-core`): `napi`, `serde` (opt-in Serialize/Deserialize + `toon::list()`), `schemars`, `miette`. Plan 2 execution lands as separate crates when built, never as features here — `pipeline` has shipped this way (see `crates/michi-pipeline/` above); `fuzzy`/`cache`/`cli` remain unbuilt. See `docs/spec/01-overview-and-setup.md`'s Cargo.toml section for the current split.
 - See `docs/superpowers/specs/2026-07-03-michi-design.md` for decisions
 - See `docs/spec/` for full module API reference
 
 ## Module guide
+
+All modules live in `crates/michi-core/src/`.
 
 | Module | Purpose |
 | --- | --- |
@@ -51,7 +55,7 @@
 | `hints` | `help[]` hint blocks |
 | `truncate` | Token-safe content truncation |
 | `empty` | Definitive empty state responses |
-| `error` | Unified `michi::Error` type with agent rendering |
+| `error` | Unified `michi_core::Error` type with agent rendering |
 | `idempotency` | Partial-success reporting (`PartialSuccess`/`FailedOp`) — despite the name, idempotency keys and already-done detection live in `resilience` (`AlreadyDone`/`already_done()`), not here |
 | `resilience` | Retry config, delay calculation, retry-after parsing |
 | `status` | Health/status response rendering |
@@ -59,5 +63,6 @@
 | `response` | `AgentResponse` builder — composes all primitives |
 | `mcp` | MCP `CallToolResult` assembly — always compiled, no feature gate |
 | `audience` | `Audience` (assistant/user) — shared by `mcp` and `response::render_for()` |
-| `pipeline` | Pipeline pure data type + render (execution now in `crates/michi-pipeline`, not this table's `src/`) |
+| `pipeline` | Pipeline pure data type + render (execution lives in `crates/michi-pipeline`, not `crates/michi-core`) |
 | `telemetry` | No-op telemetry provider (`NoopProvider`) — zero-cost default, always compiled |
+| `napi` | NAPI export surface for `@orin-dx/michi` (`napi` feature only) — the one module allowed `unsafe` |

@@ -1,20 +1,22 @@
 [package]
 name        = "michi-core"
-version     = "0.1.1"
-description = "AXI response primitives, AgentResponse builder, Audience routing, and structured diagnostics"
+description = "AXI response primitives for agent-ergonomic tools: TOON lists, key-value blocks, hints, errors, truncation and retry policy"
+readme      = "../../README.md"
+keywords    = ["axi", "agent", "mcp", "cli", "llm"]
+categories  = ["text-processing", "encoding", "development-tools"]
+version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true
 license.workspace      = true
 repository.workspace   = true
 homepage.workspace     = true
+authors.workspace      = true
 
 [lints]
 workspace = true
 
 [dependencies]
-michi-truncate   = { path = "../michi-truncate", version = "0.1.0" }
-michi-resilience = { path = "../michi-resilience", version = "0.1.0" }
-michi-toon       = { path = "../michi-toon", version = "0.2.0" }
+compact_str = { workspace = true }
 thiserror.workspace = true
 
 serde      = { workspace = true, optional = true }
@@ -22,11 +24,30 @@ serde_json = { workspace = true, optional = true }
 schemars   = { workspace = true, optional = true }
 miette     = { workspace = true, optional = true }
 
+# napi feature
+napi        = { version = "3", features = ["napi6", "serde-json"], optional = true }
+napi-derive = { version = "3", optional = true }
+
 [features]
 default  = []
-serde    = ["dep:serde", "dep:serde_json", "michi-toon/serde"]
-schemars = ["dep:schemars", "michi-toon/schemars"]
+serde    = ["dep:serde", "dep:serde_json", "serde_json/float_roundtrip", "compact_str/serde"]
+schemars = ["dep:schemars", "serde"]
 miette   = ["dep:miette"]
+napi     = ["dep:napi", "dep:napi-derive", "serde"]
 
 [dev-dependencies]
-trybuild = "1"
+serde      = { workspace = true }
+# float_roundtrip here too, so the default-feature test build parses fixture floats correctly rounded.
+serde_json = { workspace = true, features = ["float_roundtrip"] }
+divan      = "0.1"
+proptest   = "1"
+insta      = { version = "1", features = ["yaml"] }
+trybuild   = "1"
+
+[[bench]]
+name    = "toon_render"
+harness = false
+
+[[bench]]
+name    = "kv_render"
+harness = false

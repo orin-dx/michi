@@ -1,0 +1,7 @@
+---
+source: crates/michi-core/tests/snapshot_tests.rs
+expression: "render_kv(&items, None, &[]).expect(\"valid items\")"
+---
+id: 1
+description: A longer field value
+x: true

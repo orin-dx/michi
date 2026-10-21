@@ -76,15 +76,16 @@ void describe('renderToon', () => {
 void describe('emptyState', () => {
   void it('returns empty block', () => {
     const out = emptyState('issue')
-    assert.strictEqual(out, 'issue[0]{}:\ntotalCount: 0\n')
+    assert.strictEqual(out, 'issue: []\ntotalCount: 0')
   })
 })
 
 void describe('renderHints', () => {
   void it('renders hint block', () => {
     const out = renderHints(['hint one', 'hint two'])
-    assert.ok(out.startsWith('help[2]:'))
-    assert.ok(out.includes('  hint one\n'))
+    // TOON 4.4 inline primitive array; hints are quoted only when §7.2 requires it.
+    assert.strictEqual(out, 'help[2]: hint one,hint two')
+    assert.strictEqual(renderHints(['a, b']), 'help[1]: "a, b"')
   })
 
   void it('returns empty for no hints', () => {
@@ -94,15 +95,16 @@ void describe('renderHints', () => {
 
 void describe('appendHints', () => {
   void it('appends a help block to an existing body', () => {
-    assert.strictEqual(appendHints('body\n', ['do this']), 'body\nhelp[1]:\n  do this\n')
+    assert.strictEqual(appendHints('body\n', ['do this']), 'body\nhelp[1]: do this')
+    assert.strictEqual(appendHints('t: []', ['do this']), 't: []\nhelp[1]: do this')
   })
 })
 
 void describe('renderRecovery', () => {
   void it('renders a recovery block', () => {
-    const out = renderRecovery([{ tool: 'retry', reason: 'rate limited' }])
-    assert.ok(out.startsWith('recovery[1]:\n  retry'))
-    assert.ok(out.includes('rate limited'))
+    // TOON 4.4 tabular array; params is the quoted compact JSON object, an absent reason is null.
+    const out = renderRecovery([{ tool: 'retry', reason: 'rate limited' }, { tool: 'reload' }])
+    assert.strictEqual(out, 'recovery[2]{tool,params,reason}:\n  retry,"{}",rate limited\n  reload,"{}",null')
   })
 })
 
@@ -111,9 +113,41 @@ void describe('truncate', () => {
     assert.strictEqual(truncate('hello', 100, 'full=true'), 'hello')
   })
 
-  void it('truncates long content', () => {
+  void it('truncates long content and reports the chars cut', () => {
+    // " (183 more chars — use full=true)" is 33 chars: 17 kept, and 17 + 183 = 200.
     const out = truncate('a'.repeat(200), 50, 'full=true')
-    assert.ok(out.includes('chars truncated'))
+    assert.strictEqual(out, `${'a'.repeat(17)} (183 more chars — use full=true)`)
+  })
+
+  void it('omits the use clause for an empty hint', () => {
+    assert.strictEqual(truncate('a'.repeat(100), 40, ''), `${'a'.repeat(24)} (76 more chars)`)
+  })
+
+  void it('falls back to an ellipsis when the cap is too small for the suffix', () => {
+    assert.strictEqual(truncate('a'.repeat(100), 3, 'x'), 'aa…')
+    assert.strictEqual(truncate('a'.repeat(100), 1, 'x'), '…')
+    assert.strictEqual(truncate('a'.repeat(100), 0, 'x'), '')
+  })
+})
+
+void describe('truncation hint', () => {
+  const longRow = [[{ type: 'str', strVal: 'a'.repeat(500) }]]
+
+  void it('renderToon names no parameter without truncationHint', () => {
+    const out = renderToon({ typeName: 't', fields: ['a'], rows: longRow, hints: [] })
+    assert.strictEqual(out, `t[1]{a}:\n  ${'a'.repeat(183)} (317 more chars)`)
+  })
+
+  void it('renderToon appends the caller truncationHint', () => {
+    const out = renderToon({ typeName: 't', fields: ['a'], rows: longRow, hints: [], truncationHint: 'full=true' })
+    assert.strictEqual(out, `t[1]{a}:\n  ${'a'.repeat(167)} (333 more chars — use full=true)`)
+  })
+
+  void it('AgentResponse.truncationHint passes through to the TOON body', () => {
+    const r = new AgentResponse('t')
+    r.truncationHint('full=true')
+    r.items(longRow, ['a'])
+    assert.strictEqual(r.renderToon(), `t[1]{a}:\n  ${'a'.repeat(167)} (333 more chars — use full=true)`)
   })
 })
 
@@ -124,17 +158,34 @@ void describe('standalone helpers', () => {
       1,
       ['hint 1']
     )
-    assert.ok(out.includes('name:'))
-    assert.ok(out.includes('michi'))
-    assert.ok(out.includes('totalCount: 1'))
-    assert.ok(out.includes('help[1]:'))
+    assert.strictEqual(out, 'name: michi\ntotalCount: 1\nhelp[1]: hint 1')
+  })
+
+  void it('renderKv writes TOON primitives: null, canonical rounded floats, quoted strings', () => {
+    const out = renderKv(
+      [
+        { key: 'gone', value: { type: 'null' } },
+        { key: 'score', value: { type: 'float', floatVal: 1.5, decimalsVal: 3 } },
+        { key: 'note', value: { type: 'str', strVal: 'a: b' } },
+      ],
+      null,
+      []
+    )
+    assert.strictEqual(out, 'gone: null\nscore: 1.5\nnote: "a: b"')
+  })
+
+  void it('renderKv rejects a duplicate or reserved key', () => {
+    const k = (key) => ({ key, value: { type: 'null' } })
+    assert.throws(
+      () => renderKv([k('a'), k('a')], null, []),
+      (err) => err.message === 'kv_validation_failed: key "a" appears more than once'
+    )
+    assert.throws(() => renderKv([k('help')], null, []), /kv_validation_failed: key "help" is a reserved document key/)
   })
 
   void it('renderAlreadyDone formats no-op block', () => {
     const out = renderAlreadyDone('create_issue', 'Already exists', ['view issue 42'])
-    assert.ok(out.includes('status:    already_done'))
-    assert.ok(out.includes('summary:   Already exists'))
-    assert.ok(out.includes('help[1]:'))
+    assert.strictEqual(out, 'operation: create_issue\nstatus: already_done\nsummary: Already exists\nhelp[1]: view issue 42')
   })
 
   void it('parseRetryAfter parses integer seconds', () => {
@@ -179,9 +230,8 @@ void describe('standalone helpers', () => {
   })
 
   void it('renderDomainError formats error card and github annotation', () => {
-    const card = renderDomainError('not_found', 'Item not found', ['check ID'])
-    assert.ok(card.includes('error: not_found'))
-    assert.ok(card.includes('message: Item not found'))
+    const card = renderDomainError('not_found', 'Item not found: 42', ['check ID'])
+    assert.strictEqual(card, 'error: not_found\nmessage: "Item not found: 42"\nexit_code: 1\nhelp[1]: check ID')
 
     const gh = renderDomainError('not_found', 'Item not found', [], true)
     assert.strictEqual(gh, '::error title=not_found::Item not found')
@@ -194,9 +244,12 @@ void describe('standalone helpers', () => {
   void it('renderStatus formats orientation block', () => {
     const out = renderStatus('my_tool', 'Does work', [
       { key: 'cache', value: { type: 'str', strVal: 'ready' }, health: 'ok' },
+      { key: 'db', value: { type: 'int', intVal: 3 }, health: 'degraded: slow' },
     ])
-    assert.ok(out.includes('tool:        my_tool'))
-    assert.ok(out.includes('description: Does work'))
+    assert.strictEqual(
+      out,
+      'tool: my_tool\ndescription: Does work\nitems[2]{key,value,health,reason}:\n  cache,ready,ok,null\n  db,3,degraded,slow'
+    )
   })
 })
 
@@ -268,6 +321,16 @@ void describe('toCallToolResult', () => {
     assert.strictEqual(result.content[1].type, 'text')
     assert.deepStrictEqual(result.content[1].annotations.audience, ['user'])
   })
+
+  void it('marks invalid TOON rows as an error on every surface', () => {
+    const r = new AgentResponse('issues')
+    r.items([[{ type: 'int', intVal: 1 }]], ['id', 'state'])
+    const result = r.toCallToolResult()
+    assert.ok(result.content[0].text.startsWith('error: toon_validation_failed\n'), `got: ${result.content[0].text}`)
+    assert.strictEqual(result.isError, true)
+    assert.strictEqual(result.structuredContent.isError, true)
+    assert.ok(r.renderJson().includes('"isError":true'))
+  })
 })
 
 void describe('renderFor / hasHumanContent', () => {
@@ -302,15 +365,15 @@ void describe('renderFor / hasHumanContent', () => {
 void describe('int64 boundary (SPEC-NAPI-POINTFIX-001)', () => {
   void it('AC-001 renders a positive int beyond i32::MAX losslessly', () => {
     const out = renderToon({ typeName: 't', fields: ['a'], rows: [[{ type: 'int', intVal: 1755000000000 }]], hints: [] })
-    assert.strictEqual(out, 't[1]{a}:\n  1755000000000\n')
+    assert.strictEqual(out, 't[1]{a}:\n  1755000000000')
   })
   void it('AC-002 renders a negative int beyond i32::MIN losslessly', () => {
     const out = renderToon({ typeName: 't', fields: ['a'], rows: [[{ type: 'int', intVal: -1755000000000 }]], hints: [] })
-    assert.strictEqual(out, 't[1]{a}:\n  -1755000000000\n')
+    assert.strictEqual(out, 't[1]{a}:\n  -1755000000000')
   })
   void it('AC-003 renderKv renders an int beyond i32::MAX losslessly', () => {
     const out = renderKv([{ key: 'id', value: { type: 'int', intVal: 1755000000000 } }], null, [])
-    assert.strictEqual(out, 'id: 1755000000000\n')
+    assert.strictEqual(out, 'id: 1755000000000')
   })
   void it('renderToon rejects a fractional intVal', () => {
     assert.throws(
@@ -333,16 +396,24 @@ void describe('render_toon validate() surfacing (SPEC-NAPI-POINTFIX-001)', () =>
       (err) => err.message === 'toon_validation_failed: row 0 has 2 values but 1 fields declared'
     )
   })
-  void it('AC-009 rejects a type_name containing a structural character', () => {
+  void it('AC-009 quotes a type_name containing a structural character (TOON 4.4 §7.3)', () => {
+    const out = renderToon({ typeName: 'a[b]', fields: ['x'], rows: [[{ type: 'str', strVal: 'v' }]], hints: [] })
+    assert.strictEqual(out, '"a[b]"[1]{x}:\n  v')
+  })
+  void it('AC-009b rejects a reserved type_name', () => {
     assert.throws(
-      () => renderToon({ typeName: 'a[b]', fields: ['x'], rows: [[{ type: 'str', strVal: 'v' }]], hints: [] }),
-      (err) => err.message === 'toon_validation_failed: type_name "a[b]" contains a structural character'
+      () => renderToon({ typeName: 'help', fields: ['x'], rows: [[{ type: 'str', strVal: 'v' }]], hints: [] }),
+      (err) => err.message === 'toon_validation_failed: type_name "help" is a reserved document key (totalCount, help, recovery)'
     )
   })
-  void it('AC-010 rejects a field name containing a structural character', () => {
+  void it('AC-010 quotes a field name containing a structural character (TOON 4.4 §7.3)', () => {
+    const out = renderToon({ typeName: 't', fields: ['a,b'], rows: [[{ type: 'str', strVal: 'v' }]], hints: [] })
+    assert.strictEqual(out, 't[1]{"a,b"}:\n  v')
+  })
+  void it('AC-010c rejects a repeated field name', () => {
     assert.throws(
-      () => renderToon({ typeName: 't', fields: ['a,b'], rows: [[{ type: 'str', strVal: 'v' }]], hints: [] }),
-      (err) => err.message === 'toon_validation_failed: field "a,b" contains a structural character'
+      () => renderToon({ typeName: 't', fields: ['a', 'a'], rows: [], hints: [] }),
+      (err) => err.message === 'toon_validation_failed: field "a" appears more than once'
     )
   })
   void it('AC-010b renderToon throws with a toon_validation_failed-prefixed message for row-arity errors', () => {
@@ -418,8 +489,9 @@ void describe('rejection instead of coercion (SPEC-ARCH-003 AC-009)', () => {
   })
 
   void it('renderKv defaults absent decimalsVal to 6', () => {
-    const out = renderKv([{ key: 'score', value: { type: 'float', floatVal: 1.0 } }], null, [])
-    assert.ok(out.includes('1.000000'), `expected 6 decimal places by default, got: ${out}`)
+    // Rounded to 6 places, then written canonically (TOON 4.4 §2): decimals bound precision, never pad.
+    const out = renderKv([{ key: 'score', value: { type: 'float', floatVal: 1.23456789 } }], null, [])
+    assert.strictEqual(out, 'score: 1.234568')
   })
 })
 
