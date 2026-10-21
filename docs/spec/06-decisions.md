@@ -22,7 +22,7 @@ Tracked by what they block, not by sequence number — "Q1/Q2/Q3" reads too easi
 For external Rust binaries to depend on `michi`:
 
 - **(a) crates.io publish** — cleanest for public consumers once the API is stable.
-- **(b) git dep with tag** — `michi = { git = "https://github.com/orin-axi/michi", tag = "v0.x.y" }`, good for early adopters before crates.io publish.
+- **(b) git dep with tag** — `michi = { git = "https://github.com/orin-dx/michi", tag = "v0.x.y" }`, good for early adopters before crates.io publish.
 - **(c) private cargo registry** — overhead not worth it.
 
 **Recommendation:** (b) during development, (a) at first stable release. crates.io publish is gated behind at least one real consumer integration test.

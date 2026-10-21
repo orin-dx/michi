@@ -1,10 +1,12 @@
 [package]
 name = "michi-pipeline"
+description = "Async pipeline execution for michi: retries, circuit breaking, and cancellation on Tokio"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace   = true
 authors.workspace = true
 
 [lints]

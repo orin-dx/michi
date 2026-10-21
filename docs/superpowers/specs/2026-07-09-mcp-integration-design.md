@@ -1,6 +1,6 @@
 # michi — MCP integration, DX polish, and doc/hygiene reconciliation
 
-> orin-axi · Design · 09 Jul 2026
+> orin-dx · Design · 09 Jul 2026
 
 **Context:** Follow-up to a re-evaluation of michi against axi.md and the 2026-07-28 MCP
 release candidate (see conversation; no separate artifact for the eval itself). The eval

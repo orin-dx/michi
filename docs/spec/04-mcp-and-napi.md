@@ -44,7 +44,7 @@ Under the `serde` feature, `ContentBlock`/`CallToolResult` don't derive `Seriali
 
 ---
 
-## NAPI npm package — `@orin-axi/michi`
+## NAPI npm package — `@orin-dx/michi`
 
 A thin napi-rs wrapper around the same crate, built with the `napi` feature enabled:
 
@@ -214,7 +214,7 @@ napi build --release --cross-compile --target x86_64-unknown-linux-musl
 Today's `.github/workflows/ci.yml` has a `napi` job with a `fail-fast: false` matrix that **builds and tests** four targets on every push: `x86_64-apple-darwin`, `aarch64-apple-darwin`, `x86_64-unknown-linux-gnu`, `x86_64-unknown-linux-musl` (the last cross-compiled via `cargo-zigbuild`).
 
 - `.github/workflows/release.yml` ("Release & Publish") runs on every push to `main`, invoking the `orin-dx/callisto` action with `publish: "true"` — an automated publish pipeline exists.
-- As of this writing, that pipeline has never actually produced a release: neither `michi` on crates.io nor `@orin-axi/michi` on npm exists yet (verified directly against both registries, not assumed). crates.io publish is gated behind at least one real consumer integration test (see [`docs/spec/06-decisions.md`](06-decisions.md)) — the pipeline exists, but the gate condition it's waiting on hasn't been met.
+- As of this writing, that pipeline has never actually produced a release: neither `michi` on crates.io nor `@orin-dx/michi` on npm exists yet (verified directly against both registries, not assumed). crates.io publish is gated behind at least one real consumer integration test (see [`docs/spec/06-decisions.md`](06-decisions.md)) — the pipeline exists, but the gate condition it's waiting on hasn't been met.
 - What callisto's release job actually does internally (version detection, per-platform `.node` artifact assembly, `napi prepublish`) is external to this repo — `orin-dx/callisto`'s own source is the reference, not restated here.
 
 The `version-sync` job already asserts the npm package version equals the crate version on every push/PR (see [05-scope-and-quality.md](05-scope-and-quality.md)) — that check exists today and would gate a publish job once one is built.

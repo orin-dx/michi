@@ -1,6 +1,6 @@
 # michi — MVP Implementation Plan
 
-> orin-axi · Draft · June 2026
+> orin-dx · Draft · June 2026
 
 ---
 
@@ -169,7 +169,7 @@ resolver = "2"
 edition      = "2021"
 rust-version = "1.93"
 license      = "AGPL-3.0-or-later"
-repository   = "https://github.com/orin-axi/michi"
+repository   = "https://github.com/orin-dx/michi"
 ```
 
 **`Cargo.toml` (crate)**
@@ -1078,7 +1078,7 @@ Why this shape:
   "license": "AGPL-3.0-or-later",
   "repository": {
     "type": "git",
-    "url": "https://github.com/orin-axi/michi"
+    "url": "https://github.com/orin-dx/michi"
   },
   "keywords": ["axi", "agent", "mcp", "cli", "llm"],
   "napi": {

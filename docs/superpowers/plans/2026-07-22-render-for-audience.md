@@ -484,14 +484,14 @@ Replace with:
 Find:
 ```
 Any TypeScript CLI
-  npm dep on @orin-axi/michi
+  npm dep on @orin-dx/michi
   --format toon dispatch calls into the NAPI wrapper
   Same output; the NAPI boundary is transparent
 ```
 Replace with:
 ```
 Any TypeScript CLI
-  npm dep on @orin-axi/michi
+  npm dep on @orin-dx/michi
   --format toon dispatch calls into the NAPI wrapper
   Same output; the NAPI boundary is transparent
   render_for()/renderFor() picks agent vs. human output — see 03-rust-api.md
@@ -809,7 +809,7 @@ Find (the second mermaid diagram, further down):
 ```
 Replace with:
 ```
-    binary --> npm["npm package \"@orin-axi/michi\"<br/>(TypeScript consumers)"]
+    binary --> npm["npm package \"@orin-dx/michi\"<br/>(TypeScript consumers)"]
 ```
 
 - [ ] **Step 5: Verify and commit**
