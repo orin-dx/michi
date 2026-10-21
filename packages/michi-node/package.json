@@ -26,8 +26,7 @@
     "test": "node --test __test__/index.test.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint --type-aware .",
-    "check": "pnpm typecheck && pnpm lint",
-    "prepublishOnly": "napi prepublish -t npm --no-gh-release"
+    "check": "pnpm typecheck && pnpm lint"
   },
   "devDependencies": {
     "@napi-rs/cli": "^3.0.0",
@@ -38,5 +37,15 @@
   },
   "engines": {
     "node": ">= 18"
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "CHANGELOG.md"
+  ],
+  "optionalDependencies": {
+    "@orin-dx/michi-darwin-arm64": "0.3.0",
+    "@orin-dx/michi-linux-x64-gnu": "0.3.0",
+    "@orin-dx/michi-linux-x64-musl": "0.3.0"
   }
 }

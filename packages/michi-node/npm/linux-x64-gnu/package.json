@@ -1,0 +1,30 @@
+{
+  "name": "@orin-dx/michi-linux-x64-gnu",
+  "version": "0.3.0",
+  "cpu": [
+    "x64"
+  ],
+  "main": "michi.linux-x64-gnu.node",
+  "files": [
+    "michi.linux-x64-gnu.node"
+  ],
+  "description": "AXI response primitives for agent-ergonomic tools",
+  "license": "FSL-1.1-MIT",
+  "engines": {
+    "node": ">= 18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/orin-dx/michi.git",
+    "directory": "packages/michi-node"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "os": [
+    "linux"
+  ],
+  "libc": [
+    "glibc"
+  ]
+}

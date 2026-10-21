@@ -15,8 +15,8 @@ env:
 jobs:
   # Cheap, standalone check that .prototools is fully proto-installable.
   # This is the ONLY thing in this file that exercises the same
-  # moonrepo/setup-toolchain -> proto install path release.yml's
-  # callisto-action uses internally -- without this job, .prototools could
+  # moonrepo/setup-toolchain -> proto install path callisto-release.yml's
+  # Callisto actions use internally -- without this job, .prototools could
   # break silently and only surface at actual release time (which is what
   # happened: multiple tools here had no working proto plugin, and CI
   # stayed green through all of it since nothing here ever touched proto).
