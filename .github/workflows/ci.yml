@@ -79,11 +79,11 @@ jobs:
       - name: Check API compatibility against the pending release type
         run: |
           set -euo pipefail
-          release_type=patch
+          release_type="patch"
           if grep -hqE '^[^:]+:[[:space:]]*major[[:space:]]*$' .changeset/*.md 2>/dev/null; then
-            release_type=major
+            release_type="major"
           elif grep -hqE '^[^:]+:[[:space:]]*minor[[:space:]]*$' .changeset/*.md 2>/dev/null; then
-            release_type=minor
+            release_type="minor"
           fi
           echo "Pending release type: $release_type"
           cargo semver-checks check-release -p michi-core -p michi-pipeline --release-type "$release_type"
