@@ -1,5 +1,35 @@
 # michi-node
 
+## 0.4.0
+
+- Oversize inputs are now rejected quickly instead of costing seconds and gigabytes.
+  
+  - michi-core: TOON lists are capped at 1,000 fields (`toon::MAX_FIELDS`), 1,000,000 cells (`toon::MAX_CELLS`) and a 256-char truncation hint (`toon::MAX_TRUNCATION_HINT_CHARS`). `ToonOptions::validate()` and `toon::list()` return the new `ToonError::TooManyFields`, `TooManyCells` and `TruncationHintTooLong` variants, and `AgentResponse` reports them as a `toon_validation_failed` error block with `isError` set. Valid lists render exactly as before, and `AgentResponse` no longer copies its rows on each render.
+  - @orin-dx/michi: collection arguments are checked before they are converted, and each call is limited to 1,000,000 cells and 64 MiB of strings (1 MiB per cell, hint or message; 4 KiB per type name, field name, key or truncation hint). Rejecting a 100,001-row `renderToon` input now takes well under a millisecond, and a JS string reused across many cells is counted every time it is used. TypeScript types are unchanged.
+  - michi-pipeline: `resume` and `Plan::new` are linear in the number of steps and dependencies; resuming 50,000 steps takes about 20 ms instead of seconds.
+- @orin-dx/michi: four new exports cover the rest of the michi-core rendering surface.
+  
+  - `renderPartialSuccess(completed, failed, skipped)` renders a partial-success report: the summary, `completed[N]`, the `failed[N]{operation,reason}:` table, `skipped[N]`, then the failed operations' recovery hints as one `recovery[N]{tool,params,reason}:` table. A failed op is `{ operation, reason, recovery?: { tool, reason? } }`.
+  - `renderPipeline(steps)` renders `step[N]{id,name,status,reason}:`. `status` and `reason` are typed `StepStatus` labels (`completed`, `outcome_unknown` with `timeout`, `skipped` with `prerequisite_failed`, …); an unknown status, a missing or unknown reason, or a reason on a status that takes none throws.
+  - `emptyStateWithHints(typeName, hints)` is `emptyState` plus a `help[N]: …` block, and throws `toon_validation_failed: …` for a reserved type name like `emptyState`.
+  - `alreadyDone(stored)` classifies an idempotency lookup: `{ done: true, result }` for any stored string, `{ done: false }` for `null` or `undefined`.
+  - All four check their inputs before converting them: at most 10,000 entries per list, 4 KiB per id, operation, status or reason label, 1 MiB per name, reason or hint, and 64 MiB of strings per call.
+- @orin-dx/michi now ships native binaries for linux-arm64 (glibc and musl) and Intel macOS.
+- @orin-dx/michi: no silent rounding and no invalid TOON.
+  
+  - `emptyState` throws `toon_validation_failed: …` for a reserved `typeName` (`totalCount`, `help`, `recovery`), like `renderToon`. It returned invalid TOON before.
+  - `renderKv`, `renderStatus` and `AgentResponse.kvItems` keep a float exact when `decimalsVal` is absent: `1e-7` renders `1e-7` and `1.23456789` stays `1.23456789`. They rounded to 6 places, so small values rendered `0`. An explicit `decimalsVal` still rounds.
+  - `AgentResponse` on the KV path with no items keeps its total count (`totalCount: 0`) instead of rendering an empty body.
+  - michi-core's fixes to recovery hints (no duplicate keys), empty states, Retry-After parsing and sub-millisecond delays apply here too; see the michi-core changelog.
+- Packaging and docs: the minimum supported Rust version is now 1.93 (was 1.96). The crates and npm packages ship their license text, michi-pipeline ships a README, docs.rs builds michi-core with the `serde`, `schemars` and `miette` features, the READMEs' links work on crates.io and npm, and michi-pipeline re-exports `RetryConfig`, `RetryConfigError`, `RetryBudget` and `IdempotencyKey`, so configuring retries needs no direct michi-core dependency.
+- Report what a list cap cut, and keep an error's cause chain apart from its hints.
+  
+  - michi-core: new `TruncationOutcome<T>` (`kept`, `total_before`, `truncated()`, `omitted()`) reports what a cap on a list cut, however you chose the survivors. `truncate_by_count(items, max)` keeps the first `max`; `truncate_by_size(items, budget, size_of)` keeps items in order while your `size_of` (bytes, tokens, …) fits the budget. Wrap your own selection with `TruncationOutcome::new(kept, total_before)`. `hint(guidance)` returns `showing 2 of 5; {guidance}`, or `None` when nothing was cut.
+  - michi-core: `AgentResponse::truncation(&outcome, guidance)` sets `totalCount` and adds that hint in one call, so the two always agree. Pass `outcome.kept` to `.items(...)` as before.
+  - michi-core: `DomainError` has a `causes` field and a `.cause(text)` builder for why an error happened, separate from `hints` (what to do next). `render()` writes them as `causes[N]: …` after `message`; `render_json()`, serde and the JSON Schema add a `causes` array (`[]` when empty); with `miette`, `help()` lists them as `caused by: …` lines after the hints.
+  - michi-core: `DomainError::from_error(code, &err)` takes the message from `err` and one cause per `source()` link, outermost first, skipping a link whose text the previous one already includes (common with `#[error("…: {0}")]`).
+  - @orin-dx/michi: `renderDomainError` takes an optional fifth argument, `causes` (string array), rendered as `causes[N]: …`. Each cause is capped at 1 MiB and counts toward the call's 64 MiB limit.
+
 ## 0.3.1
 
 - First published release. `@orin-dx/michi` installs a release-built native binary through its per-platform packages (`@orin-dx/michi-darwin-arm64`, `@orin-dx/michi-linux-x64-gnu`, `@orin-dx/michi-linux-x64-musl`) and ships its TypeScript declarations.
