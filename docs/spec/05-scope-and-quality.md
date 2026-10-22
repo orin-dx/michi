@@ -56,11 +56,11 @@ All feature flags live on `michi-core` (`crates/michi-core/Cargo.toml`):
 
 ```toml
 [features]
-default  = []
-serde    = ["dep:serde", "dep:serde_json"]
+default = []
+serde = ["dep:serde", "dep:serde_json"]
 schemars = ["dep:schemars"]
-miette   = ["dep:miette"]
-napi     = ["dep:napi", "dep:napi-derive", "serde"]
+miette = ["dep:miette"]
+napi = ["dep:napi", "dep:napi-derive", "serde"]
 ```
 
 No async runtime dependency, no tokio, no async-std — every public function is sync.

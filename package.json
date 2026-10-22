@@ -4,6 +4,6 @@
   "private": true,
   "description": "Root tooling for the michi repo: markdown formatting only. See packages/michi-node for the published npm package. `private: true` keeps this manifest from ever being published; its `version` is not a release version.",
   "devDependencies": {
-    "oxfmt": "^0.60.0"
+    "oxfmt": "^0.73.0"
   }
 }
