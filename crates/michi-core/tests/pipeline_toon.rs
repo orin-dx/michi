@@ -26,14 +26,10 @@ fn every_status() -> Vec<StepStatus> {
 #[test]
 fn every_status_renders_a_conformant_status_and_reason_cell() {
     let statuses = every_status();
-    let pipeline = Pipeline {
-        id: "run-1".into(),
-        steps: statuses
-            .iter()
-            .enumerate()
-            .map(|(i, s)| PipelineStep { id: format!("s{i}"), name: format!("Step {i}"), status: *s })
-            .collect(),
-    };
+    let pipeline = Pipeline::new(
+        "run-1",
+        statuses.iter().enumerate().map(|(i, s)| PipelineStep::new(format!("s{i}"), format!("Step {i}"), *s)).collect(),
+    );
     let out = pipeline.render();
     let doc = decode(&out).unwrap_or_else(|e| panic!("non-conformant TOON: {e}\n{out}"));
     let Some(Node::Table { fields, rows }) = doc.get("step") else { panic!("expected a step table, got {out}") };

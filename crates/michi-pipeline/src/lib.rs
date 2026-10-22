@@ -42,6 +42,8 @@
 #![warn(missing_docs)]
 #![warn(clippy::unwrap_used, clippy::expect_used)]
 #![warn(clippy::disallowed_types)]
+#![warn(clippy::must_use_candidate, clippy::missing_errors_doc, clippy::missing_panics_doc)]
+#![warn(missing_debug_implementations)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod breaker;

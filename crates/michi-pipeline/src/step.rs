@@ -136,6 +136,13 @@ pub struct FnStep<F> {
     replay: Replay,
 }
 
+// Manual so `F` (usually a closure) need not be `Debug`.
+impl<F> std::fmt::Debug for FnStep<F> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FnStep").field("replay", &self.replay).finish_non_exhaustive()
+    }
+}
+
 impl<F> FnStep<F> {
     /// Declares the step idempotent ([`Replay::Idempotent`]).
     #[must_use]

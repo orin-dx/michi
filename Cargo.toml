@@ -42,12 +42,13 @@ debug    = true
 # "forbid") so the napi boundary's local `#![allow(unsafe_code)]` can still
 # override it -- see CLAUDE.md's "No unsafe outside napi boundary".
 #
-# missing_docs / clippy::unwrap_used / clippy::expect_used /
-# clippy::disallowed_types stay as per-crate `#![warn(...)]` inner
-# attributes in each lib.rs instead of living here: `[lints]` applies to
-# every target in a package (every integration test, bench, and example,
-# not just the lib target), and those four lints are specifically meant to
-# apply to library code only -- CLAUDE.md's "no unwrap/expect in lib code"
+# missing_docs / missing_debug_implementations / clippy::unwrap_used /
+# clippy::expect_used / clippy::disallowed_types / clippy::must_use_candidate /
+# clippy::missing_errors_doc / clippy::missing_panics_doc stay as per-crate
+# `#![warn(...)]` inner attributes in each lib.rs instead of living here:
+# `[lints]` applies to every target in a package (every integration test,
+# bench, and example, not just the lib target), and those lints are
+# specifically meant to apply to library code only -- CLAUDE.md's "no unwrap/expect in lib code"
 # rule was never meant to cover benches/examples, and doc-coverage doesn't
 # make sense for internal test binaries. unsafe_code is the one lint here
 # with no such exception (nothing outside the documented napi boundary

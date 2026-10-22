@@ -289,6 +289,10 @@ pub struct Plan {
 impl Plan {
     /// Validates `steps` and returns the plan, or every violation at once: duplicate ids, unknown dependencies,
     /// self-dependencies and cycles (found with an iterative Kahn pass, so depth is bounded by memory).
+    ///
+    /// # Errors
+    ///
+    /// A [`PlanError`] listing every [`PlanViolation`] when the steps do not form a valid graph.
     pub fn new(steps: Vec<ExecStep>) -> Result<Self, PlanError> {
         let n = steps.len();
         let mut violations = Vec::new();

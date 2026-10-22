@@ -121,7 +121,7 @@ impl std::fmt::Display for ToonError {
 impl std::error::Error for ToonError {}
 
 /// Options for rendering a TOON document.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct ToonOptions {
     /// Snake_case type name, e.g. `"issue"`, `"component"`: the key of the list entry. Names outside TOON's

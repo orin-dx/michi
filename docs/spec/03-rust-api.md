@@ -9,13 +9,16 @@ pub use error::{DomainError, Error, ErrorClass, ErrorCode, Sensitive};
 pub use response::{AgentResponse, OutputFormat};
 pub use kv::{render_kv, KvError, KvItem, KvValue};
 // … audience, empty, hints, idempotency, mcp, recovery, status
-pub use resilience::*;            // michi_core::RetryConfig, michi_core::already_done, …
-pub use truncate::*;              // michi_core::truncate(), michi_core::Truncated, …
+pub use resilience::{
+    already_done, is_retryable_status, next_retry_delay, parse_retry_after, parse_retry_after_at,
+    render_already_done, AlreadyDone, IdempotencyKey, RetryBudget, RetryConfig, RetryConfigError,
+};
+pub use truncate::{truncate, truncate_inline, Truncated};
 
 pub type Result<T> = std::result::Result<T, Error>;
 ```
 
-`toon` is not glob-re-exported; its items are reached as `michi_core::toon::ToonOptions`, `michi_core::toon::list()`, and so on. There is no `michi` crate (the name on crates.io belongs to an unrelated project); consumers who prefer `michi::` paths rename the dependency with `michi = { package = "michi-core", version = "0.3" }`.
+The root re-exports are explicit lists (0.4.0 replaced the `resilience::*` and `truncate::*` globs), so a new item in a module does not appear at the root by accident. `toon` is not re-exported at the root; its items are reached as `michi_core::toon::ToonOptions`, `michi_core::toon::list()`, and so on. There is no `michi` crate (the name on crates.io belongs to an unrelated project); consumers who prefer `michi::` paths rename the dependency with `michi = { package = "michi-core", version = "0.3" }`.
 
 ## `toon` — List Rendering
 
@@ -53,6 +56,7 @@ pub const MAX_FIELDS: usize = 1_000;
 pub const MAX_CELLS: usize = 1_000_000;
 pub const MAX_TRUNCATION_HINT_CHARS: usize = 256;
 
+#[non_exhaustive]
 pub enum Value {
     Str(compact_str::CompactString),
     Int(i64),
@@ -183,6 +187,8 @@ The TOON slot is stored as a `ToonOptions` and validated and rendered by referen
 
 ```rust
 // In michi_core::idempotency (also at michi_core::PartialSuccess, michi_core::FailedOp)
+#[non_exhaustive]
+#[derive(Default)]
 pub struct PartialSuccess {
     pub completed: Vec<String>,
     pub failed: Vec<FailedOp>,
@@ -190,17 +196,25 @@ pub struct PartialSuccess {
 }
 
 impl PartialSuccess {
+    pub fn new(completed: Vec<String>, failed: Vec<FailedOp>, skipped: Vec<String>) -> Self;
     pub fn render(&self) -> String;
     pub fn exit_code(&self) -> i32;   // 0 = no failures, 1 = any failed
 }
 
+#[non_exhaustive]
 pub struct FailedOp {
     pub operation: String,
     pub reason: String,
     pub recovery: Option<RecoveryHint>,
 }
 
+impl FailedOp {
+    pub fn new(operation: impl Into<String>, reason: impl Into<String>) -> Self;
+    pub fn recovery(self, hint: RecoveryHint) -> Self;
+}
+
 // In michi_core::resilience (also at michi_core::already_done, michi_core::AlreadyDone)
+#[non_exhaustive]
 pub enum AlreadyDone { Yes { result: String }, No }
 pub fn already_done(stored: Option<String>) -> AlreadyDone;
 pub fn render_already_done(operation: &str, summary: &str, hints: &[String]) -> String;
@@ -217,7 +231,10 @@ Every block renderer returns a finished TOON 4.4 document with no trailing newli
 
 ```rust
 // michi_core::kv
+#[non_exhaustive]
 pub struct KvItem { pub key: String, pub value: KvValue }
+impl KvItem { pub fn new(key: impl Into<String>, value: KvValue) -> Self; }
+#[non_exhaustive]
 pub enum KvValue { Text(String), Int(i64), Float(f64, u8), Bool(bool), Duration(Duration), Missing }
 #[non_exhaustive]
 pub enum KvError { ReservedKey { key: String }, DuplicateKey { key: String } }
@@ -230,12 +247,39 @@ pub fn render_hints(hints: &[Hint]) -> String;               // help[N]: h1,h2
 pub fn append_hints(out: &mut String, hints: &[Hint]);
 
 // michi_core::recovery
+#[non_exhaustive]
+pub struct RecoveryHint { pub tool: String, pub params: Vec<(String, KvValue)>, pub reason: Option<String> }
+impl RecoveryHint {
+    pub fn new(tool: impl Into<String>) -> Self;
+    pub fn param(self, key: impl Into<String>, value: KvValue) -> Self;
+    pub fn reason(self, reason: impl Into<String>) -> Self;
+}
 pub fn render_recovery(hints: &[RecoveryHint]) -> String;    // recovery[N]{tool,params,reason}:
 pub fn append_recovery(out: &mut String, hints: &[RecoveryHint]);
 
 // michi_core::status
+#[non_exhaustive]
+pub struct StatusItem { pub key: String, pub value: KvValue, pub health: Option<Health> }
+impl StatusItem {
+    pub fn new(key: impl Into<String>, value: KvValue) -> Self;   // health: None
+    pub fn health(self, health: Health) -> Self;
+}
 impl StatusResponse { pub fn render(&self) -> String; }      // tool, description, items[N]{key,value,health,reason}:, help
+
+// michi_core::pipeline
+#[non_exhaustive]
+pub struct PipelineStep { pub id: String, pub name: String, pub status: StepStatus }
+impl PipelineStep { pub fn new(id: impl Into<String>, name: impl Into<String>, status: StepStatus) -> Self; }
+#[non_exhaustive]
+#[derive(Default)]
+pub struct Pipeline { pub id: String, pub steps: Vec<PipelineStep> }
+impl Pipeline {
+    pub fn new(id: impl Into<String>, steps: Vec<PipelineStep>) -> Self;
+    pub fn render(&self) -> String;                           // step[N]{id,name,status,reason}:
+}
 ```
+
+The structs above are `#[non_exhaustive]` from 0.4.0: build them with their constructors, then read or assign their public fields as before. Struct literals and exhaustive destructuring work only inside michi-core, so adding a field later is not a breaking change. `Value`, `KvValue`, `AlreadyDone` and `RetryConfigError` are `#[non_exhaustive]` enums: a `match` outside michi-core needs a `_` arm.
 
 `KvValue::Float(f, decimals)` rounds `f` to `decimals` places and writes the rounded value in canonical TOON number form, so `Float(1.5, 3)` is `1.5`, not `1.500`; `Missing` is `null`; `Duration` is the string `1.5s`. `AgentResponse`'s KV path turns a `KvError` into a `kv_validation_failed` error body and sets `is_error`, like `toon_validation_failed` on the TOON path.
 
@@ -272,6 +316,8 @@ Truncates strings safely at Unicode scalar boundaries without splitting UTF-8 co
 ## `resilience` — Retry & Idempotency Primitives
 
 ```rust
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RetryConfig {
     pub max_retries: u32,
     pub base_delay: Duration,
@@ -284,6 +330,13 @@ impl RetryConfig {
     pub fn new(max_retries: u32, base_delay: Duration, max_delay: Duration, jitter_factor: f64) -> Self;
     /// Strict constructor — returns Err for out-of-range values.
     pub fn try_new(...) -> Result<Self, RetryConfigError>;
+}
+
+#[non_exhaustive]
+pub enum RetryConfigError {
+    MaxDelayIsZero,
+    BaseDelayExceedsMaxDelay { base: Duration, max: Duration },
+    JitterFactorOutOfRange { factor: f64 },
 }
 
 pub fn next_retry_delay(

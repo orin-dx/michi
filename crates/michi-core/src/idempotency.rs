@@ -1,5 +1,8 @@
 /// A single operation that failed within a larger multi-step operation.
+///
+/// `#[non_exhaustive]`: build it with [`FailedOp::new`] (and [`FailedOp::recovery`]); the fields stay public.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct FailedOp {
     /// Identifier of the operation that failed.
     pub operation: String,
@@ -9,6 +12,21 @@ pub struct FailedOp {
     pub recovery: Option<crate::recovery::RecoveryHint>,
 }
 
+impl FailedOp {
+    /// A failed operation with its reason and no recovery hint.
+    #[must_use]
+    pub fn new(operation: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self { operation: operation.into(), reason: reason.into(), recovery: None }
+    }
+
+    /// Attach a structured recovery hint for this failure.
+    #[must_use]
+    pub fn recovery(mut self, hint: crate::recovery::RecoveryHint) -> Self {
+        self.recovery = Some(hint);
+        self
+    }
+}
+
 /// Signals that an operation partially completed before a failure.
 ///
 /// Use this when some steps of a multi-step operation succeeded — the agent
@@ -16,7 +34,11 @@ pub struct FailedOp {
 ///
 /// For a fully-completed prior call, see [`crate::resilience::AlreadyDone`]
 /// and [`crate::resilience::already_done`].
-#[derive(Debug, Clone, PartialEq)]
+///
+/// `#[non_exhaustive]`: build it with [`PartialSuccess::new`] or [`PartialSuccess::default`]; the fields stay
+/// public.
+#[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
 pub struct PartialSuccess {
     /// Identifiers of steps that completed successfully.
     pub completed: Vec<String>,
@@ -27,6 +49,12 @@ pub struct PartialSuccess {
 }
 
 impl PartialSuccess {
+    /// A partial-success report from the completed step ids, the failed operations and the skipped step ids.
+    #[must_use]
+    pub fn new(completed: Vec<String>, failed: Vec<FailedOp>, skipped: Vec<String>) -> Self {
+        Self { completed, failed, skipped }
+    }
+
     /// Render as a TOON 4.4 root object, with no trailing newline: a quoted summary, one entry per non-empty outcome
     /// category, then the failed operations' recovery hints as a `recovery[N]{tool,params,reason}:` table (see
     /// [`crate::recovery::render_recovery`]).

@@ -115,7 +115,10 @@ impl StepStatus {
 }
 
 /// A pipeline step definition.
-#[derive(Debug, Clone)]
+///
+/// `#[non_exhaustive]`: build it with [`PipelineStep::new`]; the fields stay public.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct PipelineStep {
     /// Step identifier.
     ///
@@ -129,8 +132,19 @@ pub struct PipelineStep {
     pub status: StepStatus,
 }
 
+impl PipelineStep {
+    /// A step with its id, display name and status.
+    #[must_use]
+    pub fn new(id: impl Into<String>, name: impl Into<String>, status: StepStatus) -> Self {
+        Self { id: id.into(), name: name.into(), status }
+    }
+}
+
 /// A pipeline run state.
-#[derive(Debug, Clone, Default)]
+///
+/// `#[non_exhaustive]`: build it with [`Pipeline::new`] or [`Pipeline::default`]; the fields stay public.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Pipeline {
     /// Pipeline identifier.
     pub id: String,
@@ -139,6 +153,12 @@ pub struct Pipeline {
 }
 
 impl Pipeline {
+    /// A pipeline with its id and steps in declaration order.
+    #[must_use]
+    pub fn new(id: impl Into<String>, steps: Vec<PipelineStep>) -> Self {
+        Self { id: id.into(), steps }
+    }
+
     /// Render the pipeline state as a TOON 4.4 document: `step[N]{id,name,status,reason}:` with one row per step, or
     /// `step: []` when there are no steps, with no trailing newline. `status` is [`StepStatus::label`] and `reason`
     /// is [`StepStatus::reason`] or `null`. `id` and `name` are quoted when TOON's string rules (§7.2) require it.

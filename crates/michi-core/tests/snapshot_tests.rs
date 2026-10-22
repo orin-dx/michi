@@ -36,10 +36,10 @@ fn snapshot_toon_empty_state() {
 #[test]
 fn snapshot_kv_single_item() {
     let items = vec![
-        KvItem { key: "id".into(), value: KvValue::Text("abc-123".into()) },
-        KvItem { key: "title".into(), value: KvValue::Text("Fix login".into()) },
-        KvItem { key: "state".into(), value: KvValue::Text("open".into()) },
-        KvItem { key: "count".into(), value: KvValue::Int(3) },
+        KvItem::new("id", KvValue::Text("abc-123".into())),
+        KvItem::new("title", KvValue::Text("Fix login".into())),
+        KvItem::new("state", KvValue::Text("open".into())),
+        KvItem::new("count", KvValue::Int(3)),
     ];
     insta::assert_snapshot!(render_kv(&items, None, &[]).expect("valid items"));
 }
@@ -47,9 +47,9 @@ fn snapshot_kv_single_item() {
 #[test]
 fn snapshot_kv_mixed_values() {
     let items = vec![
-        KvItem { key: "id".into(), value: KvValue::Int(1) },
-        KvItem { key: "description".into(), value: KvValue::Text("A longer field value".into()) },
-        KvItem { key: "x".into(), value: KvValue::Bool(true) },
+        KvItem::new("id", KvValue::Int(1)),
+        KvItem::new("description", KvValue::Text("A longer field value".into())),
+        KvItem::new("x", KvValue::Bool(true)),
     ];
     insta::assert_snapshot!(render_kv(&items, None, &[]).expect("valid items"));
 }
@@ -60,17 +60,9 @@ fn snapshot_status_mixed_health() {
         "my-tool",
         "does things",
         vec![
-            StatusItem { key: "index".into(), value: KvValue::Text("ready".into()), health: Some(Health::Ok) },
-            StatusItem {
-                key: "cache".into(),
-                value: KvValue::Text("warm".into()),
-                health: Some(Health::Degraded("near limit".into())),
-            },
-            StatusItem {
-                key: "queue".into(),
-                value: KvValue::Text("down".into()),
-                health: Some(Health::Error("disconnected".into())),
-            },
+            StatusItem::new("index", KvValue::Text("ready".into())).health(Health::Ok),
+            StatusItem::new("cache", KvValue::Text("warm".into())).health(Health::Degraded("near limit".into())),
+            StatusItem::new("queue", KvValue::Text("down".into())).health(Health::Error("disconnected".into())),
         ],
     );
     insta::assert_snapshot!(resp.render());
@@ -91,8 +83,8 @@ fn snapshot_agent_response_full() {
 fn snapshot_call_tool_result_kv() {
     let r = AgentResponse::new("issue")
         .kv_items(vec![
-            KvItem { key: "id".into(), value: KvValue::Text("abc-123".into()) },
-            KvItem { key: "state".into(), value: KvValue::Text("open".into()) },
+            KvItem::new("id", KvValue::Text("abc-123".into())),
+            KvItem::new("state", KvValue::Text("open".into())),
         ])
         .human_content("Issue abc-123 is currently open.");
     let result = r.to_call_tool_result();
@@ -101,15 +93,12 @@ fn snapshot_call_tool_result_kv() {
 
 #[test]
 fn snapshot_partial_success_full() {
-    let ps = PartialSuccess {
-        completed: vec!["create_issue".into(), "add_label".into()],
-        failed: vec![FailedOp {
-            operation: "assign_user".into(),
-            reason: "User 'ghost' not found".into(),
-            recovery: Some(RecoveryHint::new("assign_user").param("user", KvValue::Text("alice".into()))),
-        }],
-        skipped: vec!["notify_team".into()],
-    };
+    let ps = PartialSuccess::new(
+        vec!["create_issue".into(), "add_label".into()],
+        vec![FailedOp::new("assign_user", "User 'ghost' not found")
+            .recovery(RecoveryHint::new("assign_user").param("user", KvValue::Text("alice".into())))],
+        vec!["notify_team".into()],
+    );
     insta::assert_snapshot!(ps.render());
 }
 

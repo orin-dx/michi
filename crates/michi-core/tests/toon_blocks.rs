@@ -22,7 +22,7 @@ fn conformant(out: &str) -> Doc {
 }
 
 fn kv(key: &str, value: KvValue) -> KvItem {
-    KvItem { key: key.into(), value }
+    KvItem::new(key, value)
 }
 
 fn kv_doc(items: &[KvItem]) -> String {
@@ -217,18 +217,10 @@ fn status_items_are_a_tabular_array_with_health_and_reason_columns() {
         "my-tool",
         "does things",
         vec![
-            StatusItem { key: "index".into(), value: KvValue::Text("ready".into()), health: Some(Health::Ok) },
-            StatusItem {
-                key: "cache".into(),
-                value: KvValue::Text("warm".into()),
-                health: Some(Health::Degraded("near limit".into())),
-            },
-            StatusItem {
-                key: "queue".into(),
-                value: KvValue::Text("down".into()),
-                health: Some(Health::Error("disconnected".into())),
-            },
-            StatusItem { key: "workers".into(), value: KvValue::Int(4), health: None },
+            StatusItem::new("index", KvValue::Text("ready".into())).health(Health::Ok),
+            StatusItem::new("cache", KvValue::Text("warm".into())).health(Health::Degraded("near limit".into())),
+            StatusItem::new("queue", KvValue::Text("down".into())).health(Health::Error("disconnected".into())),
+            StatusItem::new("workers", KvValue::Int(4)),
         ],
     )
     .with_hints(vec![Hint::new("Call get_status for detail")]);
@@ -252,10 +244,7 @@ fn status_without_items_has_an_empty_items_array() {
 // Item keys are cells, not root keys, so any key — even a repeated one or `help` — keeps the document valid.
 #[test]
 fn status_item_keys_cannot_collide_with_root_keys() {
-    let items = ["tool", "help", "help"]
-        .into_iter()
-        .map(|k| StatusItem { key: k.into(), value: KvValue::Missing, health: None })
-        .collect();
+    let items = ["tool", "help", "help"].into_iter().map(|k| StatusItem::new(k, KvValue::Missing)).collect();
     let out = StatusResponse::new("t", "a, b", items).with_hints(vec![Hint::new("h")]).render();
     assert_eq!(
         out,
@@ -318,15 +307,12 @@ fn unified_error_variants_use_the_domain_error_shape() {
 
 #[test]
 fn partial_success_full_example() {
-    let ps = PartialSuccess {
-        completed: vec!["create_issue".into(), "add_label".into()],
-        failed: vec![FailedOp {
-            operation: "assign_user".into(),
-            reason: "User 'ghost' not found".into(),
-            recovery: Some(RecoveryHint::new("assign_user").param("user", KvValue::Text("alice".into()))),
-        }],
-        skipped: vec!["notify_team".into()],
-    };
+    let ps = PartialSuccess::new(
+        vec!["create_issue".into(), "add_label".into()],
+        vec![FailedOp::new("assign_user", "User 'ghost' not found")
+            .recovery(RecoveryHint::new("assign_user").param("user", KvValue::Text("alice".into())))],
+        vec!["notify_team".into()],
+    );
     let out = ps.render();
     assert_eq!(
         out,
@@ -339,7 +325,7 @@ fn partial_success_full_example() {
 
 #[test]
 fn partial_success_empty_is_just_the_summary() {
-    let ps = PartialSuccess { completed: vec![], failed: vec![], skipped: vec![] };
+    let ps = PartialSuccess::new(vec![], vec![], vec![]);
     let out = ps.render();
     assert_eq!(out, "partial_success: \"0 completed, 0 failed, 0 skipped\"");
     conformant(&out);
@@ -347,7 +333,7 @@ fn partial_success_empty_is_just_the_summary() {
 
 #[test]
 fn partial_success_operation_names_are_quoted_in_inline_arrays() {
-    let ps = PartialSuccess { completed: vec!["a, b".into(), "-x".into()], failed: vec![], skipped: vec!["".into()] };
+    let ps = PartialSuccess::new(vec!["a, b".into(), "-x".into()], vec![], vec!["".into()]);
     let out = ps.render();
     assert_eq!(
         out,

@@ -11,6 +11,7 @@ impl Hint {
     }
 
     /// The raw hint string.
+    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }

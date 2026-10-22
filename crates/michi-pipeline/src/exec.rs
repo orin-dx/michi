@@ -306,6 +306,11 @@ pub async fn execute(plan: &Plan, run_id: RunId, opts: &ExecOptions) -> RunRecor
 ///
 /// At least once per step: a step can run again if the process stopped after its effect but before its record was
 /// saved. Not incremental recomputation: a completed step is not re-run because its inputs changed.
+///
+/// # Errors
+///
+/// [`ResumeError::FingerprintMismatch`], [`ResumeError::UnknownStep`] or [`ResumeError::NotAwaitingVerification`],
+/// returned before any step runs.
 pub async fn resume(prior: &RunRecord, plan: &Plan, opts: &ResumeOptions) -> Result<RunRecord, ResumeError> {
     if prior.plan_fingerprint() != plan.fingerprint() {
         return Err(ResumeError::FingerprintMismatch { record: prior.plan_fingerprint(), plan: plan.fingerprint() });

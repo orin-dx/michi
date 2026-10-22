@@ -1,0 +1,46 @@
+error[E0639]: cannot create non-exhaustive struct using struct expression
+ --> tests/ui-fail/api_hygiene_struct_literals.rs:4:13
+  |
+4 |     let _ = michi_core::FailedOp { operation: "op".to_string(), reason: "r".to_string(), recovery: None };
+  |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0639]: cannot create non-exhaustive struct using struct expression
+ --> tests/ui-fail/api_hygiene_struct_literals.rs:5:13
+  |
+5 |     let _ = michi_core::PartialSuccess { completed: vec![], failed: vec![], skipped: vec![] };
+  |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0639]: cannot create non-exhaustive struct using struct expression
+ --> tests/ui-fail/api_hygiene_struct_literals.rs:6:13
+  |
+6 |     let _ = michi_core::KvItem { key: "k".to_string(), value: michi_core::KvValue::Int(1) };
+  |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0639]: cannot create non-exhaustive struct using struct expression
+ --> tests/ui-fail/api_hygiene_struct_literals.rs:7:13
+  |
+7 |     let _ = michi_core::StatusItem { key: "k".to_string(), value: michi_core::KvValue::Int(1), health: None };
+  |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0639]: cannot create non-exhaustive struct using struct expression
+ --> tests/ui-fail/api_hygiene_struct_literals.rs:8:13
+  |
+8 |     let _ = michi_core::RecoveryHint { tool: "t".to_string(), params: vec![], reason: None };
+  |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0639]: cannot create non-exhaustive struct using struct expression
+  --> tests/ui-fail/api_hygiene_struct_literals.rs:9:13
+   |
+ 9 |       let _ = michi_core::pipeline::PipelineStep {
+   |  _____________^
+10 | |         id: "s".to_string(),
+11 | |         name: "n".to_string(),
+12 | |         status: michi_core::pipeline::StepStatus::Pending,
+13 | |     };
+   | |_____^
+
+error[E0639]: cannot create non-exhaustive struct using struct expression
+  --> tests/ui-fail/api_hygiene_struct_literals.rs:14:13
+   |
+14 |     let _ = michi_core::pipeline::Pipeline { id: "p".to_string(), steps: vec![] };
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

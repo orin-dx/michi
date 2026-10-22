@@ -15,3 +15,6 @@ Use `Proposed` while a decision is under review and `Accepted` once it is implem
 | [0003](0003-fsl-1-1-mit-license.md) | License the workspace under FSL-1.1-MIT. | Accepted |
 | [0004](0004-publish-before-consumer-integration.md) | Publish an initial version before requiring downstream integration. | Accepted |
 | [0005](0005-two-crates-one-version.md) | Publish `michi-core` and `michi-pipeline` on one version; no facade. Amends ADR 1's dependency detail. | Accepted |
+| [0006](0006-toon-4-4-conformance.md) | Every agent-facing block is TOON 4.4 encoder output; no michi dialect. | Accepted |
+| [0007](0007-pipeline-plans-records-replay.md) | Run pipelines from a validated plan into a strict run record, with one replay rule for retries and resume. | Accepted |
+| [0008](0008-capacity-limits.md) | Cap core document shapes and give every NAPI call a length and byte budget. | Accepted |

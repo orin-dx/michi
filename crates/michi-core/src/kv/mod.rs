@@ -3,7 +3,10 @@ use std::fmt::Write as _;
 use std::time::Duration;
 
 /// A single key-value pair for [`render_kv`].
+///
+/// `#[non_exhaustive]`: build it with [`KvItem::new`]; the fields stay public.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct KvItem {
     /// The field name.
     pub key: String,
@@ -11,10 +14,22 @@ pub struct KvItem {
     pub value: KvValue,
 }
 
+impl KvItem {
+    /// A key-value pair.
+    #[must_use]
+    pub fn new(key: impl Into<String>, value: KvValue) -> Self {
+        Self { key: key.into(), value }
+    }
+}
+
 /// A value in a key-value item, rendered as a TOON 4.4 primitive.
+///
+/// `#[non_exhaustive]`: new value kinds may be added in a minor release, so a `match` outside michi needs a wildcard
+/// arm.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub enum KvValue {
     /// UTF-8 text value, quoted only when TOON 4.4 §7.2 requires it.
     Text(String),
