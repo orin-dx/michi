@@ -25,7 +25,7 @@ let graph = b.build(UnknownTargets::Error);
 ```
 
 - `node(key)` declares a node and returns a `Decl` token. Edges hang off the token, not the key. A later node reusing a key is recorded as a duplicate, and its edges are dropped with it, so they can never land on the first node and cause false errors.
-- `depends_on(decl, &prerequisite, kind)` borrows the prerequisite key (`K: Borrow<Q>`), so no key is cloned unless it turns out to be unknown. An edge repeated with the same kind collapses into one.
+- `depends_on(decl, prerequisite, kind)` takes the prerequisite key, which may be declared before or after. An edge repeated with the same kind collapses into one.
 - `build(policy)` never fails. It sets aside what it cannot use and records why, so every problem can be reported later in one list:
   - a duplicate node;
   - an edge to a key no node has (a **dangling** edge). It is always kept in `Graph::dangling()`. The `UnknownTargets` policy only decides whether validation reports it: `Error` reports it as `UnknownDependency`, and `Ignore` doesn't (Callisto ignores dependencies on packages outside the workspace);
@@ -37,7 +37,7 @@ let graph = b.build(UnknownTargets::Error);
 
 A `Graph<K, E>` may contain cycles. A `Dag<K>` is proven acyclic and carries no kinds, because validation has already chosen which edges count.
 
-- `graph.validate(order)` uses every edge; `graph.validate_filtered(keep, order)` keeps only the edges for which `keep(EdgeRef)` returns true. `EdgeRef` has named fields: `dependent`, `prerequisite`, `kind` and both `NodeIx`s. `into_dag` and `into_dag_filtered` do the same while consuming the graph, which avoids copying the keys.
+- `graph.validate(order)` uses every edge; `graph.validate_filtered(keep, order)` keeps only the edges for which `keep(EdgeRef)` returns true. `EdgeRef` has named fields: `dependent`, `prerequisite`, `kind` and both `NodeIx`s. Keys are shared between the graph and its dags, so validating does not copy them.
 - One graph can produce several dags. Callisto validates its package graph once without dev edges for cascade order, and once with them for publish order.
 - Validation returns the `Dag` or a `Violations` list with every problem at once. Cycles made only of filtered-out edges are not problems: you validate the graph you will run.
 - When several kinds connect the same pair and more than one passes the filter, the dag holds one edge. `prerequisites` and `dependents` never repeat a node.
@@ -62,7 +62,7 @@ Everything the crate outputs follows that one order: the topological order, each
 | `layers()` | layer 0 has no prerequisites; a node's layer is one more than its deepest prerequisite's. Nodes in one layer don't depend on each other, so they can run together |
 | `ready(satisfied, eligible)` | nodes for which `eligible(key)` holds and `satisfied(p)` holds for every prerequisite, in order |
 | `ancestors(roots)`, `descendants(roots)` | every node upstream or downstream of `roots`, not including them |
-| `key(ix)`, `index_of(&key)`, `len()` | lookups |
+| `key(ix)`, `index_of(&key)`, `node_at(position)`, `len()` | lookups; `node_at` maps a declaration position to its node, for callers that keep per-node data in declaration order |
 | `canonical()` | each node's key with its prerequisites' keys, nodes and prerequisites sorted by key, for callers that hash the structure with their own hasher. Isolated nodes are included |
 
 `ready` takes two predicates because callers track more than "done". A node behind a failure must not become ready, and a running or failed node is not eligible to start. When `satisfied` holds only for nodes that succeeded, checking direct prerequisites is enough: a node whose prerequisite failed can never become ready.
@@ -92,7 +92,7 @@ Everything the crate outputs follows that one order: the topological order, each
 
 ## How michi-pipeline uses it
 
-- `Plan::new` declares one node per step, builds with `UnknownTargets::Error` and validates with `Order::Declaration`. Violations map one to one onto `PlanViolation`. Cycles stay a single `PlanViolation::Cycle` listing every step on any cycle in declaration order, as today, and `TooManyNodes` becomes `PlanViolation::TooManySteps`.
+- `Plan::new` declares one node per step, builds with `UnknownTargets::Error` and validates with `Order::Declaration`. Violations map one to one onto `PlanViolation`. Cycles stay a single `PlanViolation::Cycle` listing every step on any cycle in declaration order, and `TooManyNodes` becomes `PlanViolation::TooManySteps`. One change: a step stuck between two cycles (depending on one, depended on by another) lies on no cycle and is no longer listed.
 - The scheduler reads `order()`, `prerequisites` and `dependents`. Node indices are declaration positions, so they match `Plan::steps()` and `RunRecord` without translation. Its ready counters, failure skipping and resume seeding stay in michi-pipeline: they are execution policy.
 - `PlanFingerprint` stays michi's own 64-bit FNV-1a with its current framing, computed over `canonical()`. A record saved before the change still resumes.
 - No michi-graph type appears in michi-pipeline's public API, so a michi-graph release never forces a breaking michi-pipeline release. michi-pipeline depends on it with a normal `^` range, not the exact pin the lockstep crates use.

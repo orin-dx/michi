@@ -393,6 +393,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "michi-graph"
+version = "0.0.0"
+dependencies = [
+ "divan",
+ "proptest",
+]
+
+[[package]]
 name = "michi-node"
 version = "0.4.0"
 dependencies = [
@@ -408,6 +416,7 @@ version = "0.4.0"
 dependencies = [
  "divan",
  "michi-core",
+ "michi-graph",
  "serde",
  "serde_json",
  "thiserror",

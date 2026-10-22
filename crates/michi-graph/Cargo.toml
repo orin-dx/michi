@@ -1,0 +1,33 @@
+[package]
+name = "michi-graph"
+description = "Deterministic dependency graphs: validation that reports every problem at once, topological order, layers, ready sets and cycle reports"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+# MIT, not the workspace's FSL-1.1-MIT: permissive crates depend on it. CI checks no non-permissive crate enters its
+# dependency tree (just check-graph-license).
+license = "MIT"
+repository.workspace = true
+homepage.workspace   = true
+authors.workspace = true
+readme = "README.md"
+documentation = "https://docs.rs/michi-graph"
+keywords = ["graph", "dag", "toposort", "dependency", "no_std"]
+categories = ["algorithms", "data-structures", "no-std"]
+
+[package.metadata.docs.rs]
+all-features = true
+
+[lints]
+workspace = true
+
+# No dependencies: no_std + alloc, so any crate can use it.
+[dependencies]
+
+[dev-dependencies]
+divan    = "0.1"
+proptest = "1"
+
+[[bench]]
+name    = "graph"
+harness = false

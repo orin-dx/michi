@@ -104,3 +104,24 @@ fn fingerprint_covers_ids_and_dependencies_only() {
     assert_eq!(text.parse::<PlanFingerprint>().unwrap(), base);
     assert!("xyz".parse::<PlanFingerprint>().is_err());
 }
+
+#[test]
+fn the_fingerprint_keeps_its_published_value_so_saved_records_still_resume() {
+    // FNV-1a over "a␟␝ b␟a␞␝ c␟a␞b␞␝" (ids and sorted prerequisites), computed independently of michi-graph.
+    let fp = plan(vec![noop("c", &["b", "a"]), noop("a", &[]), noop("b", &["a"])]).fingerprint();
+    assert_eq!(fp.to_string(), "b7b6687929998429");
+}
+
+#[test]
+fn a_step_stuck_between_two_cycles_is_not_reported_as_on_a_cycle() {
+    // x depends on cycle {a, b}, and cycle {c, d} depends on x: x can never run, but it lies on no cycle.
+    let err = Plan::new(vec![
+        noop("a", &["b"]),
+        noop("b", &["a"]),
+        noop("x", &["a"]),
+        noop("c", &["d", "x"]),
+        noop("d", &["c"]),
+    ])
+    .unwrap_err();
+    assert_eq!(err.violations(), &[PlanViolation::Cycle { step_ids: vec![sid("a"), sid("b"), sid("c"), sid("d")] }]);
+}

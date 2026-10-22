@@ -12,6 +12,7 @@ michi (workspace root, virtual manifest)
 │   ├── michi-core        # Every sync primitive: toon, kv, hints, recovery, empty, error, status, mcp, audience,
 │   │                     #   response (AgentResponse), pipeline (data type), truncate, truncation, resilience, telemetry;
 │   │                     #   napi (feature)
+│   ├── michi-graph       # MIT, no dependencies: dependency graphs (GraphBuilder, Graph, Dag), validation, order, layers
 │   └── michi-pipeline    # Async pipeline execution: Plan, execute/resume, RunRecord, BreakerRegistry, CancellationToken
 └── packages/michi-node   # Node.js NAPI cdylib (@orin-dx/michi), publish = false
 ```
@@ -21,21 +22,24 @@ Dependency direction:
 ```mermaid
 graph LR
     core["michi-core"]
+    graphcrate["michi-graph (MIT)"]
     pipeline["michi-pipeline"]
     node["packages/michi-node (@orin-dx/michi)"]
 
     pipeline --> core
+    pipeline --> graphcrate
     node -- "features = [napi]" --> core
 ```
 
-All three version in lockstep (each crate's `version`, kept equal by Callisto), released together as a Callisto fixed group. `michi-pipeline` and `michi-node` depend on `michi-core` through an exact `=x.y.z` workspace pin, so a mixed set never resolves.
+`michi-core`, `michi-pipeline` and `michi-node` version in lockstep (each crate's `version`, kept equal by Callisto), released together as a Callisto fixed group. `michi-graph` is MIT, depends on nothing in michi and versions on its own; `michi-pipeline` takes it through a normal `^` range and keeps its types out of its public API. `michi-pipeline` and `michi-node` depend on `michi-core` through an exact `=x.y.z` workspace pin, so a mixed set never resolves.
 
 ## Component Overview
 
 | Crate / Package | Responsibility | Runtime Dependencies |
 | --- | --- | --- |
 | `michi-core` | All sync AXI primitives. `toon`: TOON list rendering and parsing with stack-inlined `CompactString` cells. `truncate`: UTF-8 char-boundary content truncation (`floor_char_boundary`). `truncation`: `TruncationOutcome`, the report of what a list cap cut. `resilience`: retry back-off math, `Retry-After` HTTP date parsing, FNV-1a idempotency keys. Response DTOs: `AgentResponse`, `DomainError`, `StatusResponse`, `CallToolResult`, and the `Pipeline` data type. The public `resilience`, `truncate` and `truncation` items are re-exported at the crate root by explicit list. | `thiserror`, `compact_str` (Optional: `serde`, `serde_json`, `schemars`, `miette`, `napi`, `napi-derive`) |
-| `michi-pipeline` | Async execution of a validated `Plan` of steps: one `JoinSet` scheduler (sequential or capped parallel), a returned `RunRecord` whose statuses are `michi-core`'s `StepStatus`, `resume` from a record, a keyed `BreakerRegistry`, a per-run `RetryBudget`, `CancellationToken` and a `StepObserver`. Own `ExecutionError` and `PlanError` types, converting into `DomainError` via `From` — not variants of `michi_core::Error`. See `docs/spec/08-pipeline-execution.md`. | `michi-core`, `tokio`, `tokio-util`, `thiserror` (optional: `serde`) |
+| `michi-pipeline` | Async execution of a validated `Plan` of steps: one `JoinSet` scheduler (sequential or capped parallel), a returned `RunRecord` whose statuses are `michi-core`'s `StepStatus`, `resume` from a record, a keyed `BreakerRegistry`, a per-run `RetryBudget`, `CancellationToken` and a `StepObserver`. Own `ExecutionError` and `PlanError` types, converting into `DomainError` via `From` — not variants of `michi_core::Error`. See `docs/spec/08-pipeline-execution.md`. | `michi-core`, `michi-graph`, `tokio`, `tokio-util`, `thiserror` (optional: `serde`) |
+| `michi-graph` | MIT, `no_std` + `alloc`. Deterministic dependency graphs: `GraphBuilder` declares nodes and kinded edges, `Graph` may hold cycles, and validation returns a `Dag` or every violation at once. Topological order, layers, ready sets, ancestors and descendants, all following one caller-chosen tie-break. See `docs/spec/09-graph.md`. | none |
 | `packages/michi-node` | NAPI cdylib shim for `@orin-dx/michi`. Not published to crates.io. | `michi-core` (`napi` feature), `napi`, `napi-derive` |
 
 ## Data Composition & Render Flow

@@ -106,6 +106,15 @@ jobs:
         env:
           MSRV: ${{ steps.msrv.outputs.version }}
 
+  graph-license:
+    name: michi-graph stays permissive
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: orin-dx/actions/setup-rust@2521888266780dabc7f5fd4c32b02d6ab82849db # v1.1
+      # michi-graph is MIT inside an FSL workspace: no non-permissive crate may enter what it ships.
+      - run: cargo metadata --format-version 1 --all-features | python3 scripts/check-permissive-deps.py michi-graph
+
   version-sync:
     name: Version sync
     runs-on: ubuntu-latest
@@ -114,6 +123,7 @@ jobs:
       - uses: moonrepo/setup-toolchain@261c62cb5b0f580c7be7c8cd0f023a2e96756095 # v0.6.4
         with:
           auto-install: true
+      # michi-graph versions on its own (outside the Callisto fixed group), so it is not checked here.
       - name: Assert every published package has the same version
         run: |
           crate_version() { grep -m1 '^version' "$1" | sed -E 's/version *= *"(.*)"/\1/'; }

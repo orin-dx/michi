@@ -15,10 +15,10 @@ allow = [
     "BSD-3-Clause",
     "CC0-1.0",
     "Zlib",
-    # All crates in this workspace are intentionally source-available under
-    # FSL-1.1-MIT. Michi has no permissive-core layer yet; if one is
-    # designated later, see Lumen's deny.toml for the containment pattern
-    # that keeps FSL-licensed code from leaking into a permissive crate.
+    # Every crate in this workspace except michi-graph is source-available
+    # under FSL-1.1-MIT. michi-graph is MIT; `just check-graph-license` (and
+    # the CI job of the same purpose) keeps any non-permissive license out of
+    # what it ships.
     "FSL-1.1-MIT",
 ]
 

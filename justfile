@@ -27,7 +27,12 @@ test-rust-all:
 # Each published crate alone with its default features: a workspace-wide run unifies features across crates.
 test-crates-default:
     cargo nextest run -p michi-core
+    cargo nextest run -p michi-graph
     cargo nextest run -p michi-pipeline
+
+# michi-graph is MIT: fail if a non-permissive license enters its normal or build dependencies.
+check-graph-license:
+    cargo metadata --format-version 1 --all-features | python3 scripts/check-permissive-deps.py michi-graph
 
 test-rust-release:
     cargo nextest run --workspace --release

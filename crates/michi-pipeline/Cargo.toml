@@ -22,6 +22,7 @@ workspace = true
 
 [dependencies]
 michi-core.workspace = true
+michi-graph.workspace = true
 tokio = { workspace = true, features = ["time", "rt", "macros"] }
 # CancellationToken only; wrapped in michi's own newtype so the 0.x type never appears in the public API.
 tokio-util = { version = "0.7.20", default-features = false }
