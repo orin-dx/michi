@@ -2,7 +2,7 @@
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::graph::{Dangling, Edge, Graph};
 use crate::{NodeIx, UnknownTargets};
@@ -10,24 +10,48 @@ use crate::{NodeIx, UnknownTargets};
 /// A node declaration, returned by [`GraphBuilder::node`]. Edges hang off the declaration rather than the key, so the
 /// edges of a duplicate declaration are dropped with it instead of landing on the first node with that key.
 ///
-/// A declaration belongs to the builder that made it (and that builder's clones). Passing it to another builder adds
-/// nothing, rather than silently naming that builder's node at the same position.
+/// A declaration belongs to the builder that made it. A clone of that builder also accepts the declarations made
+/// before it was cloned, since it holds the same nodes, but not later ones. Passing a declaration to any other
+/// builder adds nothing, rather than silently naming that builder's node at the same position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Decl {
-    builder: u32,
+    builder: usize,
     index: u32,
 }
 
-/// Distinguishes builders, so a [`Decl`] from one is ignored by another.
-static NEXT_BUILDER: AtomicU32 = AtomicU32::new(0);
+/// Distinguishes builders, so a [`Decl`] from one is ignored by another. Pointer-sized, so it does not wrap in
+/// practice on 64-bit targets.
+static NEXT_BUILDER: AtomicUsize = AtomicUsize::new(0);
+
+fn next_builder_id() -> usize {
+    NEXT_BUILDER.fetch_add(1, Ordering::Relaxed)
+}
 
 /// Collects nodes and edges. [`GraphBuilder::build`] never fails; problems are reported when the graph is validated.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct GraphBuilder<K, E = ()> {
-    id: u32,
+    id: usize,
+    /// Builders this one was cloned from, each with how many declarations it had then: their earlier declarations
+    /// name the same nodes here.
+    ancestors: Vec<(usize, u32)>,
     decls: Vec<K>,
     edges: Vec<(u32, K, E)>,
     overflow: bool,
+}
+
+impl<K: Clone, E: Clone> Clone for GraphBuilder<K, E> {
+    /// A copy with its own identity: declarations made on either builder after the clone don't work on the other.
+    fn clone(&self) -> Self {
+        let mut ancestors = self.ancestors.clone();
+        ancestors.push((self.id, u32::try_from(self.decls.len()).unwrap_or(u32::MAX)));
+        Self {
+            id: next_builder_id(),
+            ancestors,
+            decls: self.decls.clone(),
+            edges: self.edges.clone(),
+            overflow: self.overflow,
+        }
+    }
 }
 
 impl<K: Ord + Clone, E: Ord> Default for GraphBuilder<K, E> {
@@ -47,7 +71,8 @@ impl<K: Ord + Clone, E: Ord> GraphBuilder<K, E> {
     #[must_use]
     pub fn with_capacity(nodes: usize) -> Self {
         Self {
-            id: NEXT_BUILDER.fetch_add(1, Ordering::Relaxed),
+            id: next_builder_id(),
+            ancestors: Vec::new(),
             decls: Vec::with_capacity(nodes),
             edges: Vec::with_capacity(nodes),
             overflow: false,
@@ -72,7 +97,9 @@ impl<K: Ord + Clone, E: Ord> GraphBuilder<K, E> {
     /// Adds an edge: `dependent` depends on the node keyed `prerequisite`, which may be declared before or after it.
     /// Repeating an edge with the same kind has no further effect.
     pub fn depends_on(&mut self, dependent: Decl, prerequisite: K, kind: E) -> &mut Self {
-        if dependent.builder == self.id && (dependent.index as usize) < self.decls.len() {
+        let mine = dependent.builder == self.id
+            || self.ancestors.iter().any(|&(id, upto)| id == dependent.builder && dependent.index < upto);
+        if mine && (dependent.index as usize) < self.decls.len() {
             self.edges.push((dependent.index, prerequisite, kind));
         }
         self
@@ -83,7 +110,7 @@ impl<K: Ord + Clone, E: Ord> GraphBuilder<K, E> {
     /// and more than `u32::MAX - 1` nodes.
     #[must_use]
     pub fn build(self, unknown: UnknownTargets) -> Graph<K, E> {
-        let Self { id: _, decls, edges, overflow } = self;
+        let Self { id: _, ancestors: _, decls, edges, overflow } = self;
 
         // Declarations sorted by key, ties by position: the first of each run of equal keys is the node.
         let mut sorted: Vec<u32> = (0..decls.len()).filter_map(|i| u32::try_from(i).ok()).collect();

@@ -68,6 +68,14 @@ pub struct Graph<K, E = ()> {
     pub(crate) overflow: bool,
 }
 
+/// An edge problem waiting to be ordered.
+struct Problem<'a, K> {
+    rank: u32,
+    seq: usize,
+    target: &'a K,
+    violation: Violation<K>,
+}
+
 /// The adjacency of the edges a filter kept, without self-loops.
 pub(crate) struct Kept {
     pub(crate) prerequisites: Csr,
@@ -146,35 +154,54 @@ impl<K: Ord + Clone, E: Ord> Graph<K, E> {
     ) -> Result<Dag<K>, Violations<K>> {
         let kept = self.kept(keep, order);
         let n = self.len();
+        // Duplicates in declaration order, or by key under `Order::Key` so shuffling declarations changes nothing.
+        let mut duplicates: Vec<&K> = self.duplicates.iter().collect();
+        if order == Order::Key {
+            duplicates.sort();
+        }
         let mut violations: Vec<Violation<K>> =
-            self.duplicates.iter().map(|key| Violation::DuplicateNode { key: key.clone() }).collect();
+            duplicates.into_iter().map(|key| Violation::DuplicateNode { key: key.clone() }).collect();
         if self.overflow {
             violations.push(Violation::TooManyNodes);
         }
 
-        // Unknown dependencies and self-dependencies, by dependent then edge declaration order.
-        let mut edge_problems: Vec<(u32, usize, Violation<K>)> = Vec::new();
+        // Unknown dependencies and self-dependencies, by the dependent's rank, then (declaration order) the edge's
+        // position or (key order) the missing key, a self-dependency sorting as its own key.
+        let rank_of = |ix: u32| kept.rank.get(ix as usize).copied().unwrap_or(u32::MAX);
+        let mut problems: Vec<Problem<'_, K>> = Vec::new();
         if self.unknown == UnknownTargets::Error {
             for (d, _) in self.dangling.iter().zip(&kept.dangling_kept).filter(|(_, kept)| **kept) {
                 if let Some(dependent) = self.key(d.dependent) {
-                    edge_problems.push((
-                        d.dependent.0,
-                        d.seq,
-                        Violation::UnknownDependency {
+                    problems.push(Problem {
+                        rank: rank_of(d.dependent.0),
+                        seq: d.seq,
+                        target: &d.prerequisite,
+                        violation: Violation::UnknownDependency {
                             dependent: dependent.clone(),
                             prerequisite: d.prerequisite.clone(),
                         },
-                    ));
+                    });
                 }
             }
         }
         for (i, seq) in kept.self_loop_seq.iter().enumerate() {
             if let (Some(seq), Some(key), Ok(i)) = (seq, self.keys.get(i), u32::try_from(i)) {
-                edge_problems.push((i, *seq, Violation::SelfDependency { key: key.clone() }));
+                problems.push(Problem {
+                    rank: rank_of(i),
+                    seq: *seq,
+                    target: key,
+                    violation: Violation::SelfDependency { key: key.clone() },
+                });
             }
         }
-        edge_problems.sort_by_key(|&(d, seq, _)| (d, seq));
-        violations.extend(edge_problems.into_iter().map(|(_, _, v)| v));
+        match order {
+            Order::Declaration => problems.sort_by_key(|p| (p.rank, p.seq)),
+            Order::Key => problems.sort_by(|a, b| (a.rank, a.target, a.seq).cmp(&(b.rank, b.target, b.seq))),
+        }
+        // The same missing key under several kept edge kinds is one problem, reported where it first appears.
+        let mut seen = alloc::collections::BTreeSet::new();
+        problems.retain(|p| seen.insert((p.rank, p.target, matches!(p.violation, Violation::SelfDependency { .. }))));
+        violations.extend(problems.into_iter().map(|p| p.violation));
 
         let topo = kahn(n, &kept.prerequisites, &kept.dependents, &kept.rank, &kept.by_rank);
         if topo.len() < n {

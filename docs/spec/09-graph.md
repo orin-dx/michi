@@ -1,6 +1,6 @@
 # Dependency graphs (`michi-graph`)
 
-`michi-graph` validates and orders dependency graphs: steps in a pipeline, operations in a release, packages in a workspace, tasks in an agent's plan. It is MIT-licensed, has no dependencies (it is `no_std` with `alloc`), and depends on nothing else in michi, so permissive crates such as `callisto-model` can use it. `michi-pipeline` builds its `Plan` on it.
+`michi-graph` validates and orders dependency graphs: steps in a pipeline, operations in a release, packages in a workspace, tasks in an agent's plan. It is MIT-licensed, has no dependencies (it is `no_std` with `alloc`, and needs pointer-sized atomics, which every mainstream target has; CI builds it for `thumbv7em-none-eabihf`), and depends on nothing else in michi, so permissive crates such as `callisto-model` can use it. `michi-pipeline` builds its `Plan` on it.
 
 It is a small, deterministic graph model, not a general graph library. There are no node or edge payloads, no mutation after a graph is built, no path finding and no execution policy. The reasons for each choice are in [06-decisions.md](06-decisions.md), "michi-graph: an MIT leaf crate, versioned on its own".
 
@@ -9,7 +9,7 @@ It is a small, deterministic graph model, not a general graph library. There are
 - A **node** has a key `K: Ord + Clone` chosen by the caller (`StepId`, `PackageId`, `String`).
 - An **edge** says that a **dependent** depends on a **prerequisite**: the prerequisite comes first. The API never says "from/to" or "in/out", because those words mean opposite things in different tools.
 - Every edge has a **kind** `E: Ord`, which defaults to `()`. Callisto uses kinds such as runtime, dev and peer; michi and wisp don't use kinds.
-- A `NodeIx` is a node's declaration position: the first node declared is 0. It has no public constructor. Every method that takes one returns an empty slice or `None` for an index the graph does not have, so an index from another graph never panics.
+- A `NodeIx` is a node's position among the graph's nodes in declaration order: the first node declared is 0. Duplicate declarations are not nodes and don't count, so in a graph that validates it is exactly the declaration position. It has no public constructor. Every method that takes one returns an empty slice or `None` for an index the graph does not have, so an index from another graph never panics.
 
 ## Building
 
@@ -24,12 +24,12 @@ for step in &steps {
 let graph = b.build(UnknownTargets::Error);
 ```
 
-- `node(key)` declares a node and returns a `Decl` token. Edges hang off the token, not the key. A later node reusing a key is recorded as a duplicate, and its edges are dropped with it, so they can never land on the first node and cause false errors.
+- `node(key)` declares a node and returns a `Decl` token. Edges hang off the token, not the key. A token only works on its own builder; a clone of the builder accepts tokens made before the clone, not after, so a token can never name another builder's node at the same position. A later node reusing a key is recorded as a duplicate, and its edges are dropped with it, so they can never land on the first node and cause false errors.
 - `depends_on(decl, prerequisite, kind)` takes the prerequisite key, which may be declared before or after. An edge repeated with the same kind collapses into one.
 - `build(policy)` never fails. It sets aside what it cannot use and records why, so every problem can be reported later in one list:
   - a duplicate node;
-  - an edge to a key no node has (a **dangling** edge). It is always kept in `Graph::dangling()`. The `UnknownTargets` policy only decides whether validation reports it: `Error` reports it as `UnknownDependency`, and `Ignore` doesn't (Callisto ignores dependencies on packages outside the workspace);
-  - more than `u32::MAX` nodes.
+  - an edge to a key no node has (a **dangling** edge). It is always kept in `Graph::dangling()`. The edge filter sees it too (with no `prerequisite_ix`), so an unknown dev dependency is not a problem when dev edges are filtered out. For a kept dangling edge, the `UnknownTargets` policy decides: `Error` reports it as `UnknownDependency`, and `Ignore` doesn't (Callisto ignores dependencies on packages outside the workspace). One missing key under several kept kinds is reported once;
+  - more than `u32::MAX - 1` nodes.
 - A node that depends on itself is kept as an ordinary edge, and the edge filter decides whether it counts (a dev-only self-dependency is legal in Cargo).
 - `Dag::from_nodes(iter, order)` builds and validates in one call for the common case: no kinds and unknown targets are errors.
 
@@ -79,7 +79,7 @@ Everything the crate outputs follows that one order: the topological order, each
 - `Cycle(Cycle<K>)`: `members()` lists every node of one strongly connected component, in the chosen order. `path()` is one shortest closed path through the first member, so a message can show a real loop.
 - `TooManyNodes`
 
-`Violations<K>` lists them in a fixed order: duplicates, then edge problems by the dependent's declaration position and the edge's position, then cycles in the chosen order. The same input always gives the same list.
+`Violations<K>` lists them in a fixed order: duplicates, then `TooManyNodes`, then edge problems, then cycles. Under `Order::Declaration`, duplicates are in declaration order and edge problems go by the dependent's declaration position, then the edge's. Under `Order::Key`, duplicates are sorted by key and edge problems go by the dependent's key, then the missing key (a self-dependency sorts as the node's own key), so shuffling the declarations changes nothing. Cycles follow the chosen order either way. The same input always gives the same list.
 
 `Display` exists when `K: Display`, and `display_with(|key, f| ...)` covers keys without it. A cycle reads as `a depends on b, which depends on c, which depends on a`. The printed path stops after 8 steps with `… and N more`; the struct keeps the whole path. `Violations<K>` implements `core::error::Error` when `K: Debug + Display`.
 

@@ -40,13 +40,23 @@ fn a_duplicate_declarations_edges_are_dropped_with_it() {
 }
 
 #[test]
-fn edge_problems_follow_the_dependents_declaration_then_the_edges() {
-    let found = violations(&[("x", &["x", "gone", "x"]), ("y", &["missing"])], Order::Key);
+fn edge_problems_follow_the_dependent_then_the_edge_or_the_key() {
+    let nodes: &[(&str, &[&str])] = &[("x", &["x", "gone", "x"]), ("y", &["missing"])];
+    // Declaration order: the edges as declared.
     assert_eq!(
-        found,
+        violations(nodes, Order::Declaration),
         [
             Violation::SelfDependency { key: "x" },
             Violation::UnknownDependency { dependent: "x", prerequisite: "gone" },
+            Violation::UnknownDependency { dependent: "y", prerequisite: "missing" },
+        ]
+    );
+    // Key order: by the missing key, a self-dependency sorting as the node's own key.
+    assert_eq!(
+        violations(nodes, Order::Key),
+        [
+            Violation::UnknownDependency { dependent: "x", prerequisite: "gone" },
+            Violation::SelfDependency { key: "x" },
             Violation::UnknownDependency { dependent: "y", prerequisite: "missing" },
         ]
     );
