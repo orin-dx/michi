@@ -89,26 +89,22 @@ Any TypeScript MCP server
 
 ```toml
 [workspace]
-members  = [
-  "crates/michi-core",
-  "crates/michi-pipeline",
-  "packages/michi-node"
-]
+members = ["crates/michi-core", "crates/michi-pipeline", "packages/michi-node"]
 resolver = "2"
 
 [workspace.package]
 # One version for every crate: Callisto releases michi-core, michi-pipeline and the npm package as a fixed group.
-version      = "0.3.0"
+version = "0.3.0"
 
 [workspace.dependencies]
 # Exact pin: workspace crates release in lockstep, so a mixed set must never resolve.
-michi-core  = { path = "crates/michi-core", version = "=0.3.0" }
-thiserror   = "2"
+michi-core = { path = "crates/michi-core", version = "=0.3.0" }
+thiserror = "2"
 compact_str = "0.8"
-serde       = { version = "1.0.228", features = ["derive"] }
-serde_json  = { version = "1.0.150", features = ["preserve_order"] }
-schemars    = "0.8"
-miette      = "7"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = { version = "1.0.150", features = ["preserve_order"] }
+schemars = "0.8"
+miette = "7"
 tokio = { version = "1", features = ["time"] }
 ```
 
@@ -123,21 +119,21 @@ version.workspace = true
 compact_str = { workspace = true, features = ["serde"] }
 thiserror.workspace = true
 
-serde      = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
-schemars   = { workspace = true, optional = true }
-miette     = { workspace = true, optional = true }
+schemars = { workspace = true, optional = true }
+miette = { workspace = true, optional = true }
 
 # napi feature
-napi        = { version = "3", features = ["napi6", "serde-json"], optional = true }
+napi = { version = "3", features = ["napi6", "serde-json"], optional = true }
 napi-derive = { version = "3", optional = true }
 
 [features]
-default  = []
-serde    = ["dep:serde", "dep:serde_json"]
+default = []
+serde = ["dep:serde", "dep:serde_json"]
 schemars = ["dep:schemars"]
-miette   = ["dep:miette"]
-napi     = ["dep:napi", "dep:napi-derive", "serde"]
+miette = ["dep:miette"]
+napi = ["dep:napi", "dep:napi-derive", "serde"]
 ```
 
 (Elided: the remaining `[workspace.package]` metadata, `[profile.release]`/`[profile.bench]`, `[workspace.lints]`, `[dev-dependencies]`, `[[bench]]` entries — see the real files for those.)
