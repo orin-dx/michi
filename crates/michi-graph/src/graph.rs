@@ -5,7 +5,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::borrow::Borrow;
 
-use crate::algo::{cyclic_components, kahn, shortest_cycle, Csr};
+use crate::algo::{cyclic_components, kahn, shortest_cycle, Csr, CycleScratch};
 use crate::builder::lookup;
 use crate::dag::Dag;
 use crate::violation::{Cycle, Violation, Violations};
@@ -32,20 +32,20 @@ pub struct Dangling<K, E = ()> {
     pub(crate) seq: usize,
 }
 
-/// One edge as an edge filter sees it.
+/// One declared edge as an edge filter sees it, including edges whose prerequisite no node has.
 #[non_exhaustive]
 #[derive(Debug)]
 pub struct EdgeRef<'a, K, E> {
     /// The node that depends on `prerequisite`.
     pub dependent: &'a K,
-    /// The node that comes first.
+    /// The key of the node that comes first.
     pub prerequisite: &'a K,
     /// The edge's kind.
     pub kind: &'a E,
     /// `dependent`'s index.
     pub dependent_ix: NodeIx,
-    /// `prerequisite`'s index.
-    pub prerequisite_ix: NodeIx,
+    /// `prerequisite`'s index, or `None` for a dangling edge (no node has that key).
+    pub prerequisite_ix: Option<NodeIx>,
 }
 
 impl<K, E> Clone for EdgeRef<'_, K, E> {
@@ -75,6 +75,8 @@ pub(crate) struct Kept {
     self_loop: Vec<bool>,
     /// The declaration sequence of each node's first kept self-edge.
     self_loop_seq: Vec<Option<usize>>,
+    /// Whether the filter kept each dangling edge, by position in `Graph::dangling`.
+    dangling_kept: Vec<bool>,
     pub(crate) rank: Vec<u32>,
     pub(crate) by_rank: Vec<u32>,
 }
@@ -130,7 +132,9 @@ impl<K: Ord + Clone, E: Ord> Graph<K, E> {
 
     /// Validates the graph with the edges `keep` accepts and returns a [`Dag`], or every problem at once, in this
     /// order: duplicate nodes, then unknown dependencies (unless ignored) and self-dependencies by the dependent's
-    /// declaration position and the edge's, then cycles. Cycles made only of rejected edges are not problems.
+    /// declaration position and the edge's, then cycles. `keep` sees every declared edge, dangling ones included
+    /// (with no `prerequisite_ix`), and only the edges it keeps can be problems: an unknown dev dependency is not one
+    /// when dev edges are filtered out, and cycles made only of rejected edges are not problems.
     ///
     /// # Errors
     ///
@@ -151,7 +155,7 @@ impl<K: Ord + Clone, E: Ord> Graph<K, E> {
         // Unknown dependencies and self-dependencies, by dependent then edge declaration order.
         let mut edge_problems: Vec<(u32, usize, Violation<K>)> = Vec::new();
         if self.unknown == UnknownTargets::Error {
-            for d in &self.dangling {
+            for (d, _) in self.dangling.iter().zip(&kept.dangling_kept).filter(|(_, kept)| **kept) {
                 if let Some(dependent) = self.key(d.dependent) {
                     edge_problems.push((
                         d.dependent.0,
@@ -209,6 +213,7 @@ impl<K: Ord + Clone, E: Ord> Graph<K, E> {
         }
         components.sort_unstable_by_key(|c| c.first().map_or(u32::MAX, rank));
         let mut inside = vec![false; self.len()];
+        let mut scratch = CycleScratch::new(self.len());
         components
             .into_iter()
             .map(|component| {
@@ -217,8 +222,12 @@ impl<K: Ord + Clone, E: Ord> Graph<K, E> {
                         *f = true;
                     }
                 }
+                // A node's own self-edge is the shortest loop through it.
                 let path = match component.first() {
-                    Some(&start) if component.len() > 1 => shortest_cycle(start, &inside, &kept.prerequisites),
+                    Some(&start) if self_loop.get(start.u()).copied().unwrap_or(false) => vec![start],
+                    Some(&start) if component.len() > 1 => {
+                        shortest_cycle(start, &inside, &kept.prerequisites, &mut scratch)
+                    }
                     Some(&start) => vec![start],
                     None => Vec::new(),
                 };
@@ -239,7 +248,7 @@ impl<K: Ord + Clone, E: Ord> Graph<K, E> {
             prerequisite: self.keys.get(e.prerequisite as usize)?,
             kind: &e.kind,
             dependent_ix: NodeIx(e.dependent),
-            prerequisite_ix: NodeIx(e.prerequisite),
+            prerequisite_ix: Some(NodeIx(e.prerequisite)),
         })
     }
 
@@ -282,12 +291,28 @@ impl<K: Ord + Clone, E: Ord> Graph<K, E> {
                 forward.push((e.dependent, e.prerequisite));
             }
         }
+        let dangling_kept = self
+            .dangling
+            .iter()
+            .map(|d| {
+                self.key(d.dependent).is_some_and(|dependent| {
+                    keep(EdgeRef {
+                        dependent,
+                        prerequisite: &d.prerequisite,
+                        kind: &d.kind,
+                        dependent_ix: d.dependent,
+                        prerequisite_ix: None,
+                    })
+                })
+            })
+            .collect();
         let backward = forward.iter().map(|&(d, p)| (p, d)).collect();
         Kept {
             prerequisites: Csr::from_pairs(n, forward, &rank),
             dependents: Csr::from_pairs(n, backward, &rank),
             self_loop,
             self_loop_seq,
+            dangling_kept,
             rank,
             by_rank,
         }

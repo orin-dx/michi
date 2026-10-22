@@ -158,6 +158,11 @@ pub enum PlanViolation {
     },
     /// More steps than a plan can index (`u32::MAX - 1`).
     TooManySteps,
+    /// A graph problem this version of michi-pipeline does not know by name, rendered by michi-graph.
+    Other {
+        /// The problem, as michi-graph describes it.
+        message: String,
+    },
 }
 
 impl fmt::Display for PlanViolation {
@@ -179,6 +184,7 @@ impl fmt::Display for PlanViolation {
                 Ok(())
             }
             Self::TooManySteps => write!(f, "more than {} steps", u32::MAX - 1),
+            Self::Other { message } => f.write_str(message),
         }
     }
 }
@@ -382,7 +388,9 @@ fn plan_error(steps: &[ExecStep], violations: michi_graph::Violations<StepId>) -
             }
             Violation::SelfDependency { key } => out.push(PlanViolation::SelfDependency { step_id: key }),
             Violation::Cycle(cycle) => on_cycle.extend(cycle.members().iter().cloned()),
-            _ => out.push(PlanViolation::TooManySteps),
+            Violation::TooManyNodes => out.push(PlanViolation::TooManySteps),
+            // michi-graph's violations are non-exhaustive: name a new one by its own message, never as another kind.
+            other => out.push(PlanViolation::Other { message: other.to_string() }),
         }
     }
     if !on_cycle.is_empty() {

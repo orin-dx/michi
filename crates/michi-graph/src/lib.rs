@@ -57,7 +57,9 @@ pub use dag::{Dag, Layers};
 pub use graph::{Dangling, EdgeRef, Graph};
 pub use violation::{Cycle, Violation, Violations};
 
-/// A node's declaration position in its graph: the first node declared is 0.
+/// A node's position among its graph's nodes, in declaration order: the first node declared is 0. Duplicate
+/// declarations are not nodes and don't count, so in a graph that validates (no duplicates) it is exactly the
+/// declaration position.
 ///
 /// There is no public constructor. Methods that take a `NodeIx` return an empty slice or `None` for an index their
 /// graph does not have, so an index from another graph never panics.

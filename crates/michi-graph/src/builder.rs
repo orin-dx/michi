@@ -2,18 +2,29 @@
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use crate::graph::{Dangling, Edge, Graph};
 use crate::{NodeIx, UnknownTargets};
 
 /// A node declaration, returned by [`GraphBuilder::node`]. Edges hang off the declaration rather than the key, so the
 /// edges of a duplicate declaration are dropped with it instead of landing on the first node with that key.
+///
+/// A declaration belongs to the builder that made it (and that builder's clones). Passing it to another builder adds
+/// nothing, rather than silently naming that builder's node at the same position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Decl(u32);
+pub struct Decl {
+    builder: u32,
+    index: u32,
+}
+
+/// Distinguishes builders, so a [`Decl`] from one is ignored by another.
+static NEXT_BUILDER: AtomicU32 = AtomicU32::new(0);
 
 /// Collects nodes and edges. [`GraphBuilder::build`] never fails; problems are reported when the graph is validated.
 #[derive(Debug, Clone)]
 pub struct GraphBuilder<K, E = ()> {
+    id: u32,
     decls: Vec<K>,
     edges: Vec<(u32, K, E)>,
     overflow: bool,
@@ -29,13 +40,18 @@ impl<K: Ord + Clone, E: Ord> GraphBuilder<K, E> {
     /// An empty builder.
     #[must_use]
     pub fn new() -> Self {
-        Self { decls: Vec::new(), edges: Vec::new(), overflow: false }
+        Self::with_capacity(0)
     }
 
     /// An empty builder with room for `nodes` declarations.
     #[must_use]
     pub fn with_capacity(nodes: usize) -> Self {
-        Self { decls: Vec::with_capacity(nodes), edges: Vec::with_capacity(nodes), overflow: false }
+        Self {
+            id: NEXT_BUILDER.fetch_add(1, Ordering::Relaxed),
+            decls: Vec::with_capacity(nodes),
+            edges: Vec::with_capacity(nodes),
+            overflow: false,
+        }
     }
 
     /// Declares a node. A later declaration reusing a key is reported as [`crate::Violation::DuplicateNode`], and the
@@ -44,11 +60,11 @@ impl<K: Ord + Clone, E: Ord> GraphBuilder<K, E> {
         match u32::try_from(self.decls.len()) {
             Ok(n) if n < u32::MAX => {
                 self.decls.push(key);
-                Decl(n)
+                Decl { builder: self.id, index: n }
             }
             _ => {
                 self.overflow = true;
-                Decl(u32::MAX)
+                Decl { builder: self.id, index: u32::MAX }
             }
         }
     }
@@ -56,8 +72,8 @@ impl<K: Ord + Clone, E: Ord> GraphBuilder<K, E> {
     /// Adds an edge: `dependent` depends on the node keyed `prerequisite`, which may be declared before or after it.
     /// Repeating an edge with the same kind has no further effect.
     pub fn depends_on(&mut self, dependent: Decl, prerequisite: K, kind: E) -> &mut Self {
-        if (dependent.0 as usize) < self.decls.len() {
-            self.edges.push((dependent.0, prerequisite, kind));
+        if dependent.builder == self.id && (dependent.index as usize) < self.decls.len() {
+            self.edges.push((dependent.index, prerequisite, kind));
         }
         self
     }
@@ -67,7 +83,7 @@ impl<K: Ord + Clone, E: Ord> GraphBuilder<K, E> {
     /// and more than `u32::MAX - 1` nodes.
     #[must_use]
     pub fn build(self, unknown: UnknownTargets) -> Graph<K, E> {
-        let Self { decls, edges, overflow } = self;
+        let Self { id: _, decls, edges, overflow } = self;
 
         // Declarations sorted by key, ties by position: the first of each run of equal keys is the node.
         let mut sorted: Vec<u32> = (0..decls.len()).filter_map(|i| u32::try_from(i).ok()).collect();

@@ -141,40 +141,67 @@ fn mark(flags: &mut [bool], i: usize) {
     }
 }
 
+/// Scratch space for [`shortest_cycle`], allocated once per report and reset only where a search touched it, so
+/// reporting many small cycles stays linear in the graph rather than quadratic.
+pub(crate) struct CycleScratch {
+    parent: Vec<u32>,
+    touched: Vec<usize>,
+    queue: alloc::collections::VecDeque<usize>,
+}
+
+const UNSEEN: u32 = u32::MAX;
+
+impl CycleScratch {
+    pub(crate) fn new(n: usize) -> Self {
+        Self { parent: vec![UNSEEN; n], touched: Vec::new(), queue: alloc::collections::VecDeque::new() }
+    }
+}
+
 /// One shortest closed path through `start` that stays inside `component`, following `forward` edges. The path
-/// lists `start` first and does not repeat it at the end.
-pub(crate) fn shortest_cycle(start: NodeIx, component: &[bool], forward: &Csr) -> Vec<NodeIx> {
-    let n = component.len();
-    let mut parent: Vec<u32> = vec![u32::MAX; n];
-    let mut queue = alloc::collections::VecDeque::new();
-    queue.push_back(start.u());
-    let mut seen = vec![false; n];
-    mark(&mut seen, start.u());
+/// lists `start` first and does not repeat it at the end. Work is proportional to the component searched.
+pub(crate) fn shortest_cycle(
+    start: NodeIx,
+    component: &[bool],
+    forward: &Csr,
+    scratch: &mut CycleScratch,
+) -> Vec<NodeIx> {
+    let s = start.u();
+    let path = search(s, component, forward, scratch).unwrap_or_else(|| vec![start]);
+    for &t in &scratch.touched {
+        if let Some(p) = scratch.parent.get_mut(t) {
+            *p = UNSEEN;
+        }
+    }
+    scratch.touched.clear();
+    scratch.queue.clear();
+    path
+}
+
+fn search(s: usize, component: &[bool], forward: &Csr, scratch: &mut CycleScratch) -> Option<Vec<NodeIx>> {
+    let CycleScratch { parent, touched, queue } = scratch;
+    *parent.get_mut(s)? = s as u32;
+    touched.push(s);
+    queue.push_back(s);
     while let Some(node) = queue.pop_front() {
         for next in forward.of(node) {
             let i = next.u();
-            if i == start.u() {
+            if i == s {
                 let mut path = vec![NodeIx(node as u32)];
                 let mut at = node;
-                while at != start.u() {
-                    let Some(&p) = parent.get(at) else { break };
-                    if p == u32::MAX {
-                        break;
-                    }
+                while at != s {
+                    let p = *parent.get(at)?;
                     path.push(NodeIx(p));
                     at = p as usize;
                 }
                 path.reverse();
-                return path;
+                return Some(path);
             }
-            if component.get(i).copied().unwrap_or(false) && !seen.get(i).copied().unwrap_or(true) {
-                mark(&mut seen, i);
-                if let Some(slot) = parent.get_mut(i) {
-                    *slot = node as u32;
-                }
+            if component.get(i).copied().unwrap_or(false) && parent.get(i) == Some(&UNSEEN) {
+                *parent.get_mut(i)? = node as u32;
+                touched.push(i);
                 queue.push_back(i);
             }
         }
     }
-    vec![start]
+    None
 }
