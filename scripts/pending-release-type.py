@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Print the cargo-semver-checks release type for the michi fixed group's pending changesets.
 
-Only the YAML front matter of `.changeset/*.md` counts, and only entries naming a fixed-group package: michi-graph
-versions on its own, so its bump must not loosen the check for michi-core and michi-pipeline. cargo-semver-checks
+Only the YAML front matter of `.changeset/*.md` counts, and only entries naming a fixed-group package (the group
+releases together, so any member's bump is everyone's). cargo-semver-checks
 names release types literally, so before 1.0 Callisto's minor bump (0.4 -> 0.5) is `major` here.
 
 Prints `infer` when no changeset names a fixed-group package: then the version in the manifests is the guide (on
@@ -15,7 +15,7 @@ import pathlib
 import re
 import sys
 
-GROUP = {"michi-core", "michi-pipeline", "michi-node", "@orin-dx/michi"}
+GROUP = {"michi-core", "michi-graph", "michi-pipeline", "michi-node", "@orin-dx/michi"}
 RANK = {"none": 0, "patch": 1, "minor": 2, "major": 3}
 
 

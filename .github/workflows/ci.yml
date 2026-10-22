@@ -83,8 +83,8 @@ jobs:
           # Front matter of the fixed group's changesets only (michi-graph's own bump must not loosen this check), or
           # the version bump when none are pending, as on Callisto's version PR.
           bash scripts/check-semver.sh
-      # michi-graph versions on its own, so its release type comes from its own version bump. It has no baseline until
-      # its first publish.
+      # michi-graph releases with the group but has no crates.io baseline until its first publish; until then there is
+      # nothing to compare. Its release type comes from its version, which the group bumps with the others.
       - name: Check michi-graph's API against crates.io
         run: |
           set -euo pipefail
@@ -147,16 +147,16 @@ jobs:
       - uses: moonrepo/setup-toolchain@261c62cb5b0f580c7be7c8cd0f023a2e96756095 # v0.6.4
         with:
           auto-install: true
-      # michi-graph versions on its own (outside the Callisto fixed group), so it is not checked here.
       - name: Assert every published package has the same version
         run: |
           crate_version() { grep -m1 '^version' "$1" | sed -E 's/version *= *"(.*)"/\1/'; }
           CORE=$(crate_version crates/michi-core/Cargo.toml)
+          GRAPH=$(crate_version crates/michi-graph/Cargo.toml)
           PIPELINE=$(crate_version crates/michi-pipeline/Cargo.toml)
           NPM=$(node -p "require('./packages/michi-node/package.json').version")
-          echo "michi-core: $CORE  michi-pipeline: $PIPELINE  @orin-dx/michi: $NPM"
-          if [ "$CORE" != "$PIPELINE" ] || [ "$CORE" != "$NPM" ]; then
-            echo "::error::Version mismatch: michi-core=$CORE michi-pipeline=$PIPELINE @orin-dx/michi=$NPM"
+          echo "michi-core: $CORE  michi-graph: $GRAPH  michi-pipeline: $PIPELINE  @orin-dx/michi: $NPM"
+          if [ "$CORE" != "$GRAPH" ] || [ "$CORE" != "$PIPELINE" ] || [ "$CORE" != "$NPM" ]; then
+            echo "::error::Version mismatch: michi-core=$CORE michi-graph=$GRAPH michi-pipeline=$PIPELINE @orin-dx/michi=$NPM"
             exit 1
           fi
 

@@ -12,8 +12,9 @@ CASES = [
     # (changesets, version, expected)
     # No changeset for the group (a version PR has applied them): the version bump decides.
     ({}, "0.5.0", "infer"),
-    # michi-graph versions on its own and body text never counts.
-    ({"a.md": "---\nmichi-graph: major\n---\n\nImpact: major\nmichi-core: major\n"}, "0.4.0", "infer"),
+    # michi-graph is in the group; body text never counts.
+    ({"a.md": "---\nmichi-graph: patch\n---\n\nImpact: major\nmichi-core: major\n"}, "0.4.0", "patch"),
+    ({"a.md": "---\nunrelated: major\n---\n"}, "0.4.0", "infer"),
     ({"a.md": "---\nmichi-core: none\n---\n"}, "0.4.0", "patch"),
     ({"a.md": "---\nmichi-pipeline: patch\n---\n\nx\n"}, "0.4.0", "patch"),
     # Before 1.0 a minor bump is breaking.

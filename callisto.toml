@@ -21,8 +21,7 @@ match = "cargo/michi-pipeline"
 publish-to = ["crates-io"]
 release-trigger = "changeset"
 
-# MIT graph crate. Versions on its own, outside the fixed group: permissive crates outside the michi release cycle
-# depend on it.
+# MIT graph crate, released with the rest of michi (one version for every michi package).
 [[package]]
 match = "cargo/michi-graph"
 publish-to = ["crates-io"]
@@ -34,7 +33,7 @@ match = "npm/michi-node"
 publish-to = ["npm"]
 release-trigger = "changeset"
 
-# Every michi package ships one version: a change to any of them releases all three.
+# Every michi package ships one version: a change to any of them releases all four.
 [[fixed-group]]
 name = "michi"
-members = ["cargo/michi-core", "cargo/michi-pipeline", "npm/@orin-dx/michi"]
+members = ["cargo/michi-core", "cargo/michi-graph", "cargo/michi-pipeline", "npm/@orin-dx/michi"]

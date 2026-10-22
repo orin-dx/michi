@@ -145,10 +145,10 @@ graph LR
 | --- | --- |
 | `michi-core` | All sync AXI primitives: TOON list rendering (`toon`; render only, no public parser), key-value blocks, hints, structured errors (`DomainError`), status, recovery hints, MCP `CallToolResult`, the `AgentResponse` builder, UTF-8 char-boundary truncation (`truncate`), the report of what a list cap cut (`truncation`), and retry/back-off math with `Retry-After` parsing and idempotency keys (`resilience`). |
 | `michi-pipeline` | Async pipeline execution: a validated step plan run sequentially or with a concurrency cap, a per-step run record with replay-honest statuses, resume, keyed circuit breakers, a retry budget and cancellation. Depends on `michi-core`, `tokio` and `tokio-util`. |
-| `michi-graph` | Deterministic dependency graphs, MIT-licensed with no dependencies: validation that reports every problem at once (with a concrete loop for each cycle), topological order, layers, ready sets, ancestors and descendants. Versions on its own. |
+| `michi-graph` | Deterministic dependency graphs, MIT-licensed with no dependencies: validation that reports every problem at once (with a concrete loop for each cycle), topological order, layers, ready sets, ancestors and descendants. |
 | `@orin-dx/michi` | Node.js NAPI bindings built with `@napi-rs/cli` from `packages/michi-node`, which re-exports `michi-core`'s `napi` feature surface. |
 
-`michi-core`, `michi-pipeline` and `@orin-dx/michi` version in lockstep. The crate name `michi` on crates.io belongs to an unrelated project; to write `use michi::...`, rename the dependency in `Cargo.toml`:
+`michi-core`, `michi-graph`, `michi-pipeline` and `@orin-dx/michi` version in lockstep. The crate name `michi` on crates.io belongs to an unrelated project; to write `use michi::...`, rename the dependency in `Cargo.toml`:
 
 ```toml
 michi = { package = "michi-core", version = "0.3" }

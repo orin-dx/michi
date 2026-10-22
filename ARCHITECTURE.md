@@ -31,7 +31,7 @@ graph LR
     node -- "features = [napi]" --> core
 ```
 
-`michi-core`, `michi-pipeline` and `michi-node` version in lockstep (each crate's `version`, kept equal by Callisto), released together as a Callisto fixed group. `michi-graph` is MIT, depends on nothing in michi and versions on its own; `michi-pipeline` takes it through a normal `^` range and keeps its types out of its public API. `michi-pipeline` and `michi-node` depend on `michi-core` through an exact `=x.y.z` workspace pin, so a mixed set never resolves.
+`michi-core`, `michi-graph`, `michi-pipeline` and `michi-node` version in lockstep (each crate's `version`, kept equal by Callisto), released together as a Callisto fixed group. `michi-graph` is MIT and depends on nothing in michi; `michi-pipeline` keeps its types out of its public API. The workspace crates depend on each other through exact `=x.y.z` pins, so a mixed set never resolves.
 
 ## Component Overview
 
