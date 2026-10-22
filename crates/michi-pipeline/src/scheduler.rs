@@ -118,13 +118,13 @@ impl<'a> Scheduler<'a> {
                 self.set_terminal(i, *record);
             }
         }
-        for &i in self.plan.topological_order() {
+        for i in self.plan.topological_order() {
             if self.records[i].is_some() {
                 continue;
             }
             let mut waiting = 0;
             let mut blocked_by = None;
-            for &p in self.plan.prerequisites_of(i) {
+            for p in self.plan.prerequisites_of(i) {
                 match &self.records[p] {
                     Some(r) if r.status.is_success() => {}
                     Some(r) => {
@@ -244,7 +244,7 @@ impl<'a> Scheduler<'a> {
         if record.status.is_success() {
             self.completion_order.push(record.step_id.clone());
             self.set_terminal(i, record);
-            for &d in self.plan.dependents_of(i) {
+            for d in self.plan.dependents_of(i) {
                 if self.records[d].is_none() && self.remaining[d] > 0 {
                     self.remaining[d] -= 1;
                     if self.remaining[d] == 0 {
@@ -269,7 +269,7 @@ impl<'a> Scheduler<'a> {
         let Some(root) = self.records[i].as_ref().map(root_of) else { return };
         let mut stack = vec![i];
         while let Some(j) = stack.pop() {
-            for &d in self.plan.dependents_of(j) {
+            for d in self.plan.dependents_of(j) {
                 if self.records[d].is_none() {
                     self.ready.remove(&d);
                     let record = self.skipped_by_prerequisite(d, root.clone());
