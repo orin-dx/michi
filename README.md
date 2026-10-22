@@ -13,9 +13,9 @@ AXI response primitives for agent-ergonomic tools — TOON lists, key-value bloc
 
 `michi` is the formatting and response layer for the [Orin DX](https://orin-dx.com) tools: it turns structured data into token-efficient, agent-readable text. No CLI framework or async runtime required.
 
-Available as Rust crates (`michi-core`, plus `michi-pipeline` for async execution) or a Node.js package (`@orin-dx/michi`).
+Available as Rust crates (`michi-core`, plus `michi-pipeline` for async execution and the MIT `michi-graph` for dependency graphs) or a Node.js package (`@orin-dx/michi`).
 
-For developer docs, start with the [documentation map](https://github.com/orin-dx/michi/blob/main/docs/README.md). API reference: [michi-core](https://docs.rs/michi-core) and [michi-pipeline](https://docs.rs/michi-pipeline) on docs.rs.
+For developer docs, start with the [documentation map](https://github.com/orin-dx/michi/blob/main/docs/README.md). API reference: [michi-core](https://docs.rs/michi-core), [michi-pipeline](https://docs.rs/michi-pipeline) and [michi-graph](https://docs.rs/michi-graph) on docs.rs.
 
 ## Install
 
@@ -127,15 +127,17 @@ help[1]: Run `gh-axi issue view <number>` to view an issue
 
 ## Workspace Architecture
 
-`michi` is organized as a Cargo workspace with two published crates. `michi-core` holds every sync primitive and by default depends only on `thiserror` and `compact_str`; `michi-pipeline` adds async execution on `tokio`. Optional features live on `michi-core`:
+`michi` is organized as a Cargo workspace with three published crates. `michi-core` holds every sync primitive and by default depends only on `thiserror` and `compact_str`; `michi-pipeline` adds async execution on `tokio`; `michi-graph` (MIT, no dependencies) validates and orders dependency graphs. Optional features live on `michi-core`:
 
 ```mermaid
 graph LR
     core[michi-core]
     pipeline[michi-pipeline]
+    graphcrate["michi-graph (MIT)"]
     node["@orin-dx/michi"]
 
     core --> pipeline
+    graphcrate --> pipeline
     core -- napi feature --> node
 ```
 
@@ -143,9 +145,10 @@ graph LR
 | --- | --- |
 | `michi-core` | All sync AXI primitives: TOON list rendering (`toon`; render only, no public parser), key-value blocks, hints, structured errors (`DomainError`), status, recovery hints, MCP `CallToolResult`, the `AgentResponse` builder, UTF-8 char-boundary truncation (`truncate`), the report of what a list cap cut (`truncation`), and retry/back-off math with `Retry-After` parsing and idempotency keys (`resilience`). |
 | `michi-pipeline` | Async pipeline execution: a validated step plan run sequentially or with a concurrency cap, a per-step run record with replay-honest statuses, resume, keyed circuit breakers, a retry budget and cancellation. Depends on `michi-core`, `tokio` and `tokio-util`. |
+| `michi-graph` | Deterministic dependency graphs, MIT-licensed with no dependencies: validation that reports every problem at once (with a concrete loop for each cycle), topological order, layers, ready sets, ancestors and descendants. Versions on its own. |
 | `@orin-dx/michi` | Node.js NAPI bindings built with `@napi-rs/cli` from `packages/michi-node`, which re-exports `michi-core`'s `napi` feature surface. |
 
-All three version in lockstep. The crate name `michi` on crates.io belongs to an unrelated project; to write `use michi::...`, rename the dependency in `Cargo.toml`:
+`michi-core`, `michi-pipeline` and `@orin-dx/michi` version in lockstep. The crate name `michi` on crates.io belongs to an unrelated project; to write `use michi::...`, rename the dependency in `Cargo.toml`:
 
 ```toml
 michi = { package = "michi-core", version = "0.3" }
@@ -172,4 +175,4 @@ just bench       # Run Divan performance benchmarks
 
 ## License
 
-FSL-1.1-MIT — Functional Source License, converting to MIT two years after each release. See [`LICENSE`](https://github.com/orin-dx/michi/blob/main/LICENSE).
+FSL-1.1-MIT — Functional Source License, converting to MIT two years after each release. `michi-graph` is MIT ([`crates/michi-graph/LICENSE`](https://github.com/orin-dx/michi/blob/main/crates/michi-graph/LICENSE)). See [`LICENSE`](https://github.com/orin-dx/michi/blob/main/LICENSE).

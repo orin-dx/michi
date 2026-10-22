@@ -20,7 +20,10 @@ A step definition is an `ExecStep`: an id, a name, the ids it depends on, the ru
 - `DuplicateStepId`: a later step reuses an earlier step's id.
 - `UnknownDependency`: a step depends on an id no step has.
 - `SelfDependency`: a step depends on itself.
-- `Cycle`: the steps that lie on a dependency cycle, found with an iterative Kahn pass, so graph depth is bounded by memory rather than the call stack.
+- `Cycle`: the steps that lie on a dependency cycle, found without recursion, so graph depth is bounded by memory rather than the call stack.
+- `TooManySteps`: more than `u32::MAX - 1` steps.
+
+Validation and ordering come from [`michi-graph`](09-graph.md); no michi-graph type appears in this crate's API.
 
 A repeated dependency in one step's list is collapsed. An invalid plan is an `Err` before execution, so it can never be confused with a run that happened and failed.
 

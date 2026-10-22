@@ -15,6 +15,7 @@ See the [documentation map](../README.md) for the role of this reference and rel
 | [05-scope-and-quality.md](05-scope-and-quality.md) | What's formalized vs. what stays in your app, feature flags, versioning, performance, testing |
 | [06-decisions.md](06-decisions.md) | Open questions and API design rationale |
 | [08-pipeline-execution.md](08-pipeline-execution.md) | `michi-pipeline`: step plans, the replay rule, the status model, the run record, scheduling, cancellation, keyed breakers, the retry budget, the observer and resume |
+| [09-graph.md](09-graph.md) | `michi-graph`: the MIT dependency-graph crate — building, validation, order, layers, ready sets, violations, and how `michi-pipeline` uses it |
 
 New to the crate? Read 01 → 02 → 03 in order — that's the whole mental model. Read 04–06 and 08 as needed.
 

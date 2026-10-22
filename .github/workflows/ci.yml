@@ -76,18 +76,30 @@ jobs:
       # The baseline is the latest version of each crate published on crates.io. The release type comes from the
       # pending changesets, translated to cargo-semver-checks' terms: it names release types literally, so a breaking
       # change needs `major` even before 1.0, where Callisto's minor bump (0.3 -> 0.4) is the breaking bump.
+      - run: python3 scripts/test_pending_release_type.py
       - name: Check API compatibility against the pending release type
         run: |
           set -euo pipefail
           version=$(grep -m1 '^version' crates/michi-core/Cargo.toml | sed -E 's/version *= *"(.*)"/\1/')
-          release_type="patch"
-          if grep -hqE '^[^:]+:[[:space:]]*major[[:space:]]*$' .changeset/*.md 2>/dev/null; then
-            release_type="major"
-          elif grep -hqE '^[^:]+:[[:space:]]*minor[[:space:]]*$' .changeset/*.md 2>/dev/null; then
-            if [[ "$version" == 0.* ]]; then release_type="major"; else release_type="minor"; fi
-          fi
+          # Front matter of the fixed group's changesets only: michi-graph's own bump must not loosen this check.
+          release_type=$(python3 scripts/pending-release-type.py "$version")
           echo "Pending release type: $release_type"
           cargo semver-checks check-release -p michi-core -p michi-pipeline --release-type "$release_type"
+      # michi-graph versions on its own, so its release type comes from its own version bump. It has no baseline until
+      # its first publish.
+      - name: Check michi-graph's API against crates.io
+        run: |
+          set -euo pipefail
+          status=$(curl -s -o /dev/null -w '%{http_code}' --user-agent "orin-dx/michi CI" \
+            https://crates.io/api/v1/crates/michi-graph)
+          case "$status" in
+            200) cargo semver-checks check-release -p michi-graph ;;
+            404) echo "michi-graph is not on crates.io yet; nothing to compare against" ;;
+            *)
+              echo "::error::crates.io answered $status; cannot tell whether michi-graph has a baseline"
+              exit 1
+              ;;
+          esac
 
   msrv:
     name: MSRV
@@ -106,6 +118,29 @@ jobs:
         env:
           MSRV: ${{ steps.msrv.outputs.version }}
 
+  graph-license:
+    name: michi-graph stays permissive
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: orin-dx/actions/setup-rust@2521888266780dabc7f5fd4c32b02d6ab82849db # v1.1
+      - run: python3 scripts/test_check_permissive_deps.py
+      # michi-graph is MIT inside an FSL workspace: no non-permissive crate may enter what it ships.
+      - run: cargo metadata --format-version 1 --all-features | python3 scripts/check-permissive-deps.py michi-graph
+
+  graph-no-std:
+    name: michi-graph builds without std
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: orin-dx/actions/setup-rust@2521888266780dabc7f5fd4c32b02d6ab82849db # v1.1
+        with:
+          targets: thumbv7em-none-eabihf
+          cache-key: graph-no-std
+      # A bare-metal target with no std: proves the crate is no_std + alloc. It needs pointer-sized atomics (Arc and
+      # the builder id), which thumbv7em has; targets without compare-and-swap (thumbv6m) are not supported.
+      - run: cargo build -p michi-graph --target thumbv7em-none-eabihf
+
   version-sync:
     name: Version sync
     runs-on: ubuntu-latest
@@ -114,6 +149,7 @@ jobs:
       - uses: moonrepo/setup-toolchain@261c62cb5b0f580c7be7c8cd0f023a2e96756095 # v0.6.4
         with:
           auto-install: true
+      # michi-graph versions on its own (outside the Callisto fixed group), so it is not checked here.
       - name: Assert every published package has the same version
         run: |
           crate_version() { grep -m1 '^version' "$1" | sed -E 's/version *= *"(.*)"/\1/'; }
@@ -144,6 +180,7 @@ jobs:
       # Not `napi`: doctest binaries can't link the Node symbols it references.
       - run: cargo test --doc -p michi-core --features serde,schemars,miette
       - run: cargo test --doc -p michi-pipeline --all-features
+      - run: cargo test --doc -p michi-graph
 
   deny:
     name: Deny
