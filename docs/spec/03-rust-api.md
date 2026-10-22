@@ -5,7 +5,7 @@
 `michi-core` is the one crate holding every sync primitive. Each primitive is a module (`michi_core::toon`, `michi_core::kv`, `michi_core::truncate`, `michi_core::resilience`, …), and the most-used types are re-exported at the crate root:
 
 ```rust
-pub use error::{DomainError, Error, ErrorClass, ErrorCode, Sensitive};
+pub use error::{DomainError, Error, ErrorClass, ErrorCode, Sensitive, MAY_HAVE_TAKEN_EFFECT_HINT};
 pub use response::{AgentResponse, OutputFormat};
 pub use kv::{render_kv, KvError, KvItem, KvValue};
 // … audience, empty, hints, idempotency, mcp, recovery, status
@@ -145,6 +145,7 @@ impl DomainError {
 - `render()` outputs a TOON 4.4 document: `error: <code>`, `message: …` (quoted per §7.2), `causes[N]: …` when there are causes, `exit_code: 1`, then `help[N]: …` and `recovery[1]{tool,params,reason}:` when set. `Error::render()` uses the same shape for every variant (`error: invalid_input` / `error: not_found` for the non-domain variants). See [02-toon-format.md](02-toon-format.md#agent-facing-blocks).
 - `render_github_annotation()` outputs a GitHub Actions annotation (`::error title=code::message`). Newlines and CRs are percent-encoded.
 - `retryable` means calling again is expected to help without repeating an effect. `DomainError::new` sets it from `ErrorCode::is_retryable_by_default()`: `true` for `RateLimited` and `Unavailable` (the request was not processed), `false` for every other code. A `Timeout` or `ExternalFailure` may have taken effect, so mark it `.retryable(true)` only when the operation is idempotent. `Error::is_retryable()` and `ErrorClass::Transient` follow the field.
+- A `Timeout` that is not marked retryable is `ErrorClass::Ambiguous` (no answer came back, so the operation may or may not have taken effect: not the caller's fault and not an internal error), and `DomainError::new` gives it the hint `MAY_HAVE_TAKEN_EFFECT_HINT` ("verify whether it completed before retrying, unless it is idempotent"). `.retryable(true)` makes it `Transient` and removes that hint; `.retryable(false)` puts it back. `ExternalFailure` covers too much (a failed local walk, a server error) to say, so it stays `Internal` with no automatic hint; add your own when you know the operation may have applied.
 - `render_json()` outputs a JSON object: `{"isError":true,"error":"...","message":"...","causes":[...],"retryable":bool,"hints":[...],"recovery":null|{...}}`. `causes` and `hints` are always present, `[]` when empty; serde and the `schemars` schema match it.
 - `from_error(code, err)` sets `message` to `err.to_string()` and walks `err.source()`, adding each link's `Display` to `causes`. A link whose text the last kept text (the message or the previous kept cause) already contains is skipped, since `thiserror` messages often embed their source (`#[error("walk failed: {0}")]`). The walk stops after 128 links. Nothing is stored but text: `source()` on a `DomainError` stays `None`, and it stays `Clone + Send + Sync`. Line breaks stay inside their cause; `render()` escapes them.
 - With the `miette` feature, `Diagnostic::help()` lists the hints, then one `caused by: …` line per cause (`None` when there are neither). The GitHub annotation stays message-only.
