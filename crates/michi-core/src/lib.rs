@@ -73,6 +73,8 @@ mod float_wire;
 pub mod hints;
 /// Idempotency: partial-success state for multi-step operations.
 pub mod idempotency;
+#[cfg(feature = "schemars")]
+mod int_schema;
 /// Key-value single-item rendering (`key: value`).
 pub mod kv;
 /// MCP `CallToolResult` mapping.

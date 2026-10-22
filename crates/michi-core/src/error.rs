@@ -16,7 +16,9 @@ pub enum ErrorClass {
     /// error is not self-resolving. michi does not recommend automatic retry
     /// for `Internal` errors.
     Internal,
-    /// A transient failure expected to resolve without intervention.
+    /// A failure that trying the same call again is expected to fix, without repeating an effect: the request was
+    /// not processed (rate limited, unavailable), or the caller marked the error retryable because the operation is
+    /// idempotent.
     Transient,
 }
 
@@ -82,10 +84,13 @@ impl ErrorCode {
         }
     }
 
-    /// Whether this code is conventionally retryable.
+    /// Whether a fresh [`DomainError`] with this code is retryable: `RateLimited` and `Unavailable` only, which mean
+    /// the request was not processed. `Timeout` and `ExternalFailure` are not: the request may have taken effect
+    /// (RFC 9110 §15.6), so retrying is safe only for an idempotent operation, and the caller says so with
+    /// [`DomainError::retryable`].
     #[must_use]
     pub fn is_retryable_by_default(&self) -> bool {
-        matches!(self, Self::RateLimited | Self::Unavailable | Self::Timeout | Self::ExternalFailure)
+        matches!(self, Self::RateLimited | Self::Unavailable)
     }
 
     /// The default [`ErrorClass`] for this code, independent of `DomainError.retryable`.
@@ -129,7 +134,9 @@ pub struct DomainError {
     pub hints: Vec<Hint>,
     /// Optional structured recovery hint.
     pub recovery: Option<RecoveryHint>,
-    /// Whether this error is safe to retry.
+    /// Whether calling again is expected to help without repeating an effect. Defaults to `true` only for
+    /// `RateLimited` and `Unavailable` (the request was not processed); set it for a `Timeout` or `ExternalFailure`
+    /// only when the operation is idempotent, since the failed attempt may have taken effect.
     pub retryable: bool,
     /// Parsed `Retry-After` delay, if known.
     pub retry_after: Option<Duration>,
@@ -209,7 +216,8 @@ impl DomainError {
         self
     }
 
-    /// Override the default retryability for this error instance.
+    /// Override the default retryability for this error instance. Pass `true` for a `Timeout` or `ExternalFailure`
+    /// only when repeating the operation is safe (it is idempotent, or known not to have taken effect).
     #[must_use]
     pub fn retryable(mut self, retryable: bool) -> Self {
         self.retryable = retryable;
@@ -348,7 +356,7 @@ struct DomainErrorWire {
     message: String,
     /// Why it happened, outermost first; `[]` when unknown.
     causes: Vec<String>,
-    /// Whether this error is safe to retry.
+    /// Whether calling again is expected to help without repeating an effect.
     retryable: bool,
     /// Contextual hints.
     hints: Vec<String>,
@@ -518,7 +526,8 @@ impl Error {
         }
     }
 
-    /// Whether this error is safe to retry automatically.
+    /// Whether this error is [`ErrorClass::Transient`]: calling again is expected to help without repeating an
+    /// effect. A `Timeout` or `ExternalFailure` is retryable only when its `DomainError` was marked so.
     #[must_use]
     pub fn is_retryable(&self) -> bool {
         matches!(self.class(), ErrorClass::Transient)
@@ -778,12 +787,12 @@ mod tests {
     }
 
     #[test]
-    fn ac006_is_retryable_by_default_matches_the_transient_codes() {
+    fn ac006_is_retryable_by_default_matches_the_not_processed_codes() {
         use ErrorCode::*;
         assert!(RateLimited.is_retryable_by_default());
         assert!(Unavailable.is_retryable_by_default());
-        assert!(Timeout.is_retryable_by_default());
-        assert!(ExternalFailure.is_retryable_by_default());
+        assert!(!Timeout.is_retryable_by_default(), "a timed-out request may have taken effect");
+        assert!(!ExternalFailure.is_retryable_by_default(), "a downstream failure may have taken effect");
         assert!(!InvalidInput.is_retryable_by_default());
         assert!(!NotFound.is_retryable_by_default());
         assert!(!Unauthorized.is_retryable_by_default());
@@ -1061,10 +1070,26 @@ mod tests {
     #[test]
     fn ac032_all_transient_default_codes_are_transient_and_retryable() {
         use ErrorCode::*;
-        for code in [RateLimited, Unavailable, Timeout, ExternalFailure] {
+        for code in [RateLimited, Unavailable] {
             let err = Error::Domain(DomainError::new(code, "m"));
             assert_eq!(err.class(), ErrorClass::Transient, "{code:?}");
             assert!(err.is_retryable(), "{code:?}");
+        }
+    }
+
+    // A timeout or downstream failure may have applied the request (RFC 9110 §15.6), so by default it must not tell
+    // an agent that retrying is safe. Callers that know the operation is idempotent opt in with `.retryable(true)`.
+    #[test]
+    fn ambiguous_codes_do_not_claim_retry_is_safe_by_default() {
+        for code in [ErrorCode::Timeout, ErrorCode::ExternalFailure] {
+            let d = DomainError::new(code, "POST /charge timed out");
+            assert!(!d.retryable, "{code:?}");
+            assert!(d.render_json().contains("\"retryable\":false"), "{code:?}");
+            let err = Error::Domain(d);
+            assert_eq!(err.class(), ErrorClass::Internal, "{code:?}");
+            assert!(!err.is_retryable(), "{code:?}");
+            let idempotent = Error::Domain(DomainError::new(code, "GET /items timed out").retryable(true));
+            assert!(idempotent.is_retryable(), "{code:?} opt-in");
         }
     }
 

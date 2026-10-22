@@ -195,7 +195,7 @@ A string cell longer than `max_cell_len` chars (default 200) is cut, and its tex
 | Limit | Constant | Error |
 | --- | --- | --- |
 | At most 1,000 header fields | `MAX_FIELDS` | `ToonError::TooManyFields { count, max }` |
-| At most 1,000,000 cells (`rows × fields`) | `MAX_CELLS` | `ToonError::TooManyCells { rows, fields, max }` |
+| At most 1,000,000 cells (`rows × fields`; a list with no fields counts one cell per row) | `MAX_CELLS` | `ToonError::TooManyCells { rows, fields, max }` |
 | A `truncation_hint` of at most 256 chars | `MAX_TRUNCATION_HINT_CHARS` | `ToonError::TruncationHintTooLong { len, max }` |
 
 - Checks run in a fixed order and the first failure wins: reserved type name, field count, repeated field, cell count, truncation hint length, row length.
