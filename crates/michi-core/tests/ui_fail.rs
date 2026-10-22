@@ -6,6 +6,9 @@
 //! to compile (E0004).
 //! error.rs AC-009a: `DomainError`'s builder methods are `#[must_use]`, so
 //! discarding their return value under `#![deny(unused_must_use)]` fails.
+//! `StatusResponse`, `StatusItem`, `Health`, `ToonOptions`, `ErrorClass`, `KvItem`, `OutputFormat`, `Pipeline` and
+//! `PipelineStep` have no `JsonSchema` impl even with the `schemars` feature on: nothing serializes them, so a
+//! schema would describe no real wire form.
 //! pipeline/mod.rs AC-003: `StepStatus` is `#[non_exhaustive]`, so an
 //! exhaustive match without a wildcard arm fails to compile (E0004).
 
@@ -30,4 +33,6 @@ fn non_exhaustive_and_no_serde_types_reject_the_forbidden_construction() {
         t.compile_fail("tests/ui-fail/status_item_no_deserialize.rs");
         t.compile_fail("tests/ui-fail/status_response_no_deserialize.rs");
     }
+    #[cfg(feature = "schemars")]
+    t.compile_fail("tests/ui-fail/unserialized_types_no_schema.rs");
 }

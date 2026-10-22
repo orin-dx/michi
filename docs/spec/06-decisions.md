@@ -253,15 +253,17 @@ function assembleToolResult(opts: RespondOpts): ToolResult {
 
 ### `parse_retry_after()` format details
 
-Accepts both forms from RFC 7231 §7.1.3:
+Accepts `delay-seconds` and every HTTP-date form RFC 9110 §5.6.7 requires recipients to accept (updated 2026-10-21; it used to accept only IMF-fixdate):
 
-| Form            | Example                           | Notes                              |
-| --------------- | --------------------------------- | ---------------------------------- |
-| Integer seconds | `"120"`                           | Seconds to wait from response time |
-| HTTP-date       | `"Wed, 21 Oct 2026 07:28:00 GMT"` | Absolute datetime, UTC only        |
+| Form | Example | Notes |
+| --- | --- | --- |
+| Integer seconds | `"120"` | ASCII digits only, no sign |
+| IMF-fixdate | `"Wed, 21 Oct 2026 07:28:00 GMT"` | Absolute datetime, GMT |
+| RFC 850 (obsolete) | `"Wednesday, 21-Oct-26 07:28:00 GMT"` | Two-digit year: at most 50 years ahead of now |
+| asctime (obsolete) | `"Wed Oct 21 07:28:00 2026"` | No zone; read as GMT |
 
 - Returns `None` for anything malformed — callers should treat that as "use backoff only" and call `next_retry_delay()` with `retry_after: None`.
-- Doesn't validate that an HTTP-date is in the future: a server returning a past date (clock skew, a bug) produces a zero or very small duration from this function alone, but `next_retry_delay()` clamps the final result to at least `config.initial_delay` regardless, so no extra handling is needed at the call site.
+- Doesn't validate that an HTTP-date is in the future: a past date (clock skew, a bug) is a zero delay. `next_retry_delay()` never returns less than its exponential backoff (`config.base_delay * 2^attempt`, capped at `max_delay`), so no extra handling is needed at the call site.
 
 ### `render_toon()`'s capacity estimate
 
@@ -483,3 +485,39 @@ Decisions:
 - **NAPI budgets:** exports that take collections (`renderToon`, `renderHints`, `appendHints`, `renderRecovery`, `renderKv`, `renderAlreadyDone`, `renderDomainError`, `renderStatus`, `AgentResponse.items`/`kvItems`) take untyped napi values and convert incrementally, because napi-derive converts typed parameters in full before the body runs. Lengths are checked first; then each call gets 1,000,000 cells and 64 MiB of string bytes, with 1 MiB per cell, hint, reason, description or message and 4 KiB per name (type name, field name, key, tool, code, operation, truncation hint). A string's UTF-8 length is charged before it is copied, so shared JS strings cannot amplify. The single-string `AgentResponse` setters keep `String` parameters (napi copies their one argument exactly once) and apply the same caps after the copy. `index.d.ts` declares the same types (`ts_args_type`); the Rust-typed functions keep their names for Rust callers. Considered: checking lengths in the body of the typed exports — rejected, the conversion has already happened by then.
 - **Pipeline:** `resume` indexes the prior record once (first record wins, as with `RunRecord::step`); `Plan::new` dedups dependencies with an O(1) stamp per edge. `RunRecord::step` stays a linear scan, documented as such, rather than adding a cached index to a serialized, `PartialEq` type.
 - **Compatibility:** previously accepted oversize inputs are now rejected, so this ships as a minor release of the fixed `michi` group.
+
+### Resolved 2026-10-21 — Floats keep their value on every wire
+
+Supersedes two statements above: "The JSON companion (`kv_value_to_json`) is unchanged" in "Every agent-facing block is TOON 4.4", and the implicit f64 widening of `f32` input.
+
+- **Rendered output:** NaN and ±Infinity are `null` everywhere an agent reads them, TOON (§3) and the JSON companions alike. The companions used to quote Rust's `NaN`/`inf` text, so the two surfaces disagreed.
+- **Serde form:** `KvValue::Float` and `toon::Value::Float` serialize a non-finite float as the string `"NaN"`, `"Infinity"` or `"-Infinity"` and read those strings back, so the value round-trips exactly; finite values stay JSON numbers. One shared helper (`float_wire`) serves both types, and their schemas say `anyOf` a number or one of the three strings. `null` was the alternative: it reads back as no value, which loses data.
+- **f32:** `Value::from(f32)` keeps the f32's own shortest digits (`0.1f32` renders `0.1`, not `0.10000000149011612`), and `toon::list()` serializes items to JSON text and parses it back instead of `serde_json::to_value`, which widens an `f32` field to f64 before michi sees it. Reading the text back is exact for every other value (`float_roundtrip` is on).
+- **Node floats without `decimalsVal`:** KV and status floats keep their shortest exact decimals, as `RecoveryHint` deserialization does, instead of rounding to 6 places (`1e-7` rendered `0`).
+
+### Resolved 2026-10-21 — MCP wire input is tolerant where MCP is
+
+Extends "Schemas and serde describe the wire form" above, which said nothing about input tolerance. `CallToolResult` deserialization required `isError` and `structuredContent`, and `ContentBlock` required `annotations.audience`, so valid MCP results from other servers failed to parse.
+
+- **Input:** only `content` is required. `isError` defaults to `false`, an absent or `null` `structuredContent` becomes the empty string, `annotations` and `annotations.audience` default to no audience, and other annotation fields are ignored. A non-object `structuredContent` and a non-`"text"` content block are still rejected.
+- **Output:** `structuredContent` is omitted when empty, never `null`. Serializing a `CallToolResult` whose `structured_content` is not empty and not a JSON object is a serde error, because MCP requires an object; `CallToolResult::try_new` checks the same thing up front.
+- **Retry-After:** `parse_retry_after` accepts all three HTTP-date forms RFC 9110 §5.6.7 requires (IMF-fixdate, RFC 850, asctime), not just IMF-fixdate; see "`parse_retry_after()` format details".
+
+### Resolved 2026-10-21 — Schemas only for types serde serializes
+
+`StatusResponse`, `StatusItem`, `Health`, `ToonOptions`, `ErrorClass`, `KvItem`, `OutputFormat`, `Pipeline` and `PipelineStep` derived `JsonSchema` although nothing serializes them, so their schemas described a wire form that does not exist and could mislead an MCP `outputSchema`.
+
+- **Decision:** remove those derives. Every remaining `JsonSchema` impl is the schema of a serde form, and a compile-fail test pins the removed ones. Breaking under the `schemars` feature only, shipped in the 0.4 minor release.
+
+### Resolved 2026-10-21 — Pipeline records cannot read as a false success
+
+A bug hunt found records and retries that misreported a run.
+
+- **Complete records:** a `RunRecord` stores its plan's step count and always lists each plan step once. `RunRecord::from_parts` takes the plan (`from_parts(run_id, saved_fingerprint, &plan, steps) -> Result<_, ResumeError>`), fills a step with no saved record as `Pending`, and refuses a changed plan or a foreign step. Deserializing checks `plan_steps` against the steps listed. Before, a record with no steps was `Succeeded`. Considered: storing every plan step id (larger records for no extra safety, since resume checks ids against the plan) and passing the count to `outcome()` (every caller would have to remember it).
+- **Last write wins in `from_parts`:** the documented observer pattern saves `in_flight` on start and the finished record on finish; keeping the first record made a finished step look in flight. Supersedes "first record wins" in "Capacity limits".
+- **Every step resume holds is reported:** `needs_verification()` lists `OutcomeUnknown`, `Panicked` and `Running`; `Running` is a root cause and makes the outcome `OutcomeUnknown`; `error()` is `None` only for a successful run.
+- **A step that cancels itself is a root cause:** `Cancelled` returned while the run's token has not fired ends `Failed`, not `Skipped(Cancelled)`, so its dependents name a real cause. It never took effect, so resume runs it again.
+- **Server retry hints win over `max_delay`:** a step-reported `retry_after` is waited in full, bounded by the step deadline (past it, the step stops retrying). michi-core's `next_retry_delay` keeps capping at `max_delay`, which bounds michi's own backoff; the pipeline adds the server rule on top.
+- **Per-retry jitter by default:** the jitter seed is derived from run id, step id and attempt unless the caller fixes one, so parallel steps do not retry in lockstep and a run stays reproducible.
+- **Client errors are not breaker failures:** HTTP 4xx other than 408 and 429 count as a success for the breaker (the downstream answered), following Envoy's consecutive-5xx outlier detection.
+- **Overflow-safe deadlines and unambiguous run ids:** a deadline too large for the clock means none instead of panicking, and `RunId::unique` separates the pid from the counter (`1388`+`1152` and `50000`+`0` printed the same base-36 digits).

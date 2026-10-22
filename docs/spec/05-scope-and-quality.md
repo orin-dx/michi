@@ -66,7 +66,7 @@ napi     = ["dep:napi", "dep:napi-derive", "serde"]
 No async runtime dependency, no tokio, no async-std — every public function is sync.
 
 - `serde` is opt-in Rust-side ergonomics: `Serialize`/`Deserialize` on the core value types, plus `toon::list()`. See [01-overview-and-setup.md](01-overview-and-setup.md) for the full dependency rationale.
-- `schemars` derives `JsonSchema` on DTO types (`DomainError`, `StatusResponse`, `ToonOptions`, and others) for automatic MCP `outputSchema` generation.
+- `schemars` implements `JsonSchema` on the types serde serializes (`DomainError`, `CallToolResult`, `ContentBlock`, `RecoveryHint`, `KvValue`, `toon::Value`, the pipeline status types and others), each describing its serde wire form, for MCP `outputSchema` generation. Render-only types such as `StatusResponse` and `ToonOptions` have no schema.
 - `miette` implements `miette::Diagnostic` for `DomainError` to render colorized CLI diagnostic cards.
 - `cli` is **not** a Cargo feature of `michi-core` at all. Terminal-aware rendering (line wrapping, colour codes for the `degraded`/`error` health signals in `status::StatusResponse`) is out of scope for v1, since michi v1 targets agent consumers only.
 - When that work is actually built, it lands as its own crate, downstream of `pipeline`, rather than a feature flag here — see [ARCHITECTURE.md](../../ARCHITECTURE.md) and [06-decisions.md](06-decisions.md) for the crate-boundary rule and the v2 scope sketch.
@@ -154,7 +154,7 @@ Benchmarks live in `crates/michi-core/benches/` and run via `divan`; CI builds t
 - `truncate_inline()` never returns a string longer than `limit` chars, suffix included, and its count plus the kept chars equals the input char count
 - TOON round-trip: render → parse (test-only parser) → compare values
 - `parse_retry_after()` never panics on arbitrary strings
-- `next_retry_delay()` always returns a value within `[initial_delay, max_delay]`
+- `next_retry_delay()` always returns a value within `[base_delay, max_delay]`
 
 **Snapshot tests** (`insta`, `tests/snapshot_tests.rs`):
 

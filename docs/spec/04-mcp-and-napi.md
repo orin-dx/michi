@@ -36,6 +36,11 @@ Under the `serde` feature, `ContentBlock`/`CallToolResult` don't derive `Seriali
   - for `CallToolResult`, parses `structured_content` into a real embedded JSON value rather than a double-encoded string
 - `Audience` itself serializes lowercase (`"assistant"`/`"user"`), matching MCP's `Role` type.
 
+The wire rules, for output and input:
+
+- **Output:** `structuredContent` is the parsed JSON object and is omitted when `structured_content` is empty. MCP requires an object there, so serializing a `CallToolResult` whose `structured_content` is neither empty nor the text of a JSON object fails with a serde error (no `null`, array or double-encoded string is ever emitted). `CallToolResult::try_new` runs the same check up front and returns `StructuredContentError::InvalidJson` or `NotAnObject`.
+- **Input is tolerant where MCP is:** only `content` is required. `isError` defaults to `false`; an absent or `null` `structuredContent` becomes the empty string; `annotations` and `annotations.audience` are optional and default to no audience; other annotation fields (such as `priority`) are ignored. Still rejected: a `structuredContent` that is not an object, and a content block whose `type` is not `"text"`.
+
 `AgentResponse::to_call_tool_result()` (see [03-rust-api.md](03-rust-api.md)) is the only intended constructor. It builds:
 
 - the primary `assistant`-audience block from whichever of `render_toon()`/`render_kv()` is active
@@ -158,7 +163,7 @@ const out = new AgentResponse("issues")
 
 Any `#[napi]` function returning `napi::Result<T>` throws a JS `Error` on `Err`. Two practices apply here:
 
-- Wrap fallible conversions (row shape mismatches, oversized inputs) in `Result` and surface them as `napi::Error::from_reason(...)`. Inputs that cannot form a valid TOON document throw with a prefixed message: `toon_validation_failed: …` from `renderToon`, `kv_validation_failed: …` from `renderKv` (a duplicate key, or a reserved `totalCount`/`help`/`recovery` key).
+- Wrap fallible conversions (row shape mismatches, oversized inputs) in `Result` and surface them as `napi::Error::from_reason(...)`. Inputs that cannot form a valid TOON document throw with a prefixed message: `toon_validation_failed: …` from `renderToon` and `emptyState` (a reserved `typeName`), `kv_validation_failed: …` from `renderKv` (a duplicate key, or a reserved `totalCount`/`help`/`recovery` key).
 - Annotate exports that call into non-trivial rendering with `#[napi(catch_unwind)]`.
   - Without it: **a Rust panic crashes the entire Node process** — there's no isolation boundary.
   - With it: a panic becomes a thrown JS `Error` (or a rejected `Promise` for async) instead of process death.
@@ -183,7 +188,7 @@ The typed Rust functions (`render_toon(JsToonOptions)`, `JsAgentResponse::items(
 Every JavaScript number that crosses into a rendering or resilience call is validated at the boundary through a newtype in `crates/michi-core/src/napi/num.rs` before any michi code runs; an out-of-domain value throws a JS `Error` instead of being narrowed. `napi_get_value_double` (a non-coercing read) is used for every converted position, so `napi_get_value_int32`'s `ToInt32` wraparound is never in the path.
 
 - `totalCount` (`JsToonOptions.totalCount`, `renderKv`'s `totalCount` parameter, and `AgentResponse.totalCount`) is rejected unless it is a finite, non-negative integer no greater than `Number.MAX_SAFE_INTEGER` (2^53 - 1).
-- `decimalsVal` is rejected unless it is a finite integer in `[0, 20]`.
+- `decimalsVal` is rejected unless it is a finite integer in `[0, 20]`. When it is absent, a KV or status float keeps its shortest exact decimals (the rule `RecoveryHint` deserialization uses), so `1e-7` renders `1e-7`; a value needing more than 255 places (below about 1e-255) is rounded at 255.
 - `maxChars` (`truncate`'s parameter) is rejected unless it is a finite, non-negative integer no greater than `Number.MAX_SAFE_INTEGER`.
 - `intVal` is rejected unless it is a finite integer in `[-9007199254740991, 9007199254740991]` — the range over which a JS number and an `i64` agree exactly.
 - `floatVal` is rejected unless it is finite; `NaN`, `Infinity`, and `-Infinity` are all rejected.
@@ -245,7 +250,8 @@ export interface JsToonValue {
   intVal?: number;
   floatVal?: number;
   boolVal?: boolean;
-  /** Decimal places when `type` is `"float"` (KV render only). Rejected if outside [0, 20]. Defaults to 6. */
+  /** Decimal places when `type` is `"float"` (KV and status render only). Rejected if outside [0, 20].
+   * Defaults to the value's shortest exact decimals, so `1e-7` renders `1e-7` rather than `0`. */
   decimalsVal?: number;
 }
 
@@ -268,7 +274,8 @@ export interface JsToonOptions {
 export declare function renderToon(opts: JsToonOptions): string;
 
 /** Render a definitive empty-state TOON response: `typeName: []\ntotalCount: 0` (no trailing newline).
- * No `hints` parameter over this boundary — use `appendHints()` to add one. */
+ * No `hints` parameter over this boundary — use `appendHints()` to add one.
+ * Throws `toon_validation_failed: …` for a reserved `typeName` (`totalCount`, `help`, `recovery`), like `renderToon`. */
 export declare function emptyState(typeName: string): string;
 
 /** The TOON 4.4 inline array `help[N]: h1,h2` (no trailing newline); an empty string when hints is empty. */

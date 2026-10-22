@@ -119,7 +119,7 @@ slug_id! {
 }
 
 impl RunId {
-    /// Builds a run id that is unique in practice without a UUID dependency: `{prefix}-{millis}-{pid}{counter}`, the
+    /// Builds a run id that is unique in practice without a UUID dependency: `{prefix}-{millis}-{pid}-{counter}`, the
     /// numbers in base 36. Fails if `prefix` is not a valid slug or the result would exceed [`MAX_ID_LEN`].
     pub fn unique(prefix: &str) -> Result<Self, IdError> {
         static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -128,15 +128,20 @@ impl RunId {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
         let seq = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let mut id = String::with_capacity(prefix.len() + 24);
-        id.push_str(prefix);
-        id.push('-');
-        push_base36(&mut id, millis);
-        id.push('-');
-        push_base36(&mut id, u64::from(std::process::id()));
-        push_base36(&mut id, seq);
-        Self::try_new(id)
+        Self::try_new(unique_id(prefix, millis, u64::from(std::process::id()), seq))
     }
+}
+
+/// `{prefix}-{millis}-{pid}-{seq}` in base 36. Every number has its own separator: base-36 numbers vary in length, so
+/// without one two different (pid, seq) pairs could print the same digits.
+fn unique_id(prefix: &str, millis: u64, pid: u64, seq: u64) -> String {
+    let mut id = String::with_capacity(prefix.len() + 3 + 3 * 13);
+    id.push_str(prefix);
+    for n in [millis, pid, seq] {
+        id.push('-');
+        push_base36(&mut id, n);
+    }
+    id
 }
 
 /// Appends `n` in lowercase base 36.
@@ -188,6 +193,20 @@ mod tests {
         assert!(a.as_str().len() <= MAX_ID_LEN);
         assert!(RunId::unique("bad:prefix").is_err());
         assert!(RunId::unique(&"p".repeat(60)).is_err(), "the suffix pushes it past the limit");
+    }
+
+    #[test]
+    fn unique_ids_separate_the_pid_from_the_counter() {
+        // Without a separator, pid 1388 ("12k") + counter 1152 ("w0") and pid 50000 ("12kw") + counter 0 ("0") both
+        // printed "12kw0".
+        let a = unique_id("run", 1, 1388, 1152);
+        let b = unique_id("run", 1, 50_000, 0);
+        assert_ne!(a, b);
+        assert_eq!(a, "run-1-12k-w0");
+        assert_eq!(b, "run-1-12kw-0");
+        let id = RunId::unique("deploy").unwrap();
+        assert_eq!(id.as_str().split('-').count(), 4, "{id}");
+        assert!(RunId::try_new(unique_id("p", u64::MAX, u64::from(u32::MAX), u64::MAX)).is_ok(), "fits the limit");
     }
 
     #[test]

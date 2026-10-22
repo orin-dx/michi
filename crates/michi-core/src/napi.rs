@@ -84,7 +84,8 @@ pub struct JsToonValue {
     /// The value when `type` is `"bool"`.
     #[napi(js_name = "boolVal")]
     pub bool_val: Option<bool>,
-    /// Decimal places when `type` is `"float"` (KV render only). Rejected if outside [0, 20]. Defaults to 6.
+    /// Decimal places when `type` is `"float"` (KV and status render only). Rejected if outside [0, 20]. Defaults to
+    /// the value's shortest exact decimals, so `1e-7` renders `1e-7` rather than `0`.
     #[napi(js_name = "decimalsVal", ts_type = "number")]
     pub decimals_val: Option<JsDecimals>,
 }
@@ -222,9 +223,15 @@ pub fn render_toon(opts: JsToonOptions) -> napi::Result<String> {
 }
 
 /// Render an explicit empty-state response.
+///
+/// # Errors
+///
+/// Returns an error if `type_name` is a reserved root key (`totalCount`, `help` or `recovery`). The reason is
+/// `toon_validation_failed: ` followed by the `ToonError` text, as `renderToon` reports it.
 #[napi(catch_unwind)]
-pub fn empty_state(type_name: String) -> String {
-    crate::empty::empty_state(&type_name)
+pub fn empty_state(type_name: String) -> napi::Result<String> {
+    crate::empty::try_empty_state(&type_name)
+        .map_err(|e| napi::Error::from_reason(format!("toon_validation_failed: {e}")))
 }
 
 /// Render the TOON 4.4 inline array `help[N]: h1,h2` (no trailing newline).
@@ -359,7 +366,12 @@ fn js_kv_value_to_rust(v: JsToonValue) -> napi::Result<crate::kv::KvValue> {
             .map(|n| crate::kv::KvValue::Int(n.get()))
             .ok_or_else(|| napi::Error::from_reason("JsToonValue: type is \"int\" but intVal is missing")),
         "float" => {
-            let decimals = v.decimals_val.map_or(6, JsDecimals::get_u8);
+            // Without `decimalsVal`, keep the number exact: its shortest decimals, as RecoveryHint deserialization
+            // does. A value too small to write in 255 places (below about 1e-255) is rounded at 255.
+            let decimals = v.decimals_val.map_or_else(
+                || v.float_val.map_or(0, |n| u8::try_from(crate::kv::shortest_decimals(n.get())).unwrap_or(u8::MAX)),
+                JsDecimals::get_u8,
+            );
             v.float_val
                 .map(|n| crate::kv::KvValue::Float(n.get(), decimals))
                 .ok_or_else(|| napi::Error::from_reason("JsToonValue: type is \"float\" but floatVal is missing"))
@@ -1201,7 +1213,16 @@ mod tests {
 
     #[test]
     fn empty_state_renders() {
-        assert_eq!(empty_state("issue".to_string()), "issue: []\ntotalCount: 0");
+        assert_eq!(empty_state("issue".to_string()).expect("valid name"), "issue: []\ntotalCount: 0");
+    }
+
+    #[test]
+    fn empty_state_rejects_a_reserved_type_name_like_render_toon() {
+        for name in ["totalCount", "help", "recovery"] {
+            let err = empty_state(name.to_string()).expect_err("reserved root key");
+            assert!(err.reason.starts_with("toon_validation_failed: "), "{}", err.reason);
+            assert!(err.reason.contains(name), "{}", err.reason);
+        }
     }
 
     #[test]
@@ -1641,7 +1662,30 @@ mod tests {
         };
         let out = render_kv(vec![item], None, vec![]).unwrap();
         assert!(out.contains("score:"), "got: {out}");
-        assert_eq!(out, "score: 3.14159", "rounded to 6 places by default, then canonical (no padding)");
+        assert_eq!(out, "score: 3.14159", "the shortest exact decimals by default, then canonical (no padding)");
+    }
+
+    #[test]
+    fn render_kv_napi_float_without_decimals_keeps_small_and_long_values_exact() {
+        let float = |f: f64| JsToonValue { float_val: Some(JsFloat::try_from(f).expect("finite")), ..value("float") };
+        for (f, expected) in [
+            (1e-7, "x: 1e-7"),
+            (0.000_000_123_4, "x: 1.234e-7"),
+            (0.123_456_789, "x: 0.123456789"),
+            (2.0, "x: 2"),
+            (1e21, "x: 1e+21"),
+        ] {
+            let out = render_kv(vec![JsKvItem { key: "x".into(), value: float(f) }], None, vec![]).unwrap();
+            assert_eq!(out, expected, "{f}");
+        }
+        let status = render_status(
+            "tool".into(),
+            "desc".into(),
+            vec![JsStatusItem { key: "lag".into(), value: float(1e-7), health: None }],
+            None,
+        )
+        .unwrap();
+        assert!(status.contains("lag,1e-7,ok,null"), "status items use the same rule: {status}");
     }
 
     #[test]

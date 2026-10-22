@@ -5,7 +5,6 @@ use crate::recovery::RecoveryHint;
 
 /// Classification of a `crate::Error` for routing and display decisions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub enum ErrorClass {
     /// The caller provided invalid input. Do not retry.

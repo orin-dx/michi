@@ -4,7 +4,6 @@ use std::time::Duration;
 
 /// A single key-value pair for [`render_kv`].
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct KvItem {
     /// The field name.
     pub key: String,
@@ -28,8 +27,8 @@ pub enum KvValue {
     /// the `serde` feature, `KvValue` itself serializes a non-finite float as the string `"NaN"`, `"Infinity"` or
     /// `"-Infinity"` (finite values stay JSON numbers) and accepts those strings back, so it round-trips exactly.
     Float(
-        #[cfg_attr(feature = "serde", serde(with = "float_wire"))]
-        #[cfg_attr(feature = "schemars", schemars(schema_with = "float_wire::schema"))]
+        #[cfg_attr(feature = "serde", serde(with = "crate::float_wire"))]
+        #[cfg_attr(feature = "schemars", schemars(schema_with = "crate::float_wire::schema"))]
         f64,
         u8,
     ),
@@ -39,65 +38,6 @@ pub enum KvValue {
     Duration(Duration),
     /// Absent value, renders as `null`.
     Missing,
-}
-
-/// Serde form of `KvValue::Float`'s `f64`: a JSON number when finite, else one of the strings `"NaN"`, `"Infinity"`
-/// or `"-Infinity"`, which JSON numbers cannot express.
-#[cfg(feature = "serde")]
-mod float_wire {
-    use serde::{Deserialize as _, Serialize as _};
-
-    #[derive(serde::Serialize, serde::Deserialize)]
-    #[serde(untagged)]
-    enum Wire {
-        Number(f64),
-        Named(NonFinite),
-    }
-
-    #[derive(serde::Serialize, serde::Deserialize)]
-    enum NonFinite {
-        #[serde(rename = "NaN")]
-        NaN,
-        #[serde(rename = "Infinity")]
-        Infinity,
-        #[serde(rename = "-Infinity")]
-        NegInfinity,
-    }
-
-    #[allow(clippy::trivially_copy_pass_by_ref)] // serde's `with` passes the field by reference
-    pub(super) fn serialize<S: serde::Serializer>(f: &f64, s: S) -> Result<S::Ok, S::Error> {
-        let wire = if f.is_nan() {
-            Wire::Named(NonFinite::NaN)
-        } else if *f == f64::INFINITY {
-            Wire::Named(NonFinite::Infinity)
-        } else if *f == f64::NEG_INFINITY {
-            Wire::Named(NonFinite::NegInfinity)
-        } else {
-            Wire::Number(*f)
-        };
-        wire.serialize(s)
-    }
-
-    pub(super) fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f64, D::Error> {
-        Ok(match Wire::deserialize(d)? {
-            Wire::Number(f) => f,
-            Wire::Named(NonFinite::NaN) => f64::NAN,
-            Wire::Named(NonFinite::Infinity) => f64::INFINITY,
-            Wire::Named(NonFinite::NegInfinity) => f64::NEG_INFINITY,
-        })
-    }
-
-    /// The schema of the wire form: `anyOf` a number or one of the three named strings.
-    #[cfg(feature = "schemars")]
-    pub(super) fn schema(_: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
-        serde_json::from_value(serde_json::json!({
-            "anyOf": [
-                { "type": "number", "format": "double" },
-                { "type": "string", "enum": ["NaN", "Infinity", "-Infinity"] }
-            ]
-        }))
-        .unwrap_or(schemars::schema::Schema::Bool(true))
-    }
 }
 
 /// Append a KV value as a TOON 4.4 primitive token (§2, §3, §7.2).
@@ -124,6 +64,17 @@ pub(crate) fn push_kv_value(out: &mut String, value: &KvValue) {
 
 /// `f` rounded to `decimals` fractional digits by the correctly rounded decimal formatting of `{f:.decimals}`.
 /// Non-finite values pass through unchanged.
+/// The decimal places `KvValue::Float` needs to reproduce `f` exactly: the fractional digits of its shortest exact
+/// representation (Rust's `Display` for f64, which never uses an exponent), so `1e-7` needs 7 and `2.0` needs 0.
+/// Non-finite values need 0. Used where a float arrives without a decimals setting.
+#[cfg(any(feature = "serde", feature = "napi"))]
+pub(crate) fn shortest_decimals(f: f64) -> usize {
+    if !f.is_finite() {
+        return 0;
+    }
+    f.to_string().split_once('.').map_or(0, |(_, frac)| frac.len())
+}
+
 fn round_to_decimals(f: f64, decimals: u8) -> f64 {
     if !f.is_finite() {
         return f;

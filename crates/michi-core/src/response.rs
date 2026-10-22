@@ -5,7 +5,6 @@ use crate::toon::Value;
 
 /// The serialisation format for `AgentResponse::render`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub enum OutputFormat {
     /// Plain-text TOON / kv format. Default.
@@ -145,6 +144,12 @@ impl AgentResponse {
     /// The KV body, and whether it is a validation-failure error block instead of the requested items (a duplicate
     /// or reserved key, see [`crate::kv::KvError`]).
     fn kv_body(&self) -> (String, bool) {
+        // `render_kv` renders nothing for no items, dropping the count; a response that set one still reports it,
+        // as the TOON path does (`t: []\ntotalCount: 0`).
+        if self.single_item.is_empty() {
+            let body = self.toon.total_count.map_or_else(String::new, |n| format!("totalCount: {n}"));
+            return (body, false);
+        }
         match crate::kv::render_kv(&self.single_item, self.toon.total_count, &[]) {
             Ok(body) => (body, false),
             Err(e) => (validation_error_body("kv_validation_failed", &e.to_string()), true),
@@ -384,6 +389,17 @@ mod tests {
         let r = AgentResponse::new("t").kv_items(items.clone());
         // Without hints or recovery the composed text is exactly the KV document.
         assert_eq!(Ok(r.render(OutputFormat::Text)), crate::kv::render_kv(&items, None, &[]));
+    }
+
+    #[test]
+    fn kv_path_with_no_items_keeps_the_total_count() {
+        let r = AgentResponse::new("t").kv_items(vec![]).total_count(0);
+        assert_eq!(r.render(OutputFormat::Text), "totalCount: 0");
+        let json = r.render(OutputFormat::Json);
+        assert!(json.starts_with("{\"body\":\"totalCount: 0\","), "{json}");
+        let with_hint = AgentResponse::new("t").kv_items(vec![]).total_count(3).hint("try another id");
+        assert_eq!(with_hint.render(OutputFormat::Text), "totalCount: 3\nhelp[1]: try another id");
+        assert_eq!(AgentResponse::new("t").kv_items(vec![]).render(OutputFormat::Text), "", "no count, no body");
     }
 
     #[test]

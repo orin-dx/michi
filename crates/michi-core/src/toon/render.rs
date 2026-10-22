@@ -20,7 +20,15 @@ pub enum Value {
     /// stay exact unquoted numbers instead of being clamped, rounded or stringified.
     UInt(u64),
     /// Floating-point number. NaN and ±Infinity render as `null` (TOON 4.4 §3).
-    Float(f64),
+    ///
+    /// With the `serde` feature, `Value` itself serializes a non-finite float as the string `"NaN"`, `"Infinity"` or
+    /// `"-Infinity"` (finite values stay JSON numbers) and accepts those strings back, so it round-trips exactly. This
+    /// is the same wire form as [`crate::kv::KvValue::Float`].
+    Float(
+        #[cfg_attr(feature = "serde", serde(with = "crate::float_wire"))]
+        #[cfg_attr(feature = "schemars", schemars(schema_with = "crate::float_wire::schema"))]
+        f64,
+    ),
     /// Boolean renders as `true` or `false`.
     Bool(bool),
     /// Null renders as the `null` literal.
@@ -96,8 +104,16 @@ impl From<usize> for Value {
 }
 
 impl From<f32> for Value {
+    /// Keeps the f32's own shortest digits: `0.1f32` becomes `0.1`, not its exact widened value
+    /// `0.10000000149011612`. The f32 is printed with its shortest round-trip form and that decimal is read back as
+    /// an f64.
     fn from(f: f32) -> Self {
-        Self::Float(f64::from(f))
+        if !f.is_finite() {
+            return Self::Float(f64::from(f));
+        }
+        let mut digits = String::with_capacity(16);
+        let _ = std::fmt::Write::write_fmt(&mut digits, format_args!("{f}"));
+        Self::Float(digits.parse().unwrap_or(f64::from(f)))
     }
 }
 

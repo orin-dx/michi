@@ -64,6 +64,8 @@ pub mod audience;
 pub mod empty;
 /// Unified domain errors.
 pub mod error;
+#[cfg(feature = "serde")]
+mod float_wire;
 /// Contextual usage hints (`help[]`).
 pub mod hints;
 /// Idempotency: partial-success state for multi-step operations.

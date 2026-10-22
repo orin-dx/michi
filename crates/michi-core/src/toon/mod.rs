@@ -122,7 +122,6 @@ impl std::error::Error for ToonError {}
 
 /// Options for rendering a TOON document.
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub struct ToonOptions {
     /// Snake_case type name, e.g. `"issue"`, `"component"`: the key of the list entry. Names outside TOON's
@@ -297,7 +296,10 @@ pub fn list<T: serde::Serialize>(type_name: impl Into<String>, items: &[T]) -> R
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut objects: Vec<serde_json::Map<String, serde_json::Value>> = Vec::with_capacity(items.len());
     for (row_index, item) in items.iter().enumerate() {
-        let obj = match serde_json::to_value(item) {
+        // Through JSON text rather than `serde_json::to_value`: the text writer prints an `f32` with its own shortest
+        // digits (`0.1`), while `to_value` widens it to f64 first (`0.10000000149011612`). Reading the text back is
+        // exact for every other value (`float_roundtrip` is on).
+        let obj = match serde_json::to_vec(item).and_then(|text| serde_json::from_slice(&text)) {
             Ok(serde_json::Value::Object(map)) => map,
             Ok(_) => {
                 return Err(ToonError::InvalidItem {

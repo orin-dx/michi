@@ -78,6 +78,15 @@ void describe('emptyState', () => {
     const out = emptyState('issue')
     assert.strictEqual(out, 'issue: []\ntotalCount: 0')
   })
+
+  void it('throws toon_validation_failed for a reserved type name, like renderToon', () => {
+    for (const name of ['totalCount', 'help', 'recovery']) {
+      assert.throws(
+        () => emptyState(name),
+        (err) => err.message.startsWith('toon_validation_failed: ') && err.message.includes(name),
+      )
+    }
+  })
 })
 
 void describe('renderHints', () => {
@@ -488,10 +497,14 @@ void describe('rejection instead of coercion (SPEC-ARCH-003 AC-009)', () => {
     )
   })
 
-  void it('renderKv defaults absent decimalsVal to 6', () => {
-    // Rounded to 6 places, then written canonically (TOON 4.4 §2): decimals bound precision, never pad.
-    const out = renderKv([{ key: 'score', value: { type: 'float', floatVal: 1.23456789 } }], null, [])
-    assert.strictEqual(out, 'score: 1.234568')
+  void it('renderKv keeps a float exact when decimalsVal is absent', () => {
+    // The shortest exact decimals, then written canonically (TOON 4.4 §2): 1e-7 no longer rounds to 0.
+    const kv = (floatVal) => renderKv([{ key: 'score', value: { type: 'float', floatVal } }], null, [])
+    assert.strictEqual(kv(1.23456789), 'score: 1.23456789')
+    assert.strictEqual(kv(1e-7), 'score: 1e-7')
+    assert.strictEqual(kv(2), 'score: 2')
+    const rounded = renderKv([{ key: 'score', value: { type: 'float', floatVal: 1.23456789, decimalsVal: 6 } }], null, [])
+    assert.strictEqual(rounded, 'score: 1.234568', 'an explicit decimalsVal still rounds')
   })
 })
 
