@@ -3,7 +3,6 @@ use crate::kv::KvValue;
 
 /// Health classification for an individual status item.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub enum Health {
     /// Operating normally — renders health `ok` and reason `null`.
@@ -16,7 +15,6 @@ pub enum Health {
 
 /// A single named component with a value and optional health signal.
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct StatusItem {
     /// Component key, e.g. `"index"`, `"cache"`.
     pub key: String,
@@ -28,7 +26,6 @@ pub struct StatusItem {
 
 /// Content-first orientation response (AXI **P8**).
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub struct StatusResponse {
     /// The tool's name, shown as the first line.

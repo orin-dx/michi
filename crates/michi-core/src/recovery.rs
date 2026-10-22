@@ -98,11 +98,7 @@ fn json_to_kv_value(key: &str, v: serde_json::Value) -> Result<KvValue, String> 
             if let Some(i) = n.as_i64() {
                 Ok(KvValue::Int(i))
             } else if let (true, Some(f)) = (n.is_f64(), n.as_f64()) {
-                // Rust's `Display` for f64 is the shortest exact representation and never uses an exponent, so its
-                // fractional digits are the decimal places `KvValue::Float` needs to reproduce `f` (1e-6 -> 6).
-                let shortest = f.to_string();
-                let decimals = shortest.split_once('.').map_or(0, |(_, frac)| frac.len());
-                let decimals = u8::try_from(decimals)
+                let decimals = u8::try_from(crate::kv::shortest_decimals(f))
                     .map_err(|_| format!("parameter `{key}`: {n} needs more than 255 decimal places"))?;
                 Ok(KvValue::Float(f, decimals))
             } else {

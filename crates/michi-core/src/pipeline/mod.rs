@@ -116,7 +116,6 @@ impl StepStatus {
 
 /// A pipeline step definition.
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct PipelineStep {
     /// Step identifier.
     ///
@@ -132,7 +131,6 @@ pub struct PipelineStep {
 
 /// A pipeline run state.
 #[derive(Debug, Clone, Default)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Pipeline {
     /// Pipeline identifier.
     pub id: String,

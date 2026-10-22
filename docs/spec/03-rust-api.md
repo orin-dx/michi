@@ -57,7 +57,7 @@ pub enum Value {
     Str(compact_str::CompactString),
     Int(i64),
     UInt(u64),  // From<u64>/From<usize> above i64::MAX; always an exact unquoted number
-    Float(f64), // NaN/±Infinity render as null
+    Float(f64), // NaN/±Infinity render as null; serde writes them as "NaN"/"Infinity"/"-Infinity" and reads them back
     Bool(bool),
     Null,
 }
@@ -65,6 +65,7 @@ pub enum Value {
 impl From<&str> for Value { ... }
 impl From<String> for Value { ... }
 impl From<i64> for Value { ... }
+impl From<f32> for Value { ... } // keeps the f32's shortest digits: 0.1f32 renders 0.1
 impl From<f64> for Value { ... }
 impl From<bool> for Value { ... }
 
@@ -94,7 +95,7 @@ pub fn list<T: serde::Serialize>(
 ) -> Result<String, ToonError>;
 ```
 
-Items are serialized via `serde_json::to_value()` and must produce JSON objects (structs or maps). Non-object items and a reserved `type_name` (`totalCount`, `help`, `recovery`) return `Err(ToonError)`, and so does a key union wider than `MAX_FIELDS` or an `items.len() × fields` table larger than `MAX_CELLS` (checked before any row is built). A key missing from some items renders as `null` in those rows; nested arrays/objects become their compact JSON text, quoted.
+Items are serialized to JSON text and read back (so an `f32` field keeps its own shortest digits, `0.1` rather than `0.10000000149011612`) and must produce JSON objects (structs or maps). Non-object items and a reserved `type_name` (`totalCount`, `help`, `recovery`) return `Err(ToonError)`, and so does a key union wider than `MAX_FIELDS` or an `items.len() × fields` table larger than `MAX_CELLS` (checked before any row is built). A key missing from some items renders as `null` in those rows; nested arrays/objects become their compact JSON text, quoted.
 
 ## Response Compositor (`error`, `response`, `idempotency`)
 
@@ -132,7 +133,7 @@ impl DomainError {
 - `render_github_annotation()` outputs a GitHub Actions annotation (`::error title=code::message`). Newlines and CRs are percent-encoded.
 - `render_json()` outputs a JSON object: `{"isError":true,"error":"...","message":"...","retryable":bool,"hints":[...],"recovery":null|{...}}`.
 - `to_call_tool_result()` builds an MCP `CallToolResult` with `is_error:true` and the rendered JSON as `structured_content`.
-- When the `schemars` feature is enabled, `DomainError`, `StatusResponse`, and `ToonOptions` derive `JsonSchema`.
+- When the `schemars` feature is enabled, `DomainError` implements `JsonSchema` (the schema of `render_json()`'s object). Only types serde actually serializes have a schema: `StatusResponse`, `ToonOptions`, `ErrorClass` and the other render-only types do not.
 
 ### `AgentResponse` Builder
 
@@ -175,6 +176,8 @@ impl AgentResponse {
 `render_json()` is not part of the public API — it's reached only via `render(OutputFormat::Json)`.
 
 The TOON slot is stored as a `ToonOptions` and validated and rendered by reference, so a render never copies the rows. `is_error()` validates without rendering. Hints and recovery are appended to the rendered body in place.
+
+`total_count` applies to both paths. On the KV path with no items the body is just `totalCount: N` (the free `render_kv` still returns `""` for empty items), so a count the caller set is never dropped; with neither items nor a count the body is empty.
 
 ### Idempotency
 
