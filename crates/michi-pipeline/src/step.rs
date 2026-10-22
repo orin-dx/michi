@@ -6,11 +6,13 @@ use std::time::Duration;
 
 use crate::{CancellationToken, ExecutionError, RunId, StepId};
 
-/// Whether running a step more than once has the same effect as running it once.
+/// Whether running a step more than once has the same effect as running it once, or how to tell whether it already
+/// ran.
 ///
-/// Decides what happens after an ambiguous attempt (timeout, HTTP 502/504, interruption): an idempotent step is
-/// retried and, on resume, re-run; a non-idempotent step ends [`michi_core::pipeline::StepStatus::OutcomeUnknown`]
-/// and is never replayed automatically.
+/// Decides what happens after an attempt whose effect is unknown (timeout, HTTP 5xx, interruption,
+/// [`ExecutionError::failed`]): an idempotent step is retried and, on resume, re-run; a prechecked step is retried
+/// and re-run through its [`Step::precheck`]; any other step ends
+/// [`michi_core::pipeline::StepStatus::OutcomeUnknown`] and is never replayed automatically.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Replay {
@@ -19,6 +21,23 @@ pub enum Replay {
     NotIdempotent,
     /// Repeating the step is harmless.
     Idempotent,
+    /// Repeating the step could repeat its side effect, but its [`Step::precheck`] reliably tells whether the effect
+    /// is already in place. The precheck runs before every attempt, in a fresh run and on resume.
+    Prechecked,
+}
+
+/// What a [`Step::precheck`] found in the outside world. Mirrors [`crate::Verification`]: precheck is verification
+/// the step performs for itself.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Precheck {
+    /// The effect is already in place: the step is not run and ends `CompletedEarlier`.
+    Applied,
+    /// There is proof the effect is absent: the attempt runs. Return it only with proof; a read that may be stale
+    /// (a cached registry document, say) is not proof.
+    NotApplied,
+    /// Can't tell (eventual consistency, a read that failed softly): the attempt does not run.
+    Unknown,
 }
 
 /// What a step attempt gets from the executor.
@@ -102,31 +121,50 @@ impl StepContext {
 /// The boxed future a [`Step`] attempt returns.
 pub type StepFuture<'a> = Pin<Box<dyn Future<Output = Result<(), ExecutionError>> + Send + 'a>>;
 
+/// The boxed future a [`Step::precheck`] returns.
+pub type PrecheckFuture<'a> = Pin<Box<dyn Future<Output = Result<Precheck, ExecutionError>> + Send + 'a>>;
+
 /// What a plan step runs. Object-safe, so steps of different types share one plan without an async-trait
 /// dependency.
 ///
 /// # Replay safety
 ///
-/// The executor may run a step more than once: on retry within a run, and on resume. Every failed attempt is
-/// classified by whether it could have taken effect ([`crate::ReplayClass`]):
+/// The executor may run a step more than once: on retry within a run, and on resume. Every failed attempt carries two
+/// facts: whether retrying could help ([`ExecutionError::is_retryable`]) and whether its effect may have landed
+/// ([`ExecutionError::effect`]). From those and [`Step::replay`]:
 ///
-/// - **Not executed**: circuit open, or the step returned [`ExecutionError::Cancelled`]. Not retried; safe to run on
-///   resume.
-/// - **Rejected**: HTTP 429 or 503, or `Failed { retryable: true }`. Retried for every step.
-/// - **Ambiguous**: a timeout, HTTP 502 or 504, or an interruption. Retried only if [`Step::replay`] is
-///   [`Replay::Idempotent`]; otherwise the step ends `OutcomeUnknown`.
-/// - **Definitive**: everything else. Not retried.
+/// - **Not applied** ([`crate::Effect::NotApplied`]): circuit open, `Cancelled`, HTTP 4xx and 503,
+///   [`ExecutionError::refused`] and [`ExecutionError::rejected`]. Retried if retryable; otherwise the step ends
+///   `Failed` and resume runs it again.
+/// - **Unknown** ([`crate::Effect::Unknown`]): a timeout, HTTP 5xx other than 503, an interruption, a panic,
+///   [`ExecutionError::failed`] and [`ExecutionError::transient`]. Retried only if retryable and the step is
+///   [`Replay::Idempotent`] or [`Replay::Prechecked`]. Otherwise the step ends `OutcomeUnknown` and resume holds it
+///   until the caller verifies it (an idempotent step ends `Failed` and resume runs it; a prechecked one runs and its
+///   precheck decides).
 ///
 /// A step classifies its own outcome by the error it returns, so it must classify honestly: a step that may have
-/// committed its effect must not report 429, 503, `Failed { retryable: true }` or `Cancelled`. It reports 502, 504,
-/// a timeout or a non-retryable error instead.
+/// committed its effect must not report 429, 503, a 4xx, `refused`, `rejected` or `Cancelled`. It reports
+/// [`ExecutionError::failed`] (or 500, 502, 504 or a timeout) instead.
 pub trait Step: Send + Sync {
     /// Runs one attempt.
     fn run<'a>(&'a self, ctx: &'a StepContext) -> StepFuture<'a>;
 
-    /// Whether the step may be replayed after an ambiguous outcome. Defaults to [`Replay::NotIdempotent`].
+    /// Whether the step may be replayed after an attempt whose effect is unknown. Defaults to
+    /// [`Replay::NotIdempotent`].
     fn replay(&self) -> Replay {
         Replay::NotIdempotent
+    }
+
+    /// Looks at the outside world before an attempt. Only consulted for [`Replay::Prechecked`] steps, before every
+    /// attempt (after breaker admission), under the attempt timeout. It is not reported to the breaker and does not
+    /// draw from the retry budget.
+    ///
+    /// A timeout or an `Err` counts as [`Precheck::Unknown`], except [`ExecutionError::refused`] (not retryable, not
+    /// applied), which fails the step: that is how a precheck reports a blocking precondition. The default answers
+    /// `Unknown`, which never runs the step, so a prechecked step must implement this.
+    fn precheck<'a>(&'a self, ctx: &'a StepContext) -> PrecheckFuture<'a> {
+        let _ = ctx;
+        Box::pin(async { Ok(Precheck::Unknown) })
     }
 }
 

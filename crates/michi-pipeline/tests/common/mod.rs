@@ -8,7 +8,8 @@ use std::time::Duration;
 
 use michi_core::resilience::RetryConfig;
 use michi_pipeline::{
-    ExecStep, ExecutionError, Plan, Replay, RunId, RunRecord, Step, StepContext, StepFuture, StepId, StepStatus,
+    ExecStep, ExecutionError, Plan, Precheck, PrecheckFuture, Replay, RunId, RunRecord, Step, StepContext, StepFuture,
+    StepId, StepStatus,
 };
 
 pub fn sid(s: &str) -> StepId {
@@ -23,8 +24,15 @@ pub fn http(status: u16) -> ExecutionError {
     ExecutionError::Http { status, message: format!("status {status}"), retry_after: None }
 }
 
+/// A failure that certainly had no effect (`refused`): the step ends `Failed` and resume runs it again.
 pub fn fatal(msg: &str) -> ExecutionError {
-    ExecutionError::Failed { message: msg.to_string(), retryable: false }
+    ExecutionError::refused(msg)
+}
+
+/// A downstream failure the breaker counts (`failed`: not retryable, effect unknown). A step that is not idempotent
+/// ends `OutcomeUnknown` with it.
+pub fn down(msg: &str) -> ExecutionError {
+    ExecutionError::failed(msg)
 }
 
 /// `max_retries` retries with a fixed `delay_ms` and no jitter.
@@ -113,7 +121,9 @@ pub struct Scripted {
     acts: Vec<Act>,
     replay: Replay,
     log: Log,
+    checks: Vec<Result<Precheck, ExecutionError>>,
     pub calls: Arc<AtomicU32>,
+    pub check_calls: Arc<AtomicU32>,
     pub keys: Arc<Mutex<Vec<String>>>,
 }
 
@@ -124,13 +134,23 @@ impl Scripted {
             acts,
             replay: Replay::NotIdempotent,
             log: log.clone(),
+            checks: Vec::new(),
             calls: Arc::default(),
+            check_calls: Arc::default(),
             keys: Arc::default(),
         }
     }
 
     pub fn idempotent(mut self) -> Self {
         self.replay = Replay::Idempotent;
+        self
+    }
+
+    /// Makes the step `Replay::Prechecked`; its precheck answers `checks[n]` on its n-th call (the last repeats) and
+    /// logs `check:<id>`.
+    pub fn prechecked(mut self, checks: Vec<Result<Precheck, ExecutionError>>) -> Self {
+        self.replay = Replay::Prechecked;
+        self.checks = checks;
         self
     }
 }
@@ -182,6 +202,13 @@ impl Step for Scripted {
 
     fn replay(&self) -> Replay {
         self.replay
+    }
+
+    fn precheck<'a>(&'a self, _ctx: &'a StepContext) -> PrecheckFuture<'a> {
+        let n = self.check_calls.fetch_add(1, Ordering::SeqCst) as usize;
+        self.log.push(format!("check:{}", self.id));
+        let answer = self.checks[n.min(self.checks.len() - 1)].clone();
+        Box::pin(async move { answer })
     }
 }
 

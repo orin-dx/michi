@@ -346,7 +346,7 @@ async fn breakers_are_keyed_so_one_failing_service_does_not_trip_another() {
     let gh_second = Scripted::new(&log, "gh2", vec![Act::Ok]);
     let gh_second_calls = Arc::clone(&gh_second.calls);
     let p = plan(vec![
-        act(&log, "gh1", &[], Act::Err(fatal("down"))).breaker_key("github"),
+        act(&log, "gh1", &[], Act::Err(down("down"))).breaker_key("github"),
         act(&log, "slack", &[], Act::Ok).breaker_key("slack"),
         exec("gh2", &[], gh_second).breaker_key("github"),
         act(&log, "after", &["gh2"], Act::Ok),
@@ -406,7 +406,7 @@ async fn a_panicking_probe_releases_the_probe_slot() {
     let log = Log::new();
     let registry = Arc::new(BreakerRegistry::new(BreakerConfig::new(1, Duration::from_secs(10))));
     let opts = ExecOptions::new().breakers(Arc::clone(&registry));
-    let _ = execute(&plan(vec![act(&log, "a", &[], Act::Err(fatal("x")))]), rid("r1"), &opts).await;
+    let _ = execute(&plan(vec![act(&log, "a", &[], Act::Err(down("x")))]), rid("r1"), &opts).await;
     tokio::time::advance(Duration::from_secs(10)).await;
     let panicked = execute(&plan(vec![act(&log, "a", &[], Act::Panic)]), rid("r2"), &opts).await;
     assert_eq!(status(&panicked, "a"), StepStatus::Panicked);
@@ -611,7 +611,7 @@ async fn a_second_step_on_a_half_open_key_is_not_run_while_the_probe_is_in_fligh
     let registry = Arc::new(BreakerRegistry::new(BreakerConfig::new(1, Duration::from_secs(10))));
     let opts = ExecOptions::new().breakers(Arc::clone(&registry)).mode(parallel(2));
     let _ =
-        execute(&plan(vec![act(&log, "trip", &[], Act::Err(fatal("x"))).breaker_key("svc")]), rid("r1"), &opts).await;
+        execute(&plan(vec![act(&log, "trip", &[], Act::Err(down("x"))).breaker_key("svc")]), rid("r1"), &opts).await;
     tokio::time::advance(Duration::from_secs(10)).await;
     let loser = Scripted::new(&log, "loser", vec![Act::Ok]);
     let loser_calls = Arc::clone(&loser.calls);
@@ -637,13 +637,13 @@ async fn a_panicking_step_reports_nothing_to_a_closed_breaker() {
     let opts = ExecOptions::new().breakers(Arc::clone(&registry));
     let p = plan(vec![
         act(&log, "boom", &[], Act::Panic).breaker_key("svc"),
-        act(&log, "fails", &[], Act::Err(fatal("x"))).breaker_key("svc"),
+        act(&log, "fails", &[], Act::Err(down("x"))).breaker_key("svc"),
     ]);
     let record = execute(&p, rid("r1"), &opts).await;
     assert_eq!(status(&record, "boom"), StepStatus::Panicked);
     assert_eq!(registry.phase("svc"), Some(BreakerPhase::Closed), "one real failure; the panic counted for nothing");
     let _ =
-        execute(&plan(vec![act(&log, "fails", &[], Act::Err(fatal("x"))).breaker_key("svc")]), rid("r2"), &opts).await;
+        execute(&plan(vec![act(&log, "fails", &[], Act::Err(down("x"))).breaker_key("svc")]), rid("r2"), &opts).await;
     assert_eq!(registry.phase("svc"), Some(BreakerPhase::Open), "the breaker still counts real failures");
 }
 
@@ -652,7 +652,7 @@ async fn an_ambiguous_half_open_probe_is_not_retryable_and_reopens_the_breaker()
     let log = Log::new();
     let registry = Arc::new(BreakerRegistry::new(BreakerConfig::new(1, Duration::from_secs(10))));
     let opts = ExecOptions::new().breakers(Arc::clone(&registry)).retry(retries(3, 1));
-    let _ = execute(&plan(vec![act(&log, "a", &[], Act::Err(fatal("x")))]), rid("r1"), &opts).await;
+    let _ = execute(&plan(vec![act(&log, "a", &[], Act::Err(down("x")))]), rid("r1"), &opts).await;
     tokio::time::advance(Duration::from_secs(10)).await;
     let probe = Scripted::new(&log, "a", vec![Act::Err(http(504))]);
     let calls = Arc::clone(&probe.calls);
@@ -712,7 +712,7 @@ async fn a_failure_and_a_cancellation_in_one_run_keep_the_failure_as_the_root_ca
             let token = token.clone();
             async move {
                 token.cancel();
-                Err(ExecutionError::Failed { message: "boom".into(), retryable: false })
+                Err(ExecutionError::refused("boom"))
             }
         })
     };

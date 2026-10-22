@@ -474,8 +474,11 @@ export interface JsPipelineStep {
     | "gateway"
     | "cancelled"
     | "interrupted"
+    | "step_failed"
     | "prerequisite_failed"
     | "circuit_open"
+    | "unverified"
+    | "start_not_recorded"
     | null;
 }
 

@@ -1067,9 +1067,12 @@ void describe('renderPipeline', () => {
       ['outcome_unknown', 'gateway'],
       ['outcome_unknown', 'cancelled'],
       ['outcome_unknown', 'interrupted'],
+      ['outcome_unknown', 'step_failed'],
       ['skipped', 'prerequisite_failed'],
       ['skipped', 'cancelled'],
       ['not_run', 'circuit_open'],
+      ['not_run', 'unverified'],
+      ['not_run', 'start_not_recorded'],
     ]
     for (const [status, reason] of cases) {
       const out = renderPipeline([{ id: 's', name: 'n', status, reason }])
@@ -1086,7 +1089,7 @@ void describe('renderPipeline', () => {
     )
     assert.throws(
       () => renderPipeline(step('outcome_unknown', 'circuit_open')),
-      /^Error: unknown reason "circuit_open" for step status "outcome_unknown": expected timeout, gateway, cancelled or interrupted$/,
+      /^Error: unknown reason "circuit_open" for step status "outcome_unknown": expected timeout, gateway, cancelled, interrupted or step_failed$/,
     )
     assert.throws(
       () => renderPipeline(step('completed', 'timeout')),

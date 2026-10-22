@@ -53,6 +53,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 `RetryConfig`, `RetryBudget` and `IdempotencyKey` are re-exported from `michi-core`, so you don't need it as a direct dependency to configure retries.
 
+## Failures and resume
+
+A failure says two things: whether retrying could help, and whether the effect may have landed. Pick the constructor that matches:
+
+| Constructor | Retried | Effect | Use it when |
+| --- | --- | --- | --- |
+| `ExecutionError::failed(msg)` | no | unknown | you can't vouch for the effect (the default) |
+| `ExecutionError::refused(msg)` | no | not applied | you rejected the work before doing anything |
+| `ExecutionError::rejected(msg)` | yes | not applied | a dependency turned the request away; try later |
+| `ExecutionError::transient(msg)` | idempotent or prechecked steps only | unknown | a transport hiccup mid-request |
+
+A step that is not idempotent and fails with an unknown effect ends `outcome_unknown`, and `resume` holds it until you verify it. A step that can check for itself is `Replay::Prechecked`: its `precheck` runs before every attempt, and resume uses it instead of asking you.
+
+```rust
+use michi_pipeline::{ExecutionError, Precheck, PrecheckFuture, Replay, Step, StepContext, StepFuture};
+
+struct Publish;
+
+impl Step for Publish {
+    fn run<'a>(&'a self, _ctx: &'a StepContext) -> StepFuture<'a> {
+        Box::pin(async { Err(ExecutionError::failed("registry closed the connection")) })
+    }
+
+    fn replay(&self) -> Replay {
+        Replay::Prechecked
+    }
+
+    fn precheck<'a>(&'a self, _ctx: &'a StepContext) -> PrecheckFuture<'a> {
+        // Answer `NotApplied` only with proof; a stale read is `Unknown`.
+        Box::pin(async { Ok(Precheck::Applied) })
+    }
+}
+```
+
+To make sure a step only runs once its start is saved, implement `DurableObserver::record_start` and pass the observer to `ExecOptions::durable_starts(observer)`.
+
 ## Docs
 
 - API reference: [docs.rs/michi-pipeline](https://docs.rs/michi-pipeline)

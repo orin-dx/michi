@@ -26,6 +26,7 @@ These documents describe possible future work, not available APIs.
 | Doc | Covers |
 | --- | --- |
 | [07-wisp-and-monokl-envelope.md](07-wisp-and-monokl-envelope.md) | Multi-section response envelope for Wisp and monokl: `Section`, michi's own `BudgetSummary` and `ProvenanceBlock` slots, index-bearing per-op outcomes, `structuredContent` and `outputSchema`; inclusion case remains open |
+| [10-pipeline-effects.md](10-pipeline-effects.md) | Amendment to 08: what happened to a failed step's effect (not applied or unknown), so resume never repeats one blindly; an opt-in precheck that adopts effects already in place; durable starts that close the crash gap |
 
 ## Known gaps
 

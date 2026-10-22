@@ -10,7 +10,8 @@ use michi_core::resilience::{RetryBudget, RetryConfig};
 
 use crate::scheduler::{self, Initial};
 use crate::{
-    BreakerRegistry, CancellationToken, ExecutionError, Plan, PlanFingerprint, RunId, RunRecord, StepId, StepRecord,
+    BreakerRegistry, CancellationToken, ExecutionError, Plan, PlanFingerprint, Replay, RunId, RunRecord, StepId,
+    StepRecord,
 };
 
 /// How many steps run at once.
@@ -47,6 +48,9 @@ pub enum FailurePolicy {
 /// counted in [`RunRecord::observer_panics`]. (The process's panic hook still runs, so the default hook prints it.)
 pub trait StepObserver: Send + Sync {
     /// A step is about to be dispatched. Persist [`StepRecord::in_flight`] here to make a crash mid-step visible.
+    ///
+    /// The step is dispatched whatever happens here, even if this panics. If saving the marker can fail and the step
+    /// must not run without it, implement [`DurableObserver`] and pass it to [`ExecOptions::durable_starts`].
     fn on_step_started(&self, run_id: &RunId, step_id: &StepId) {
         let _ = (run_id, step_id);
     }
@@ -64,6 +68,30 @@ where
     }
 }
 
+/// An observer that saves each step's in-flight marker before the step may run. Pass it to
+/// [`ExecOptions::durable_starts`]: a step then runs only once [`DurableObserver::record_start`] returns `Ok`, so a
+/// record rebuilt after a crash never shows a step that ran as `Pending`.
+///
+/// A closure observer cannot be one: it sees finish events only, so durable starts with it do not compile.
+///
+/// ```compile_fail
+/// use std::sync::Arc;
+/// use michi_pipeline::{ExecOptions, RunId, StepRecord};
+///
+/// let finish_only = |_: &RunId, _: &StepRecord| {};
+/// let _ = ExecOptions::new().durable_starts(Arc::new(finish_only));
+/// ```
+pub trait DurableObserver: StepObserver {
+    /// Persist the in-flight marker ([`StepRecord::in_flight`]) and return `Ok` only once it is saved. Called instead
+    /// of [`StepObserver::on_step_started`]. `Err(reason)` or a panic stops the step: it ends
+    /// `NotRun(StartNotRecorded)` without being invoked, and resume runs it again.
+    ///
+    /// # Errors
+    ///
+    /// Why the marker could not be saved.
+    fn record_start(&self, run_id: &RunId, step_id: &StepId) -> Result<(), String>;
+}
+
 /// Options for [`execute`]. Every field has a default; builder methods override them.
 #[derive(Clone)]
 pub struct ExecOptions {
@@ -78,6 +106,8 @@ pub struct ExecOptions {
     pub(crate) retry_budget: Option<RetryBudget>,
     pub(crate) breakers: Option<Arc<BreakerRegistry>>,
     pub(crate) observer: Option<Arc<dyn StepObserver>>,
+    /// Set with the observer by `durable_starts`: the same observer, which records starts.
+    pub(crate) durable: Option<Arc<dyn DurableObserver>>,
 }
 
 impl Default for ExecOptions {
@@ -94,6 +124,7 @@ impl Default for ExecOptions {
             retry_budget: Some(RetryBudget::default()),
             breakers: None,
             observer: None,
+            durable: None,
         }
     }
 }
@@ -111,13 +142,15 @@ impl std::fmt::Debug for ExecOptions {
             .field("retry_budget", &self.retry_budget)
             .field("breakers", &self.breakers.is_some())
             .field("observer", &self.observer.is_some())
+            .field("durable_starts", &self.durable.is_some())
             .finish_non_exhaustive()
     }
 }
 
 impl ExecOptions {
     /// The defaults: sequential, skip dependents, `RetryConfig::default()`, 30 s per attempt, no step deadline,
-    /// jitter seeded per run, step and attempt, 5 s cancellation grace, `RetryBudget::default()`, no breakers, no observer.
+    /// jitter seeded per run, step and attempt, 5 s cancellation grace, `RetryBudget::default()`, no breakers, no
+    /// observer, no durable starts.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -205,10 +238,26 @@ impl ExecOptions {
         self
     }
 
-    /// The step observer.
+    /// The step observer. Replaces any observer set before, including one from [`ExecOptions::durable_starts`], which
+    /// turns durable starts off.
     #[must_use]
     pub fn observer(mut self, observer: Arc<dyn StepObserver>) -> Self {
         self.observer = Some(observer);
+        self.durable = None;
+        self
+    }
+
+    /// Makes `observer` the step observer and runs a step only once its [`DurableObserver::record_start`] has saved
+    /// the in-flight marker. If that returns `Err` or panics, the step ends `NotRun(StartNotRecorded)` without being
+    /// invoked, its dependents are skipped and other branches carry on; resume runs it again. Replaces any observer
+    /// set before.
+    ///
+    /// This closes the crash gap: a step that ran always has a saved marker, so a record rebuilt with
+    /// [`RunRecord::from_parts`] after a crash shows it `Running` (verify, then resume), never `Pending`.
+    #[must_use]
+    pub fn durable_starts(mut self, observer: Arc<dyn DurableObserver>) -> Self {
+        self.observer = Some(Arc::clone(&observer) as Arc<dyn StepObserver>);
+        self.durable = Some(observer);
         self
     }
 }
@@ -237,8 +286,9 @@ impl ResumeOptions {
         Self { exec, verified: BTreeMap::new() }
     }
 
-    /// Records what the caller found for a step that is `OutcomeUnknown`, `Panicked` or `Running` in the prior
-    /// record.
+    /// Records what the caller found for a step awaiting verification in the prior record
+    /// ([`StepRecord::awaits_verification`]): `OutcomeUnknown`, `Panicked`, `Running`, or `Failed` with an error whose
+    /// effect is unknown. A verdict takes precedence over the step's own precheck.
     #[must_use]
     pub fn verified(mut self, step_id: StepId, verification: Verification) -> Self {
         self.verified.insert(step_id, verification);
@@ -297,15 +347,22 @@ pub async fn execute(plan: &Plan, run_id: RunId, opts: &ExecOptions) -> RunRecor
 /// Continues the run in `prior` under its run id, so idempotency keys stay the same.
 ///
 /// Refuses, before running anything, a plan whose fingerprint differs from the record's, a record naming a step the
-/// plan lacks, and a verdict for a step that is not awaiting verification. Then: `Completed` and `CompletedEarlier`
-/// steps become `CompletedEarlier` and are not run; `Failed`, `Skipped`, `NotRun`, `Pending` and missing steps run
-/// again; `OutcomeUnknown`, `Panicked` and `Running` steps run again only if the step is [`crate::Replay::Idempotent`]
-/// or the caller verified them as [`Verification::NotApplied`], become `CompletedEarlier` if verified as
-/// [`Verification::Applied`], and otherwise keep their prior record (a `Running` one becomes
-/// `OutcomeUnknown(Interrupted)`).
+/// plan lacks, and a verdict for a step that is not awaiting verification. Then, per step:
+///
+/// - `Completed` and `CompletedEarlier` steps become `CompletedEarlier` and are not run.
+/// - `Skipped`, `NotRun`, `Pending` and missing steps run again: they never took effect.
+/// - `Failed` steps run again if their final error is [`crate::Effect::NotApplied`] or the step is
+///   [`crate::Replay::Idempotent`]. Otherwise (a `Failed` whose effect is unknown, only in records saved before 0.5)
+///   they are held like `OutcomeUnknown`.
+/// - `OutcomeUnknown`, `Panicked` and `Running` steps, and held `Failed` ones: a caller's verdict decides
+///   ([`Verification::Applied`] makes them `CompletedEarlier`, [`Verification::NotApplied`] runs them). Without one,
+///   an idempotent step runs again, a [`crate::Replay::Prechecked`] step runs and its precheck decides, and any other
+///   step keeps its prior record (a `Running` one becomes `OutcomeUnknown(Interrupted)`, a held `Failed` one
+///   `OutcomeUnknown(StepFailed)`) and its dependents are skipped.
 ///
 /// At least once per step: a step can run again if the process stopped after its effect but before its record was
-/// saved. Not incremental recomputation: a completed step is not re-run because its inputs changed.
+/// saved, unless the run used [`ExecOptions::durable_starts`]. Not incremental recomputation: a completed step is not
+/// re-run because its inputs changed.
 ///
 /// # Errors
 ///
@@ -338,21 +395,26 @@ pub async fn resume(prior: &RunRecord, plan: &Plan, opts: &ResumeOptions) -> Res
         .iter()
         .map(|step| {
             let Some(&prev) = by_id.get(step.id()) else { return Initial::Run };
+            let replay = step.runner().replay();
             match prev.status() {
                 StepStatus::Completed | StepStatus::CompletedEarlier => {
                     Initial::Done(Box::new(carried_over(prev, "completed earlier in this run")))
                 }
-                StepStatus::OutcomeUnknown(_) | StepStatus::Panicked | StepStatus::Running => {
+                StepStatus::Failed if !prev.awaits_verification() => Initial::Run,
+                StepStatus::Failed | StepStatus::OutcomeUnknown(_) | StepStatus::Panicked | StepStatus::Running => {
                     match opts.verified.get(step.id()) {
                         Some(Verification::Applied) => {
                             Initial::Done(Box::new(carried_over(prev, "verified as applied by the caller")))
                         }
                         Some(Verification::NotApplied) => Initial::Run,
-                        None if step.runner().replay() == crate::Replay::Idempotent => Initial::Run,
+                        None if matches!(replay, Replay::Idempotent | Replay::Prechecked) => Initial::Run,
                         None => Initial::Done(Box::new(kept_unresolved(prev))),
                     }
                 }
-                _ => Initial::Run,
+                // Never invoked, or never took effect.
+                StepStatus::Skipped(_) | StepStatus::NotRun(_) | StepStatus::Pending => Initial::Run,
+                // A status this version doesn't know (`StepStatus` is non-exhaustive): don't guess it is safe to run.
+                _ => Initial::Done(Box::new(kept_unresolved(prev))),
             }
         })
         .collect();
@@ -368,17 +430,31 @@ fn carried_over(prev: &StepRecord, reason: &str) -> StepRecord {
 }
 
 /// A prior outcome still in doubt, kept as it was (timing cleared). A step left `Running` by a crash becomes
-/// `OutcomeUnknown(Interrupted)`.
+/// `OutcomeUnknown(Interrupted)`, and a held `Failed` step `OutcomeUnknown(StepFailed)`, so the new record names the
+/// right recovery (verify, then resume) instead of one resume would not follow.
 fn kept_unresolved(prev: &StepRecord) -> StepRecord {
     let mut record = prev.clone();
     record.started_at = None;
     record.elapsed = None;
-    if record.status == StepStatus::Running {
-        record.status = StepStatus::OutcomeUnknown(UnknownCause::Interrupted);
-        record.error =
-            Some(ExecutionError::AmbiguousOutcome { source: Box::new(ExecutionError::Interrupted { elapsed_ms: 0 }) });
-        record.reason =
-            Some("in flight when the previous process stopped; verify whether it took effect, then resume".to_string());
+    match record.status {
+        StepStatus::Running => {
+            record.status = StepStatus::OutcomeUnknown(UnknownCause::Interrupted);
+            record.error = Some(ExecutionError::AmbiguousOutcome {
+                source: Box::new(ExecutionError::Interrupted { elapsed_ms: 0 }),
+            });
+            record.reason = Some(
+                "in flight when the previous process stopped; verify whether it took effect, then resume".to_string(),
+            );
+        }
+        StepStatus::Failed => {
+            record.status = StepStatus::OutcomeUnknown(UnknownCause::StepFailed);
+            let source = record.error.take().unwrap_or_else(|| ExecutionError::failed("the step failed"));
+            record.reason = Some(format!(
+                "{source}; the failure does not say whether the effect landed, so verify it, then resume"
+            ));
+            record.error = Some(ExecutionError::AmbiguousOutcome { source: Box::new(source) });
+        }
+        _ => {}
     }
     record
 }

@@ -106,6 +106,17 @@ fn fingerprint_covers_ids_and_dependencies_only() {
 }
 
 #[test]
+fn a_fingerprint_parses_only_from_its_own_16_lowercase_hex_digits() {
+    // `u64::from_str_radix` accepts a leading `+`, so "+fffffffffffffff" (16 chars) used to parse and print back as
+    // "0fffffffffffffff": not the string that was saved.
+    for bad in ["+fffffffffffffff", "-fffffffffffffff", " fffffffffffffff", "FFFFFFFFFFFFFFFF", "0x00000000000000"] {
+        assert!(bad.parse::<PlanFingerprint>().is_err(), "{bad:?} must not parse");
+    }
+    let fp: PlanFingerprint = "00000000000000ff".parse().unwrap();
+    assert_eq!(fp.to_string(), "00000000000000ff");
+}
+
+#[test]
 fn the_fingerprint_keeps_its_published_value_so_saved_records_still_resume() {
     // FNV-1a over "a␟␝ b␟a␞␝ c␟a␞b␞␝" (ids and sorted prerequisites), computed independently of michi-graph.
     let fp = plan(vec![noop("c", &["b", "a"]), noop("a", &[]), noop("b", &["a"])]).fingerprint();
