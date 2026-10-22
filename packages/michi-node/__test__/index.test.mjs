@@ -542,6 +542,74 @@ void describe('rejection instead of coercion (SPEC-ARCH-003 AC-009)', () => {
     const rounded = renderKv([{ key: 'score', value: { type: 'float', floatVal: 1.23456789, decimalsVal: 6 } }], null, [])
     assert.strictEqual(rounded, 'score: 1.234568', 'an explicit decimalsVal still rounds')
   })
+
+  void it('renderKv keeps floats that need more than 255 decimal places', () => {
+    // These rendered `score: 0`: the default decimals were capped at 255 and then rounded.
+    const kv = (floatVal) => renderKv([{ key: 'score', value: { type: 'float', floatVal } }], null, [])
+    assert.strictEqual(kv(1e-256), 'score: 1e-256')
+    assert.strictEqual(kv(1e-300), 'score: 1e-300')
+    assert.strictEqual(kv(5e-324), 'score: 5e-324')
+    assert.strictEqual(Number(kv(-1.2345678901234568e-250).slice('score: '.length)), -1.2345678901234568e-250)
+    const status = renderStatus('tool', 'desc', [{ key: 'lag', value: { type: 'float', floatVal: 5e-324 } }])
+    assert.ok(status.includes('lag,5e-324,ok,null'), status)
+  })
+})
+
+void describe('parseRetryAfter follows RFC 9110', () => {
+  void it('treats a pre-1970 date as past, saturates huge delays and rejects malformed times', () => {
+    assert.strictEqual(parseRetryAfter('Mon, 01 Jan 1900 00:00:00 GMT'), 0)
+    assert.strictEqual(parseRetryAfter('99999999999999999999999'), 2 ** 64, 'u64::MAX seconds, as the nearest double')
+    assert.strictEqual(parseRetryAfter('Thu, 01 Jan 2026 +8:+9:+7 GMT'), null)
+    assert.strictEqual(parseRetryAfter('Thu, 01 Jan 2026 8:09:07 GMT'), null)
+  })
+})
+
+void describe('AgentResponse cumulative byte budget', () => {
+  const mib = 'x'.repeat(1_048_576)
+
+  void it('caps hints at 64 MiB across calls, not per call', () => {
+    // 65 separate 1 MiB hints were all accepted and rendered 68 MB synchronously.
+    const r = new AgentResponse('t')
+    let accepted = 0
+    assert.throws(
+      () => {
+        for (let i = 0; i < 65; i++) {
+          r.hint(mib)
+          accepted++
+        }
+      },
+      (err) => err.message === `cumulative byte total ${1 + 64 * 1_048_576} exceeds maximum of 67108864`
+    )
+    assert.strictEqual(accepted, 63, '"t" takes one byte, so the 64th full hint passes 64 MiB')
+    assert.ok(r.renderToon().length < 67_108_864)
+  })
+
+  void it('charges recovery hints, items and kvItems to the same total', () => {
+    const r = new AgentResponse('t')
+    for (let i = 0; i < 40; i++) r.recoveryHint('retry', mib)
+    const rows = Array.from({ length: 30 }, () => [{ type: 'str', strVal: mib }])
+    assert.throws(() => r.items(rows, ['v']), /^Error: cumulative byte total \d+ exceeds maximum of 67108864$/)
+    assert.ok(r.renderToon().startsWith('t: []'), 'the builder is unchanged on error')
+    r.items(rows.slice(0, 20), ['v'])
+    r.items(rows.slice(0, 20), ['v']) // replacing the list gives its bytes back
+    const kv = Array.from({ length: 5 }, (_, i) => ({ key: `k${i}`, value: { type: 'str', strVal: mib } }))
+    assert.throws(() => r.kvItems(kv), /cumulative byte total/, '40 + 20 + 5 MiB passes 64 MiB')
+    r.kvItems(kv.slice(0, 3))
+  })
+
+  void it('caps the constructor type name and humanContent', () => {
+    assert.throws(() => new AgentResponse('t'.repeat(4097)), {
+      message: 'typeName byte length 4097 exceeds maximum of 4096',
+    })
+    const r = new AgentResponse('t')
+    assert.throws(() => r.humanContent('x'.repeat(1_048_577)), {
+      message: 'humanContent byte length 1048577 exceeds maximum of 1048576',
+    })
+    assert.strictEqual(r.hasHumanContent(), false)
+    r.humanContent(mib)
+    r.humanContent('short')
+    assert.strictEqual(r.renderFor('user'), 'short')
+  })
 })
 
 void describe('index.d.ts keeps plain number types (SPEC-ARCH-003 AC-012)', () => {

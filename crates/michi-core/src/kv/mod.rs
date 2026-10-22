@@ -34,9 +34,11 @@ pub enum KvValue {
     /// UTF-8 text value, quoted only when TOON 4.4 §7.2 requires it.
     Text(String),
     /// Signed integer.
-    Int(i64),
+    Int(#[cfg_attr(feature = "schemars", schemars(schema_with = "crate::int_schema::i64"))] i64),
     /// Floating-point number, rounded to the given number of decimal places and then written in canonical TOON
     /// number form (§2): the decimals bound the precision but never pad (`Float(1.5, 3)` renders `1.5`).
+    /// [`KvValue::FULL_PRECISION`] (255) never rounds: the value renders with its shortest round-trip digits, so even
+    /// `5e-324` keeps its value. Any smaller count rounds as asked, so `Float(1e-300, 2)` renders `0`.
     ///
     /// NaN and ±Infinity render as `null` in every rendered output, TOON (§3) and the JSON companions alike. With
     /// the `serde` feature, `KvValue` itself serializes a non-finite float as the string `"NaN"`, `"Infinity"` or
@@ -45,7 +47,7 @@ pub enum KvValue {
         #[cfg_attr(feature = "serde", serde(with = "crate::float_wire"))]
         #[cfg_attr(feature = "schemars", schemars(schema_with = "crate::float_wire::schema"))]
         f64,
-        u8,
+        #[cfg_attr(feature = "schemars", schemars(schema_with = "crate::int_schema::u8"))] u8,
     ),
     /// Boolean renders as `true` or `false`.
     Bool(bool),
@@ -53,6 +55,14 @@ pub enum KvValue {
     Duration(Duration),
     /// Absent value, renders as `null`.
     Missing,
+}
+
+impl KvValue {
+    /// The decimals setting of [`KvValue::Float`] that never rounds: the float renders with its shortest round-trip
+    /// digits, in exponent form when TOON's canonical number form calls for it (`1e-300`). Use it when the value
+    /// itself matters more than a fixed precision. It is `u8::MAX`, so a count this large meant the same thing for
+    /// every value that 255 places could already hold.
+    pub const FULL_PRECISION: u8 = u8::MAX;
 }
 
 /// Append a KV value as a TOON 4.4 primitive token (§2, §3, §7.2).
@@ -77,21 +87,23 @@ pub(crate) fn push_kv_value(out: &mut String, value: &KvValue) {
     }
 }
 
-/// `f` rounded to `decimals` fractional digits by the correctly rounded decimal formatting of `{f:.decimals}`.
-/// Non-finite values pass through unchanged.
 /// The decimal places `KvValue::Float` needs to reproduce `f` exactly: the fractional digits of its shortest exact
 /// representation (Rust's `Display` for f64, which never uses an exponent), so `1e-7` needs 7 and `2.0` needs 0.
-/// Non-finite values need 0. Used where a float arrives without a decimals setting.
+/// Non-finite values need 0. A value needing more than 254 places gets [`KvValue::FULL_PRECISION`], which never
+/// rounds. Used where a float arrives without a decimals setting.
 #[cfg(any(feature = "serde", feature = "napi"))]
-pub(crate) fn shortest_decimals(f: f64) -> usize {
+pub(crate) fn exact_decimals(f: f64) -> u8 {
     if !f.is_finite() {
         return 0;
     }
-    f.to_string().split_once('.').map_or(0, |(_, frac)| frac.len())
+    let places = f.to_string().split_once('.').map_or(0, |(_, frac)| frac.len());
+    u8::try_from(places).unwrap_or(KvValue::FULL_PRECISION)
 }
 
+/// `f` rounded to `decimals` fractional digits by the correctly rounded decimal formatting of `{f:.decimals}`.
+/// Non-finite values, and every value at [`KvValue::FULL_PRECISION`], pass through unchanged.
 fn round_to_decimals(f: f64, decimals: u8) -> f64 {
-    if !f.is_finite() {
+    if !f.is_finite() || decimals == KvValue::FULL_PRECISION {
         return f;
     }
     format!("{f:.*}", usize::from(decimals)).parse().unwrap_or(f)
@@ -128,6 +140,10 @@ pub(crate) fn kv_value_to_json(out: &mut String, value: &KvValue) {
             if !f.is_finite() {
                 // Not a JSON number: `null`, the same token the TOON body uses (§3), so the surfaces agree.
                 out.push_str("null");
+            } else if *decimals == KvValue::FULL_PRECISION {
+                // TOON's canonical number form is also valid JSON (`1e-300`, `1e+21`), and padding to 255 places
+                // would round a smaller value to zero.
+                crate::toon::push_f64(out, *f);
             } else {
                 let _ = write!(out, "{f:.*}", *decimals as usize);
             }
@@ -294,6 +310,35 @@ mod tests {
         assert_eq!(value(&KvValue::Float(1.5, 3)), "1.5");
         assert_eq!(value(&KvValue::Float(2.0, 2)), "2");
         assert_eq!(value(&KvValue::Float(-0.001, 2)), "0");
+    }
+
+    // 255 decimals means "do not round": a value needing more places than a u8 can count (below about 1e-255) used to
+    // round to 0 in TOON and the JSON companion.
+    #[test]
+    fn full_precision_keeps_values_that_need_more_than_255_places() {
+        for (f, expected) in [
+            (1e-256, "1e-256"),
+            (1e-300, "1e-300"),
+            (5e-324, "5e-324"),
+            (-1.234_567_890_123_456_8e-250, "-1.2345678901234568e-250"),
+            (0.1, "0.1"),
+            (1e300, "1e+300"),
+        ] {
+            let v = KvValue::Float(f, u8::MAX);
+            assert_eq!(value(&v), expected, "TOON for {f:e}");
+            let mut json = String::new();
+            kv_value_to_json(&mut json, &v);
+            assert_eq!(json, expected, "JSON for {f:e}");
+            let back: f64 = json.parse().expect("a JSON number");
+            assert_eq!(back.to_bits(), f.to_bits(), "{json} must read back as {f:e}");
+        }
+    }
+
+    // Explicit decimals below 255 still round, as asked: that is the caller's precision, not a lossy default.
+    #[test]
+    fn explicit_decimals_still_round_tiny_values() {
+        assert_eq!(value(&KvValue::Float(1e-300, 2)), "0");
+        assert_eq!(value(&KvValue::Float(1e-300, 254)), "0");
     }
 
     // AC-017: total_count and hints are NOT rendered when items is empty — not just the trivial all-None/empty case,
