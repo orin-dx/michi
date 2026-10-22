@@ -309,8 +309,14 @@ pub async fn resume(prior: &RunRecord, plan: &Plan, opts: &ResumeOptions) -> Res
     if let Some(unknown) = prior.steps().iter().find(|s| plan.index_of(s.step_id()).is_none()) {
         return Err(ResumeError::UnknownStep { step_id: unknown.step_id().clone() });
     }
+    // One index instead of a linear `prior.step()` per plan step and per verdict, which made resume O(N²). The first
+    // record for an id wins, as with `RunRecord::step`.
+    let mut by_id: BTreeMap<&StepId, &StepRecord> = BTreeMap::new();
+    for record in prior.steps() {
+        by_id.entry(record.step_id()).or_insert(record);
+    }
     for step_id in opts.verified.keys() {
-        let status = prior.step(step_id).map(StepRecord::status);
+        let status = by_id.get(step_id).map(|r| r.status());
         if !matches!(status, Some(StepStatus::OutcomeUnknown(_) | StepStatus::Panicked | StepStatus::Running)) {
             return Err(ResumeError::NotAwaitingVerification {
                 step_id: step_id.clone(),
@@ -322,7 +328,7 @@ pub async fn resume(prior: &RunRecord, plan: &Plan, opts: &ResumeOptions) -> Res
         .steps()
         .iter()
         .map(|step| {
-            let Some(prev) = prior.step(step.id()) else { return Initial::Run };
+            let Some(&prev) = by_id.get(step.id()) else { return Initial::Run };
             match prev.status() {
                 StepStatus::Completed | StepStatus::CompletedEarlier => {
                     Initial::Done(Box::new(carried_over(prev, "completed earlier in this run")))

@@ -239,7 +239,9 @@ impl RunRecord {
         &self.steps
     }
 
-    /// The record for `id`, if the run has that step.
+    /// The record for `id`, if the run has that step (the first one, if a rebuilt record lists it twice).
+    ///
+    /// A linear scan: to look up many steps, index [`RunRecord::steps`] once instead of calling this in a loop.
     pub fn step(&self, id: &StepId) -> Option<&StepRecord> {
         self.steps.iter().find(|s| s.step_id == *id)
     }

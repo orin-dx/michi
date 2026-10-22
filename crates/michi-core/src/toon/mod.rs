@@ -18,6 +18,19 @@ pub(crate) use escape::push_f64;
 pub use escape::{escape_key, escape_value, escape_value_quoted};
 pub use render::{ToonDocument, Value};
 
+/// Most header fields one TOON list may declare. [`ToonOptions::validate()`] returns [`ToonError::TooManyFields`] past
+/// it, and `list()` checks it against the union of item keys before building any row.
+pub const MAX_FIELDS: usize = 1_000;
+
+/// Most cells (`rows × fields`) one TOON list may hold. [`ToonOptions::validate()`] returns
+/// [`ToonError::TooManyCells`] past it, before looking at any row, and `list()` checks it before building rows, so a
+/// sparse item set whose key union is wide cannot expand into a huge table.
+pub const MAX_CELLS: usize = 1_000_000;
+
+/// Longest [`ToonOptions::truncation_hint`], in chars. The hint is copied into every truncated cell, so its length
+/// multiplies by the cell count; [`ToonOptions::validate()`] returns [`ToonError::TruncationHintTooLong`] past it.
+pub const MAX_TRUNCATION_HINT_CHARS: usize = 256;
+
 /// Error returned by [`ToonOptions::validate()`] when the options cannot form a valid TOON document.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
@@ -43,7 +56,7 @@ pub enum ToonError {
         /// Actual number of values in the row.
         actual: usize,
     },
-    /// An item in [`list()`] could not be rendered as a TOON row.
+    /// An item in `list()` (`serde` feature) could not be rendered as a TOON row.
     ///
     /// Items must serialize to a JSON object (`serde_json::Value::Object`).
     /// Scalars, arrays, and `null` values cannot be represented as TOON rows.
@@ -52,6 +65,29 @@ pub enum ToonError {
         row_index: usize,
         /// Reason why the item is invalid.
         reason: String,
+    },
+    /// `fields` declares more than [`MAX_FIELDS`] names (for `list()`: the items' keys add up to more).
+    TooManyFields {
+        /// Number of fields declared.
+        count: usize,
+        /// The limit, [`MAX_FIELDS`].
+        max: usize,
+    },
+    /// `rows × fields` is more than [`MAX_CELLS`].
+    TooManyCells {
+        /// Number of rows.
+        rows: usize,
+        /// Number of fields.
+        fields: usize,
+        /// The limit, [`MAX_CELLS`].
+        max: usize,
+    },
+    /// [`ToonOptions::truncation_hint`] is longer than [`MAX_TRUNCATION_HINT_CHARS`] chars.
+    TruncationHintTooLong {
+        /// Length of the hint, in chars.
+        len: usize,
+        /// The limit, [`MAX_TRUNCATION_HINT_CHARS`].
+        max: usize,
     },
 }
 
@@ -69,6 +105,14 @@ impl std::fmt::Display for ToonError {
             }
             Self::InvalidItem { row_index, reason } => {
                 write!(f, "item at index {row_index} cannot be rendered as a TOON row: {reason}")
+            }
+            Self::TooManyFields { count, max } => write!(f, "fields length {count} exceeds maximum of {max}"),
+            Self::TooManyCells { rows, fields, max } => {
+                let cells = rows.saturating_mul(*fields);
+                write!(f, "{rows} rows x {fields} fields = {cells} cells exceeds maximum of {max}")
+            }
+            Self::TruncationHintTooLong { len, max } => {
+                write!(f, "truncation_hint length {len} chars exceeds maximum of {max}")
             }
         }
     }
@@ -162,8 +206,10 @@ impl ToonOptions {
     /// # Errors
     ///
     /// Returns [`ToonError::InvalidTypeName`] if `type_name` is a reserved
-    /// root key (`totalCount`, `help` or `recovery`), [`ToonError::InvalidFieldName`] if a
-    /// field name appears more than once, or [`ToonError::RowLengthMismatch`]
+    /// root key (`totalCount`, `help` or `recovery`), [`ToonError::TooManyFields`] past [`MAX_FIELDS`] fields,
+    /// [`ToonError::InvalidFieldName`] if a field name appears more than once, [`ToonError::TooManyCells`] if
+    /// `rows × fields` is past [`MAX_CELLS`], [`ToonError::TruncationHintTooLong`] if the truncation hint is past
+    /// [`MAX_TRUNCATION_HINT_CHARS`] chars, or [`ToonError::RowLengthMismatch`]
     /// if any row's length differs from `fields.len()`.
     pub fn validate(&self) -> Result<ToonDocument<'_>, ToonError> {
         ToonDocument::validate(self)
@@ -240,7 +286,10 @@ fn json_value_to_toon_value(v: Option<&serde_json::Value>) -> Value {
 /// Returns [`ToonError::InvalidItem`] if an item fails to serialize or does
 /// not produce a JSON object (struct or map required). Returns
 /// [`ToonError::InvalidTypeName`] if `type_name` is a reserved root key
-/// (`totalCount`, `help` or `recovery`).
+/// (`totalCount`, `help` or `recovery`). Returns [`ToonError::TooManyFields`] if the items' keys add up to more than
+/// [`MAX_FIELDS`] distinct names, or [`ToonError::TooManyCells`] if `items.len()` times that header width is past
+/// [`MAX_CELLS`]; both are checked before any row is built.
+#[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
 #[cfg(feature = "serde")]
 pub fn list<T: serde::Serialize>(type_name: impl Into<String>, items: &[T]) -> Result<String, ToonError> {
     let type_name = type_name.into();
@@ -266,6 +315,16 @@ pub fn list<T: serde::Serialize>(type_name: impl Into<String>, items: &[T]) -> R
             }
         }
         objects.push(obj);
+    }
+    // Check the shape before building rows: a sparse item set whose key union is wide would otherwise expand into
+    // rows × fields cells here, before validate() could reject it.
+    if !render::RESERVED_TYPE_NAMES.contains(&type_name.as_str()) {
+        if fields.len() > MAX_FIELDS {
+            return Err(ToonError::TooManyFields { count: fields.len(), max: MAX_FIELDS });
+        }
+        if objects.len().saturating_mul(fields.len()) > MAX_CELLS {
+            return Err(ToonError::TooManyCells { rows: objects.len(), fields: fields.len(), max: MAX_CELLS });
+        }
     }
     let rows: Vec<Vec<Value>> =
         objects.iter().map(|obj| fields.iter().map(|f| json_value_to_toon_value(obj.get(f))).collect()).collect();
@@ -461,6 +520,89 @@ mod validate_tests {
         let o = opts("help", &["a"], vec![vec![Value::from("x"), Value::from("y")]]);
         assert_eq!(o.validate().unwrap_err(), ToonError::InvalidTypeName { name: "help".to_string() });
     }
+
+    fn distinct_fields(n: usize) -> Vec<String> {
+        (0..n).map(|i| format!("f{i}")).collect()
+    }
+
+    #[test]
+    fn capacity_limits_are_the_documented_values() {
+        assert_eq!(MAX_FIELDS, 1_000);
+        assert_eq!(MAX_CELLS, 1_000_000);
+        assert_eq!(MAX_TRUNCATION_HINT_CHARS, 256);
+    }
+
+    #[test]
+    fn validate_accepts_exactly_max_fields_and_rejects_one_more() {
+        let at_cap = ToonOptions::new("t", distinct_fields(MAX_FIELDS), vec![]);
+        assert!(at_cap.validate().is_ok());
+        let over = ToonOptions::new("t", distinct_fields(MAX_FIELDS + 1), vec![]);
+        assert_eq!(over.validate().unwrap_err(), ToonError::TooManyFields { count: MAX_FIELDS + 1, max: MAX_FIELDS });
+    }
+
+    #[test]
+    fn too_many_fields_takes_precedence_over_a_duplicate_field() {
+        let mut fields = distinct_fields(MAX_FIELDS + 1);
+        fields[1] = fields[0].clone();
+        let o = ToonOptions::new("t", fields, vec![]);
+        assert!(matches!(o.validate(), Err(ToonError::TooManyFields { .. })));
+    }
+
+    #[test]
+    fn duplicate_check_is_linear_for_the_largest_accepted_header() {
+        // The last field repeats the first: the O(F²) scan this replaced did ~500k comparisons here; a set does 1000.
+        let mut fields = distinct_fields(MAX_FIELDS);
+        fields[MAX_FIELDS - 1] = "f0".to_string();
+        let o = ToonOptions::new("t", fields, vec![]);
+        assert_eq!(o.validate().unwrap_err(), ToonError::InvalidFieldName { name: "f0".to_string() });
+    }
+
+    #[test]
+    fn validate_rejects_more_than_max_cells() {
+        // 1001 rows x 1000 fields = 1,001,000 cells. Rows are empty: the cell cap is checked before row arity, so
+        // an oversized document is rejected without looking at any row.
+        let o = ToonOptions::new("t", distinct_fields(1_000), vec![Vec::new(); 1_001]);
+        assert_eq!(o.validate().unwrap_err(), ToonError::TooManyCells { rows: 1_001, fields: 1_000, max: MAX_CELLS });
+    }
+
+    #[test]
+    fn validate_accepts_exactly_max_cells() {
+        let o = ToonOptions::new("t", vec!["a".to_string()], vec![vec![Value::Null]; MAX_CELLS]);
+        assert!(o.validate().is_ok());
+        let o = ToonOptions::new("t", vec!["a".to_string()], vec![vec![Value::Null]; MAX_CELLS + 1]);
+        assert_eq!(
+            o.validate().unwrap_err(),
+            ToonError::TooManyCells { rows: MAX_CELLS + 1, fields: 1, max: MAX_CELLS }
+        );
+    }
+
+    #[test]
+    fn validate_caps_truncation_hint_in_chars_not_bytes() {
+        // 256 two-byte chars (512 bytes) is at the cap; one more char is over it.
+        let at_cap = ToonOptions::new("t", vec![], vec![]).truncation_hint("é".repeat(MAX_TRUNCATION_HINT_CHARS));
+        assert!(at_cap.validate().is_ok());
+        let over = ToonOptions::new("t", vec![], vec![]).truncation_hint("é".repeat(MAX_TRUNCATION_HINT_CHARS + 1));
+        assert_eq!(
+            over.validate().unwrap_err(),
+            ToonError::TruncationHintTooLong { len: MAX_TRUNCATION_HINT_CHARS + 1, max: MAX_TRUNCATION_HINT_CHARS }
+        );
+    }
+
+    #[test]
+    fn capacity_errors_display_the_limit() {
+        assert_eq!(
+            ToonError::TooManyFields { count: 1001, max: 1000 }.to_string(),
+            "fields length 1001 exceeds maximum of 1000"
+        );
+        assert_eq!(
+            ToonError::TooManyCells { rows: 2000, fields: 1000, max: 1_000_000 }.to_string(),
+            "2000 rows x 1000 fields = 2000000 cells exceeds maximum of 1000000"
+        );
+        assert_eq!(
+            ToonError::TruncationHintTooLong { len: 300, max: 256 }.to_string(),
+            "truncation_hint length 300 chars exceeds maximum of 256"
+        );
+    }
 }
 
 #[cfg(all(test, feature = "serde"))]
@@ -601,6 +743,29 @@ mod list_tests {
         let result =
             list("t", &[serde_json::json!({}), serde_json::json!({"k": 1}), serde_json::json!({"a": 1, "b": 2})]);
         assert_eq!(result, Ok("t[3]{k,a,b}:\n  null,null,null\n  1,null,null\n  null,1,2".to_string()));
+    }
+
+    #[test]
+    fn list_rejects_a_key_union_over_max_fields() {
+        let items: Vec<serde_json::Value> =
+            (0..=MAX_FIELDS).map(|i| serde_json::json!({ format!("k{i}"): 1 })).collect();
+        assert_eq!(list("t", &items), Err(ToonError::TooManyFields { count: MAX_FIELDS + 1, max: MAX_FIELDS }));
+    }
+
+    #[test]
+    fn list_rejects_sparse_items_whose_header_times_rows_exceeds_max_cells() {
+        // 2000 items each with one distinct key: only 2000 values, but the union header makes a 2000 x 1000 table.
+        // Rejected before any row is materialized (the 10k x 10k case allocated 2.84 GiB).
+        let items: Vec<serde_json::Value> =
+            (0..2_000).map(|i| serde_json::json!({ format!("k{}", i % 1_000): 1 })).collect();
+        assert_eq!(list("t", &items), Err(ToonError::TooManyCells { rows: 2_000, fields: 1_000, max: MAX_CELLS }));
+    }
+
+    #[test]
+    fn list_reports_reserved_type_name_before_capacity_errors() {
+        let items: Vec<serde_json::Value> =
+            (0..=MAX_FIELDS).map(|i| serde_json::json!({ format!("k{i}"): 1 })).collect();
+        assert_eq!(list("help", &items), Err(ToonError::InvalidTypeName { name: "help".to_string() }));
     }
 
     #[test]

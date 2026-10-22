@@ -147,14 +147,14 @@ pub(crate) const RESERVED_TYPE_NAMES: [&str; 3] = crate::kv::RESERVED_ROOT_KEYS;
 
 /// Append one row cell: §7.2 quoting for strings, §2/§3 canonical numbers, the `null` literal. Only strings are
 /// truncated to `max_cell_len` chars, counted before escaping, with the caller's `hint` (empty: none) in the suffix.
-fn push_cell(out: &mut String, cell: &Value, max_cell_len: usize, hint: &str) {
+fn push_cell(out: &mut String, cell: &Value, max_cell_len: usize, hint: &crate::truncate::InlineHint<'_>) {
     use std::fmt::Write as _;
     match cell {
         Value::Str(s) => {
             if s.len() <= max_cell_len {
                 out.push_str(&escape_value(s));
             } else {
-                let truncated = crate::truncate::truncate_inline(s, max_cell_len, hint);
+                let truncated = hint.truncate(s, max_cell_len);
                 out.push_str(&escape_value(&truncated));
             }
         }
@@ -198,14 +198,15 @@ fn push_list(out: &mut String, opts: &crate::toon::ToonOptions) {
         out.push_str(&escape_key(field));
     }
     out.push_str("}:\n");
-    let hint = opts.truncation_hint.as_deref().unwrap_or("");
+    // Measured once per document, not once per truncated cell.
+    let hint = crate::truncate::InlineHint::new(opts.truncation_hint.as_deref().unwrap_or(""));
     for row in &opts.rows {
         out.push_str("  ");
         for (i, cell) in row.iter().enumerate() {
             if i > 0 {
                 out.push(',');
             }
-            push_cell(out, cell, opts.max_cell_len, hint);
+            push_cell(out, cell, opts.max_cell_len, &hint);
         }
         out.push('\n');
     }
@@ -285,23 +286,51 @@ mod proof {
         ///
         /// # Errors
         ///
-        /// Returns [`crate::toon::ToonError::InvalidTypeName`] if `type_name`
-        /// is a reserved root key (`totalCount`, `help` or `recovery`),
+        /// Checks run in this order and the first failure is returned:
+        /// [`crate::toon::ToonError::InvalidTypeName`] if `type_name` is a
+        /// reserved root key (`totalCount`, `help` or `recovery`),
+        /// [`crate::toon::ToonError::TooManyFields`] past
+        /// [`crate::toon::MAX_FIELDS`] fields,
         /// [`crate::toon::ToonError::InvalidFieldName`] if a field name appears
-        /// more than once, or [`crate::toon::ToonError::RowLengthMismatch`] if
-        /// any row's length differs from `fields.len()`.
+        /// more than once, [`crate::toon::ToonError::TooManyCells`] if
+        /// `rows × fields` is past [`crate::toon::MAX_CELLS`],
+        /// [`crate::toon::ToonError::TruncationHintTooLong`] if the truncation
+        /// hint is past [`crate::toon::MAX_TRUNCATION_HINT_CHARS`] chars, and
+        /// [`crate::toon::ToonError::RowLengthMismatch`] if any row's length
+        /// differs from `fields.len()`. Every check is linear in the input.
         pub fn validate(opts: &'a crate::toon::ToonOptions) -> Result<Self, crate::toon::ToonError> {
+            use crate::toon::{ToonError, MAX_CELLS, MAX_FIELDS, MAX_TRUNCATION_HINT_CHARS};
             if super::RESERVED_TYPE_NAMES.contains(&opts.type_name.as_str()) {
-                return Err(crate::toon::ToonError::InvalidTypeName { name: opts.type_name.clone() });
+                return Err(ToonError::InvalidTypeName { name: opts.type_name.clone() });
             }
-            for (i, field) in opts.fields.iter().enumerate() {
-                if opts.fields[..i].contains(field) {
-                    return Err(crate::toon::ToonError::InvalidFieldName { name: field.clone() });
+            if opts.fields.len() > MAX_FIELDS {
+                return Err(ToonError::TooManyFields { count: opts.fields.len(), max: MAX_FIELDS });
+            }
+            let mut seen = std::collections::HashSet::with_capacity(opts.fields.len());
+            for field in &opts.fields {
+                if !seen.insert(field.as_str()) {
+                    return Err(ToonError::InvalidFieldName { name: field.clone() });
+                }
+            }
+            if opts.rows.len().saturating_mul(opts.fields.len()) > MAX_CELLS {
+                return Err(ToonError::TooManyCells {
+                    rows: opts.rows.len(),
+                    fields: opts.fields.len(),
+                    max: MAX_CELLS,
+                });
+            }
+            if let Some(hint) = &opts.truncation_hint {
+                // A hint of at most MAX bytes has at most MAX chars, so only a longer one needs counting.
+                if hint.len() > MAX_TRUNCATION_HINT_CHARS {
+                    let len = hint.chars().count();
+                    if len > MAX_TRUNCATION_HINT_CHARS {
+                        return Err(ToonError::TruncationHintTooLong { len, max: MAX_TRUNCATION_HINT_CHARS });
+                    }
                 }
             }
             for (i, row) in opts.rows.iter().enumerate() {
                 if row.len() != opts.fields.len() {
-                    return Err(crate::toon::ToonError::RowLengthMismatch {
+                    return Err(ToonError::RowLengthMismatch {
                         row_index: i,
                         expected: opts.fields.len(),
                         actual: row.len(),

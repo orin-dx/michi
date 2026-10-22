@@ -15,6 +15,9 @@ pub struct RecoveryHint {
     /// The tool/operation name the agent should call to recover.
     pub tool: String,
     /// Ordered key-value parameters to call `tool` with.
+    ///
+    /// Keys should be unique; [`RecoveryHint::param`] keeps them so. If this field is filled directly with a repeated
+    /// key, every renderer emits that key once, at its first position, with its last value.
     pub params: Vec<(String, KvValue)>,
     /// Optional human-readable reason this recovery path applies.
     pub reason: Option<String>,
@@ -26,10 +29,15 @@ impl RecoveryHint {
         Self { tool: tool.into(), params: Vec::new(), reason: None }
     }
 
-    /// Append a suggested parameter.
+    /// Add a suggested parameter, or replace the value of an existing parameter with the same key in place (it keeps
+    /// the position of its first insertion). Parameters render as a JSON object, which cannot repeat a key.
     #[must_use]
     pub fn param(mut self, key: impl Into<String>, value: KvValue) -> Self {
-        self.params.push((key.into(), value));
+        let key = key.into();
+        match self.params.iter_mut().find(|(k, _)| *k == key) {
+            Some(slot) => slot.1 = value,
+            None => self.params.push((key, value)),
+        }
         self
     }
 
@@ -123,6 +131,7 @@ impl TryFrom<RecoveryHintWire> for RecoveryHint {
 
 // The schema describes the wire form above, not the Rust field layout.
 #[cfg(feature = "schemars")]
+#[cfg_attr(docsrs, doc(cfg(feature = "schemars")))]
 impl schemars::JsonSchema for RecoveryHint {
     fn schema_name() -> String {
         RecoveryHintWire::schema_name()
@@ -180,17 +189,29 @@ pub fn append_recovery(out: &mut String, hints: &[RecoveryHint]) {
 /// The parameters as a compact JSON object, written by the same writer as the JSON companions.
 pub(crate) fn params_json(params: &[(String, KvValue)]) -> String {
     let mut json = String::with_capacity(2 + params.iter().map(|(k, _)| k.len() + 16).sum::<usize>());
-    json.push('{');
-    for (i, (k, v)) in params.iter().enumerate() {
-        if i > 0 {
-            json.push(',');
-        }
-        crate::kv::json_escape_str(&mut json, k);
-        json.push(':');
-        crate::kv::kv_value_to_json(&mut json, v);
-    }
-    json.push('}');
+    push_params_json(&mut json, params);
     json
+}
+
+/// Append the parameters as a compact JSON object. A repeated key is written once, at its first position, with its
+/// last value -- what [`RecoveryHint::param`] would have produced -- so the object never holds a duplicate key.
+pub(crate) fn push_params_json(out: &mut String, params: &[(String, KvValue)]) {
+    out.push('{');
+    let mut first = true;
+    for (i, (k, _)) in params.iter().enumerate() {
+        if params[..i].iter().any(|(earlier, _)| earlier == k) {
+            continue;
+        }
+        let Some((_, v)) = params[i..].iter().rev().find(|(later, _)| later == k) else { continue };
+        if !first {
+            out.push(',');
+        }
+        first = false;
+        crate::kv::json_escape_str(out, k);
+        out.push(':');
+        crate::kv::kv_value_to_json(out, v);
+    }
+    out.push('}');
 }
 
 #[cfg(test)]
@@ -324,6 +345,37 @@ mod tests {
         let out = render_recovery(&hints);
         assert_eq!(out, format!("{HEADER}t,\"{{\\\"k\\\\rz\\\":\\\"v\\\"}}\",null"));
         assert!(!out.contains('\r'), "no raw CR may survive, got: {out:?}");
+    }
+
+    // A JSON object cannot repeat a key, so `param` with an existing key replaces that value in place.
+    #[test]
+    fn param_with_an_existing_key_replaces_the_value_in_place() {
+        let hint =
+            RecoveryHint::new("t").param("x", KvValue::Int(1)).param("y", KvValue::Int(2)).param("x", KvValue::Int(3));
+        assert_eq!(hint.params, vec![("x".to_string(), KvValue::Int(3)), ("y".to_string(), KvValue::Int(2))]);
+    }
+
+    // `params` is a public field, so duplicates can still be pushed directly; every writer then keeps one entry per
+    // key, at its first position with its last value -- the same result `param` would give.
+    #[test]
+    fn directly_pushed_duplicate_params_render_one_key_with_the_last_value() {
+        let mut hint = RecoveryHint::new("t");
+        hint.params.push(("x".to_string(), KvValue::Int(1)));
+        hint.params.push(("y".to_string(), KvValue::Int(2)));
+        hint.params.push(("x".to_string(), KvValue::Int(3)));
+        assert_eq!(params_json(&hint.params), "{\"x\":3,\"y\":2}");
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn duplicate_params_serialize_losslessly() {
+        let hint = RecoveryHint::new("t").param("x", KvValue::Int(1)).param("x", KvValue::Int(2));
+        let back: RecoveryHint = serde_json::from_str(&serde_json::to_string(&hint).unwrap()).unwrap();
+        assert_eq!(back, hint);
+        let mut direct = RecoveryHint::new("t");
+        direct.params.push(("x".to_string(), KvValue::Int(1)));
+        direct.params.push(("x".to_string(), KvValue::Int(2)));
+        assert_eq!(serde_json::to_string(&direct).unwrap(), "{\"tool\":\"t\",\"params\":{\"x\":2}}");
     }
 
     #[test]

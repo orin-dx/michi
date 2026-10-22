@@ -4,7 +4,7 @@
 
 //! # Resilience
 //!
-//! Retry configuration, delay calculation, RFC 7231 `Retry-After` parsing,
+//! Retry configuration, delay calculation, RFC 9110 `Retry-After` parsing,
 //! and FNV-1a idempotency primitives.
 
 use std::time::Duration;
@@ -116,6 +116,10 @@ impl Default for RetryConfig {
 }
 
 /// Compute the delay before the next retry attempt.
+///
+/// Returns `None` once `attempt >= max_retries`. Otherwise the delay is `base_delay * 2^attempt` plus jitter, raised to
+/// `retry_after` when that is larger, and capped at `max_delay`. `base_delay` and `retry_after` are rounded up to whole
+/// milliseconds first, so a positive delay is never zero; the cap is the exact `max_delay`.
 #[must_use]
 #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss, clippy::cast_sign_loss)]
 pub fn next_retry_delay(
@@ -129,17 +133,31 @@ pub fn next_retry_delay(
     }
     let jitter_seed = if jitter_seed.is_finite() { jitter_seed.clamp(0.0, 1.0) } else { 0.0 };
     let exp = 2u64.saturating_pow(attempt);
-    let base_ms = u64::try_from(config.base_delay.as_millis()).unwrap_or(u64::MAX);
-    let max_ms = u64::try_from(config.max_delay.as_millis()).unwrap_or(u64::MAX);
+    let base_ms = ceil_millis(config.base_delay);
     let raw_ms = base_ms.saturating_mul(exp);
     let jitter_ms = (raw_ms as f64 * config.jitter_factor * jitter_seed) as u64;
     let jittered_ms = raw_ms.saturating_add(jitter_ms);
-    let retry_after_ms = retry_after.map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
-    let capped_ms = jittered_ms.max(retry_after_ms).min(max_ms);
-    Some(Duration::from_millis(capped_ms))
+    let retry_after_ms = retry_after.map_or(0, ceil_millis);
+    // Cap against the exact `max_delay`, so rounding up never exceeds it.
+    Some(Duration::from_millis(jittered_ms.max(retry_after_ms)).min(config.max_delay))
 }
 
-/// Parse the value of an HTTP `Retry-After` header as a delay in seconds.
+/// Whole milliseconds in `d`, rounded up so a positive delay never becomes zero and a server's `Retry-After` is never
+/// shortened; saturates at `u64::MAX`.
+fn ceil_millis(d: Duration) -> u64 {
+    let ms = u64::try_from(d.as_millis()).unwrap_or(u64::MAX);
+    if d.subsec_nanos().is_multiple_of(1_000_000) {
+        ms
+    } else {
+        ms.saturating_add(1)
+    }
+}
+
+/// Parse the value of an HTTP `Retry-After` header (RFC 9110 §10.2.3) as a delay.
+///
+/// Accepts `delay-seconds` (ASCII digits only, no sign) or an HTTP-date in any of the three forms RFC 9110 §5.6.7
+/// requires: IMF-fixdate, RFC 850 and asctime. A date in the past is a zero delay. Surrounding whitespace is ignored;
+/// anything else returns `None`.
 #[must_use]
 pub fn parse_retry_after(header_value: &str) -> Option<Duration> {
     parse_retry_after_at(header_value, std::time::SystemTime::now())
@@ -149,25 +167,93 @@ pub fn parse_retry_after(header_value: &str) -> Option<Duration> {
 #[must_use]
 pub fn parse_retry_after_at(header_value: &str, now: std::time::SystemTime) -> Option<Duration> {
     let trimmed = header_value.trim();
-    if let Ok(secs) = trimmed.parse::<u64>() {
-        return Some(Duration::from_secs(secs));
+    // delay-seconds is 1*DIGIT (RFC 9110 §10.2.3); `u64::from_str` alone would also accept a leading `+`.
+    if !trimmed.is_empty() && trimmed.bytes().all(|b| b.is_ascii_digit()) {
+        return trimmed.parse::<u64>().ok().map(Duration::from_secs);
     }
-    let target = parse_http_date(trimmed)?;
+    let target = parse_http_date(trimmed, now)?;
     Some(target.duration_since(now).unwrap_or(Duration::ZERO))
 }
 
-fn parse_http_date(s: &str) -> Option<std::time::SystemTime> {
+/// Parse an HTTP-date in any of the three forms RFC 9110 §5.6.7 requires recipients to accept: IMF-fixdate
+/// (`Sun, 06 Nov 1994 08:49:37 GMT`), the obsolete RFC 850 form (`Sunday, 06-Nov-94 08:49:37 GMT`) and the obsolete
+/// asctime form (`Sun Nov  6 08:49:37 1994`). The weekday is not checked against the date.
+fn parse_http_date(s: &str, now: std::time::SystemTime) -> Option<std::time::SystemTime> {
+    parse_imf_fixdate(s).or_else(|| parse_rfc850_date(s, now)).or_else(|| parse_asctime_date(s))
+}
+
+fn parse_imf_fixdate(s: &str) -> Option<std::time::SystemTime> {
     let s = s.strip_suffix(" GMT")?;
     let (_weekday, rest) = s.split_once(", ")?;
     let mut parts = rest.split(' ');
     let day: u64 = parts.next()?.parse().ok()?;
     let month = month_number(parts.next()?)?;
     let year: i64 = parts.next()?.parse().ok()?;
-    if !(0..=9999).contains(&year) {
-        return None;
-    }
     let time = parts.next()?;
     if parts.next().is_some() {
+        return None;
+    }
+    to_system_time(year, month, day, time)
+}
+
+/// `rfc850-date = day-name-l "," SP date2 SP time-of-day SP GMT`, with `date2 = day "-" month "-" 2DIGIT`.
+///
+/// A two-digit year means the latest year with those last two digits that is not more than 50 years after `now`'s
+/// year (RFC 9110 §5.6.7): from 2026, `76` is 2076 and `77` is 1977.
+fn parse_rfc850_date(s: &str, now: std::time::SystemTime) -> Option<std::time::SystemTime> {
+    let s = s.strip_suffix(" GMT")?;
+    let (_weekday, rest) = s.split_once(", ")?;
+    let (date, time) = rest.split_once(' ')?;
+    let mut date_parts = date.split('-');
+    let day: u64 = date_parts.next()?.parse().ok()?;
+    let month = month_number(date_parts.next()?)?;
+    let yy = date_parts.next()?;
+    if date_parts.next().is_some() || yy.len() != 2 || !yy.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let yy: i64 = yy.parse().ok()?;
+    // The latest year ending in `yy` that is at most 50 years after now's year.
+    let limit = civil_year(now) + 50;
+    let year = limit - (limit - yy).rem_euclid(100);
+    to_system_time(year, month, day, time)
+}
+
+/// `asctime-date = day-name SP month SP ( 2DIGIT / ( SP DIGIT ) ) SP time-of-day SP year`, with no zone (GMT).
+fn parse_asctime_date(s: &str) -> Option<std::time::SystemTime> {
+    let mut parts = s.split_whitespace();
+    let _weekday = parts.next()?;
+    let month = month_number(parts.next()?)?;
+    let day: u64 = parts.next()?.parse().ok()?;
+    let time = parts.next()?;
+    let year = parts.next()?;
+    if parts.next().is_some() || year.len() != 4 || !year.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    to_system_time(year.parse().ok()?, month, day, time)
+}
+
+/// The UTC year `now` falls in (1970 for instants before the epoch, which no caller passes in practice).
+fn civil_year(now: std::time::SystemTime) -> i64 {
+    let secs = now.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let days = i64::try_from(secs / 86_400).unwrap_or(i64::MAX / 2);
+    // Inverse of `days_from_civil` (Howard Hinnant's civil_from_days), keeping only the year.
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let year = yoe + era * 400;
+    if mp >= 10 {
+        year + 1
+    } else {
+        year
+    }
+}
+
+/// Validate a civil date and `HH:MM:SS` time-of-day (GMT) and convert them to a `SystemTime`.
+fn to_system_time(year: i64, month: u64, day: u64, time: &str) -> Option<std::time::SystemTime> {
+    if !(0..=9999).contains(&year) {
         return None;
     }
     let mut time_parts = time.split(':');
@@ -414,11 +500,35 @@ mod tests {
     }
 
     #[test]
-    fn retry_after_sub_millisecond_truncates_toward_zero() {
+    fn retry_after_fractional_millisecond_rounds_up_never_waiting_less_than_asked() {
         let config = RetryConfig::new(3, Duration::from_millis(1), Duration::from_secs(30), 0.0);
         let delay = next_retry_delay(&config, 0, 0.0, Some(Duration::from_nanos(1_500_000)))
             .expect("attempt 0 within max_retries");
+        assert_eq!(delay, Duration::from_millis(2));
+        let delay = next_retry_delay(&config, 0, 0.0, Some(Duration::from_micros(1_900)))
+            .expect("attempt 0 within max_retries");
+        assert_eq!(delay, Duration::from_millis(2));
+    }
+
+    #[test]
+    fn sub_millisecond_base_delay_is_never_rounded_to_zero() {
+        let config = RetryConfig::try_new(3, Duration::from_micros(500), Duration::from_secs(1), 0.0).expect("valid");
+        let delay = next_retry_delay(&config, 0, 0.0, None).expect("attempt 0 within max_retries");
         assert_eq!(delay, Duration::from_millis(1));
+        let delay = next_retry_delay(&config, 0, 0.0, Some(Duration::from_nanos(1))).expect("attempt 0");
+        assert_eq!(delay, Duration::from_millis(1));
+    }
+
+    #[test]
+    fn rounding_up_never_exceeds_a_fractional_max_delay() {
+        let config =
+            RetryConfig::try_new(3, Duration::from_micros(500), Duration::from_micros(1_500), 0.0).expect("valid");
+        let delay = next_retry_delay(&config, 0, 0.0, Some(Duration::from_micros(1_200))).expect("attempt 0");
+        assert_eq!(delay, Duration::from_micros(1_500), "capped at max_delay exactly");
+        let config =
+            RetryConfig::try_new(3, Duration::from_micros(300), Duration::from_micros(500), 0.0).expect("valid");
+        let delay = next_retry_delay(&config, 0, 0.0, None).expect("attempt 0");
+        assert_eq!(delay, Duration::from_micros(500));
     }
 
     #[test]
@@ -659,6 +769,78 @@ mod tests {
     #[test]
     fn public_parse_retry_after_rejects_malformed_header() {
         assert_eq!(parse_retry_after("not a valid header"), None);
+    }
+
+    /// 1994-11-06 08:49:37 UTC, the RFC 9110 §5.6.7 example instant.
+    const RFC_EXAMPLE_SECS: u64 = 784_111_777;
+
+    fn at(secs: u64) -> std::time::SystemTime {
+        std::time::UNIX_EPOCH + Duration::from_secs(secs)
+    }
+
+    // delay-seconds is 1*DIGIT (RFC 9110 §10.2.3): a sign is not a digit.
+    #[test]
+    fn delay_seconds_rejects_a_sign() {
+        let now = at(0);
+        assert_eq!(parse_retry_after_at("+5", now), None);
+        assert_eq!(parse_retry_after_at("-5", now), None);
+        assert_eq!(parse_retry_after_at("5", now), Some(Duration::from_secs(5)));
+    }
+
+    // RFC 9110 §5.6.7: recipients MUST accept all three HTTP-date forms. Same instant, three spellings.
+    #[test]
+    fn all_three_http_date_forms_parse_to_the_same_instant() {
+        let now = at(RFC_EXAMPLE_SECS - 37);
+        let expected = Some(Duration::from_secs(37));
+        assert_eq!(parse_retry_after_at("Sun, 06 Nov 1994 08:49:37 GMT", now), expected, "IMF-fixdate");
+        assert_eq!(parse_retry_after_at("Sunday, 06-Nov-94 08:49:37 GMT", now), expected, "rfc850-date");
+        assert_eq!(parse_retry_after_at("Sun Nov  6 08:49:37 1994", now), expected, "asctime-date");
+    }
+
+    #[test]
+    fn asctime_accepts_a_two_digit_day() {
+        let now = at(0);
+        assert_eq!(parse_retry_after_at("Thu Jan 01 00:01:00 1970", now), Some(Duration::from_secs(60)));
+        assert_eq!(parse_retry_after_at("Thu Jan 15 00:00:00 1970", now), Some(Duration::from_secs(14 * 86_400)));
+    }
+
+    #[test]
+    fn obsolete_forms_reject_malformed_input() {
+        let now = at(0);
+        for bad in [
+            "Sunday, 06-Foo-94 08:49:37 GMT",
+            "Sunday, 06-Nov-94 08:49:37",
+            "Sunday, 06-Nov-1994 08:49:37 GMT",
+            "Sunday, 31-Nov-94 08:49:37 GMT",
+            "Sunday, 06-Nov-94 25:49:37 GMT",
+            "Sun Nov  6 08:49:37",
+            "Sun Nov  6 08:49:37 1994 GMT",
+            "Sun Nov 31 08:49:37 1994",
+            "Sun Foo  6 08:49:37 1994",
+        ] {
+            assert_eq!(parse_retry_after_at(bad, now), None, "{bad:?}");
+        }
+    }
+
+    // A two-digit year that would be more than 50 years after `now` means the most recent past year with those digits.
+    #[test]
+    fn rfc850_two_digit_year_uses_the_50_year_window() {
+        // now = 2026-01-01T00:00:00Z
+        let now = at(1_767_225_600);
+        // 76 -> 2076 (exactly 50 years ahead, not more): in the future.
+        let d = parse_retry_after_at("Wednesday, 01-Jan-76 00:00:00 GMT", now).expect("parses");
+        assert_eq!(d, Duration::from_secs(3_345_062_400 - 1_767_225_600));
+        // 77 -> 2077 would be 51 years ahead, so it is 1977: in the past, delay 0.
+        assert_eq!(parse_retry_after_at("Saturday, 01-Jan-77 00:00:00 GMT", now), Some(Duration::ZERO));
+        // 26 -> 2026: one minute ahead.
+        assert_eq!(parse_retry_after_at("Thursday, 01-Jan-26 00:01:00 GMT", now), Some(Duration::from_secs(60)));
+        // One second earlier it is still 2025, so 76 would be 51 years ahead: 1976.
+        let now = at(1_767_225_599);
+        assert_eq!(parse_retry_after_at("Thursday, 01-Jan-76 00:00:00 GMT", now), Some(Duration::ZERO));
+        // From 1994, 94 is 1994 and 44 is 2044.
+        let now = at(RFC_EXAMPLE_SECS);
+        assert_eq!(parse_retry_after_at("Sunday, 06-Nov-94 08:49:37 GMT", now), Some(Duration::ZERO));
+        assert!(parse_retry_after_at("Sunday, 06-Nov-44 08:49:37 GMT", now).expect("parses") > Duration::from_secs(1));
     }
 
     #[test]

@@ -22,15 +22,82 @@ pub enum KvValue {
     /// Signed integer.
     Int(i64),
     /// Floating-point number, rounded to the given number of decimal places and then written in canonical TOON
-    /// number form (§2): the decimals bound the precision but never pad (`Float(1.5, 3)` renders `1.5`), and NaN and
-    /// ±Infinity render as `null`.
-    Float(f64, u8),
+    /// number form (§2): the decimals bound the precision but never pad (`Float(1.5, 3)` renders `1.5`).
+    ///
+    /// NaN and ±Infinity render as `null` in every rendered output, TOON (§3) and the JSON companions alike. With
+    /// the `serde` feature, `KvValue` itself serializes a non-finite float as the string `"NaN"`, `"Infinity"` or
+    /// `"-Infinity"` (finite values stay JSON numbers) and accepts those strings back, so it round-trips exactly.
+    Float(
+        #[cfg_attr(feature = "serde", serde(with = "float_wire"))]
+        #[cfg_attr(feature = "schemars", schemars(schema_with = "float_wire::schema"))]
+        f64,
+        u8,
+    ),
     /// Boolean renders as `true` or `false`.
     Bool(bool),
     /// Elapsed time, rendered as the string of fractional seconds with one decimal, e.g. `1.5s`.
     Duration(Duration),
     /// Absent value, renders as `null`.
     Missing,
+}
+
+/// Serde form of `KvValue::Float`'s `f64`: a JSON number when finite, else one of the strings `"NaN"`, `"Infinity"`
+/// or `"-Infinity"`, which JSON numbers cannot express.
+#[cfg(feature = "serde")]
+mod float_wire {
+    use serde::{Deserialize as _, Serialize as _};
+
+    #[derive(serde::Serialize, serde::Deserialize)]
+    #[serde(untagged)]
+    enum Wire {
+        Number(f64),
+        Named(NonFinite),
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize)]
+    enum NonFinite {
+        #[serde(rename = "NaN")]
+        NaN,
+        #[serde(rename = "Infinity")]
+        Infinity,
+        #[serde(rename = "-Infinity")]
+        NegInfinity,
+    }
+
+    #[allow(clippy::trivially_copy_pass_by_ref)] // serde's `with` passes the field by reference
+    pub(super) fn serialize<S: serde::Serializer>(f: &f64, s: S) -> Result<S::Ok, S::Error> {
+        let wire = if f.is_nan() {
+            Wire::Named(NonFinite::NaN)
+        } else if *f == f64::INFINITY {
+            Wire::Named(NonFinite::Infinity)
+        } else if *f == f64::NEG_INFINITY {
+            Wire::Named(NonFinite::NegInfinity)
+        } else {
+            Wire::Number(*f)
+        };
+        wire.serialize(s)
+    }
+
+    pub(super) fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f64, D::Error> {
+        Ok(match Wire::deserialize(d)? {
+            Wire::Number(f) => f,
+            Wire::Named(NonFinite::NaN) => f64::NAN,
+            Wire::Named(NonFinite::Infinity) => f64::INFINITY,
+            Wire::Named(NonFinite::NegInfinity) => f64::NEG_INFINITY,
+        })
+    }
+
+    /// The schema of the wire form: `anyOf` a number or one of the three named strings.
+    #[cfg(feature = "schemars")]
+    pub(super) fn schema(_: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+        serde_json::from_value(serde_json::json!({
+            "anyOf": [
+                { "type": "number", "format": "double" },
+                { "type": "string", "enum": ["NaN", "Infinity", "-Infinity"] }
+            ]
+        }))
+        .unwrap_or(schemars::schema::Schema::Bool(true))
+    }
 }
 
 /// Append a KV value as a TOON 4.4 primitive token (§2, §3, §7.2).
@@ -92,11 +159,9 @@ pub(crate) fn kv_value_to_json(out: &mut String, value: &KvValue) {
             let _ = write!(out, "{n}");
         }
         KvValue::Float(f, decimals) => {
-            if f.is_nan() || f.is_infinite() {
-                // NaN and Infinity are not valid JSON numbers — render as quoted strings
-                // to avoid producing invalid JSON output
-                let s = format!("{f:.*}", *decimals as usize);
-                json_escape_str(out, &s);
+            if !f.is_finite() {
+                // Not a JSON number: `null`, the same token the TOON body uses (§3), so the surfaces agree.
+                out.push_str("null");
             } else {
                 let _ = write!(out, "{f:.*}", *decimals as usize);
             }
@@ -307,12 +372,19 @@ mod tests {
         assert!(out.capacity() >= "id".len() + 24, "capacity {} too small", out.capacity());
     }
 
+    // AC-042/AC-043 (superseded): the JSON companion writes a non-finite float exactly as the TOON body does, as
+    // `null` (TOON 4.4 §3; also what JSON.stringify does), so the two surfaces never disagree. It used to write the
+    // Rust tokens "NaN"/"inf"/"-inf" as strings. `KvValue`'s own serde form, which must round-trip, uses the strings
+    // "NaN", "Infinity" and "-Infinity" instead (see tests/kv_value_wire.rs).
     #[test]
-    fn float_nan_in_json_is_quoted() {
-        let mut out = String::new();
-        kv_value_to_json(&mut out, &KvValue::Float(f64::NAN, 2));
-        // Must be valid JSON — not the bare NaN token
-        assert!(out.starts_with('"'), "NaN must be JSON-quoted, got: {out}");
+    fn non_finite_floats_in_json_are_null_like_the_toon_body() {
+        for (f, decimals) in [(f64::NAN, 2), (f64::INFINITY, 0), (f64::NEG_INFINITY, 0)] {
+            let v = KvValue::Float(f, decimals);
+            let mut json = String::new();
+            kv_value_to_json(&mut json, &v);
+            assert_eq!(json, "null", "{v:?}");
+            assert_eq!(json, value(&v), "JSON and TOON tokens must agree for {v:?}");
+        }
     }
 
     #[cfg(feature = "serde")]
@@ -321,37 +393,7 @@ mod tests {
         let mut out = String::new();
         kv_value_to_json(&mut out, &KvValue::Float(f64::NAN, 2));
         let parsed: serde_json::Value = serde_json::from_str(&out).expect("must be valid JSON");
-        assert!(parsed.is_string(), "NaN must serialize as a JSON string");
-    }
-
-    #[test]
-    fn float_inf_in_json_is_quoted() {
-        let mut out = String::new();
-        kv_value_to_json(&mut out, &KvValue::Float(f64::INFINITY, 0));
-        assert!(out.starts_with('"'), "Inf must be JSON-quoted, got: {out}");
-    }
-
-    #[test]
-    fn float_neg_inf_in_json_is_quoted() {
-        let mut out = String::new();
-        kv_value_to_json(&mut out, &KvValue::Float(f64::NEG_INFINITY, 0));
-        assert!(out.starts_with('"'), "-Inf must be JSON-quoted, got: {out}");
-    }
-
-    // AC-042/AC-043: the three prior tests above only check the leading quote
-    // byte, which any quoted string (even a wrong one) would satisfy. Pin the
-    // exact quoted content.
-    #[test]
-    fn ac042_ac043_float_special_values_render_exact_quoted_tokens() {
-        let mut nan = String::new();
-        kv_value_to_json(&mut nan, &KvValue::Float(f64::NAN, 2));
-        assert_eq!(nan, "\"NaN\"");
-        let mut inf = String::new();
-        kv_value_to_json(&mut inf, &KvValue::Float(f64::INFINITY, 0));
-        assert_eq!(inf, "\"inf\"");
-        let mut neg_inf = String::new();
-        kv_value_to_json(&mut neg_inf, &KvValue::Float(f64::NEG_INFINITY, 0));
-        assert_eq!(neg_inf, "\"-inf\"");
+        assert!(parsed.is_null(), "NaN must be JSON null");
     }
 
     // AC-041: Missing renders as a bare JSON null, not a string or absent.
