@@ -48,8 +48,8 @@
     "@napi-rs/cli": "^3.0.0",
     "@types/node": "^26.1.0",
     "oxlint": "^1.72.0",
-    "oxlint-tsgolint": "^0.24.0",
-    "typescript": "^6.0.3"
+    "oxlint-tsgolint": "^7.0.2004",
+    "typescript": "^7.0.2"
   },
   "engines": {
     "node": ">= 18"
