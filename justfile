@@ -118,7 +118,7 @@ doc-check:
 # API SemVer check of the published crates against their latest crates.io release (the default baseline). CI runs the
 # same check.
 check-api:
-    cargo semver-checks check-release -p michi-core -p michi-pipeline --release-type "$(just pending-release-type)"
+    bash scripts/check-semver.sh
     # michi-graph has no crates.io baseline until its first release; CI's semver job skips it until then.
     -cargo semver-checks check-release -p michi-graph
 

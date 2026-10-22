@@ -10,15 +10,17 @@ SCRIPT = pathlib.Path(__file__).with_name("pending-release-type.py")
 
 CASES = [
     # (changesets, version, expected)
-    ({}, "0.4.0", "patch"),
+    # No changeset for the group (a version PR has applied them): the version bump decides.
+    ({}, "0.5.0", "infer"),
     # michi-graph versions on its own and body text never counts.
-    ({"a.md": "---\nmichi-graph: major\n---\n\nImpact: major\nmichi-core: major\n"}, "0.4.0", "patch"),
+    ({"a.md": "---\nmichi-graph: major\n---\n\nImpact: major\nmichi-core: major\n"}, "0.4.0", "infer"),
+    ({"a.md": "---\nmichi-core: none\n---\n"}, "0.4.0", "patch"),
     ({"a.md": "---\nmichi-pipeline: patch\n---\n\nx\n"}, "0.4.0", "patch"),
     # Before 1.0 a minor bump is breaking.
     ({"a.md": '---\n"michi-pipeline": minor\n---\n\nx\n'}, "0.4.0", "major"),
     ({"a.md": "---\nmichi-core: minor\n---\n\nx\n"}, "1.2.0", "minor"),
     ({"a.md": "---\nmichi-core: patch\n---\n", "b.md": "---\n'@orin-dx/michi': major\n---\n"}, "1.2.0", "major"),
-    ({"a.md": "michi-core: major\n"}, "0.4.0", "patch"),
+    ({"a.md": "michi-core: major\n"}, "0.4.0", "infer"),
 ]
 
 failures = 0
