@@ -80,11 +80,9 @@ jobs:
       - name: Check API compatibility against the pending release type
         run: |
           set -euo pipefail
-          version=$(grep -m1 '^version' crates/michi-core/Cargo.toml | sed -E 's/version *= *"(.*)"/\1/')
-          # Front matter of the fixed group's changesets only: michi-graph's own bump must not loosen this check.
-          release_type=$(python3 scripts/pending-release-type.py "$version")
-          echo "Pending release type: $release_type"
-          cargo semver-checks check-release -p michi-core -p michi-pipeline --release-type "$release_type"
+          # Front matter of the fixed group's changesets only (michi-graph's own bump must not loosen this check), or
+          # the version bump when none are pending, as on Callisto's version PR.
+          bash scripts/check-semver.sh
       # michi-graph versions on its own, so its release type comes from its own version bump. It has no baseline until
       # its first publish.
       - name: Check michi-graph's API against crates.io
