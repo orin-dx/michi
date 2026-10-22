@@ -95,10 +95,10 @@ Everything the crate outputs follows that one order: the topological order, each
 - `Plan::new` declares one node per step, builds with `UnknownTargets::Error` and validates with `Order::Declaration`. Violations map one to one onto `PlanViolation`. Cycles stay a single `PlanViolation::Cycle` listing every step on any cycle in declaration order, and `TooManyNodes` becomes `PlanViolation::TooManySteps`. One change: a step stuck between two cycles (depending on one, depended on by another) lies on no cycle and is no longer listed.
 - The scheduler reads `order()`, `prerequisites` and `dependents`. Node indices are declaration positions, so they match `Plan::steps()` and `RunRecord` without translation. Its ready counters, failure skipping and resume seeding stay in michi-pipeline: they are execution policy.
 - `PlanFingerprint` stays michi's own 64-bit FNV-1a with its current framing, computed over `canonical()`. A record saved before the change still resumes.
-- No michi-graph type appears in michi-pipeline's public API, so a michi-graph release never forces a breaking michi-pipeline release. michi-pipeline depends on it with a normal `^` range, not the exact pin the lockstep crates use.
+- No michi-graph type appears in michi-pipeline's public API. michi-pipeline depends on it through the same exact `=` pin as michi-core, since they release together.
 
 ## Licensing and release
 
 - `license = "MIT"` in the crate's own manifest and a crate `LICENSE`; the rest of the workspace stays FSL-1.1-MIT.
 - CI walks the normal and build dependencies of `michi-graph` with `cargo metadata` and fails on any license outside the permissive allowlist, so no FSL crate can enter its tree.
-- It versions on its own, outside the Callisto fixed group `michi`. A michi-graph minor release moves michi-pipeline out of its `^` range, so Callisto's cascade also bumps the michi group.
+- It releases with the rest of michi: one version for every michi package, in the Callisto fixed group `michi`, checked by CI's version-sync. Its first release is 0.5.0.
