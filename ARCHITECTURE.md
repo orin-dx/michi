@@ -10,7 +10,8 @@ This document describes how the `michi` workspace crates fit together.
 michi (workspace root, virtual manifest)
 ├── crates/
 │   ├── michi-core        # Every sync primitive: toon, kv, hints, recovery, empty, error, status, mcp, audience,
-│   │                     #   response (AgentResponse), pipeline (data type), truncate, resilience, telemetry; napi (feature)
+│   │                     #   response (AgentResponse), pipeline (data type), truncate, truncation, resilience, telemetry;
+│   │                     #   napi (feature)
 │   └── michi-pipeline    # Async pipeline execution: Plan, execute/resume, RunRecord, BreakerRegistry, CancellationToken
 └── packages/michi-node   # Node.js NAPI cdylib (@orin-dx/michi), publish = false
 ```
@@ -33,7 +34,7 @@ All three version in lockstep (each crate's `version`, kept equal by Callisto), 
 
 | Crate / Package | Responsibility | Runtime Dependencies |
 | --- | --- | --- |
-| `michi-core` | All sync AXI primitives. `toon`: TOON list rendering and parsing with stack-inlined `CompactString` cells. `truncate`: UTF-8 char-boundary content truncation (`floor_char_boundary`). `resilience`: retry back-off math, `Retry-After` HTTP date parsing, FNV-1a idempotency keys. Response DTOs: `AgentResponse`, `DomainError`, `StatusResponse`, `CallToolResult`, and the `Pipeline` data type. The public `resilience` and `truncate` items are re-exported at the crate root by explicit list. | `thiserror`, `compact_str` (Optional: `serde`, `serde_json`, `schemars`, `miette`, `napi`, `napi-derive`) |
+| `michi-core` | All sync AXI primitives. `toon`: TOON list rendering and parsing with stack-inlined `CompactString` cells. `truncate`: UTF-8 char-boundary content truncation (`floor_char_boundary`). `truncation`: `TruncationOutcome`, the report of what a list cap cut. `resilience`: retry back-off math, `Retry-After` HTTP date parsing, FNV-1a idempotency keys. Response DTOs: `AgentResponse`, `DomainError`, `StatusResponse`, `CallToolResult`, and the `Pipeline` data type. The public `resilience`, `truncate` and `truncation` items are re-exported at the crate root by explicit list. | `thiserror`, `compact_str` (Optional: `serde`, `serde_json`, `schemars`, `miette`, `napi`, `napi-derive`) |
 | `michi-pipeline` | Async execution of a validated `Plan` of steps: one `JoinSet` scheduler (sequential or capped parallel), a returned `RunRecord` whose statuses are `michi-core`'s `StepStatus`, `resume` from a record, a keyed `BreakerRegistry`, a per-run `RetryBudget`, `CancellationToken` and a `StepObserver`. Own `ExecutionError` and `PlanError` types, converting into `DomainError` via `From` — not variants of `michi_core::Error`. See `docs/spec/08-pipeline-execution.md`. | `michi-core`, `tokio`, `tokio-util`, `thiserror` (optional: `serde`) |
 | `packages/michi-node` | NAPI cdylib shim for `@orin-dx/michi`. Not published to crates.io. | `michi-core` (`napi` feature), `napi`, `napi-derive` |
 
@@ -52,6 +53,7 @@ flowchart TB
         hints["michi-core::hints"]
         recovery["michi-core::recovery"]
         truncate["michi-core::truncate"]
+        truncation["michi-core::truncation"]
     end
 
     toon --> AR
@@ -59,6 +61,7 @@ flowchart TB
     hints --> AR
     recovery --> AR
     truncate --> AR
+    truncation --> AR
 
     AR["michi-core::AgentResponse"]
 

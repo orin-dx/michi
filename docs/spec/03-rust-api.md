@@ -14,6 +14,7 @@ pub use resilience::{
     render_already_done, AlreadyDone, IdempotencyKey, RetryBudget, RetryConfig, RetryConfigError,
 };
 pub use truncate::{truncate, truncate_inline, Truncated};
+pub use truncation::{truncate_by_count, truncate_by_size, TruncationOutcome};
 
 pub type Result<T> = std::result::Result<T, Error>;
 ```
@@ -112,6 +113,9 @@ Items are serialized to JSON text and read back (so an `f32` field keeps its own
 pub struct DomainError {
     pub code: ErrorCode,
     pub message: String,
+    /// Why it happened, outermost first (diagnosis). Rendered as `causes[N]: …`.
+    pub causes: Vec<String>,
+    /// What to do next (guidance). Rendered as `help[N]: …`.
     pub hints: Vec<Hint>,
     pub recovery: Option<RecoveryHint>,
     pub retryable: bool,
@@ -120,6 +124,9 @@ pub struct DomainError {
 
 impl DomainError {
     pub fn new(code: ErrorCode, message: impl Into<String>) -> Self;
+    /// message = err's Display; each source() link's Display becomes one cause, outermost first.
+    pub fn from_error(code: ErrorCode, err: &(dyn std::error::Error + 'static)) -> Self;
+    pub fn cause(self, cause: impl Into<String>) -> Self;
     pub fn hint(self, hint: impl Into<String>) -> Self;
     pub fn recovery(self, r: RecoveryHint) -> Self;
     pub fn retryable(self, retryable: bool) -> Self;
@@ -133,9 +140,11 @@ impl DomainError {
 }
 ```
 
-- `render()` outputs a TOON 4.4 document: `error: <code>`, `message: …` (quoted per §7.2), `exit_code: 1`, then `help[N]: …` and `recovery[1]{tool,params,reason}:` when set. `Error::render()` uses the same shape for every variant (`error: invalid_input` / `error: not_found` for the non-domain variants). See [02-toon-format.md](02-toon-format.md#agent-facing-blocks).
+- `render()` outputs a TOON 4.4 document: `error: <code>`, `message: …` (quoted per §7.2), `causes[N]: …` when there are causes, `exit_code: 1`, then `help[N]: …` and `recovery[1]{tool,params,reason}:` when set. `Error::render()` uses the same shape for every variant (`error: invalid_input` / `error: not_found` for the non-domain variants). See [02-toon-format.md](02-toon-format.md#agent-facing-blocks).
 - `render_github_annotation()` outputs a GitHub Actions annotation (`::error title=code::message`). Newlines and CRs are percent-encoded.
-- `render_json()` outputs a JSON object: `{"isError":true,"error":"...","message":"...","retryable":bool,"hints":[...],"recovery":null|{...}}`.
+- `render_json()` outputs a JSON object: `{"isError":true,"error":"...","message":"...","causes":[...],"retryable":bool,"hints":[...],"recovery":null|{...}}`. `causes` and `hints` are always present, `[]` when empty; serde and the `schemars` schema match it.
+- `from_error(code, err)` sets `message` to `err.to_string()` and walks `err.source()`, adding each link's `Display` to `causes`. A link whose text the last kept text (the message or the previous kept cause) already contains is skipped, since `thiserror` messages often embed their source (`#[error("walk failed: {0}")]`). The walk stops after 128 links. Nothing is stored but text: `source()` on a `DomainError` stays `None`, and it stays `Clone + Send + Sync`. Line breaks stay inside their cause; `render()` escapes them.
+- With the `miette` feature, `Diagnostic::help()` lists the hints, then one `caused by: …` line per cause (`None` when there are neither). The GitHub annotation stays message-only.
 - `to_call_tool_result()` builds an MCP `CallToolResult` with `is_error:true` and the rendered JSON as `structured_content`.
 - When the `schemars` feature is enabled, `DomainError` implements `JsonSchema` (the schema of `render_json()`'s object). Only types serde actually serializes have a schema: `StatusResponse`, `ToonOptions`, `ErrorClass` and the other render-only types do not.
 
@@ -150,6 +159,8 @@ impl AgentResponse {
     pub fn new(type_name: impl Into<String>) -> Self;
     pub fn items(self, rows: Vec<Vec<Value>>, fields: &[&str]) -> Self;
     pub fn total_count(self, n: usize) -> Self;
+    /// total_count = outcome.total_before; appends outcome.hint(guidance) only when something was cut.
+    pub fn truncation<T>(self, outcome: &TruncationOutcome<T>, guidance: impl Into<String>) -> Self;
     pub fn kv_items(self, items: Vec<KvItem>) -> Self;
     pub fn hint(self, hint: impl Into<String>) -> Self;
     /// Replaces the full hint list (contrast `hint()`, which appends).
@@ -180,6 +191,8 @@ impl AgentResponse {
 `render_json()` is not part of the public API — it's reached only via `render(OutputFormat::Json)`.
 
 The TOON slot is stored as a `ToonOptions` and validated and rendered by reference, so a render never copies the rows. `is_error()` validates without rendering. Hints and recovery are appended to the rendered body in place.
+
+`truncation(&outcome, guidance)` sets the count and the cut hint in one call, so `totalCount` and `help[]` always describe the same cut. It does not touch the rows: `AgentResponse` holds TOON `Value` rows, not the caller's `T`, so pass `outcome.kept` (converted) to `.items(...)`. A later `.total_count()` or `.hints()` still overrides it.
 
 `total_count` applies to both paths. On the KV path with no items the body is just `totalCount: N` (the free `render_kv` still returns `""` for empty items), so a count the caller set is never dropped; with neither items nor a count the body is empty.
 
@@ -312,6 +325,44 @@ Truncates strings safely at Unicode scalar boundaries without splitting UTF-8 co
 - The count is the chars **removed** (input chars minus kept chars), sized so the suffix's own digits fit within `max_chars`.
 - The `— use {hint}` clause is the caller's instruction and is omitted when `hint` is empty; michi never supplies one. The `&str` signature stays so the NAPI `truncate(content, maxChars, hint)` export is unchanged.
 - When the suffix plus one kept char does not fit, the result is the first `max_chars - 1` chars and `…`, never a fragment of the suffix. `was_truncated` is still `true`.
+
+## `truncation` — What a List Cap Cut
+
+`truncate` cuts one string; `truncation` reports what a cap on a list cut. Which items survive is the caller's decision; michi owns only the report.
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)] // each only when T has it
+#[non_exhaustive]
+pub struct TruncationOutcome<T> {
+    pub kept: Vec<T>,
+    pub total_before: usize,
+}
+
+impl<T> TruncationOutcome<T> {
+    /// Wraps a caller's own selection. total_before is raised to kept.len() if lower.
+    pub fn new(kept: Vec<T>, total_before: usize) -> Self;
+    pub fn truncated(&self) -> bool; // kept.len() < total_before
+    pub fn omitted(&self) -> usize;  // total_before - kept.len(), saturating
+    /// None when nothing was cut.
+    pub fn hint(&self, guidance: impl Into<String>) -> Option<Hint>;
+}
+
+pub fn truncate_by_count<T>(items: Vec<T>, max: usize) -> TruncationOutcome<T>;
+pub fn truncate_by_size<T>(items: Vec<T>, budget: usize, size_of: impl FnMut(&T) -> usize) -> TruncationOutcome<T>;
+```
+
+- `hint(guidance)` is `showing {kept} of {total_before}; {guidance}`, or `showing {kept} of {total_before}` when `guidance` is empty. The guidance is the caller's instruction (`pass --limit 120`); michi never invents a flag.
+- `truncate_by_count` keeps the first `max` items in order.
+- `truncate_by_size` keeps items in order while the sum of `size_of` stays within `budget`, and stops at the first item that does not fit, so `kept` is always a prefix. A first item larger than the budget leaves `kept` empty with `truncated()` true. The sum is checked: a total past `usize::MAX` is over budget. `size_of` is the caller's unit (bytes, tokens, lines).
+- `truncated()` and `omitted()` are computed, never stored, so they cannot disagree with `kept` and `total_before`.
+
+| Call | `kept` | `hint("pass --all")` |
+| --- | --- | --- |
+| `truncate_by_count(vec![a, b, c, d], 2)` | `[a, b]` | `Some("showing 2 of 4; pass --all")` |
+| `truncate_by_count(vec![a, b], 5)` | `[a, b]` | `None` |
+| `truncate_by_size(vec![3, 4, 5, 1], 8, \|n\| *n)` | `[3, 4]` | `Some("showing 2 of 4; pass --all")` |
+| `truncate_by_size(vec![100, 1], 10, \|n\| *n)` | `[]` | `Some("showing 0 of 2; pass --all")` |
+| `TruncationOutcome::new(vec![c, d], 4)` | `[c, d]` | `Some("showing 2 of 4; pass --all")` |
 
 ## `resilience` — Retry & Idempotency Primitives
 

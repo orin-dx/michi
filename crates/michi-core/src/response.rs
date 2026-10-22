@@ -70,6 +70,39 @@ impl AgentResponse {
         self
     }
 
+    /// Report a list cut in one call: sets the total count to `outcome.total_before` and, only when something was
+    /// cut, appends [`TruncationOutcome::hint`](crate::truncation::TruncationOutcome::hint)`(guidance)`, so the
+    /// `totalCount` and the `help[]` line always describe the same cut.
+    ///
+    /// It does not set the rows: the response holds TOON [`Value`] rows, not the caller's `T`, so pass `outcome.kept`
+    /// (converted to rows) to [`items`](Self::items) yourself. Later [`total_count`](Self::total_count) or
+    /// [`hints`](Self::hints) calls still override what this sets.
+    ///
+    /// ```
+    /// use michi_core::toon::Value;
+    /// use michi_core::{truncate_by_count, AgentResponse, OutputFormat};
+    ///
+    /// let outcome = truncate_by_count(vec![1, 2, 3, 4], 2);
+    /// let rows = outcome.kept.iter().map(|n| vec![Value::Int(*n)]).collect();
+    /// let r = AgentResponse::new("issues").items(rows, &["n"]).truncation(&outcome, "pass --limit 4");
+    /// assert_eq!(
+    ///     r.render(OutputFormat::Text),
+    ///     "issues[2]{n}:\n  1\n  2\ntotalCount: 4\nhelp[1]: showing 2 of 4; pass --limit 4"
+    /// );
+    /// ```
+    #[must_use]
+    pub fn truncation<T>(
+        mut self,
+        outcome: &crate::truncation::TruncationOutcome<T>,
+        guidance: impl Into<String>,
+    ) -> Self {
+        self.toon.total_count = Some(outcome.total_before);
+        if let Some(hint) = outcome.hint(guidance) {
+            self.hints.push(hint);
+        }
+        self
+    }
+
     /// Populate the KV single-item path.
     #[must_use]
     pub fn kv_items(mut self, items: Vec<KvItem>) -> Self {

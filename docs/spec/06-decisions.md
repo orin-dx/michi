@@ -533,3 +533,57 @@ A bug hunt found records and retries that misreported a run.
 - **Library lints:** `clippy::must_use_candidate`, `clippy::missing_errors_doc`, `clippy::missing_panics_doc` and `missing_debug_implementations` are on for both library targets, as per-crate inner attributes like the other lib-only lints (root `Cargo.toml` comment). Every `Result`-returning public function documents its errors, and every public type implements `Debug`; `FnStep<F>` does so by hand, without requiring `F: Debug`.
 - **`PartialEq`:** added to `RetryConfig` and `ToonOptions`. `ExecOptions` and `ResumeOptions` stay without it: they hold a `CancellationToken`, a shared `BreakerRegistry` and an observer trait object, none of which compares by value.
 - **NAPI coverage:** `renderPartialSuccess`, `renderPipeline` (status and reason as `StepStatus` labels, validated), `emptyStateWithHints` (throws on a reserved type name like `emptyState`) and `alreadyDone` follow the budgeted conversion pattern of "Capacity limits": 10,000 entries per list, 4 KiB per identifier, 1 MiB per name or reason, 64 MiB per call. There is no `truncateInline`: the `truncate` export already is `truncate_inline`.
+
+### Resolved 2026-10-21 — `TruncationOutcome` reports what a list cap cut
+
+monokl asked for the "Split the decision from the signal" sketch in `PRINCIPLES.md` to ship (`target/michi-handoff.md` in monokl's `sibling-conventions` worktree). It shipped as `michi_core::truncation`: `TruncationOutcome<T> { kept, total_before }`, `truncate_by_count`, `truncate_by_size` and `AgentResponse::truncation`. See [03 — `truncation`](03-rust-api.md#truncation--what-a-list-cap-cut).
+
+Gates:
+
+1. **Rendering, not domain logic:** which items survive stays the caller's choice. michi ships two plain strategies (first N, prefix within a budget) and a `new()` for everything else; the outcome and its hint are the same whichever produced it.
+2. **Dependencies:** none added.
+3. **Cross-tool:** two independent tools hand-roll the signal. caliper appends a `"...(+N)"` marker in `truncate_with_indicator` (`caliper/crates/core/src/toon.rs`), and monokl's spec makes `items_total > items_returned` its only "there is more" signal and leaves the wording to the presentation layer (`monokl/docs/spec/08-library-session-api.md`, `OpCost`), with a token-budget cap planned. Both checked in their source, not taken from the handoff.
+4. **No duplicate:** `truncate::Truncated` is string-level (chars cut inside one value); this is list-level (items cut from a list). `AgentResponse::total_count` and `hint` already exist, and `truncation()` composes them rather than adding a third way to say "there is more": it sets `total_count` and pushes one ordinary hint, so the output is the same `totalCount` + `help[]` an agent already reads, and the two can no longer disagree. `ToonOptions` keeps its plain `total_count`/`hints` fields; no `ToonOptions::truncation` was added, since no caller asked and the fields are public.
+5. **Departures** are listed below.
+
+Departures from the `PRINCIPLES.md` sketch:
+
+| Sketch | Shipped | Why |
+| --- | --- | --- |
+| `pub truncated: bool` field | `truncated()` method | A stored flag could disagree with `kept.len()` and `total_before`. |
+| No constructor | `TruncationOutcome::new(kept, total_before)` | The struct is `#[non_exhaustive]` (so fields can be added in 0.4.x), which blocks struct literals outside the crate; wrapping a custom heuristic is the point of the type. |
+| `truncate_by_bytes(items, max_bytes, size_of)` | `truncate_by_size(items, budget, size_of)` | `size_of` is the caller's unit; monokl measures LLM tokens, not bytes. |
+| `size_of: impl Fn(&T) -> usize` | `impl FnMut(&T) -> usize` | Accepts every `Fn` closure plus ones that keep state (a tokenizer cache). |
+| No derives | `Debug`, `Clone`, `PartialEq`, `Eq`, each when `T` has it | Lets callers assert on outcomes; derive bounds keep `T` unconstrained otherwise. |
+
+Departures from monokl's handoff and resolved decisions:
+
+- **`new()` normalizes** a `total_before` below `kept.len()` up to `kept.len()` (`PRINCIPLES.md` §6: infallible constructors normalize). The handoff left it unspecified. `omitted()` saturates, so even fields assigned inconsistently after construction never panic or wrap.
+- **`truncate_by_size` stops at the first item that does not fit** (handoff's recommendation), so `kept` is always a prefix and the order says what was dropped. A first item over the whole budget leaves `kept` empty, `truncated()` true. Zero-size items always fit.
+- **Checked, not saturating, accumulation.** The handoff asked for saturation. With saturation, a sum past `usize::MAX` becomes `usize::MAX`, which "fits" a `usize::MAX` budget; checked addition treats any overflow as over budget. For every budget below `usize::MAX` the two agree.
+- **Hint wording** is exactly `showing {kept} of {total_before}; {guidance}`, or `showing {kept} of {total_before}` for empty guidance (mirroring `truncate`, which drops its `— use …` clause for an empty hint). `None` when nothing was cut. The guidance is the caller's; michi never invents a flag. It reads as a count rather than reusing `truncate`'s `(N more chars — use …)` suffix because it sits next to `totalCount` as its own `help[]` entry, not inside a cell.
+- **`AgentResponse::truncation(&outcome, guidance)`** sets `total_count = outcome.total_before` even when nothing was cut (the count is still true), and appends the hint only when something was. It does not set rows: `AgentResponse` rows are TOON `Value`s, not `T`, so the caller passes `outcome.kept` (converted) to `.items(...)`. Considered: a generic `items_from(outcome, to_row)` — rejected for now, one more way to set rows for a two-line caller-side `map`.
+- **Module:** a new `truncation` module beside `truncate`, not inside `truncate.rs`. `truncate.rs` is string-level and already long; a list-level outcome generic over `T` shares no code with it. The names pair like `truncate::Truncated` / `truncation::TruncationOutcome`. Root re-exports name the three items explicitly.
+
+### Resolved 2026-10-21 — Cause chains are their own field, not hints
+
+monokl asked for `DomainError::from_error`, filling each `source()` link in as a **hint**. Hints mean "what the agent should do next"; a cause is diagnosis. monokl's own `to_domain_error` shows the cost: cause lines and real guidance (`you supplied 12 terms; the limit is 8`) land in the same `help[]` array, and an agent cannot tell which is which. So causes got their own field.
+
+Shipped:
+
+- **`DomainError.causes: Vec<String>`** with a `.cause(text)` builder. `DomainError` was already `#[non_exhaustive]`, so the field is additive; construction stays `DomainError::new` plus builders.
+- **TOON:** `render()` writes `causes[N]: a,b` (inline primitive array, §9.1, each entry quoted and escaped per §7.2 by the helper `help[]` uses) right after `message` and before `exit_code`, so the block reads what happened, why, then what to do. Omitted when empty, like `help`. `DomainError`'s root keys are fixed, not caller-supplied, so no key needs reserving; nothing appends a `causes` block to other documents. `Error::Domain` renders its inner error, causes included; `Error::InvalidInput`/`NotFound` have no causes.
+- **JSON:** `render_json()`, `Serialize` (via `DomainErrorWire`) and the `schemars` schema all carry `causes` as an array of strings, right after `message`, **always present (`[]` when empty)**, matching `hints`. Considered: omitting it when empty — rejected, `hints` is always present and one fixed key set keeps `outputSchema` simple. `tests/wire_schema.rs` checks schema, `render_json` and serde agree with and without causes.
+- **GitHub annotation:** message only, unchanged.
+- **miette:** `help()` lists the hints, then one `caused by: …` line per cause. Considered: `related()` — it needs stored `Diagnostic` values, and causes are text; `source()` — same problem (see below). The `caused by:` label keeps them apart from the guidance lines.
+- **`DomainError::from_error(code, &dyn Error)`:** `message` is `err`'s `Display`; each `source()` link, outermost first, is one cause. One cause per link, not one per line: the renderers escape line breaks, so monokl's `split_display_lines` is no longer needed and would split one cause into several. **Dedup:** a link whose text is contained in the last kept text (the message or the previous kept cause) is skipped, since `thiserror` messages usually embed their source (`#[error("walk failed: {0}")]` with `#[source]`). Comparing with the last _kept_ text rather than the immediate predecessor also covers a message that spells out the whole chain while a middle link does not embed its own source (`walk failed: io error: permission denied` → `io error` → `permission denied` gives no causes; against the predecessor `io error`, `permission denied` would repeat). An empty link text is contained in anything, so it is skipped too. The walk stops after 128 links so a cyclic `source()` cannot hang. No message prefix parameter: the caller can prefix `message`.
+- **Render-only (handoff's recommendation):** no source error is stored. `impl std::error::Error for DomainError` keeps `source()` returning `None`, documented: `from_error` preserves the chain as text. Storing `Arc<dyn Error + Send + Sync>` would cost an owned argument and a `#[schemars(skip)]` for no current consumer.
+- **NAPI:** `renderDomainError(code, message, hints, githubAnnotation?, causes?)` — an additive optional trailing array, budgeted like hints (10,000 entries, 1 MiB per cause, counted in the call's 64 MiB). The Rust-typed `napi::render_domain_error` gains a `causes: Vec<String>` parameter (breaking for direct Rust callers of the `napi` module only, allowed in 0.4).
+
+Gates:
+
+1. **Rendering:** text from an existing error into a rendered field; no domain decision.
+2. **Dependencies:** none (`thiserror` is already a default dependency, used only in tests here).
+3. **Cross-tool — thin, recorded as such.** Only monokl has hand-written the `source()` walk; callisto and caliper do not use michi and rely on miette's `#[diagnostic(transparent)]`. Built anyway because it is mechanical (no domain knowledge, one obvious behavior), it is the first integration step for every `thiserror`-based consumer (one error enum per crate is the orin-dx convention), and the alternative is each consumer re-deriving the dedup and line-break rules. The `causes` field itself would be needed by any consumer that wants to keep diagnosis out of `help[]`. If a second consumer's needs diverge (say, it wants `source()` preserved), revisit then.
+4. **No duplicate:** `hints` is guidance and `recovery` is a structured next call; neither is diagnosis. That distinction is the reason for the new field rather than reusing `hints`.
+5. **Departures from the handoff:** causes are a field, not hints (above); dedup of embedded sources is new; the miette test checks `help()` lists causes after hints, labelled.

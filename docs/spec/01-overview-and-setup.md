@@ -16,7 +16,7 @@ michi encodes the subset of AXI that's pure, language-agnostic computation — t
 | Principle                           | Module(s)                                             |
 | ----------------------------------- | ----------------------------------------------------- |
 | P1 — Token-Efficient Output         | `toon`, `kv`                                          |
-| P3 — Content Truncation             | `truncate`                                            |
+| P3 — Content Truncation             | `truncate`, `truncation`                              |
 | P4 — Pre-Computed Aggregates        | `ToonOptions::total_count`, `status` health summaries |
 | P5 — Definitive Empty States        | `empty`                                               |
 | P6 — Structured Errors & Exit Codes | `error`, `idempotency`                                |
@@ -195,6 +195,7 @@ michi/                           (workspace root — virtual manifest, no packag
           escape.rs              # comma/quote/newline escaping, header-token sanitizing
           render.rs              # Value, ToonDocument; string assembly with pre-allocated capacity
         truncate.rs              # Truncated, truncate(), truncate_inline()
+        truncation.rs            # TruncationOutcome, truncate_by_count(), truncate_by_size()
       benches/
         toon_render.rs, kv_render.rs
       examples/

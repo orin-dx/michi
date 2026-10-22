@@ -106,9 +106,13 @@ impl ErrorCode {
 
 /// A domain-level error.
 ///
+/// `causes` say why it happened (diagnosis); `hints` say what to do next (guidance). They are separate fields, and
+/// render as separate keys, so an agent can tell them apart. [`DomainError::from_error`] fills `message` and `causes`
+/// from a `std::error::Error` and its `source()` chain.
+///
 /// With the `serde` feature it serializes to exactly the JSON of [`DomainError::render_json`]
-/// (`{isError, error, message, retryable, hints, recovery}`), and with `schemars` its schema describes that form, so
-/// it can be used as an MCP `outputSchema`. `retry_after` is not part of that form.
+/// (`{isError, error, message, causes, retryable, hints, recovery}`), and with `schemars` its schema describes that
+/// form, so it can be used as an MCP `outputSchema`. `retry_after` is not part of that form.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(into = "DomainErrorWire"))]
@@ -118,6 +122,9 @@ pub struct DomainError {
     pub code: ErrorCode,
     /// Human-readable message.
     pub message: String,
+    /// Why it happened, outermost first: one entry per underlying cause, rendered as `causes[N]: …` after the
+    /// message. Diagnosis only; what the agent should do next goes in `hints`.
+    pub causes: Vec<String>,
     /// Contextual hints, rendered as a trailing `help[N]:` block.
     pub hints: Vec<Hint>,
     /// Optional structured recovery hint.
@@ -135,10 +142,57 @@ impl DomainError {
             retryable: code.is_retryable_by_default(),
             code,
             message: message.into(),
+            causes: Vec::new(),
             hints: Vec::new(),
             recovery: None,
             retry_after: None,
         }
+    }
+
+    /// Build a domain error from an existing error and its `source()` chain.
+    ///
+    /// `message` is `err`'s own `Display`. Each `source()` link, outermost first, adds its `Display` as one entry of
+    /// `causes` (never a hint: causes are diagnosis, hints are guidance). A link whose text is already contained in
+    /// the last text kept (the message, or the previous cause kept) is skipped, because `thiserror` messages often
+    /// embed their source (`#[error("walk failed: {0}")]`) and would otherwise repeat it. Line breaks stay inside
+    /// their entry; the renderers escape them. The walk stops after 128 links, so a cyclic `source()` cannot loop.
+    ///
+    /// The chain is kept as text only: no source error is stored, so [`std::error::Error::source`] on the result is
+    /// still `None`, and the result stays `Clone`, `Send` and `Sync`. Prefix the message yourself if you want one
+    /// (`e.message = format!("walk: {}", e.message)`).
+    ///
+    /// ```
+    /// use michi_core::{DomainError, ErrorCode};
+    ///
+    /// #[derive(Debug, thiserror::Error)]
+    /// #[error("walk failed: {0}")]
+    /// struct Walk(#[source] std::io::Error);
+    ///
+    /// let io = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "permission denied");
+    /// let e = DomainError::from_error(ErrorCode::ExternalFailure, &Walk(io));
+    /// assert_eq!(e.message, "walk failed: permission denied");
+    /// assert!(e.causes.is_empty(), "the message already holds the only cause");
+    /// ```
+    pub fn from_error(code: ErrorCode, err: &(dyn std::error::Error + 'static)) -> Self {
+        let mut out = Self::new(code, err.to_string());
+        let mut link = err.source();
+        for _ in 0..MAX_CAUSE_LINKS {
+            let Some(e) = link else { break };
+            let text = e.to_string();
+            let previous = out.causes.last().unwrap_or(&out.message);
+            if !previous.contains(text.as_str()) {
+                out.causes.push(text);
+            }
+            link = e.source();
+        }
+        out
+    }
+
+    /// Append one cause (why the error happened), rendered after the message as `causes[N]: …`.
+    #[must_use]
+    pub fn cause(mut self, cause: impl Into<String>) -> Self {
+        self.causes.push(cause.into());
+        self
     }
 
     /// Append a contextual hint.
@@ -176,12 +230,13 @@ impl DomainError {
     }
 
     /// Render as a TOON 4.4 root object, with no trailing newline: `error: <code label>`, `message: …` (quoted per
-    /// §7.2), `exit_code: 1`, then the inline `help[N]: …` array and the `recovery[1]{tool,params,reason}:` table when
-    /// present.
+    /// §7.2), the inline `causes[N]: …` array when there are causes, `exit_code: 1`, then the inline `help[N]: …`
+    /// array and the `recovery[1]{tool,params,reason}:` table when present.
     #[must_use]
     pub fn render(&self) -> String {
-        let mut out = String::with_capacity(96 + self.message.len() + self.hints.len() * 50);
-        push_error_fields(&mut out, self.code.label(), &self.message);
+        let causes_est: usize = self.causes.iter().map(|c| c.len() + 3).sum();
+        let mut out = String::with_capacity(96 + self.message.len() + causes_est + self.hints.len() * 50);
+        push_error_fields(&mut out, self.code.label(), &self.message, &self.causes);
         crate::hints::append_hints(&mut out, &self.hints);
         if let Some(r) = &self.recovery {
             crate::recovery::append_recovery(&mut out, std::slice::from_ref(r));
@@ -205,22 +260,30 @@ impl DomainError {
 
     /// Render as a JSON object matching `AgentResponse::render_json()` shape.
     ///
-    /// Keys: `isError`, `error`, `message`, `retryable`, `hints`, `recovery`.
-    /// Client code reading `structured_content` should not need two schemas.
+    /// Keys: `isError`, `error`, `message`, `causes`, `retryable`, `hints`, `recovery`. `causes` and `hints` are
+    /// always present, as `[]` when empty. Client code reading `structured_content` should not need two schemas.
     #[must_use]
     pub fn render_json(&self) -> String {
         let hints_est: usize = self.hints.iter().map(|h| h.as_str().len() + 4).sum();
+        let causes_est: usize = self.causes.iter().map(|c| c.len() + 4).sum();
         let recovery_est: usize = self.recovery.as_ref().map_or(0, |r| {
             50 + r.tool.len()
                 + r.params.iter().map(|_| 20usize).sum::<usize>()
                 + r.reason.as_ref().map_or(0, |s| s.len() + 12)
         });
-        let mut out = String::with_capacity(128 + self.message.len() + hints_est + recovery_est);
+        let mut out = String::with_capacity(140 + self.message.len() + causes_est + hints_est + recovery_est);
         out.push_str("{\"isError\":true,\"error\":");
         crate::kv::json_escape_str(&mut out, self.code.label());
         out.push_str(",\"message\":");
         crate::kv::json_escape_str(&mut out, &self.message);
-        out.push_str(",\"retryable\":");
+        out.push_str(",\"causes\":[");
+        for (i, c) in self.causes.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            crate::kv::json_escape_str(&mut out, c);
+        }
+        out.push_str("],\"retryable\":");
         out.push_str(if self.retryable { "true" } else { "false" });
         out.push_str(",\"hints\":[");
         for (i, h) in self.hints.iter().enumerate() {
@@ -283,6 +346,8 @@ struct DomainErrorWire {
     error: &'static str,
     /// Human-readable message.
     message: String,
+    /// Why it happened, outermost first; `[]` when unknown.
+    causes: Vec<String>,
     /// Whether this error is safe to retry.
     retryable: bool,
     /// Contextual hints.
@@ -304,6 +369,7 @@ impl From<DomainError> for DomainErrorWire {
             is_error: true,
             error: e.code.label(),
             message: e.message,
+            causes: e.causes,
             retryable: e.retryable,
             hints: e.hints.iter().map(|h| h.as_str().to_string()).collect(),
             recovery: e.recovery,
@@ -330,7 +396,11 @@ impl std::fmt::Display for DomainError {
     }
 }
 
+/// `source()` is always `None`: [`DomainError::from_error`] keeps a chain as text in `causes`, not as a stored error.
 impl std::error::Error for DomainError {}
+
+/// The most `source()` links [`DomainError::from_error`] walks, so a cyclic chain cannot loop forever.
+const MAX_CAUSE_LINKS: usize = 128;
 
 /// Encode GitHub workflow command data (the message): `%` first, so an encoded sequence in the input stays literal,
 /// then CR and LF.
@@ -363,12 +433,14 @@ fn escape_annotation_property(s: &str) -> String {
     out
 }
 
-/// The fields every rendered error document starts with: `error: <code>`, `message: …`, `exit_code: 1`.
-fn push_error_fields(out: &mut String, code: &str, message: &str) {
+/// The fields every rendered error document starts with: `error: <code>`, `message: …`, `causes[N]: …` (only when
+/// there are causes), `exit_code: 1`.
+fn push_error_fields(out: &mut String, code: &str, message: &str, causes: &[String]) {
     out.push_str("error: ");
     out.push_str(code);
     out.push_str("\nmessage: ");
     out.push_str(&crate::toon::escape_value(message));
+    crate::hints::append_inline_strings(out, "causes", causes.iter().map(String::as_str));
     out.push_str("\nexit_code: 1");
 }
 
@@ -379,12 +451,21 @@ impl miette::Diagnostic for DomainError {
         Some(Box::new(self.code.label()))
     }
 
+    /// The hints, one per line, then one `caused by: …` line per cause; `None` when there are neither.
+    ///
+    /// miette prints a `source()` chain itself, but [`DomainError`] stores its causes as text, so they go here,
+    /// labelled and after the guidance.
     fn help<'a>(&'a self) -> Option<Box<dyn std::fmt::Display + 'a>> {
-        if self.hints.is_empty() {
-            None
-        } else {
-            Some(Box::new(self.hints.iter().map(|h| h.as_str()).collect::<Vec<_>>().join("\n")))
+        if self.hints.is_empty() && self.causes.is_empty() {
+            return None;
         }
+        let lines: Vec<String> = self
+            .hints
+            .iter()
+            .map(|h| h.as_str().to_string())
+            .chain(self.causes.iter().map(|c| format!("caused by: {c}")))
+            .collect();
+        Some(Box::new(lines.join("\n")))
     }
 }
 
@@ -417,7 +498,7 @@ impl Error {
             Self::NotFound(m) => (ErrorCode::NotFound.label(), m),
         };
         let mut out = String::with_capacity(48 + message.len());
-        push_error_fields(&mut out, code, message);
+        push_error_fields(&mut out, code, message, &[]);
         out
     }
 
@@ -841,7 +922,7 @@ mod tests {
             let obj = parsed.as_object().unwrap();
             let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
             keys.sort_unstable();
-            assert_eq!(keys, vec!["error", "hints", "isError", "message", "recovery", "retryable"]);
+            assert_eq!(keys, vec!["causes", "error", "hints", "isError", "message", "recovery", "retryable"]);
         }
     }
 

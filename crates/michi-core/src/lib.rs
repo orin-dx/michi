@@ -47,7 +47,8 @@
 //! - [`response`]: [`AgentResponse`], which composes the primitives into one reply.
 //! - [`mcp`]: MCP `CallToolResult` assembly.
 //! - [`resilience`]: retry delays, `Retry-After` parsing, retry budgets and idempotency keys.
-//! - [`truncate`](mod@truncate): UTF-8 safe truncation with a stable marker.
+//! - [`truncate`](mod@truncate): UTF-8 safe truncation of one string, with a stable marker.
+//! - [`truncation`]: what a cap on a list cut ([`TruncationOutcome`]), however the survivors were chosen.
 //!
 //! ## Features
 //!
@@ -94,8 +95,10 @@ pub mod status;
 pub mod telemetry;
 /// TOON list rendering, the token-optimized list format.
 pub mod toon;
-/// UTF-8 char-boundary-safe truncation.
+/// UTF-8 char-boundary-safe truncation within one string.
 pub mod truncate;
+/// List truncation: what a cap on a list cut, however the survivors were chosen.
+pub mod truncation;
 
 #[cfg(test)]
 pub(crate) mod test_support;
@@ -118,6 +121,7 @@ pub use resilience::{
     AlreadyDone, IdempotencyKey, RetryBudget, RetryConfig, RetryConfigError,
 };
 pub use truncate::{truncate, truncate_inline, Truncated};
+pub use truncation::{truncate_by_count, truncate_by_size, TruncationOutcome};
 
 /// Crate-level `Result` alias.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -200,5 +204,6 @@ mod tests {
         assert_send_sync_static::<Health>();
         assert_send_sync_static::<StatusItem>();
         assert_send_sync_static::<StatusResponse>();
+        assert_send_sync_static::<TruncationOutcome<String>>();
     }
 }

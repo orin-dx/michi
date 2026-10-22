@@ -250,6 +250,38 @@ void describe('standalone helpers', () => {
     assert.strictEqual(gh, '::error title=not_found::Item not found')
   })
 
+  void it('renderDomainError renders causes as their own key, apart from hints', () => {
+    const card = renderDomainError('external_failure', 'walk failed', ['check permissions'], false, [
+      'io error',
+      'line one\nline two',
+    ])
+    assert.strictEqual(
+      card,
+      'error: external_failure\nmessage: walk failed\ncauses[2]: io error,"line one\\nline two"\nexit_code: 1\n' +
+        'help[1]: check permissions'
+    )
+    assert.strictEqual(renderDomainError('not_found', 'm', [], null, []), renderDomainError('not_found', 'm', []))
+    assert.strictEqual(renderDomainError('not_found', 'm', [], undefined, null), renderDomainError('not_found', 'm', []))
+    // The GitHub annotation stays message-only.
+    assert.strictEqual(renderDomainError('not_found', 'm', [], true, ['c']), '::error title=not_found::m')
+  })
+
+  void it('renderDomainError budgets causes like hints', () => {
+    const big = 'x'.repeat(1_048_577)
+    assert.throws(() => renderDomainError('not_found', 'm', [], false, [big]), /^Error: cause byte length \(at least 1048577\) exceeds maximum of 1048576$/)
+    assert.throws(
+      () => renderDomainError('not_found', 'm', [], false, Array.from({ length: 10_001 }, () => 'c')),
+      /^Error: causes length 10001 exceeds maximum of 10000$/
+    )
+    assert.throws(() => renderDomainError('not_found', 'm', [], false, 'c'), /causes must be an array/)
+    // Causes share the call's 64 MiB budget with the message and hints.
+    const mib = 'x'.repeat(1_048_576)
+    assert.throws(
+      () => renderDomainError('not_found', 'm', Array.from({ length: 40 }, () => mib), false, Array.from({ length: 40 }, () => mib)),
+      /^Error: input byte total \d+ exceeds maximum of 67108864$/
+    )
+  })
+
   void it('renderDomainError throws on unknown error code', () => {
     assert.throws(() => renderDomainError('made_up_code', 'msg', []), /unknown error code/)
   })
