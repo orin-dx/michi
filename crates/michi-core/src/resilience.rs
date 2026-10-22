@@ -13,7 +13,7 @@ mod budget;
 pub use budget::RetryBudget;
 
 /// Configuration for automatic retry behaviour.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct RetryConfig {
     /// Maximum number of retry attempts (not counting the initial attempt).
@@ -27,7 +27,10 @@ pub struct RetryConfig {
 }
 
 /// Error returned by [`RetryConfig::try_new()`] when parameters are out of range.
+///
+/// `#[non_exhaustive]`: new checks may be added in a minor release.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum RetryConfigError {
     /// `max_delay` must be non-zero (zero silently drops server `retry_after` hints).
     MaxDelayIsZero,
@@ -85,6 +88,12 @@ impl RetryConfig {
     /// Strict constructor — returns `Err` if any parameter is out of range.
     ///
     /// For NAPI-boundary callers, use the normalizing [`RetryConfig::new()`] instead.
+    ///
+    /// # Errors
+    ///
+    /// [`RetryConfigError::MaxDelayIsZero`] when `max_delay` is zero, [`RetryConfigError::BaseDelayExceedsMaxDelay`]
+    /// when `base_delay > max_delay`, and [`RetryConfigError::JitterFactorOutOfRange`] when `jitter_factor` is outside
+    /// `[0.0, 1.0]` (or NaN).
     pub fn try_new(
         max_retries: u32,
         base_delay: std::time::Duration,
@@ -334,6 +343,7 @@ impl IdempotencyKey {
     }
 
     /// The raw key string.
+    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }

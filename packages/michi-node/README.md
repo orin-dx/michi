@@ -55,6 +55,7 @@ Every string these functions return for an agent is a TOON 4.4 document with no 
 | --- | --- |
 | `renderToon` | `(opts: JsToonOptions) => string` — TOON list rendering |
 | `emptyState` | `(typeName: string) => string` — definitive empty-state block |
+| `emptyStateWithHints` | `(typeName: string, hints: string[]) => string` — the empty-state block plus `help[N]: …`; like `emptyState`, throws `toon_validation_failed: …` for a `totalCount`/`help`/`recovery` type name |
 | `renderHints` | `(hints: string[]) => string` — the inline array `help[N]: h1,h2` |
 | `appendHints` | `(body: string, hints: string[]) => string` — append `help[N]: …` to a document, on its own line |
 | `renderRecovery` | `(hints: JsRecoveryHint[]) => string` — the table `recovery[N]{tool,params,reason}:` (`params` is `"{}"` here; an absent reason is `null`) |
@@ -62,6 +63,9 @@ Every string these functions return for an agent is a TOON 4.4 document with no 
 | `renderDomainError` | `(code, message, hints, githubAnnotation?) => string` — `error`, `message`, `exit_code`, `help` |
 | `renderStatus` | `(toolName, description, items, hints?) => string` — `tool`, `description`, the table `items[N]{key,value,health,reason}:`, `help` |
 | `renderAlreadyDone` | `(operation, summary, hints) => string` — `operation`, `status: already_done`, `summary`, `help` |
+| `alreadyDone` | `(stored?: string \| null) => { done: boolean, result?: string }` — classify an idempotency lookup: any stored string (even empty) is done |
+| `renderPartialSuccess` | `(completed: string[], failed: JsFailedOp[], skipped: string[]) => string` — the summary, `completed[N]`, the `failed[N]{operation,reason}:` table, `skipped[N]` and the failed ops' `recovery[N]{tool,params,reason}:` table |
+| `renderPipeline` | `(steps: JsPipelineStep[]) => string` — the table `step[N]{id,name,status,reason}:`; `status` is a `StepStatus` label (`completed`, `outcome_unknown`, …) and `reason` is required exactly for `outcome_unknown`, `skipped` and `not_run` |
 | `truncate` | `(content: string, maxChars: number, hint: string) => string` — `truncate("a".repeat(200), 50, "full=true")` gives 17 × `a` + `" (183 more chars — use full=true)"`; an empty `hint` drops the `— use …` clause |
 
 ### `AgentResponse` class

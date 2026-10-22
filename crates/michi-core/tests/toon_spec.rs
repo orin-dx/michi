@@ -350,7 +350,7 @@ fn s9_1_empty_list_is_key_colon_brackets() {
     assert_eq!(render_toon(&opts).unwrap(), "issues: []\ntotalCount: 0\nhelp[1]: Try x");
     assert_eq!(empty_state("issue"), "issue: []\ntotalCount: 0");
     assert_eq!(empty_state_with_hints("issue", &[Hint::new("Try x")]), "issue: []\ntotalCount: 0\nhelp[1]: Try x");
-    let empty_pipeline = Pipeline { id: "p".into(), steps: vec![] };
+    let empty_pipeline = Pipeline::new("p", vec![]);
     assert_eq!(empty_pipeline.render(), "step: []");
 }
 
@@ -402,10 +402,7 @@ fn s12_whitespace_invariants_hold_for_every_document_producer() {
     let full = ToonOptions::new("t", vec!["a".into()], vec![vec![Value::from(" x ")]])
         .total_count(Some(1))
         .hints(vec!["h ".into()]);
-    let pipeline = Pipeline {
-        id: "p".into(),
-        steps: vec![PipelineStep { id: "fetch".into(), name: "Fetch, then parse".into(), status: StepStatus::Failed }],
-    };
+    let pipeline = Pipeline::new("p", vec![PipelineStep::new("fetch", "Fetch, then parse", StepStatus::Failed)]);
     for out in [
         render_toon(&full).unwrap(),
         render_toon(&ToonOptions::default()).unwrap(),

@@ -58,6 +58,10 @@ macro_rules! slug_id {
         impl $name {
             /// Validates `id` against the slug rule: 1 to 64 ASCII letters, digits, `_`, `-` or `.`, starting with a
             /// letter, digit or `_`.
+            ///
+            /// # Errors
+            ///
+            /// [`IdError::Empty`], [`IdError::TooLong`] or [`IdError::InvalidChar`] when `id` breaks the rule.
             pub fn try_new(id: impl Into<String>) -> Result<Self, IdError> {
                 let id = id.into();
                 validate(&id)?;
@@ -120,7 +124,11 @@ slug_id! {
 
 impl RunId {
     /// Builds a run id that is unique in practice without a UUID dependency: `{prefix}-{millis}-{pid}-{counter}`, the
-    /// numbers in base 36. Fails if `prefix` is not a valid slug or the result would exceed [`MAX_ID_LEN`].
+    /// numbers in base 36.
+    ///
+    /// # Errors
+    ///
+    /// An [`IdError`] if `prefix` is not a valid slug or the result would exceed [`MAX_ID_LEN`].
     pub fn unique(prefix: &str) -> Result<Self, IdError> {
         static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         validate(prefix)?;

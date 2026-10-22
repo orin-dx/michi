@@ -295,3 +295,13 @@ async fn a_client_error_resets_the_consecutive_failure_count() {
     }
     assert_eq!(registry.breaker("a").phase(), michi_pipeline::BreakerPhase::Closed, "500, 400, 500 is not 2 in a row");
 }
+
+// ---- 0.4 API hygiene: every public type is Debug, without bounds on the caller's closure ----
+
+#[test]
+fn fn_step_is_debug_without_requiring_a_debug_closure() {
+    let step = michi_pipeline::step_fn(|_ctx| async { Ok(()) }).idempotent();
+    let shown = format!("{step:?}");
+    assert!(shown.starts_with("FnStep"), "got: {shown}");
+    assert!(shown.contains("Idempotent"), "the replay class is shown: {shown}");
+}

@@ -9,7 +9,7 @@
 use napi::bindgen_prelude::{FromNapiValue, JsObjectValue as _, Object, Unknown};
 use napi::{JsString, JsValue as _, ValueType};
 
-use super::{JsKvItem, JsRecoveryHint, JsStatusItem, JsToonValue};
+use super::{JsFailedOp, JsKvItem, JsPipelineStep, JsRecoveryHint, JsStatusItem, JsToonValue};
 
 /// Most cells (row values) one call may pass.
 pub(crate) const MAX_CELLS: usize = 1_000_000;
@@ -64,7 +64,7 @@ impl<'env> List<'env> {
     }
 }
 
-fn is_nullish(value: Unknown<'_>) -> napi::Result<bool> {
+pub(crate) fn is_nullish(value: Unknown<'_>) -> napi::Result<bool> {
     Ok(matches!(value.get_type()?, ValueType::Undefined | ValueType::Null))
 }
 
@@ -157,6 +157,14 @@ impl Budget {
         match prop(obj, name)? {
             Some(value) => self.string(value, what, max).map(Some),
             None => Ok(None),
+        }
+    }
+
+    /// An optional string property where `null` also means absent, for fields whose TypeScript type admits `null`.
+    fn nullable_string_prop(&mut self, obj: &Object<'_>, name: &str, max: usize) -> napi::Result<Option<String>> {
+        match prop(obj, name)? {
+            Some(value) if !is_nullish(value)? => self.string(value, name, max).map(Some),
+            _ => Ok(None),
         }
     }
 
@@ -260,15 +268,52 @@ impl Budget {
         Ok(out)
     }
 
+    /// One `JsRecoveryHint` object.
+    fn recovery_hint(&mut self, value: Unknown<'_>) -> napi::Result<JsRecoveryHint> {
+        let obj = object(value, "JsRecoveryHint")?;
+        let tool = self.string_prop(&obj, "tool", "tool", MAX_NAME_BYTES)?;
+        let reason = self.opt_string_prop(&obj, "reason", "reason", MAX_STRING_BYTES)?;
+        Ok(JsRecoveryHint { tool, reason })
+    }
+
+    /// `JsFailedOp[]`, at most `max` items. `recovery` may be absent, `undefined` or `null`.
+    pub(crate) fn failed_ops(&mut self, ops: &List<'_>, max: usize) -> napi::Result<Vec<JsFailedOp>> {
+        check_len("failed", ops.len(), max)?;
+        let mut out = Vec::with_capacity(ops.len());
+        for i in 0..ops.len {
+            let obj = object(ops.get(i)?, "JsFailedOp")?;
+            let operation = self.string_prop(&obj, "operation", "operation", MAX_NAME_BYTES)?;
+            let reason = self.string_prop(&obj, "reason", "reason", MAX_STRING_BYTES)?;
+            let recovery = match prop(&obj, "recovery")? {
+                Some(value) if !is_nullish(value)? => Some(self.recovery_hint(value)?),
+                _ => None,
+            };
+            out.push(JsFailedOp { operation, reason, recovery });
+        }
+        Ok(out)
+    }
+
+    /// `JsPipelineStep[]`, at most `max` items. `reason` may be absent, `undefined` or `null`.
+    pub(crate) fn pipeline_steps(&mut self, steps: &List<'_>, max: usize) -> napi::Result<Vec<JsPipelineStep>> {
+        check_len("steps", steps.len(), max)?;
+        let mut out = Vec::with_capacity(steps.len());
+        for i in 0..steps.len {
+            let obj = object(steps.get(i)?, "JsPipelineStep")?;
+            let id = self.string_prop(&obj, "id", "id", MAX_NAME_BYTES)?;
+            let name = self.string_prop(&obj, "name", "name", MAX_STRING_BYTES)?;
+            let status = self.string_prop(&obj, "status", "status", MAX_NAME_BYTES)?;
+            let reason = self.nullable_string_prop(&obj, "reason", MAX_NAME_BYTES)?;
+            out.push(JsPipelineStep { id, name, status, reason });
+        }
+        Ok(out)
+    }
+
     /// `JsRecoveryHint[]`, at most `max` items.
     pub(crate) fn recovery_hints(&mut self, hints: &List<'_>, max: usize) -> napi::Result<Vec<JsRecoveryHint>> {
         check_len("hints", hints.len(), max)?;
         let mut out = Vec::with_capacity(hints.len());
         for i in 0..hints.len {
-            let obj = object(hints.get(i)?, "JsRecoveryHint")?;
-            let tool = self.string_prop(&obj, "tool", "tool", MAX_NAME_BYTES)?;
-            let reason = self.opt_string_prop(&obj, "reason", "reason", MAX_STRING_BYTES)?;
-            out.push(JsRecoveryHint { tool, reason });
+            out.push(self.recovery_hint(hints.get(i)?)?);
         }
         Ok(out)
     }

@@ -67,7 +67,7 @@ fn check_bytes(what: &str, s: &str, max: usize) -> napi::Result<()> {
 ///
 /// Use the `type` field to discriminate: `"str"`, `"int"`, `"float"`, `"bool"`, `"null"`.
 #[napi(object)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct JsToonValue {
     /// Discriminant: `"str"`, `"int"`, `"float"`, `"bool"`, or `"null"`.
     #[napi(js_name = "type")]
@@ -92,6 +92,7 @@ pub struct JsToonValue {
 
 /// Options for rendering a TOON document (JavaScript-friendly).
 #[napi(object)]
+#[derive(Debug, Clone)]
 pub struct JsToonOptions {
     /// Snake_case type name, e.g. `"issue"`, `"component"`.
     #[napi(js_name = "typeName")]
@@ -295,6 +296,7 @@ pub fn append_hints(body: String, hints: Vec<String>) -> napi::Result<String> {
 /// structured params over this boundary; use `AgentResponse.recoveryHint`
 /// for the common case, or the Rust API directly for typed params).
 #[napi(object)]
+#[derive(Debug, Clone)]
 pub struct JsRecoveryHint {
     /// The tool/operation name the agent should call to recover.
     pub tool: String,
@@ -324,16 +326,7 @@ pub fn render_recovery(hints: Vec<JsRecoveryHint>) -> napi::Result<String> {
     if hints.len() > MAX_HINTS {
         return Err(napi::Error::from_reason(format!("hints length {} exceeds maximum of {MAX_HINTS}", hints.len())));
     }
-    let converted: Vec<crate::recovery::RecoveryHint> = hints
-        .into_iter()
-        .map(|h| {
-            let mut hint = crate::recovery::RecoveryHint::new(h.tool);
-            if let Some(reason) = h.reason {
-                hint = hint.reason(reason);
-            }
-            hint
-        })
-        .collect();
+    let converted: Vec<crate::recovery::RecoveryHint> = hints.into_iter().map(recovery_hint_from_js).collect();
     Ok(crate::recovery::render_recovery(&converted))
 }
 
@@ -342,12 +335,14 @@ pub fn render_recovery(hints: Vec<JsRecoveryHint>) -> napi::Result<String> {
 /// too small for that suffix keeps `maxChars - 1` chars and ends with `…` (`maxChars` 0 returns an empty string).
 #[napi(catch_unwind)]
 #[allow(clippy::needless_pass_by_value)] // napi-derive requires owned String for JS string params
+#[must_use]
 pub fn truncate(content: String, #[napi(ts_arg_type = "number")] max_chars: JsCount, hint: String) -> String {
     crate::truncate::truncate_inline(&content, max_chars.get(), &hint)
 }
 
 /// A key-value item for [`JsAgentResponse::kv_items`] (JavaScript-friendly).
 #[napi(object)]
+#[derive(Debug, Clone)]
 pub struct JsKvItem {
     /// The field name.
     pub key: String,
@@ -424,7 +419,7 @@ pub fn render_kv(items: Vec<JsKvItem>, total_count: Option<JsCount>, hints: Vec<
     }
     let converted: Vec<crate::kv::KvItem> = items
         .into_iter()
-        .map(|i| Ok(crate::kv::KvItem { key: i.key, value: js_kv_value_to_rust(i.value)? }))
+        .map(|i| Ok(crate::kv::KvItem::new(i.key, js_kv_value_to_rust(i.value)?)))
         .collect::<napi::Result<Vec<_>>>()?;
     let hint_objs: Vec<crate::hints::Hint> = hints.into_iter().map(Into::into).collect();
     crate::kv::render_kv(&converted, total_count.map(JsCount::get), &hint_objs)
@@ -469,6 +464,7 @@ pub fn render_already_done(operation: String, summary: String, hints: Vec<String
 
 /// Parse an RFC 7231 `Retry-After` header value into seconds.
 #[napi(catch_unwind)]
+#[must_use]
 pub fn parse_retry_after(header_value: String) -> Option<f64> {
     crate::resilience::parse_retry_after(&header_value).map(|d| d.as_secs_f64())
 }
@@ -478,6 +474,11 @@ pub fn parse_retry_after(header_value: String) -> Option<f64> {
 /// `jitter_seed` must be in `[0.0, 1.0]`; pass a per-call random value from
 /// your preferred RNG to avoid thundering-herd retries across concurrent callers.
 /// Delay inputs must be finite and non-negative; `retry_after_ms` may be `null`.
+///
+/// # Errors
+///
+/// None in practice: the numeric arguments are validated by their types before the call (an out-of-domain number is
+/// rejected by napi with an `InvalidArg` error) and the computation itself cannot fail.
 #[napi(catch_unwind)]
 #[allow(clippy::too_many_arguments)] // NAPI boundary: all params are scalar and directly map to the JS API
 pub fn next_retry_delay(
@@ -502,6 +503,7 @@ pub fn next_retry_delay(
 
 /// Return `true` if the HTTP status code is conventionally retryable (429, 502, 503, 504).
 #[napi(catch_unwind)]
+#[must_use]
 pub fn is_retryable_status(#[napi(ts_arg_type = "number")] status: JsHttpStatus) -> bool {
     crate::resilience::is_retryable_status(status.get_u16())
 }
@@ -577,6 +579,7 @@ pub fn render_domain_error(
 
 /// A component status item for [`render_status`].
 #[napi(object)]
+#[derive(Debug, Clone)]
 pub struct JsStatusItem {
     /// Component key.
     pub key: String,
@@ -657,7 +660,11 @@ pub fn render_status(
                     )));
                 }
             };
-            Ok(crate::status::StatusItem { key: i.key, value: js_kv_value_to_rust(i.value)?, health })
+            let item = crate::status::StatusItem::new(i.key, js_kv_value_to_rust(i.value)?);
+            Ok(match health {
+                Some(h) => item.health(h),
+                None => item,
+            })
         })
         .collect::<napi::Result<Vec<_>>>()?;
 
@@ -669,6 +676,7 @@ pub fn render_status(
 /// MCP content-block annotations (JavaScript-friendly). Currently carries
 /// only `audience` — michi has no concept of MCP's optional `priority`.
 #[napi(object)]
+#[derive(Debug, Clone)]
 pub struct JsAnnotations {
     /// `["assistant"]` or `["user"]` — which surface(s) this block targets.
     pub audience: Vec<String>,
@@ -677,6 +685,7 @@ pub struct JsAnnotations {
 /// One MCP content block (JavaScript-friendly). Wire-conformant with MCP's
 /// text content shape: `{type: "text", text, annotations: {audience: [...]}}`.
 #[napi(object)]
+#[derive(Debug, Clone)]
 pub struct JsContentBlock {
     /// Always `"text"` — michi only ever produces text content blocks.
     #[napi(js_name = "type")]
@@ -689,6 +698,7 @@ pub struct JsContentBlock {
 
 /// The MCP `CallToolResult` shape, returned by [`JsAgentResponse::to_call_tool_result`].
 #[napi(object)]
+#[derive(Debug, Clone)]
 pub struct JsCallToolResult {
     /// Text content blocks.
     pub content: Vec<JsContentBlock>,
@@ -779,6 +789,10 @@ impl JsAgentResponse {
     }
 
     /// Set the total available count (TOON path only).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the builder was already consumed (an internal invariant; should not happen in normal use).
     #[napi(catch_unwind)]
     pub fn total_count(&mut self, #[napi(ts_arg_type = "number")] n: JsCount) -> napi::Result<()> {
         let b = self.take()?;
@@ -814,7 +828,7 @@ impl JsAgentResponse {
         }
         let converted = items
             .into_iter()
-            .map(|i| Ok(crate::kv::KvItem { key: i.key, value: js_kv_value_to_rust(i.value)? }))
+            .map(|i| Ok(crate::kv::KvItem::new(i.key, js_kv_value_to_rust(i.value)?)))
             .collect::<napi::Result<Vec<_>>>()?;
         let b = self.take()?;
         self.inner = Some(b.kv_items(converted));
@@ -880,6 +894,10 @@ impl JsAgentResponse {
     }
 
     /// Mark this response as an error state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the builder was already consumed (an internal invariant; should not happen in normal use).
     #[napi(catch_unwind)]
     pub fn as_error(&mut self) -> napi::Result<()> {
         let b = self.take()?;
@@ -888,6 +906,10 @@ impl JsAgentResponse {
     }
 
     /// Attach a human-facing companion block (`audience: user`) for MCP callers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the builder was already consumed (an internal invariant; should not happen in normal use).
     #[napi(catch_unwind)]
     pub fn human_content(&mut self, text: String) -> napi::Result<()> {
         let b = self.take()?;
@@ -1030,6 +1052,271 @@ impl JsAgentResponse {
             is_error: result.is_error,
             structured_content,
         })
+    }
+}
+
+/// Maximum entries per list for [`render_partial_success_js`]'s `completed`, `failed` and `skipped`, and for
+/// [`render_pipeline_js`]'s `steps`.
+const MAX_STEPS: usize = 10_000;
+
+/// Render an empty state with a `help[N]: …` block: `{typeName}: []`, `totalCount: 0`, then the hints.
+///
+/// # Errors
+///
+/// Returns an error if `type_name` is a reserved root key (`totalCount`, `help` or `recovery`), with the reason
+/// `toon_validation_failed: ` followed by the `ToonError` text, as `emptyState` reports it. Also rejects more than
+/// 10,000 hints, a `typeName` over 4 KiB, a hint over 1 MiB, and more than 64 MiB of strings per call.
+#[napi(catch_unwind, js_name = "emptyStateWithHints", ts_args_type = "typeName: string, hints: Array<string>")]
+pub fn empty_state_with_hints_js(type_name: Unknown<'_>, hints: Unknown<'_>) -> napi::Result<String> {
+    let mut budget = Budget::new();
+    let hints = List::new(hints, "hints")?;
+    input::check_len("hints", hints.len(), MAX_HINTS)?;
+    let type_name = budget.string(type_name, "typeName", MAX_NAME_BYTES)?;
+    empty_state_with_hints(type_name, budget.strings(&hints, "hints", MAX_HINTS, "hint", MAX_STRING_BYTES)?)
+}
+
+/// The Rust-typed core of the `emptyStateWithHints` export.
+///
+/// # Errors
+///
+/// Rejects a reserved `type_name` and more than `MAX_HINTS` hints.
+#[allow(clippy::needless_pass_by_value)] // mirrors the JS export's owned arguments
+pub fn empty_state_with_hints(type_name: String, hints: Vec<String>) -> napi::Result<String> {
+    if hints.len() > MAX_HINTS {
+        return Err(napi::Error::from_reason(format!("hints length {} exceeds maximum of {MAX_HINTS}", hints.len())));
+    }
+    let h: Vec<crate::hints::Hint> = hints.into_iter().map(Into::into).collect();
+    crate::empty::try_empty_state_with_hints(&type_name, &h)
+        .map_err(|e| napi::Error::from_reason(format!("toon_validation_failed: {e}")))
+}
+
+/// One failed operation for [`render_partial_success`] (JavaScript-friendly).
+#[napi(object)]
+#[derive(Debug, Clone)]
+pub struct JsFailedOp {
+    /// Identifier of the operation that failed.
+    pub operation: String,
+    /// Human-readable failure reason.
+    pub reason: String,
+    /// Optional recovery hint for this failure (no structured params over this boundary).
+    #[napi(ts_type = "JsRecoveryHint | null")]
+    pub recovery: Option<JsRecoveryHint>,
+}
+
+/// Render a partial-success report: a quoted summary, `completed[N]: …`, the `failed[N]{operation,reason}:` table,
+/// `skipped[N]: …` (empty categories omitted), then the failed operations' recovery hints as one
+/// `recovery[N]{tool,params,reason}:` table.
+///
+/// # Errors
+///
+/// Rejects more than 10,000 entries in `completed`, `failed` or `skipped`, a step id, `operation` or recovery `tool`
+/// over 4 KiB, a `reason` over 1 MiB, and more than 64 MiB of strings per call.
+#[napi(
+    catch_unwind,
+    js_name = "renderPartialSuccess",
+    ts_args_type = "completed: Array<string>, failed: Array<JsFailedOp>, skipped: Array<string>"
+)]
+pub fn render_partial_success_js(
+    completed: Unknown<'_>,
+    failed: Unknown<'_>,
+    skipped: Unknown<'_>,
+) -> napi::Result<String> {
+    let mut budget = Budget::new();
+    let completed = List::new(completed, "completed")?;
+    let failed = List::new(failed, "failed")?;
+    let skipped = List::new(skipped, "skipped")?;
+    input::check_len("completed", completed.len(), MAX_STEPS)?;
+    input::check_len("failed", failed.len(), MAX_STEPS)?;
+    input::check_len("skipped", skipped.len(), MAX_STEPS)?;
+    let completed = budget.strings(&completed, "completed", MAX_STEPS, "completed step", MAX_NAME_BYTES)?;
+    let failed = budget.failed_ops(&failed, MAX_STEPS)?;
+    let skipped = budget.strings(&skipped, "skipped", MAX_STEPS, "skipped step", MAX_NAME_BYTES)?;
+    render_partial_success(completed, failed, skipped)
+}
+
+/// The Rust-typed core of the `renderPartialSuccess` export.
+///
+/// # Errors
+///
+/// Rejects more than `MAX_STEPS` entries in any list.
+pub fn render_partial_success(
+    completed: Vec<String>,
+    failed: Vec<JsFailedOp>,
+    skipped: Vec<String>,
+) -> napi::Result<String> {
+    input::check_len("completed", completed.len(), MAX_STEPS)?;
+    input::check_len("failed", failed.len(), MAX_STEPS)?;
+    input::check_len("skipped", skipped.len(), MAX_STEPS)?;
+    let failed = failed
+        .into_iter()
+        .map(|f| {
+            let op = crate::idempotency::FailedOp::new(f.operation, f.reason);
+            match f.recovery {
+                Some(h) => op.recovery(recovery_hint_from_js(h)),
+                None => op,
+            }
+        })
+        .collect();
+    Ok(crate::idempotency::PartialSuccess::new(completed, failed, skipped).render())
+}
+
+fn recovery_hint_from_js(h: JsRecoveryHint) -> crate::recovery::RecoveryHint {
+    let hint = crate::recovery::RecoveryHint::new(h.tool);
+    match h.reason {
+        Some(reason) => hint.reason(reason),
+        None => hint,
+    }
+}
+
+/// One pipeline step for [`render_pipeline`] (JavaScript-friendly).
+#[napi(object)]
+#[derive(Debug, Clone)]
+pub struct JsPipelineStep {
+    /// Step identifier.
+    pub id: String,
+    /// Human-readable name.
+    pub name: String,
+    /// Status label, as `StepStatus::label` writes it.
+    #[napi(
+        ts_type = "'pending' | 'running' | 'completed' | 'completed_earlier' | 'failed' | 'outcome_unknown' | 'skipped' | 'not_run' | 'panicked'"
+    )]
+    pub status: String,
+    /// Reason label: required for `outcome_unknown` (`timeout`, `gateway`, `cancelled`, `interrupted`), `skipped`
+    /// (`prerequisite_failed`, `cancelled`) and `not_run` (`circuit_open`); absent or `null` for every other status.
+    #[napi(
+        ts_type = "'timeout' | 'gateway' | 'cancelled' | 'interrupted' | 'prerequisite_failed' | 'circuit_open' | null"
+    )]
+    pub reason: Option<String>,
+}
+
+/// The status labels [`parse_step_status`] accepts, in [`crate::pipeline::StepStatus`] declaration order.
+const STEP_STATUSES: &str =
+    "pending, running, completed, completed_earlier, failed, outcome_unknown, skipped, not_run, panicked";
+
+/// The [`crate::pipeline::StepStatus`] a status label and reason label name: the inverse of `StepStatus::label` and
+/// `StepStatus::reason`.
+fn parse_step_status(status: &str, reason: Option<&str>) -> napi::Result<crate::pipeline::StepStatus> {
+    use crate::pipeline::{NotRunReason, SkipReason, StepStatus, UnknownCause};
+
+    let fail = |msg: String| Err(napi::Error::from_reason(msg));
+    let with_reason = |expected: &str| -> napi::Result<&str> {
+        reason.ok_or_else(|| napi::Error::from_reason(format!("step status {status:?} needs a reason: {expected}")))
+    };
+    let unknown_reason = |r: &str, expected: &str| {
+        napi::Error::from_reason(format!("unknown reason {r:?} for step status {status:?}: expected {expected}"))
+    };
+    let plain = |s: StepStatus| match reason {
+        Some(r) => fail(format!("step status {status:?} takes no reason, got {r:?}")),
+        None => Ok(s),
+    };
+    match status {
+        "pending" => plain(StepStatus::Pending),
+        "running" => plain(StepStatus::Running),
+        "completed" => plain(StepStatus::Completed),
+        "completed_earlier" => plain(StepStatus::CompletedEarlier),
+        "failed" => plain(StepStatus::Failed),
+        "panicked" => plain(StepStatus::Panicked),
+        "outcome_unknown" => {
+            const EXPECTED: &str = "timeout, gateway, cancelled or interrupted";
+            let cause = match with_reason(EXPECTED)? {
+                "timeout" => UnknownCause::Timeout,
+                "gateway" => UnknownCause::Gateway,
+                "cancelled" => UnknownCause::Cancelled,
+                "interrupted" => UnknownCause::Interrupted,
+                other => return Err(unknown_reason(other, EXPECTED)),
+            };
+            Ok(StepStatus::OutcomeUnknown(cause))
+        }
+        "skipped" => {
+            const EXPECTED: &str = "prerequisite_failed or cancelled";
+            let why = match with_reason(EXPECTED)? {
+                "prerequisite_failed" => SkipReason::PrerequisiteFailed,
+                "cancelled" => SkipReason::Cancelled,
+                other => return Err(unknown_reason(other, EXPECTED)),
+            };
+            Ok(StepStatus::Skipped(why))
+        }
+        "not_run" => {
+            const EXPECTED: &str = "circuit_open";
+            let why = match with_reason(EXPECTED)? {
+                "circuit_open" => NotRunReason::CircuitOpen,
+                other => return Err(unknown_reason(other, EXPECTED)),
+            };
+            Ok(StepStatus::NotRun(why))
+        }
+        other => fail(format!("unknown step status {other:?}: expected one of {STEP_STATUSES}")),
+    }
+}
+
+/// Render pipeline state as the TOON 4.4 table `step[N]{id,name,status,reason}:`, or `step: []` with no steps.
+///
+/// # Errors
+///
+/// Rejects an unknown `status`, a missing or unknown `reason` for `outcome_unknown`, `skipped` or `not_run`, a
+/// `reason` on any other status, more than 10,000 steps, an `id`, `status` or `reason` over 4 KiB, a `name` over
+/// 1 MiB, and more than 64 MiB of strings per call.
+#[napi(catch_unwind, js_name = "renderPipeline", ts_args_type = "steps: Array<JsPipelineStep>")]
+pub fn render_pipeline_js(steps: Unknown<'_>) -> napi::Result<String> {
+    let mut budget = Budget::new();
+    let steps = List::new(steps, "steps")?;
+    input::check_len("steps", steps.len(), MAX_STEPS)?;
+    render_pipeline(budget.pipeline_steps(&steps, MAX_STEPS)?)
+}
+
+/// The Rust-typed core of the `renderPipeline` export.
+///
+/// # Errors
+///
+/// Rejects an invalid status or reason (see [`render_pipeline_js`]) and more than `MAX_STEPS` steps.
+pub fn render_pipeline(steps: Vec<JsPipelineStep>) -> napi::Result<String> {
+    input::check_len("steps", steps.len(), MAX_STEPS)?;
+    let steps = steps
+        .into_iter()
+        .map(|s| {
+            let status = parse_step_status(&s.status, s.reason.as_deref())?;
+            Ok(crate::pipeline::PipelineStep::new(s.id, s.name, status))
+        })
+        .collect::<napi::Result<Vec<_>>>()?;
+    Ok(crate::pipeline::Pipeline::new(String::new(), steps).render())
+}
+
+/// The result of [`already_done`] (JavaScript-friendly).
+#[napi(object)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JsAlreadyDone {
+    /// Whether the operation completed in a previous call.
+    pub done: bool,
+    /// The previously stored result when `done`; absent otherwise.
+    pub result: Option<String>,
+}
+
+/// Classify an idempotency lookup: a stored result (any string, even empty) means the operation already completed;
+/// `null` or `undefined` means it has not been seen.
+///
+/// # Errors
+///
+/// Rejects a `stored` value that is not a string, `null` or `undefined`, and one over 64 MiB.
+#[napi(
+    catch_unwind,
+    js_name = "alreadyDone",
+    ts_args_type = "stored?: string | undefined | null",
+    ts_return_type = "JsAlreadyDone"
+)]
+pub fn already_done_js(stored: Option<Unknown<'_>>) -> napi::Result<JsAlreadyDone> {
+    let mut budget = Budget::new();
+    let stored = match stored {
+        Some(v) if !input::is_nullish(v)? => Some(budget.string(v, "stored", input::MAX_INPUT_BYTES)?),
+        _ => None,
+    };
+    Ok(already_done(stored))
+}
+
+/// The Rust-typed core of the `alreadyDone` export.
+#[must_use]
+pub fn already_done(stored: Option<String>) -> JsAlreadyDone {
+    match crate::resilience::already_done(stored) {
+        crate::resilience::AlreadyDone::Yes { result } => JsAlreadyDone { done: true, result: Some(result) },
+        _ => JsAlreadyDone { done: false, result: None },
     }
 }
 
@@ -2255,5 +2542,30 @@ mod tests {
             "expected to check at least 20 #[napi]-attributed fns/methods, only checked {checked} \
              (a change to how attributes are written may have broken this scan's detection)"
         );
+    }
+
+    #[test]
+    fn parse_step_status_inverts_label_and_reason_for_every_status() {
+        use crate::pipeline::{NotRunReason, SkipReason, StepStatus, UnknownCause};
+        let all = [
+            StepStatus::Pending,
+            StepStatus::Running,
+            StepStatus::Completed,
+            StepStatus::CompletedEarlier,
+            StepStatus::Failed,
+            StepStatus::Panicked,
+            StepStatus::OutcomeUnknown(UnknownCause::Timeout),
+            StepStatus::OutcomeUnknown(UnknownCause::Gateway),
+            StepStatus::OutcomeUnknown(UnknownCause::Cancelled),
+            StepStatus::OutcomeUnknown(UnknownCause::Interrupted),
+            StepStatus::Skipped(SkipReason::PrerequisiteFailed),
+            StepStatus::Skipped(SkipReason::Cancelled),
+            StepStatus::NotRun(NotRunReason::CircuitOpen),
+        ];
+        for status in all {
+            let parsed = parse_step_status(status.label(), status.reason()).expect("label and reason parse back");
+            assert_eq!(parsed, status);
+        }
+        assert!(STEP_STATUSES.split(", ").all(|label| all.iter().any(|s| s.label() == label)));
     }
 }

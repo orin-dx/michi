@@ -169,7 +169,7 @@ michi/                           (workspace root — virtual manifest, no packag
     michi-core/
       Cargo.toml
       src/
-        lib.rs                   # module declarations, root re-exports (incl. resilience::*, truncate::*), Result<T>
+        lib.rs                   # module declarations, explicit root re-exports (incl. resilience and truncate items), Result<T>
         audience.rs              # Audience — always compiled
         empty.rs                 # empty_state(), empty_state_with_hints()
         error.rs                 # Error, ErrorCode, DomainError, ErrorClass, Sensitive<T>

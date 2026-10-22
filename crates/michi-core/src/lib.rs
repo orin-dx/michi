@@ -1,6 +1,8 @@
 #![warn(missing_docs)]
 #![warn(clippy::unwrap_used, clippy::expect_used)]
 #![warn(clippy::disallowed_types)]
+#![warn(clippy::must_use_candidate, clippy::missing_errors_doc, clippy::missing_panics_doc)]
+#![warn(missing_debug_implementations)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 //! # michi-core
@@ -109,8 +111,13 @@ pub use recovery::{append_recovery, render_recovery, RecoveryHint};
 pub use response::{AgentResponse, OutputFormat};
 pub use status::{Health, StatusItem, StatusResponse};
 
-pub use resilience::*;
-pub use truncate::*;
+// Explicit lists, not globs: a glob would silently re-export every item later added to these modules at the crate
+// root, and could shadow or clash with another root name in a minor release.
+pub use resilience::{
+    already_done, is_retryable_status, next_retry_delay, parse_retry_after, parse_retry_after_at, render_already_done,
+    AlreadyDone, IdempotencyKey, RetryBudget, RetryConfig, RetryConfigError,
+};
+pub use truncate::{truncate, truncate_inline, Truncated};
 
 /// Crate-level `Result` alias.
 pub type Result<T> = std::result::Result<T, Error>;

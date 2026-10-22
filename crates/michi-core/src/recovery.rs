@@ -8,9 +8,12 @@ use crate::kv::KvValue;
 /// numbers to `Float` with enough decimal places to reproduce the value exactly, booleans to `Bool` and `null` to
 /// `Missing`. Values `KvValue` cannot hold exactly (arrays, objects, integers outside `i64`) are rejected, never
 /// rewritten.
+///
+/// `#[non_exhaustive]`: build it with [`RecoveryHint::new`] and its builder methods; the fields stay public.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(into = "RecoveryHintWire", try_from = "RecoveryHintWire"))]
+#[non_exhaustive]
 pub struct RecoveryHint {
     /// The tool/operation name the agent should call to recover.
     pub tool: String,
@@ -25,6 +28,7 @@ pub struct RecoveryHint {
 
 impl RecoveryHint {
     /// Create a recovery hint naming just the tool to call.
+    #[must_use]
     pub fn new(tool: impl Into<String>) -> Self {
         Self { tool: tool.into(), params: Vec::new(), reason: None }
     }

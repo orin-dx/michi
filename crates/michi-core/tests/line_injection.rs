@@ -45,7 +45,7 @@ fn assert_param_round_trips(hint: RecoveryHint, expected_params: serde_json::Val
 }
 
 fn kv(key: &str, value: &str) -> String {
-    render_kv(&[KvItem { key: key.into(), value: KvValue::Text(value.into()) }], None, &[]).expect("valid")
+    render_kv(&[KvItem::new(key, KvValue::Text(value.into()))], None, &[]).expect("valid")
 }
 
 #[test]
@@ -100,17 +100,13 @@ fn already_done_fields() {
 
 #[test]
 fn partial_success_operations() {
-    let ps = PartialSuccess {
-        completed: vec![INJECTED.into()],
-        failed: vec![FailedOp { operation: "op".into(), reason: INJECTED.into(), recovery: None }],
-        skipped: vec![],
-    };
+    let ps = PartialSuccess::new(vec![INJECTED.into()], vec![FailedOp::new("op", INJECTED)], vec![]);
     assert_not_injected(&ps.render());
 }
 
 #[test]
 fn status_fields() {
-    let item = StatusItem { key: "index".into(), value: KvValue::Text("ok".into()), health: None };
+    let item = StatusItem::new("index", KvValue::Text("ok".into()));
     assert_not_injected(&StatusResponse::new(INJECTED, "d", vec![item.clone()]).render());
     assert_not_injected(&StatusResponse::new("t", INJECTED, vec![item]).render());
 }

@@ -6,9 +6,13 @@ use super::escape::{escape_key, escape_value, push_f64};
 ///
 /// Rendering follows TOON 4.4: strings are quoted only when §7.2 requires it, numbers use the canonical form of §2,
 /// and `Null` is the `null` literal.
+///
+/// `#[non_exhaustive]`: new value kinds may be added in a minor release, so a `match` outside michi needs a wildcard
+/// arm.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub enum Value {
     /// UTF-8 string (stack-inlined for strings <= 24 bytes via `CompactString`). The only variant subject to
     /// `max_cell_len` truncation.

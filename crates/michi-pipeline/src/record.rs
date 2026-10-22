@@ -310,11 +310,13 @@ impl RunRecord {
     }
 
     /// The run's id.
+    #[must_use]
     pub fn run_id(&self) -> &RunId {
         &self.run_id
     }
 
     /// The fingerprint of the plan this run executed.
+    #[must_use]
     pub fn plan_fingerprint(&self) -> PlanFingerprint {
         self.plan_fingerprint
     }
@@ -322,6 +324,7 @@ impl RunRecord {
     /// The overall verdict: `Succeeded` only if the record lists every plan step and each is `Completed` or
     /// `CompletedEarlier`; otherwise `OutcomeUnknown` if any step's outcome is unknown (`OutcomeUnknown`, or
     /// `Running` in a rebuilt record), else `Cancelled` if the caller cancelled, else `Failed`.
+    #[must_use]
     pub fn outcome(&self) -> RunOutcome {
         if self.steps.len() == self.plan_steps && self.steps.iter().all(|s| s.status.is_success()) {
             RunOutcome::Succeeded
@@ -335,6 +338,7 @@ impl RunRecord {
     }
 
     /// Every step record, in declaration order.
+    #[must_use]
     pub fn steps(&self) -> &[StepRecord] {
         &self.steps
     }
@@ -342,6 +346,7 @@ impl RunRecord {
     /// The record for `id`, if the run has that step.
     ///
     /// A linear scan: to look up many steps, index [`RunRecord::steps`] once instead of calling this in a loop.
+    #[must_use]
     pub fn step(&self, id: &StepId) -> Option<&StepRecord> {
         self.steps.iter().find(|s| s.step_id == *id)
     }
@@ -366,16 +371,19 @@ impl RunRecord {
 
     /// Ids of steps that completed in this run, in the order they finished. Steps carried over by resume are not
     /// included.
+    #[must_use]
     pub fn completion_order(&self) -> &[StepId] {
         &self.completion_order
     }
 
     /// Whether the caller's cancellation token fired during the run.
+    #[must_use]
     pub fn was_cancelled(&self) -> bool {
         self.cancelled
     }
 
     /// Wall time of the run, on Tokio's clock.
+    #[must_use]
     pub fn elapsed(&self) -> Duration {
         self.elapsed
     }
@@ -383,6 +391,7 @@ impl RunRecord {
     /// How many calls to the run's [`crate::StepObserver`] panicked. The executor catches such a panic and carries
     /// on: the steps and this record are unaffected, and the observer is still called for later events. Non-zero
     /// means the observer may have missed events, so progress it persisted may be incomplete.
+    #[must_use]
     pub fn observer_panics(&self) -> u32 {
         self.observer_panics
     }
@@ -390,6 +399,7 @@ impl RunRecord {
     /// Why the run did not succeed, as [`ExecutionError::StepFailed`] for conversion into a `DomainError`: the first
     /// root cause in declaration order or, when no step failed in its own right (a cancelled run, or a rebuilt record
     /// with pending steps), the first step that did not succeed. `None` only for a [`RunOutcome::Succeeded`] run.
+    #[must_use]
     pub fn error(&self) -> Option<ExecutionError> {
         let step = self.root_causes().next().or_else(|| self.steps.iter().find(|s| !s.status.is_success()))?;
         let source = step.error.clone().unwrap_or_else(|| match step.status {
@@ -412,18 +422,16 @@ impl RunRecord {
     }
 
     /// The michi-core [`Pipeline`] view: the run id and each step's id, name and status.
+    #[must_use]
     pub fn to_pipeline(&self) -> Pipeline {
-        Pipeline {
-            id: self.run_id.to_string(),
-            steps: self
-                .steps
-                .iter()
-                .map(|s| PipelineStep { id: s.step_id.to_string(), name: s.name.clone(), status: s.status })
-                .collect(),
-        }
+        Pipeline::new(
+            self.run_id.to_string(),
+            self.steps.iter().map(|s| PipelineStep::new(s.step_id.to_string(), s.name.clone(), s.status)).collect(),
+        )
     }
 
     /// The run as a TOON 4.4 document: [`Pipeline::render`] of [`RunRecord::to_pipeline`].
+    #[must_use]
     pub fn render(&self) -> String {
         self.to_pipeline().render()
     }

@@ -571,5 +571,6 @@ pub fn value_to_prim(v: &Value) -> Prim {
         Value::Float(f) => Prim::Num(f.to_string()),
         Value::Bool(b) => Prim::Bool(*b),
         Value::Null => Prim::Null,
+        other => panic!("value_to_prim: unhandled Value variant {other:?}"),
     }
 }

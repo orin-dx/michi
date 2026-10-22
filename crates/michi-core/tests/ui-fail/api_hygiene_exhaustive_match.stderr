@@ -1,0 +1,56 @@
+error[E0004]: non-exhaustive patterns: `_` not covered
+  --> tests/ui-fail/api_hygiene_exhaustive_match.rs:3:11
+   |
+ 3 |     match v {
+   |           ^ pattern `_` not covered
+   |
+note: `Value` defined here
+  --> src/toon/render.rs
+   |
+   | pub enum Value {
+   | ^^^^^^^^^^^^^^
+   = note: the matched value is of type `Value`
+   = note: `Value` is marked as non-exhaustive, so a wildcard `_` is necessary to match exhaustively
+help: ensure that all possible cases are being handled by adding a match arm with a wildcard pattern or an explicit pattern as shown
+   |
+ 9 ~         michi_core::toon::Value::Null => {},
+10 +         _ => todo!()
+   |
+
+error[E0004]: non-exhaustive patterns: `_` not covered
+  --> tests/ui-fail/api_hygiene_exhaustive_match.rs:14:11
+   |
+14 |     match v {
+   |           ^ pattern `_` not covered
+   |
+note: `KvValue` defined here
+  --> src/kv/mod.rs
+   |
+   | pub enum KvValue {
+   | ^^^^^^^^^^^^^^^^
+   = note: the matched value is of type `KvValue`
+   = note: `KvValue` is marked as non-exhaustive, so a wildcard `_` is necessary to match exhaustively
+help: ensure that all possible cases are being handled by adding a match arm with a wildcard pattern or an explicit pattern as shown
+   |
+20 ~         michi_core::KvValue::Missing => {},
+21 +         _ => todo!()
+   |
+
+error[E0004]: non-exhaustive patterns: `_` not covered
+  --> tests/ui-fail/api_hygiene_exhaustive_match.rs:25:11
+   |
+25 |     match e {
+   |           ^ pattern `_` not covered
+   |
+note: `RetryConfigError` defined here
+  --> src/resilience.rs
+   |
+   | pub enum RetryConfigError {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: the matched value is of type `RetryConfigError`
+   = note: `RetryConfigError` is marked as non-exhaustive, so a wildcard `_` is necessary to match exhaustively
+help: ensure that all possible cases are being handled by adding a match arm with a wildcard pattern or an explicit pattern as shown
+   |
+28 ~         michi_core::RetryConfigError::JitterFactorOutOfRange { .. } => {},
+29 +         _ => todo!()
+   |

@@ -11,6 +11,9 @@
 //! schema would describe no real wire form.
 //! pipeline/mod.rs AC-003: `StepStatus` is `#[non_exhaustive]`, so an
 //! exhaustive match without a wildcard arm fails to compile (E0004).
+//! 0.4 API hygiene: `FailedOp`, `PartialSuccess`, `KvItem`, `StatusItem`, `RecoveryHint`, `PipelineStep` and
+//! `Pipeline` reject struct literals (E0639), and `toon::Value`, `KvValue` and `RetryConfigError` reject a match
+//! without a wildcard arm (E0004).
 
 #[test]
 fn non_exhaustive_and_no_serde_types_reject_the_forbidden_construction() {
@@ -24,6 +27,8 @@ fn non_exhaustive_and_no_serde_types_reject_the_forbidden_construction() {
     t.compile_fail("tests/ui-fail/error_exhaustive_match.rs");
     t.compile_fail("tests/ui-fail/domain_error_must_use.rs");
     t.compile_fail("tests/ui-fail/step_status_exhaustive_match.rs");
+    t.compile_fail("tests/ui-fail/api_hygiene_struct_literals.rs");
+    t.compile_fail("tests/ui-fail/api_hygiene_exhaustive_match.rs");
     #[cfg(feature = "serde")]
     {
         t.compile_fail("tests/ui-fail/health_no_serde.rs");

@@ -11,9 +11,9 @@ use michi_core::response::{AgentResponse, OutputFormat};
 fn main() {
     let response = AgentResponse::new("issue")
         .kv_items(vec![
-            KvItem { key: "id".into(), value: KvValue::Text("issue-51815".into()) },
-            KvItem { key: "title".into(), value: KvValue::Text("[Bug]: Telegram plugin".into()) },
-            KvItem { key: "state".into(), value: KvValue::Text("open".into()) },
+            KvItem::new("id", KvValue::Text("issue-51815".into())),
+            KvItem::new("title", KvValue::Text("[Bug]: Telegram plugin".into())),
+            KvItem::new("state", KvValue::Text("open".into())),
         ])
         .hint("Run `gh-axi issue view <number>` to view an issue")
         .human_content("Issue #51815 is currently open in the Telegram plugin module.");

@@ -20,6 +20,10 @@ import {
   isRetryableStatus,
   renderDomainError,
   renderStatus,
+  renderPartialSuccess,
+  renderPipeline,
+  emptyStateWithHints,
+  alreadyDone,
 } from '../index.js'
 
 void describe('renderToon', () => {
@@ -883,5 +887,173 @@ void describe('full in-domain regression (SPEC-ARCH-004 AC-021)', () => {
     assert.strictEqual(isRetryableStatus(429), true)
     assert.strictEqual(isRetryableStatus(503), true)
     assert.strictEqual(isRetryableStatus(404), false)
+  })
+})
+
+void describe('renderPartialSuccess', () => {
+  void it('renders the same document as the Rust PartialSuccess', () => {
+    const out = renderPartialSuccess(
+      ['create_issue', 'add_label'],
+      [{ operation: 'assign_user', reason: "User 'ghost' not found", recovery: { tool: 'assign_user' } }],
+      ['notify_team'],
+    )
+    assert.strictEqual(
+      out,
+      'partial_success: "2 completed, 1 failed, 1 skipped"\ncompleted[2]: create_issue,add_label\n' +
+        "failed[1]{operation,reason}:\n  assign_user,User 'ghost' not found\nskipped[1]: notify_team\n" +
+        'recovery[1]{tool,params,reason}:\n  assign_user,"{}",null',
+    )
+  })
+
+  void it('omits empty categories and a missing recovery hint', () => {
+    assert.strictEqual(renderPartialSuccess([], [], []), 'partial_success: "0 completed, 0 failed, 0 skipped"')
+    assert.strictEqual(
+      renderPartialSuccess(['a'], [{ operation: 'b', reason: 'c, d' }], []),
+      'partial_success: "1 completed, 1 failed, 0 skipped"\ncompleted[1]: a\nfailed[1]{operation,reason}:\n  b,"c, d"',
+    )
+  })
+
+  void it('rejects inputs over the caps', () => {
+    const many = Array.from({ length: 10_001 }, (_, i) => `s${i}`)
+    assert.throws(() => renderPartialSuccess(many, [], []), /^Error: completed length 10001 exceeds maximum of 10000$/)
+    assert.throws(() => renderPartialSuccess([], [], many), /^Error: skipped length 10001 exceeds maximum of 10000$/)
+    const failed = Array.from({ length: 10_001 }, () => ({ operation: 'o', reason: 'r' }))
+    assert.throws(() => renderPartialSuccess([], failed, []), /^Error: failed length 10001 exceeds maximum of 10000$/)
+    const long = 'x'.repeat(4097)
+    assert.throws(
+      () => renderPartialSuccess([], [{ operation: long, reason: 'r' }], []),
+      /^Error: operation byte length \(at least 4097\) exceeds maximum of 4096$/,
+    )
+    assert.throws(
+      () => renderPartialSuccess([long], [], []),
+      /^Error: completed step byte length \(at least 4097\) exceeds maximum of 4096$/,
+    )
+    assert.throws(
+      () => renderPartialSuccess([], [{ operation: 'o', reason: 'x'.repeat(1_048_577) }], []),
+      /^Error: reason byte length \(at least 1048577\) exceeds maximum of 1048576$/,
+    )
+    assert.throws(() => renderPartialSuccess([], 'nope', []), /^Error: failed must be an array$/)
+    assert.throws(() => renderPartialSuccess([], [{ reason: 'r' }], []), /Missing field `operation`/)
+  })
+})
+
+void describe('renderPipeline', () => {
+  void it('renders each status with its reason', () => {
+    const out = renderPipeline([
+      { id: 'fetch', name: 'Fetch data', status: 'completed' },
+      { id: 'upload', name: 'Upload, then verify', status: 'outcome_unknown', reason: 'timeout' },
+      { id: 'notify', name: 'Notify', status: 'skipped', reason: 'prerequisite_failed' },
+      { id: 'sync', name: 'Sync', status: 'not_run', reason: 'circuit_open' },
+      { id: 'old', name: 'Old', status: 'completed_earlier', reason: null },
+    ])
+    assert.strictEqual(
+      out,
+      'step[5]{id,name,status,reason}:\n  fetch,Fetch data,completed,null\n' +
+        '  upload,"Upload, then verify",outcome_unknown,timeout\n  notify,Notify,skipped,prerequisite_failed\n' +
+        '  sync,Sync,not_run,circuit_open\n  old,Old,completed_earlier,null',
+    )
+    assert.strictEqual(renderPipeline([]), 'step: []')
+  })
+
+  void it('accepts every status and reason the Rust StepStatus has', () => {
+    const cases = [
+      ['pending'],
+      ['running'],
+      ['completed'],
+      ['completed_earlier'],
+      ['failed'],
+      ['panicked'],
+      ['outcome_unknown', 'timeout'],
+      ['outcome_unknown', 'gateway'],
+      ['outcome_unknown', 'cancelled'],
+      ['outcome_unknown', 'interrupted'],
+      ['skipped', 'prerequisite_failed'],
+      ['skipped', 'cancelled'],
+      ['not_run', 'circuit_open'],
+    ]
+    for (const [status, reason] of cases) {
+      const out = renderPipeline([{ id: 's', name: 'n', status, reason }])
+      assert.strictEqual(out, `step[1]{id,name,status,reason}:\n  s,n,${status},${reason ?? 'null'}`)
+    }
+  })
+
+  void it('rejects an unknown status, a missing or unknown reason, and a reason on a status without one', () => {
+    const step = (status, reason) => [{ id: 's', name: 'n', status, reason }]
+    assert.throws(() => renderPipeline(step('done')), /^Error: unknown step status "done": expected one of pending, /)
+    assert.throws(
+      () => renderPipeline(step('skipped')),
+      /^Error: step status "skipped" needs a reason: prerequisite_failed or cancelled$/,
+    )
+    assert.throws(
+      () => renderPipeline(step('outcome_unknown', 'circuit_open')),
+      /^Error: unknown reason "circuit_open" for step status "outcome_unknown": expected timeout, gateway, cancelled or interrupted$/,
+    )
+    assert.throws(
+      () => renderPipeline(step('completed', 'timeout')),
+      /^Error: step status "completed" takes no reason, got "timeout"$/,
+    )
+  })
+
+  void it('rejects inputs over the caps', () => {
+    const steps = Array.from({ length: 10_001 }, () => ({ id: 's', name: 'n', status: 'pending' }))
+    assert.throws(() => renderPipeline(steps), /^Error: steps length 10001 exceeds maximum of 10000$/)
+    assert.throws(
+      () => renderPipeline([{ id: 'x'.repeat(4097), name: 'n', status: 'pending' }]),
+      /^Error: id byte length \(at least 4097\) exceeds maximum of 4096$/,
+    )
+    assert.throws(
+      () => renderPipeline([{ id: 's', name: 'x'.repeat(1_048_577), status: 'pending' }]),
+      /^Error: name byte length \(at least 1048577\) exceeds maximum of 1048576$/,
+    )
+    assert.throws(() => renderPipeline('nope'), /^Error: steps must be an array$/)
+    assert.throws(() => renderPipeline([{ id: 's', name: 'n' }]), /Missing field `status`/)
+  })
+})
+
+void describe('emptyStateWithHints', () => {
+  void it('renders the empty state with a help block', () => {
+    assert.strictEqual(emptyStateWithHints('issue', ['Try x']), 'issue: []\ntotalCount: 0\nhelp[1]: Try x')
+    assert.strictEqual(emptyStateWithHints('issue', []), emptyState('issue'))
+  })
+
+  void it('throws toon_validation_failed for a reserved type name, like emptyState', () => {
+    for (const name of ['totalCount', 'help', 'recovery']) {
+      assert.throws(
+        () => emptyStateWithHints(name, ['h']),
+        (err) => err.message.startsWith('toon_validation_failed: ') && err.message.includes(name),
+      )
+    }
+  })
+
+  void it('rejects inputs over the caps', () => {
+    const hints = Array.from({ length: 10_001 }, () => 'h')
+    assert.throws(() => emptyStateWithHints('t', hints), /^Error: hints length 10001 exceeds maximum of 10000$/)
+    assert.throws(
+      () => emptyStateWithHints('x'.repeat(4097), []),
+      /^Error: typeName byte length \(at least 4097\) exceeds maximum of 4096$/,
+    )
+    assert.throws(
+      () => emptyStateWithHints('t', ['x'.repeat(1_048_577)]),
+      /^Error: hint byte length \(at least 1048577\) exceeds maximum of 1048576$/,
+    )
+  })
+})
+
+void describe('alreadyDone', () => {
+  void it('classifies a stored result as done and a missing one as not done', () => {
+    assert.deepStrictEqual({ ...alreadyDone('issue #42') }, { done: true, result: 'issue #42' })
+    assert.strictEqual(alreadyDone(null).done, false)
+    assert.strictEqual(alreadyDone(null).result, undefined)
+    assert.strictEqual(alreadyDone(undefined).done, false)
+    assert.strictEqual(alreadyDone().done, false)
+    assert.deepStrictEqual({ ...alreadyDone('') }, { done: true, result: '' })
+  })
+
+  void it('rejects a non-string and a stored result over 64 MiB', () => {
+    assert.throws(() => alreadyDone(42), /^Error: stored must be a string$/)
+    assert.throws(
+      () => alreadyDone('x'.repeat(64 * 1024 * 1024 + 1)),
+      /^Error: stored byte length \(at least 67108865\) exceeds maximum of 67108864$/,
+    )
   })
 })

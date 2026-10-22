@@ -163,7 +163,7 @@ const out = new AgentResponse("issues")
 
 Any `#[napi]` function returning `napi::Result<T>` throws a JS `Error` on `Err`. Two practices apply here:
 
-- Wrap fallible conversions (row shape mismatches, oversized inputs) in `Result` and surface them as `napi::Error::from_reason(...)`. Inputs that cannot form a valid TOON document throw with a prefixed message: `toon_validation_failed: …` from `renderToon` and `emptyState` (a reserved `typeName`), `kv_validation_failed: …` from `renderKv` (a duplicate key, or a reserved `totalCount`/`help`/`recovery` key).
+- Wrap fallible conversions (row shape mismatches, oversized inputs) in `Result` and surface them as `napi::Error::from_reason(...)`. Inputs that cannot form a valid TOON document throw with a prefixed message: `toon_validation_failed: …` from `renderToon`, `emptyState` and `emptyStateWithHints` (a reserved `typeName`), `kv_validation_failed: …` from `renderKv` (a duplicate key, or a reserved `totalCount`/`help`/`recovery` key). `renderPipeline` throws for a status or reason that does not name a `StepStatus` (`unknown step status "done": expected one of pending, …`, `step status "skipped" needs a reason: prerequisite_failed or cancelled`, `step status "completed" takes no reason, got "timeout"`).
 - Annotate exports that call into non-trivial rendering with `#[napi(catch_unwind)]`.
   - Without it: **a Rust panic crashes the entire Node process** — there's no isolation boundary.
   - With it: a panic becomes a thrown JS `Error` (or a rejected `Promise` for async) instead of process death.
@@ -172,10 +172,10 @@ Any `#[napi]` function returning `napi::Result<T>` throws a JS `Error` on `Err`.
 
 `catch_unwind` does not stop a single call from blocking Node's event loop with a huge allocation, so every export that takes caller collections bounds the work before doing it. napi-derive converts a typed parameter such as `Vec<Vec<JsToonValue>>` or `String` in full before the export's body runs; a check in the body comes too late (a rejected 100,001 × 100 `rows` array cost 3.4 s and 2.6 GiB that way, and 10k × 10 cells sharing one 100 KB JS string were copied out once per cell, ~10 GB). These exports therefore take untyped napi values and convert them incrementally (`crates/michi-core/src/napi/input.rs`):
 
-- `renderToon`, `renderHints`, `appendHints`, `renderRecovery`, `renderKv`, `renderAlreadyDone`, `renderDomainError`, `renderStatus`, and `AgentResponse.items` / `AgentResponse.kvItems`.
-- Array lengths are checked first: at most 100,000 rows, 1,000 fields, values per row, KV items or status items, and 10,000 hints. For rows, every row's length is read and summed before any cell is converted.
+- `renderToon`, `renderHints`, `appendHints`, `renderRecovery`, `renderKv`, `renderAlreadyDone`, `renderDomainError`, `renderStatus`, `emptyStateWithHints`, `renderPartialSuccess`, `renderPipeline`, `alreadyDone`, and `AgentResponse.items` / `AgentResponse.kvItems`.
+- Array lengths are checked first: at most 100,000 rows, 1,000 fields, values per row, KV items or status items, 10,000 hints, and 10,000 entries in each of `renderPartialSuccess`' `completed`, `failed` and `skipped` and `renderPipeline`'s `steps`. For rows, every row's length is read and summed before any cell is converted.
 - Then each value is converted against a per-call budget: at most **1,000,000 cells** and **64 MiB of string data** in all. A string's UTF-8 length is read, and charged, before it is copied, so a JS string referenced many times is counted every time it is used.
-- Per-string caps: **1 MiB** for a cell value (`strVal`), hint, recovery `reason`, status `description`/`health`, error `message` or `summary`; **4 KiB** for `typeName`, a field name, a KV or status key, `truncationHint`, a recovery `tool`, `toolName`, an error `code` and `operation`. `appendHints`' `body` counts toward the 64 MiB budget only.
+- Per-string caps: **1 MiB** for a cell value (`strVal`), hint, recovery or failed-op `reason`, status `description`/`health`, error `message`, `summary` or pipeline step `name`; **4 KiB** for `typeName`, a field name, a KV or status key, `truncationHint`, a recovery `tool`, `toolName`, an error `code`, `operation`, a completed or skipped step id, and a pipeline step's `id`, `status` and `reason`. `appendHints`' `body` and `alreadyDone`'s `stored` count toward the 64 MiB budget only.
 - Errors keep the usual wording: `rows length 100001 exceeds maximum of 100000`, `cell count 1000100 exceeds maximum of 1000000`, `input byte total 67202037 exceeds maximum of 67108864`, `strVal byte length 1200000 exceeds maximum of 1048576`. A string whose UTF-16 length already exceeds the cap is rejected without scanning it, reported as `byte length (at least N)`.
 - Only the payload a cell's `type` names is read (`strVal` for `"str"`, `floatVal` and `decimalsVal` for `"float"`, …). As before, an object field set to `null` is a wrong-typed value, not an absent one.
 - The single-string `AgentResponse` setters (`hint`, `recoveryHint`, `truncationHint`) keep plain `string` parameters, since napi copies their one argument exactly once; they reject a value over the same caps after the copy. `AgentResponse.hint`/`recoveryHint` also keep their cumulative 10,000-call caps.
@@ -234,7 +234,7 @@ The pipeline has not produced a release yet: neither `michi-core`/`michi-pipelin
 
 This is auto-generated, never hand-written — `napi build` regenerates it from the `#[napi]` attributes in `crates/michi-core/src/napi.rs` every time.
 
-- Every object type is `Js`-prefixed, matching its Rust struct name: `JsToonValue`, `JsToonOptions`, `JsKvItem`, `JsRecoveryHint`, `JsContentBlock`, `JsAnnotations`, `JsCallToolResult`.
+- Every object type is `Js`-prefixed, matching its Rust struct name: `JsToonValue`, `JsToonOptions`, `JsKvItem`, `JsRecoveryHint`, `JsStatusItem`, `JsFailedOp`, `JsPipelineStep`, `JsAlreadyDone`, `JsContentBlock`, `JsAnnotations`, `JsCallToolResult`.
 - There's no unprefixed `ToonValue`/`CallToolResult`/etc. in the real output, whatever an older sketch of this section might have suggested.
 
 What's actually in `packages/michi-node/index.d.ts` today (rendering-domain surface; the resilience-, status-, and error-domain functions follow further down):
@@ -274,9 +274,11 @@ export interface JsToonOptions {
 export declare function renderToon(opts: JsToonOptions): string;
 
 /** Render a definitive empty-state TOON response: `typeName: []\ntotalCount: 0` (no trailing newline).
- * No `hints` parameter over this boundary — use `appendHints()` to add one.
  * Throws `toon_validation_failed: …` for a reserved `typeName` (`totalCount`, `help`, `recovery`), like `renderToon`. */
 export declare function emptyState(typeName: string): string;
+
+/** `emptyState` plus a `help[N]: …` block; the same `toon_validation_failed` error for a reserved `typeName`. */
+export declare function emptyStateWithHints(typeName: string, hints: Array<string>): string;
 
 /** The TOON 4.4 inline array `help[N]: h1,h2` (no trailing newline); an empty string when hints is empty. */
 export declare function renderHints(hints: Array<string>): string;
@@ -430,6 +432,61 @@ export declare function renderStatus(
   items: Array<JsStatusItem>,
   hints?: Array<string> | undefined | null,
 ): string;
+
+/** One failed operation for `renderPartialSuccess`. */
+export interface JsFailedOp {
+  operation: string;
+  reason: string;
+  /** No structured params over this boundary. */
+  recovery?: JsRecoveryHint | null;
+}
+
+/** Render `PartialSuccess`: a quoted summary, `completed[N]: …`, the `failed[N]{operation,reason}:` table,
+ * `skipped[N]: …` (empty categories omitted), then one `recovery[N]{tool,params,reason}:` table. */
+export declare function renderPartialSuccess(
+  completed: Array<string>,
+  failed: Array<JsFailedOp>,
+  skipped: Array<string>,
+): string;
+
+/** One step for `renderPipeline`: the labels `StepStatus::label` and `StepStatus::reason` write. */
+export interface JsPipelineStep {
+  id: string;
+  name: string;
+  status:
+    | "pending"
+    | "running"
+    | "completed"
+    | "completed_earlier"
+    | "failed"
+    | "outcome_unknown"
+    | "skipped"
+    | "not_run"
+    | "panicked";
+  /** Required for `outcome_unknown`, `skipped` and `not_run`; absent or `null` otherwise. */
+  reason?:
+    | "timeout"
+    | "gateway"
+    | "cancelled"
+    | "interrupted"
+    | "prerequisite_failed"
+    | "circuit_open"
+    | null;
+}
+
+/** Render pipeline state as `step[N]{id,name,status,reason}:`, or `step: []` with no steps. */
+export declare function renderPipeline(steps: Array<JsPipelineStep>): string;
+
+export interface JsAlreadyDone {
+  done: boolean;
+  /** The stored result when `done`. */
+  result?: string;
+}
+
+/** Classify an idempotency lookup: any stored string (even empty) is done; `null`/`undefined` is not. */
+export declare function alreadyDone(stored?: string | undefined | null): JsAlreadyDone;
 ```
+
+`truncate` is already the inline form (`truncate_inline`), so there is no separate `truncateInline` export. Rust's richer `truncate()` result (`Truncated`) does not cross the boundary.
 
 </details>

@@ -14,7 +14,10 @@ pub enum Health {
 }
 
 /// A single named component with a value and optional health signal.
+///
+/// `#[non_exhaustive]`: build it with [`StatusItem::new`] (and [`StatusItem::health`]); the fields stay public.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct StatusItem {
     /// Component key, e.g. `"index"`, `"cache"`.
     pub key: String,
@@ -22,6 +25,21 @@ pub struct StatusItem {
     pub value: KvValue,
     /// Optional health signal; `None` renders health and reason as `null`.
     pub health: Option<Health>,
+}
+
+impl StatusItem {
+    /// A status item with no health signal.
+    #[must_use]
+    pub fn new(key: impl Into<String>, value: KvValue) -> Self {
+        Self { key: key.into(), value, health: None }
+    }
+
+    /// Attach a health signal.
+    #[must_use]
+    pub fn health(mut self, health: Health) -> Self {
+        self.health = Some(health);
+        self
+    }
 }
 
 /// Content-first orientation response (AXI **P8**).
