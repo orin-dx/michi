@@ -179,7 +179,11 @@ fn type_admits(schema: &serde_json::Value, value: &serde_json::Value) -> bool {
     })
 }
 
-/// The `params` value schema and the deserializer accept exactly the same values, at every numeric boundary.
+/// Integers past i64 with no exact float form: rounding them would change their digits.
+const LOSSY_INTEGERS: [&str; 2] = ["9223372036854775809", "18446744073709551615"];
+
+/// The `params` value schema and the deserializer accept the same values at every numeric boundary, except
+/// [`LOSSY_INTEGERS`].
 #[test]
 fn recovery_hint_param_schema_and_deserializer_agree() {
     let root = serde_json::to_value(schemars::schema_for!(RecoveryHint)).expect("schema serializes");
@@ -208,6 +212,14 @@ fn recovery_hint_param_schema_and_deserializer_agree() {
         let json = format!(r#"{{"tool":"t","params":{{"x":{param}}}}}"#);
         let value: serde_json::Value = serde_json::from_str(param).expect("valid JSON");
         let parsed = serde_json::from_str::<RecoveryHint>(&json);
+        // The one deliberate gap: JSON Schema cannot say "an integer past i64 only if it has an exact float form",
+        // so the schema admits these and says so in its description, while the deserializer rejects them rather than
+        // rounding (integers keep their exact digits).
+        if LOSSY_INTEGERS.contains(&param) {
+            assert!(type_admits(value_schema, &value), "{param}");
+            assert!(parsed.is_err(), "{param} must be rejected, not rounded: {parsed:?}");
+            continue;
+        }
         assert_eq!(
             type_admits(value_schema, &value),
             parsed.is_ok(),

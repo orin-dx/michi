@@ -88,9 +88,27 @@ impl From<RecoveryHint> for RecoveryHintWire {
 fn param_values_schema(_: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
     serde_json::from_value(serde_json::json!({
         "type": "object",
-        "additionalProperties": { "type": ["string", "number", "boolean", "null"] }
+        "additionalProperties": {
+            "type": ["string", "number", "boolean", "null"],
+            "description": "An integer past i64 must have an exact float form; one that doesn't is rejected rather than rounded. Send such values as strings."
+        }
     }))
     .unwrap_or(schemars::schema::Schema::Bool(true))
+}
+
+/// `u` as an f64 when that loses nothing: the f64 is exactly `u`, or `u`'s digits are exactly the canonical form
+/// michi writes for that f64 (`9223372036854776000` for 2^63), so they came from a float, not a longer integer.
+#[cfg(feature = "serde")]
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn exact_u64_as_f64(u: u64) -> Option<f64> {
+    let f = u as f64;
+    // 2^64 itself is the nearest f64 to values near u64::MAX, and does not convert back.
+    if f < 18_446_744_073_709_551_616.0 && f as u64 == u {
+        return Some(f);
+    }
+    let mut canonical = String::with_capacity(24);
+    crate::toon::push_f64(&mut canonical, f);
+    (canonical == u.to_string()).then_some(f)
 }
 
 #[cfg(feature = "serde")]
@@ -100,11 +118,19 @@ fn json_to_kv_value(key: &str, v: serde_json::Value) -> Result<KvValue, String> 
         serde_json::Value::Bool(b) => Ok(KvValue::Bool(b)),
         serde_json::Value::String(s) => Ok(KvValue::Text(s)),
         serde_json::Value::Number(n) => {
-            // An integer outside i64 is read as the nearest f64, exactly as serde_json already reads one past
-            // u64::MAX and as every JSON reader in JavaScript reads any number; the schema says `number` for all of
-            // them. A `Float` michi wrote (`1e19` prints as `10000000000000000000`) reads back unchanged.
+            // Integers keep their exact digits: one past i64::MAX becomes a `Float` only when an f64 holds it exactly
+            // (a `Float` michi wrote, such as `1e19`, prints as `10000000000000000000` and reads back), and is
+            // rejected rather than rounded otherwise. An integer past u64::MAX or below i64::MIN reaches michi already
+            // read as an f64 by serde_json, so its original digits cannot be checked.
             if let Some(i) = n.as_i64() {
                 Ok(KvValue::Int(i))
+            } else if let Some(u) = n.as_u64() {
+                match exact_u64_as_f64(u) {
+                    Some(f) => Ok(KvValue::Float(f, crate::kv::exact_decimals(f))),
+                    None => Err(format!(
+                        "parameter `{key}`: integer {u} is past i64 and has no exact float form; send it as a string"
+                    )),
+                }
             } else if let Some(f) = n.as_f64() {
                 Ok(KvValue::Float(f, crate::kv::exact_decimals(f)))
             } else {
