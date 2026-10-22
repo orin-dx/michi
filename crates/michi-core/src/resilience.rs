@@ -164,9 +164,10 @@ fn ceil_millis(d: Duration) -> u64 {
 
 /// Parse the value of an HTTP `Retry-After` header (RFC 9110 §10.2.3) as a delay.
 ///
-/// Accepts `delay-seconds` (ASCII digits only, no sign) or an HTTP-date in any of the three forms RFC 9110 §5.6.7
-/// requires: IMF-fixdate, RFC 850 and asctime. A date in the past is a zero delay. Surrounding whitespace is ignored;
-/// anything else returns `None`.
+/// Accepts `delay-seconds` (ASCII digits only, no sign; a value past `u64::MAX` seconds saturates there) or an
+/// HTTP-date in any of the three forms RFC 9110 §5.6.7 requires: IMF-fixdate, RFC 850 and asctime, with fixed-width
+/// digit fields (`08:09:07`, not `8:9:7`). A date in the past, including one before 1970, is a zero delay. Surrounding
+/// whitespace is ignored; anything else returns `None`.
 #[must_use]
 pub fn parse_retry_after(header_value: &str) -> Option<Duration> {
     parse_retry_after_at(header_value, std::time::SystemTime::now())
@@ -178,26 +179,48 @@ pub fn parse_retry_after_at(header_value: &str, now: std::time::SystemTime) -> O
     let trimmed = header_value.trim();
     // delay-seconds is 1*DIGIT (RFC 9110 §10.2.3); `u64::from_str` alone would also accept a leading `+`.
     if !trimmed.is_empty() && trimmed.bytes().all(|b| b.is_ascii_digit()) {
-        return trimmed.parse::<u64>().ok().map(Duration::from_secs);
+        // All digits, so the only parse failure is overflow.
+        return Some(Duration::from_secs(trimmed.parse::<u64>().unwrap_or(u64::MAX)));
     }
     let target = parse_http_date(trimmed, now)?;
-    Some(target.duration_since(now).unwrap_or(Duration::ZERO))
+    let now_secs = match now.duration_since(std::time::UNIX_EPOCH) {
+        Ok(d) => i64::try_from(d.as_secs()).unwrap_or(i64::MAX),
+        Err(e) => i64::try_from(e.duration().as_secs()).map_or(i64::MIN, |s| -s),
+    };
+    // `target` is whole seconds; a fractional `now` only shortens the wait by less than a second, rounded down.
+    let subsec = now.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
+    let secs = target.saturating_sub(now_secs);
+    if secs <= 0 {
+        return Some(Duration::ZERO);
+    }
+    let whole = Duration::from_secs(u64::try_from(secs).unwrap_or(0));
+    Some(whole.saturating_sub(Duration::from_nanos(u64::from(subsec))))
+}
+
+/// `s` as a number when it is exactly `len` ASCII digits (no sign, no padding).
+fn fixed_digits(s: &str, len: usize) -> Option<u64> {
+    if s.len() != len || !s.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    s.parse().ok()
 }
 
 /// Parse an HTTP-date in any of the three forms RFC 9110 §5.6.7 requires recipients to accept: IMF-fixdate
 /// (`Sun, 06 Nov 1994 08:49:37 GMT`), the obsolete RFC 850 form (`Sunday, 06-Nov-94 08:49:37 GMT`) and the obsolete
-/// asctime form (`Sun Nov  6 08:49:37 1994`). The weekday is not checked against the date.
-fn parse_http_date(s: &str, now: std::time::SystemTime) -> Option<std::time::SystemTime> {
+/// asctime form (`Sun Nov  6 08:49:37 1994`), as seconds from the Unix epoch (negative before 1970). The weekday is
+/// not checked against the date.
+fn parse_http_date(s: &str, now: std::time::SystemTime) -> Option<i64> {
     parse_imf_fixdate(s).or_else(|| parse_rfc850_date(s, now)).or_else(|| parse_asctime_date(s))
 }
 
-fn parse_imf_fixdate(s: &str) -> Option<std::time::SystemTime> {
+/// `IMF-fixdate = day-name "," SP date1 SP time-of-day SP GMT`, with `date1 = 2DIGIT SP month SP 4DIGIT`.
+fn parse_imf_fixdate(s: &str) -> Option<i64> {
     let s = s.strip_suffix(" GMT")?;
     let (_weekday, rest) = s.split_once(", ")?;
     let mut parts = rest.split(' ');
-    let day: u64 = parts.next()?.parse().ok()?;
+    let day = fixed_digits(parts.next()?, 2)?;
     let month = month_number(parts.next()?)?;
-    let year: i64 = parts.next()?.parse().ok()?;
+    let year = i64::try_from(fixed_digits(parts.next()?, 4)?).ok()?;
     let time = parts.next()?;
     if parts.next().is_some() {
         return None;
@@ -209,18 +232,17 @@ fn parse_imf_fixdate(s: &str) -> Option<std::time::SystemTime> {
 ///
 /// A two-digit year means the latest year with those last two digits that is not more than 50 years after `now`'s
 /// year (RFC 9110 §5.6.7): from 2026, `76` is 2076 and `77` is 1977.
-fn parse_rfc850_date(s: &str, now: std::time::SystemTime) -> Option<std::time::SystemTime> {
+fn parse_rfc850_date(s: &str, now: std::time::SystemTime) -> Option<i64> {
     let s = s.strip_suffix(" GMT")?;
     let (_weekday, rest) = s.split_once(", ")?;
     let (date, time) = rest.split_once(' ')?;
     let mut date_parts = date.split('-');
-    let day: u64 = date_parts.next()?.parse().ok()?;
+    let day = fixed_digits(date_parts.next()?, 2)?;
     let month = month_number(date_parts.next()?)?;
-    let yy = date_parts.next()?;
-    if date_parts.next().is_some() || yy.len() != 2 || !yy.bytes().all(|b| b.is_ascii_digit()) {
+    let yy = i64::try_from(fixed_digits(date_parts.next()?, 2)?).ok()?;
+    if date_parts.next().is_some() {
         return None;
     }
-    let yy: i64 = yy.parse().ok()?;
     // The latest year ending in `yy` that is at most 50 years after now's year.
     let limit = civil_year(now) + 50;
     let year = limit - (limit - yy).rem_euclid(100);
@@ -228,17 +250,18 @@ fn parse_rfc850_date(s: &str, now: std::time::SystemTime) -> Option<std::time::S
 }
 
 /// `asctime-date = day-name SP month SP ( 2DIGIT / ( SP DIGIT ) ) SP time-of-day SP year`, with no zone (GMT).
-fn parse_asctime_date(s: &str) -> Option<std::time::SystemTime> {
+fn parse_asctime_date(s: &str) -> Option<i64> {
     let mut parts = s.split_whitespace();
     let _weekday = parts.next()?;
     let month = month_number(parts.next()?)?;
-    let day: u64 = parts.next()?.parse().ok()?;
+    let day = parts.next()?;
+    let day = fixed_digits(day, 2).or_else(|| fixed_digits(day, 1))?;
     let time = parts.next()?;
-    let year = parts.next()?;
-    if parts.next().is_some() || year.len() != 4 || !year.bytes().all(|b| b.is_ascii_digit()) {
+    let year = i64::try_from(fixed_digits(parts.next()?, 4)?).ok()?;
+    if parts.next().is_some() {
         return None;
     }
-    to_system_time(year.parse().ok()?, month, day, time)
+    to_system_time(year, month, day, time)
 }
 
 /// The UTC year `now` falls in (1970 for instants before the epoch, which no caller passes in practice).
@@ -260,15 +283,16 @@ fn civil_year(now: std::time::SystemTime) -> i64 {
     }
 }
 
-/// Validate a civil date and `HH:MM:SS` time-of-day (GMT) and convert them to a `SystemTime`.
-fn to_system_time(year: i64, month: u64, day: u64, time: &str) -> Option<std::time::SystemTime> {
+/// Validate a civil date and `HH:MM:SS` time-of-day (GMT, two digits each) and convert them to seconds from the Unix
+/// epoch, negative before 1970.
+fn to_system_time(year: i64, month: u64, day: u64, time: &str) -> Option<i64> {
     if !(0..=9999).contains(&year) {
         return None;
     }
     let mut time_parts = time.split(':');
-    let hour: u64 = time_parts.next()?.parse().ok()?;
-    let minute: u64 = time_parts.next()?.parse().ok()?;
-    let second: u64 = time_parts.next()?.parse().ok()?;
+    let hour = fixed_digits(time_parts.next()?, 2)?;
+    let minute = fixed_digits(time_parts.next()?, 2)?;
+    let second = fixed_digits(time_parts.next()?, 2)?;
     let max_day = days_in_month(year, month)?;
     if time_parts.next().is_some() || hour > 23 || minute > 59 || second > 60 || day == 0 || day > max_day {
         return None;
@@ -276,9 +300,7 @@ fn to_system_time(year: i64, month: u64, day: u64, time: &str) -> Option<std::ti
 
     let days = days_from_civil(year, month, day);
     #[allow(clippy::cast_possible_wrap)]
-    let epoch_secs = days.checked_mul(86_400)?.checked_add((hour * 3600 + minute * 60 + second) as i64)?;
-    let unix_secs = u64::try_from(epoch_secs).ok()?;
-    Some(std::time::UNIX_EPOCH + Duration::from_secs(unix_secs))
+    days.checked_mul(86_400)?.checked_add((hour * 3600 + minute * 60 + second) as i64)
 }
 
 fn days_in_month(year: i64, month: u64) -> Option<u64> {
@@ -326,7 +348,11 @@ fn days_from_civil(y: i64, m: u64, d: u64) -> i64 {
     era * 146_097 + doe as i64 - 719_468
 }
 
-/// Return `true` if the HTTP status code is conventionally retryable.
+/// Return `true` if the HTTP status code is conventionally retryable (429, 502, 503, 504).
+///
+/// Only 429 and 503 say the request was not processed. After a 502 or 504 the upstream may have applied it (RFC 9110
+/// §15.6), so retry those automatically only for an idempotent request (GET, PUT, DELETE, or one carrying an
+/// idempotency key); otherwise check whether it took effect first.
 #[must_use]
 pub fn is_retryable_status(status: u16) -> bool {
     matches!(status, 429 | 502 | 503 | 504)
@@ -628,10 +654,47 @@ mod tests {
         assert_eq!(parse_retry_after(padded), Some(Duration::from_secs(120)));
     }
 
+    // delay-seconds is 1*DIGIT with no upper bound (RFC 9110 §10.2.3); a value past u64 is a very long wait, not a
+    // malformed header.
     #[test]
-    fn parse_retry_after_rejects_u64_overflowing_digit_string() {
+    fn parse_retry_after_saturates_u64_overflowing_digit_string() {
         let now = std::time::SystemTime::UNIX_EPOCH;
-        assert_eq!(parse_retry_after_at("99999999999999999999999", now), None);
+        assert_eq!(parse_retry_after_at("99999999999999999999999", now), Some(Duration::from_secs(u64::MAX)));
+        assert_eq!(parse_retry_after_at("18446744073709551616", now), Some(Duration::from_secs(u64::MAX)));
+        assert_eq!(parse_retry_after_at("18446744073709551615", now), Some(Duration::from_secs(u64::MAX)));
+    }
+
+    // A past date is a zero delay, including one before 1970.
+    #[test]
+    fn parse_retry_after_pre_epoch_date_is_zero() {
+        let now = std::time::UNIX_EPOCH + Duration::from_secs(1_767_225_600);
+        for header in ["Fri, 01 Jan 1960 00:00:00 GMT", "Fri Jan  1 00:00:00 1960", "Mon, 01 Jan 1900 00:00:00 GMT"] {
+            assert_eq!(parse_retry_after_at(header, now), Some(Duration::ZERO), "{header}");
+        }
+        assert_eq!(parse_retry_after_at("Wed, 31 Dec 1969 23:59:59 GMT", now), Some(Duration::ZERO));
+    }
+
+    // time-of-day is `2DIGIT ":" 2DIGIT ":" 2DIGIT`; day and year are fixed-width digits too (RFC 9110 §5.6.7).
+    #[test]
+    fn parse_retry_after_rejects_signed_or_short_date_fields() {
+        let now = std::time::UNIX_EPOCH + Duration::from_secs(1_767_225_600);
+        for header in [
+            "Thu, 01 Jan 2026 +8:+9:+7 GMT",
+            "Thu, 01 Jan 2026 8:09:07 GMT",
+            "Thu, 01 Jan 2026 08:09:007 GMT",
+            "Thu, +1 Jan 2026 00:00:00 GMT",
+            "Thu, 1 Jan 2026 00:00:00 GMT",
+            "Thu, 01 Jan +2026 00:00:00 GMT",
+            "Thu, 01 Jan 26 00:00:00 GMT",
+            "Thursday, 01-Jan-26 +0:00:00 GMT",
+            "Thursday, +1-Jan-26 00:00:00 GMT",
+            "Thu Jan +1 00:00:00 2026",
+            "Thu Jan  1 0:00:00 2026",
+        ] {
+            assert_eq!(parse_retry_after_at(header, now), None, "{header}");
+        }
+        assert_eq!(parse_retry_after_at("Thu Jan  1 00:01:00 2026", now), Some(Duration::from_secs(60)));
+        assert_eq!(parse_retry_after_at("Thu Jan 01 00:01:00 2026", now), Some(Duration::from_secs(60)));
     }
 
     #[test]
@@ -662,14 +725,11 @@ mod tests {
     }
 
     #[test]
-    fn http_date_before_unix_epoch_returns_none() {
+    fn http_date_before_unix_epoch_is_a_past_date() {
+        // A past date is a zero delay, before 1970 too (it used to return None).
         let now = std::time::UNIX_EPOCH + Duration::from_secs(1_767_225_600);
-        assert_eq!(
-            parse_retry_after_at("Mon, 01 Jan 1900 00:00:00 GMT", now),
-            None,
-            "pre-epoch dates are rejected, not clamped to zero -- epoch_secs -> u64 fails on negative seconds"
-        );
-        assert_eq!(parse_retry_after_at("Wed, 01 Jan 1969 23:59:59 GMT", now), None);
+        assert_eq!(parse_retry_after_at("Mon, 01 Jan 1900 00:00:00 GMT", now), Some(Duration::ZERO));
+        assert_eq!(parse_retry_after_at("Wed, 01 Jan 1969 23:59:59 GMT", now), Some(Duration::ZERO));
     }
 
     #[test]
@@ -680,15 +740,14 @@ mod tests {
     }
 
     #[test]
-    fn http_date_grammar_is_more_lenient_than_strict_rfc7231_imf_fixdate() {
+    fn http_date_day_name_is_not_validated_but_digit_fields_are_fixed_width() {
         let now = std::time::UNIX_EPOCH;
         let expected = Some(Duration::from_secs(1_767_225_600));
         // day-name is not validated -- any token before ", " is discarded
         assert_eq!(parse_retry_after_at("Xxx, 01 Jan 2026 00:00:00 GMT", now), expected);
-        // day is parsed with str::parse, not fixed-width 2DIGIT -- unpadded accepted
-        assert_eq!(parse_retry_after_at("Thu, 1 Jan 2026 00:00:00 GMT", now), expected);
-        // time fields likewise accept unpadded digits
-        assert_eq!(parse_retry_after_at("Thu, 01 Jan 2026 0:0:0 GMT", now), expected);
+        // day and time fields are 2DIGIT: unpadded values are malformed
+        assert_eq!(parse_retry_after_at("Thu, 1 Jan 2026 00:00:00 GMT", now), None);
+        assert_eq!(parse_retry_after_at("Thu, 01 Jan 2026 0:0:0 GMT", now), None);
     }
 
     #[test]

@@ -178,7 +178,8 @@ Any `#[napi]` function returning `napi::Result<T>` throws a JS `Error` on `Err`.
 - Per-string caps: **1 MiB** for a cell value (`strVal`), hint, `renderDomainError` cause, recovery or failed-op `reason`, status `description`/`health`, error `message`, `summary` or pipeline step `name`; **4 KiB** for `typeName`, a field name, a KV or status key, `truncationHint`, a recovery `tool`, `toolName`, an error `code`, `operation`, a completed or skipped step id, and a pipeline step's `id`, `status` and `reason`. `appendHints`' `body` and `alreadyDone`'s `stored` count toward the 64 MiB budget only.
 - Errors keep the usual wording: `rows length 100001 exceeds maximum of 100000`, `cell count 1000100 exceeds maximum of 1000000`, `input byte total 67202037 exceeds maximum of 67108864`, `strVal byte length 1200000 exceeds maximum of 1048576`. A string whose UTF-16 length already exceeds the cap is rejected without scanning it, reported as `byte length (at least N)`.
 - Only the payload a cell's `type` names is read (`strVal` for `"str"`, `floatVal` and `decimalsVal` for `"float"`, …). As before, an object field set to `null` is a wrong-typed value, not an absent one.
-- The single-string `AgentResponse` setters (`hint`, `recoveryHint`, `truncationHint`) keep plain `string` parameters, since napi copies their one argument exactly once; they reject a value over the same caps after the copy. `AgentResponse.hint`/`recoveryHint` also keep their cumulative 10,000-call caps.
+- The single-string `AgentResponse` members (the constructor's `typeName`, `hint`, `recoveryHint`, `truncationHint`, `humanContent`) and `emptyState` keep plain `string` parameters, since napi copies their one argument exactly once; they reject a value over the caps after the copy: 4 KiB for `typeName`, a recovery `tool` and `truncationHint`, 1 MiB for a hint, a recovery `reason` and `humanContent`. `AgentResponse.hint`/`recoveryHint` also keep their cumulative 10,000-call caps.
+- **Cumulative budget per `AgentResponse`:** one object holds at most **64 MiB** of caller strings across all its calls: the type name, `items` fields and cells, `kvItems` keys and values, hints, recovery tools and reasons, the truncation hint and `humanContent`. `hint` and `recoveryHint` add to the total; `items`, `kvItems`, `truncationHint` and `humanContent` replace their slot, so the old value's bytes come back first. A call that would pass the total throws `cumulative byte total 67108865 exceeds maximum of 67108864` and leaves the builder unchanged. Before, each call had its own budget, so 65 separate 1 MiB hints were accepted and rendered 68 MB synchronously.
 - michi-core's own shape caps (1,000 fields, 1,000,000 cells, a 256-char truncation hint; see [02 — Size limits](02-toon-format.md#size-limits)) still apply after conversion and surface as `toon_validation_failed: …`.
 
 The typed Rust functions (`render_toon(JsToonOptions)`, `JsAgentResponse::items(Vec<Vec<JsToonValue>>, Vec<String>)`, …) keep their names and signatures for Rust callers and unit tests; the JS exports are separate Rust functions (`render_toon_js`, `items_js`, …) with `js_name` and `ts_args_type`, so `index.d.ts` still declares the same plain types.
@@ -188,7 +189,7 @@ The typed Rust functions (`render_toon(JsToonOptions)`, `JsAgentResponse::items(
 Every JavaScript number that crosses into a rendering or resilience call is validated at the boundary through a newtype in `crates/michi-core/src/napi/num.rs` before any michi code runs; an out-of-domain value throws a JS `Error` instead of being narrowed. `napi_get_value_double` (a non-coercing read) is used for every converted position, so `napi_get_value_int32`'s `ToInt32` wraparound is never in the path.
 
 - `totalCount` (`JsToonOptions.totalCount`, `renderKv`'s `totalCount` parameter, and `AgentResponse.totalCount`) is rejected unless it is a finite, non-negative integer no greater than `Number.MAX_SAFE_INTEGER` (2^53 - 1).
-- `decimalsVal` is rejected unless it is a finite integer in `[0, 20]`. When it is absent, a KV or status float keeps its shortest exact decimals (the rule `RecoveryHint` deserialization uses), so `1e-7` renders `1e-7`; a value needing more than 255 places (below about 1e-255) is rounded at 255.
+- `decimalsVal` is rejected unless it is a finite integer in `[0, 20]`. When it is absent, a KV or status float keeps every digit it needs (the rule `RecoveryHint` deserialization uses), so `1e-7` renders `1e-7` and `5e-324` renders `5e-324`. When it is given, the float rounds to that many places, as asked: `1e-7` with `decimalsVal: 2` renders `0`.
 - `maxChars` (`truncate`'s parameter) is rejected unless it is a finite, non-negative integer no greater than `Number.MAX_SAFE_INTEGER`.
 - `intVal` is rejected unless it is a finite integer in `[-9007199254740991, 9007199254740991]` — the range over which a JS number and an `i64` agree exactly.
 - `floatVal` is rejected unless it is finite; `NaN`, `Infinity`, and `-Infinity` are all rejected.
@@ -375,7 +376,8 @@ The resilience-, status-, and error-domain surface, added by SPEC-ARCH-004 and t
 <summary>Full resilience-, error-, and status-domain <code>index.d.ts</code> (57 lines)</summary>
 
 ```typescript
-/** Return `true` if the HTTP status code is conventionally retryable (429, 502, 503, 504). */
+/** Return `true` if the HTTP status code is conventionally retryable (429, 502, 503, 504). Only 429 and 503 say the
+ * request was not processed; after a 502 or 504 it may have been applied, so retry those only for an idempotent request. */
 export declare function isRetryableStatus(status: number): boolean;
 
 /**
@@ -396,7 +398,8 @@ export declare function nextRetryDelay(
   retryAfterMs?: number | undefined | null,
 ): number | null;
 
-/** Parse an RFC 7231 `Retry-After` header value (delta-seconds or HTTP-date) into seconds. */
+/** Parse an RFC 9110 `Retry-After` header value into seconds: delay-seconds (saturating at `u64::MAX`) or an
+ * HTTP-date, where a past date (before 1970 too) is `0`. Returns `null` for a malformed value. */
 export declare function parseRetryAfter(headerValue: string): number | null;
 
 /** Render the TOON 4.4 `already_done` document: `operation`, `status: already_done`, `summary`, `help`. */

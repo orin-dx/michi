@@ -73,6 +73,8 @@ mod float_wire;
 pub mod hints;
 /// Idempotency: partial-success state for multi-step operations.
 pub mod idempotency;
+#[cfg(feature = "schemars")]
+mod int_schema;
 /// Key-value single-item rendering (`key: value`).
 pub mod kv;
 /// MCP `CallToolResult` mapping.
@@ -105,7 +107,7 @@ pub(crate) mod test_support;
 
 pub use audience::Audience;
 pub use empty::{empty_state, empty_state_with_hints, try_empty_state, try_empty_state_with_hints};
-pub use error::{DomainError, Error, ErrorClass, ErrorCode, Sensitive};
+pub use error::{DomainError, Error, ErrorClass, ErrorCode, Sensitive, MAY_HAVE_TAKEN_EFFECT_HINT};
 pub use hints::{append_hints, render_hints, Hint};
 pub use idempotency::{FailedOp, PartialSuccess};
 pub use kv::{render_kv, KvError, KvItem, KvValue};

@@ -84,8 +84,9 @@ pub struct JsToonValue {
     /// The value when `type` is `"bool"`.
     #[napi(js_name = "boolVal")]
     pub bool_val: Option<bool>,
-    /// Decimal places when `type` is `"float"` (KV and status render only). Rejected if outside [0, 20]. Defaults to
-    /// the value's shortest exact decimals, so `1e-7` renders `1e-7` rather than `0`.
+    /// Decimal places when `type` is `"float"` (KV and status render only). Rejected if outside [0, 20]. Omitted, the
+    /// value keeps every digit it needs, so `1e-7` renders `1e-7` and `5e-324` renders `5e-324`. Given, it rounds as
+    /// asked: `1e-7` with `decimalsVal: 2` renders `0`.
     #[napi(js_name = "decimalsVal", ts_type = "number")]
     pub decimals_val: Option<JsDecimals>,
 }
@@ -228,9 +229,11 @@ pub fn render_toon(opts: JsToonOptions) -> napi::Result<String> {
 /// # Errors
 ///
 /// Returns an error if `type_name` is a reserved root key (`totalCount`, `help` or `recovery`). The reason is
-/// `toon_validation_failed: ` followed by the `ToonError` text, as `renderToon` reports it.
+/// `toon_validation_failed: ` followed by the `ToonError` text, as `renderToon` reports it. Also rejects a `typeName`
+/// over 4 KiB, as `emptyStateWithHints` does.
 #[napi(catch_unwind)]
 pub fn empty_state(type_name: String) -> napi::Result<String> {
+    check_bytes("typeName", &type_name, MAX_NAME_BYTES)?;
     crate::empty::try_empty_state(&type_name)
         .map_err(|e| napi::Error::from_reason(format!("toon_validation_failed: {e}")))
 }
@@ -362,11 +365,10 @@ fn js_kv_value_to_rust(v: JsToonValue) -> napi::Result<crate::kv::KvValue> {
             .ok_or_else(|| napi::Error::from_reason("JsToonValue: type is \"int\" but intVal is missing")),
         "float" => {
             // Without `decimalsVal`, keep the number exact: its shortest decimals, as RecoveryHint deserialization
-            // does. A value too small to write in 255 places (below about 1e-255) is rounded at 255.
-            let decimals = v.decimals_val.map_or_else(
-                || v.float_val.map_or(0, |n| u8::try_from(crate::kv::shortest_decimals(n.get())).unwrap_or(u8::MAX)),
-                JsDecimals::get_u8,
-            );
+            // does, or FULL_PRECISION (never rounds) for a value below about 1e-254.
+            let decimals = v
+                .decimals_val
+                .map_or_else(|| v.float_val.map_or(0, |n| crate::kv::exact_decimals(n.get())), JsDecimals::get_u8);
             v.float_val
                 .map(|n| crate::kv::KvValue::Float(n.get(), decimals))
                 .ok_or_else(|| napi::Error::from_reason("JsToonValue: type is \"float\" but floatVal is missing"))
@@ -462,7 +464,8 @@ pub fn render_already_done(operation: String, summary: String, hints: Vec<String
     Ok(crate::resilience::render_already_done(&operation, &summary, &hints))
 }
 
-/// Parse an RFC 7231 `Retry-After` header value into seconds.
+/// Parse an RFC 9110 `Retry-After` header value into seconds: delay-seconds (saturating at `u64::MAX`) or an
+/// HTTP-date, where a past date (before 1970 too) is `0`. Returns `null` for a malformed value.
 #[napi(catch_unwind)]
 #[must_use]
 pub fn parse_retry_after(header_value: String) -> Option<f64> {
@@ -501,7 +504,9 @@ pub fn next_retry_delay(
         .map(|d| d.as_secs_f64() * 1000.0))
 }
 
-/// Return `true` if the HTTP status code is conventionally retryable (429, 502, 503, 504).
+/// Return `true` if the HTTP status code is conventionally retryable (429, 502, 503, 504). Only 429 and 503 say the
+/// request was not processed; after a 502 or 504 it may have been applied, so retry those only for an idempotent
+/// request.
 #[napi(catch_unwind)]
 #[must_use]
 pub fn is_retryable_status(#[napi(ts_arg_type = "number")] status: JsHttpStatus) -> bool {
@@ -727,7 +732,51 @@ pub struct JsCallToolResult {
     pub structured_content: serde_json::Value,
 }
 
+/// String bytes one [`JsAgentResponse`] holds, per slot. A slot that a call replaces (`items`, `kvItems`,
+/// `truncationHint`, `humanContent`) gives its old bytes back; `hint` and `recoveryHint` only add.
+#[derive(Debug, Default)]
+struct HeldBytes {
+    type_name: usize,
+    items: usize,
+    kv_items: usize,
+    hints: usize,
+    recovery: usize,
+    truncation_hint: usize,
+    human_content: usize,
+}
+
+impl HeldBytes {
+    fn total(&self) -> usize {
+        [self.type_name, self.items, self.kv_items, self.hints, self.recovery, self.truncation_hint, self.human_content]
+            .iter()
+            .fold(0, |acc, n| acc.saturating_add(*n))
+    }
+
+    /// An error if replacing a slot holding `old` bytes with `new` would take the total past
+    /// [`input::MAX_INPUT_BYTES`]. Changes nothing: the caller stores the new slot size once its call succeeds.
+    fn check_replace(&self, old: usize, new: usize) -> napi::Result<()> {
+        let total = self.total().saturating_sub(old).saturating_add(new);
+        if total > input::MAX_INPUT_BYTES {
+            return Err(napi::Error::from_reason(format!(
+                "cumulative byte total {total} exceeds maximum of {}",
+                input::MAX_INPUT_BYTES
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// UTF-8 bytes of the string in one TOON cell (0 for other types).
+fn cell_bytes(v: &JsToonValue) -> usize {
+    v.str_val.as_ref().map_or(0, String::len)
+}
+
 /// NAPI wrapper around [`crate::response::AgentResponse`].
+///
+/// Besides each call's own limits, one object holds at most 64 MiB of caller strings across all its calls (type name,
+/// fields, cells, keys, hints, recovery hints, truncation hint and human content). A call that would pass that total
+/// is rejected and leaves the builder unchanged; replacing `items`, `kvItems`, `truncationHint` or `humanContent`
+/// gives the old value's bytes back first.
 #[napi(js_name = "AgentResponse")]
 #[derive(Debug)]
 pub struct JsAgentResponse {
@@ -736,15 +785,29 @@ pub struct JsAgentResponse {
     hint_count: usize,
     /// Cumulative count of [`Self::recovery_hint`] calls, capped at [`MAX_HINTS`].
     recovery_count: usize,
+    /// String bytes held, capped at [`input::MAX_INPUT_BYTES`] in all.
+    held: HeldBytes,
 }
 
 #[napi]
 impl JsAgentResponse {
-    /// Create a new response builder for the given type name.
-    #[napi(constructor, catch_unwind)]
+    /// Create a new response builder for the given type name. The Rust-typed core of the JS constructor
+    /// ([`Self::new_js`]); it does not cap the type name's length, though the name counts toward the 64 MiB total.
     #[must_use]
     pub fn new(type_name: String) -> Self {
-        Self { inner: Some(crate::response::AgentResponse::new(type_name)), hint_count: 0, recovery_count: 0 }
+        let held = HeldBytes { type_name: type_name.len(), ..HeldBytes::default() };
+        Self { inner: Some(crate::response::AgentResponse::new(type_name)), hint_count: 0, recovery_count: 0, held }
+    }
+
+    /// The JS constructor, `new AgentResponse(typeName)`.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a `typeName` over 4 KiB.
+    #[napi(constructor, catch_unwind)]
+    pub fn new_js(type_name: String) -> napi::Result<Self> {
+        check_bytes("typeName", &type_name, MAX_NAME_BYTES)?;
+        Ok(Self::new(type_name))
     }
 
     fn take(&mut self) -> napi::Result<crate::response::AgentResponse> {
@@ -757,7 +820,8 @@ impl JsAgentResponse {
     ///
     /// Rejects, before converting anything, more than 100,000 rows, 1,000 fields or 1,000 values in a row, and
     /// more than 1,000,000 cells in all; while converting, a field name over 4 KiB, a cell over 1 MiB, more than
-    /// 64 MiB of strings in the call, or an invalid cell. The builder is unchanged on error.
+    /// 64 MiB of strings in the call, or an invalid cell; then strings that would take the response past its 64 MiB
+    /// total. The builder is unchanged on error.
     #[napi(catch_unwind, js_name = "items", ts_args_type = "rows: Array<Array<JsToonValue>>, fields: Array<string>")]
     pub fn items_js(&mut self, rows: Unknown<'_>, fields: Unknown<'_>) -> napi::Result<()> {
         let mut budget = Budget::new();
@@ -774,7 +838,8 @@ impl JsAgentResponse {
     ///
     /// # Errors
     ///
-    /// Rejects more than `MAX_ROWS` rows or `MAX_FIELDS` fields or values in a row, or an invalid cell.
+    /// Rejects more than `MAX_ROWS` rows or `MAX_FIELDS` fields or values in a row, an invalid cell, or strings that
+    /// would take the response past its 64 MiB total.
     #[allow(clippy::needless_pass_by_value)] // mirrors the JS method, which hands over owned values
     pub fn items(&mut self, rows: Vec<Vec<JsToonValue>>, fields: Vec<String>) -> napi::Result<()> {
         if rows.len() > MAX_ROWS {
@@ -794,6 +859,12 @@ impl JsAgentResponse {
                 )));
             }
         }
+        let bytes = fields
+            .iter()
+            .map(String::len)
+            .chain(rows.iter().flatten().map(cell_bytes))
+            .fold(0usize, usize::saturating_add);
+        self.held.check_replace(self.held.items, bytes)?;
         let field_refs: Vec<&str> = fields.iter().map(String::as_str).collect();
         let converted: Vec<Vec<crate::toon::Value>> = rows
             .into_iter()
@@ -801,6 +872,7 @@ impl JsAgentResponse {
             .collect::<napi::Result<Vec<_>>>()?;
         let b = self.take()?;
         self.inner = Some(b.items(converted, &field_refs));
+        self.held.items = bytes;
         Ok(())
     }
 
@@ -821,7 +893,8 @@ impl JsAgentResponse {
     /// # Errors
     ///
     /// Rejects more than 1,000 items before converting any, a key over 4 KiB, a value over 1 MiB, more than 64 MiB
-    /// of strings in the call, or an invalid value. The builder is unchanged on error.
+    /// of strings in the call, an invalid value, or strings that would take the response past its 64 MiB total. The
+    /// builder is unchanged on error.
     #[napi(catch_unwind, js_name = "kvItems", ts_args_type = "items: Array<JsKvItem>")]
     pub fn kv_items_js(&mut self, items: Unknown<'_>) -> napi::Result<()> {
         let mut budget = Budget::new();
@@ -834,7 +907,8 @@ impl JsAgentResponse {
     ///
     /// # Errors
     ///
-    /// Rejects more than `MAX_FIELDS` items or an invalid value.
+    /// Rejects more than `MAX_FIELDS` items, an invalid value, or strings that would take the response past its
+    /// 64 MiB total.
     pub fn kv_items(&mut self, items: Vec<JsKvItem>) -> napi::Result<()> {
         if items.len() > MAX_FIELDS {
             return Err(napi::Error::from_reason(format!(
@@ -842,12 +916,16 @@ impl JsAgentResponse {
                 items.len()
             )));
         }
+        let bytes =
+            items.iter().map(|i| i.key.len().saturating_add(cell_bytes(&i.value))).fold(0usize, usize::saturating_add);
+        self.held.check_replace(self.held.kv_items, bytes)?;
         let converted = items
             .into_iter()
             .map(|i| Ok(crate::kv::KvItem::new(i.key, js_kv_value_to_rust(i.value)?)))
             .collect::<napi::Result<Vec<_>>>()?;
         let b = self.take()?;
         self.inner = Some(b.kv_items(converted));
+        self.held.kv_items = bytes;
         Ok(())
     }
 
@@ -855,16 +933,20 @@ impl JsAgentResponse {
     ///
     /// # Errors
     ///
-    /// Rejects a hint over 1 MiB, and any hint after the 10,000th.
+    /// Rejects a hint over 1 MiB, any hint after the 10,000th, and a hint that would take the response past its
+    /// 64 MiB total.
     #[napi(catch_unwind)]
     pub fn hint(&mut self, hint: String) -> napi::Result<()> {
         if self.hint_count >= MAX_HINTS {
             return Err(napi::Error::from_reason(format!("cumulative hint count exceeds maximum of {MAX_HINTS}")));
         }
         check_bytes("hint", &hint, MAX_STRING_BYTES)?;
+        let bytes = hint.len();
+        self.held.check_replace(0, bytes)?;
         let b = self.take()?;
         self.inner = Some(b.hint(hint));
         self.hint_count += 1;
+        self.held.hints = self.held.hints.saturating_add(bytes);
         Ok(())
     }
 
@@ -872,7 +954,8 @@ impl JsAgentResponse {
     ///
     /// # Errors
     ///
-    /// Rejects a `tool` over 4 KiB, a `reason` over 1 MiB, and any recovery hint after the 10,000th.
+    /// Rejects a `tool` over 4 KiB, a `reason` over 1 MiB, any recovery hint after the 10,000th, and one that would
+    /// take the response past its 64 MiB total.
     #[napi(catch_unwind)]
     pub fn recovery_hint(&mut self, tool: String, reason: Option<String>) -> napi::Result<()> {
         if self.recovery_count >= MAX_HINTS {
@@ -884,6 +967,8 @@ impl JsAgentResponse {
         if let Some(reason) = &reason {
             check_bytes("reason", reason, MAX_STRING_BYTES)?;
         }
+        let bytes = tool.len().saturating_add(reason.as_ref().map_or(0, String::len));
+        self.held.check_replace(0, bytes)?;
         let b = self.take()?;
         let mut hint = crate::recovery::RecoveryHint::new(tool);
         if let Some(reason) = reason {
@@ -891,6 +976,7 @@ impl JsAgentResponse {
         }
         self.inner = Some(b.recovery_hint(hint));
         self.recovery_count += 1;
+        self.held.recovery = self.held.recovery.saturating_add(bytes);
         Ok(())
     }
 
@@ -899,13 +985,17 @@ impl JsAgentResponse {
     ///
     /// # Errors
     ///
-    /// Rejects a hint over 4 KiB. A hint over 256 chars is accepted here but renders as a `toon_validation_failed`
-    /// error block, like any other options michi-core's TOON validation rejects.
+    /// Rejects a hint over 4 KiB, or one that would take the response past its 64 MiB total. A hint over 256 chars is
+    /// accepted here but renders as a `toon_validation_failed` error block, like any other options michi-core's TOON
+    /// validation rejects.
     #[napi(catch_unwind)]
     pub fn truncation_hint(&mut self, hint: String) -> napi::Result<()> {
         check_bytes("truncationHint", &hint, MAX_NAME_BYTES)?;
+        let bytes = hint.len();
+        self.held.check_replace(self.held.truncation_hint, bytes)?;
         let b = self.take()?;
         self.inner = Some(b.truncation_hint(hint));
+        self.held.truncation_hint = bytes;
         Ok(())
     }
 
@@ -921,15 +1011,20 @@ impl JsAgentResponse {
         Ok(())
     }
 
-    /// Attach a human-facing companion block (`audience: user`) for MCP callers.
+    /// Attach a human-facing companion block (`audience: user`) for MCP callers. A second call replaces the first.
     ///
     /// # Errors
     ///
-    /// Returns an error if the builder was already consumed (an internal invariant; should not happen in normal use).
+    /// Rejects text over 1 MiB, or text that would take the response past its 64 MiB total. The builder is unchanged
+    /// on error.
     #[napi(catch_unwind)]
     pub fn human_content(&mut self, text: String) -> napi::Result<()> {
+        check_bytes("humanContent", &text, MAX_STRING_BYTES)?;
+        let bytes = text.len();
+        self.held.check_replace(self.held.human_content, bytes)?;
         let b = self.take()?;
         self.inner = Some(b.human_content(text));
+        self.held.human_content = bytes;
         Ok(())
     }
 
@@ -1334,9 +1429,10 @@ pub fn already_done_js(stored: Option<Unknown<'_>>) -> napi::Result<JsAlreadyDon
 /// The Rust-typed core of the `alreadyDone` export.
 #[must_use]
 pub fn already_done(stored: Option<String>) -> JsAlreadyDone {
+    // Every variant is named: a new one must fail to compile here rather than read as "not done" and re-run work.
     match crate::resilience::already_done(stored) {
         crate::resilience::AlreadyDone::Yes { result } => JsAlreadyDone { done: true, result: Some(result) },
-        _ => JsAlreadyDone { done: false, result: None },
+        crate::resilience::AlreadyDone::No => JsAlreadyDone { done: false, result: None },
     }
 }
 
@@ -1521,6 +1617,17 @@ mod tests {
     #[test]
     fn empty_state_renders() {
         assert_eq!(empty_state("issue".to_string()).expect("valid name"), "issue: []\ntotalCount: 0");
+    }
+
+    // emptyStateWithHints caps typeName at 4 KiB; emptyState took any length.
+    #[test]
+    fn empty_state_caps_the_type_name_like_empty_state_with_hints() {
+        let err = empty_state("t".repeat(MAX_NAME_BYTES + 1)).expect_err("over 4 KiB");
+        assert_eq!(
+            err.reason,
+            format!("typeName byte length {} exceeds maximum of {MAX_NAME_BYTES}", MAX_NAME_BYTES + 1)
+        );
+        assert!(empty_state("t".repeat(MAX_NAME_BYTES)).is_ok());
     }
 
     #[test]
@@ -1872,6 +1979,82 @@ mod tests {
         assert!(result.is_err(), "expected error after exceeding MAX_HINTS cumulative recovery hints");
     }
 
+    // --- Cumulative byte budget: the 64 MiB per-call cap also bounds what one AgentResponse keeps across calls. ---
+
+    fn big(len: usize) -> String {
+        "x".repeat(len)
+    }
+
+    #[test]
+    fn agent_response_hint_bytes_are_capped_across_calls() {
+        let mut r = JsAgentResponse::new("t".to_string());
+        let mut accepted = 0;
+        let err = loop {
+            match r.hint(big(MAX_STRING_BYTES)) {
+                Ok(()) => accepted += 1,
+                Err(e) => break e,
+            }
+            assert!(accepted <= 64, "65 one-MiB hints were accepted; the budget is per call only");
+        };
+        // "t" takes one byte, so 63 full hints fit and the 64th would pass 64 MiB.
+        assert_eq!(accepted, 63);
+        assert!(err.reason.starts_with("cumulative byte total "), "{}", err.reason);
+        assert!(err.reason.ends_with(&format!("exceeds maximum of {}", input::MAX_INPUT_BYTES)), "{}", err.reason);
+        let rendered = r.render_toon().expect("still usable after the rejected hint");
+        assert!(rendered.len() < input::MAX_INPUT_BYTES + 4096, "rendered {} bytes", rendered.len());
+        r.hint("small".to_string()).expect("a hint that still fits is accepted");
+    }
+
+    #[test]
+    fn agent_response_recovery_bytes_share_the_budget() {
+        let mut r = JsAgentResponse::new("t".to_string());
+        for _ in 0..40 {
+            r.hint(big(MAX_STRING_BYTES)).expect("40 MiB of hints fit");
+        }
+        let mut accepted = 0;
+        let err = loop {
+            match r.recovery_hint("retry".to_string(), Some(big(MAX_STRING_BYTES))) {
+                Ok(()) => accepted += 1,
+                Err(e) => break e,
+            }
+            assert!(accepted <= 64, "recovery hints are not charged to the response's byte total");
+        };
+        assert_eq!(accepted, 23, "40 MiB of hints + 23 recovery reasons (+ tool names) leave less than 1 MiB");
+        assert!(err.reason.starts_with("cumulative byte total "), "{}", err.reason);
+    }
+
+    #[test]
+    fn agent_response_human_content_is_capped() {
+        let mut r = JsAgentResponse::new("t".to_string());
+        let err = r.human_content(big(MAX_STRING_BYTES + 1)).expect_err("over 1 MiB");
+        assert_eq!(
+            err.reason,
+            format!("humanContent byte length {} exceeds maximum of {MAX_STRING_BYTES}", MAX_STRING_BYTES + 1)
+        );
+        assert!(!r.has_human_content().expect("usable"), "the builder is unchanged on error");
+        r.human_content(big(MAX_STRING_BYTES)).expect("exactly 1 MiB is accepted");
+        r.human_content("short".to_string()).expect("replacing returns the old bytes to the budget");
+        assert_eq!(r.render_for("user".to_string()).expect("renders"), "short");
+    }
+
+    #[test]
+    fn agent_response_replaced_slots_return_their_bytes() {
+        let cell = |len: usize| JsToonValue { str_val: Some(big(len)), ..value("str") };
+        let rows = |n: usize| (0..n).map(|_| vec![cell(MAX_STRING_BYTES)]).collect::<Vec<_>>();
+        let mut r = JsAgentResponse::new("t".to_string());
+        r.items(rows(40), vec!["v".to_string()]).expect("40 MiB of cells fit");
+        r.items(rows(40), vec!["v".to_string()])
+            .expect("items replaces the TOON slot, so its bytes are not added twice");
+        let kv = |n: usize| {
+            (0..n).map(|i| JsKvItem { key: format!("k{i}"), value: cell(MAX_STRING_BYTES) }).collect::<Vec<_>>()
+        };
+        let err = r.kv_items(kv(30)).expect_err("40 MiB of rows + 30 MiB of KV values pass 64 MiB");
+        assert!(err.reason.starts_with("cumulative byte total "), "{}", err.reason);
+        assert!(r.render_kv().expect("usable").is_empty(), "the KV slot is unchanged on error");
+        r.items(rows(1), vec!["v".to_string()]).expect("a smaller list fits");
+        r.kv_items(kv(30)).expect("now the KV values fit");
+    }
+
     // --- AC-026: hint() and recovery_hint() are independently capped;
     // exhausting hint_count must not affect recovery_count. ---
 
@@ -1981,6 +2164,11 @@ mod tests {
             (0.123_456_789, "x: 0.123456789"),
             (2.0, "x: 2"),
             (1e21, "x: 1e+21"),
+            // Need more than 255 decimal places: these rendered `x: 0`.
+            (1e-256, "x: 1e-256"),
+            (1e-300, "x: 1e-300"),
+            (5e-324, "x: 5e-324"),
+            (-1.234_567_890_123_456_8e-250, "x: -1.2345678901234568e-250"),
         ] {
             let out = render_kv(vec![JsKvItem { key: "x".into(), value: float(f) }], None, vec![]).unwrap();
             assert_eq!(out, expected, "{f}");
@@ -2547,6 +2735,20 @@ mod tests {
     // --- AC-034a: every #[napi(...)]-attributed free function and every
     // #[napi(...)]-attributed method in `impl JsAgentResponse` carries
     // catch_unwind. ---
+
+    // A wildcard arm would report any future `AlreadyDone` variant as not done, telling JS to run the operation again.
+    // The match must name every variant, so a new one fails to compile here until it is mapped.
+    #[test]
+    fn already_done_maps_every_variant_explicitly() {
+        let napi_src = include_str!("napi.rs");
+        let start = napi_src.find("pub fn already_done(stored: Option<String>)").expect("already_done is defined");
+        let body = &napi_src[start..];
+        let body = &body[..body.find("\n}\n").expect("function ends")];
+        assert!(body.contains("AlreadyDone::No =>"), "{body}");
+        assert!(!body.contains("_ =>"), "no wildcard arm:\n{body}");
+        assert_eq!(already_done(Some(String::new())), JsAlreadyDone { done: true, result: Some(String::new()) });
+        assert_eq!(already_done(None), JsAlreadyDone { done: false, result: None });
+    }
 
     #[test]
     fn ac034a_every_napi_attributed_fn_has_catch_unwind() {

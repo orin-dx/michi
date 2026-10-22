@@ -16,9 +16,19 @@ pub enum ErrorClass {
     /// error is not self-resolving. michi does not recommend automatic retry
     /// for `Internal` errors.
     Internal,
-    /// A transient failure expected to resolve without intervention.
+    /// A failure that trying the same call again is expected to fix, without repeating an effect: the request was
+    /// not processed (rate limited, unavailable), or the caller marked the error retryable because the operation is
+    /// idempotent.
     Transient,
+    /// A timeout: no answer came back, so the operation may or may not have taken effect. Not the caller's fault and
+    /// not an internal error: verify whether it completed before retrying, unless the operation is idempotent, in
+    /// which case the caller marks it retryable and it is [`ErrorClass::Transient`].
+    Ambiguous,
 }
+
+/// The hint a fresh `Timeout` [`DomainError`] carries until it is marked retryable.
+pub const MAY_HAVE_TAKEN_EFFECT_HINT: &str =
+    "the operation may have taken effect; verify whether it completed before retrying, unless it is idempotent";
 
 /// Wraps a value so its inner content is omitted from `Debug` and `Display`.
 #[derive(Clone)]
@@ -82,24 +92,36 @@ impl ErrorCode {
         }
     }
 
-    /// Whether this code is conventionally retryable.
+    /// Whether a fresh [`DomainError`] with this code is retryable: `RateLimited` and `Unavailable` only, which mean
+    /// the request was not processed. `Timeout` and `ExternalFailure` are not: the request may have taken effect
+    /// (RFC 9110 §15.6), so retrying is safe only for an idempotent operation, and the caller says so with
+    /// [`DomainError::retryable`].
     #[must_use]
     pub fn is_retryable_by_default(&self) -> bool {
-        matches!(self, Self::RateLimited | Self::Unavailable | Self::Timeout | Self::ExternalFailure)
+        matches!(self, Self::RateLimited | Self::Unavailable)
+    }
+
+    /// Whether a failure with this code leaves it unknown whether the request was applied: `Timeout`, where no
+    /// answer came back. `ExternalFailure` is too broad to say (a failed local walk, a server error), so the caller
+    /// adds a hint when it knows; `RateLimited` and `Unavailable` mean the request was not processed.
+    #[must_use]
+    pub fn may_have_taken_effect(&self) -> bool {
+        matches!(self, Self::Timeout)
     }
 
     /// The default [`ErrorClass`] for this code, independent of `DomainError.retryable`.
     ///
-    /// Infrastructure codes (`RateLimited`, `Unavailable`, `Timeout`,
-    /// `ExternalFailure`) return `Internal`; caller-fault codes return `User`.
-    /// Used by [`Error::class()`].
+    /// `Timeout` returns `Ambiguous` (the operation may have taken effect); `RateLimited`, `Unavailable` and
+    /// `ExternalFailure` return `Internal`; caller-fault codes return `User`. Used by [`Error::class()`] when the error
+    /// is not marked retryable.
     #[must_use]
     pub fn default_class(&self) -> ErrorClass {
         match self {
             Self::InvalidInput | Self::NotFound | Self::Unauthorized | Self::Forbidden | Self::Conflict => {
                 ErrorClass::User
             }
-            Self::RateLimited | Self::Unavailable | Self::Timeout | Self::ExternalFailure => ErrorClass::Internal,
+            Self::RateLimited | Self::Unavailable | Self::ExternalFailure => ErrorClass::Internal,
+            Self::Timeout => ErrorClass::Ambiguous,
         }
     }
 }
@@ -129,7 +151,9 @@ pub struct DomainError {
     pub hints: Vec<Hint>,
     /// Optional structured recovery hint.
     pub recovery: Option<RecoveryHint>,
-    /// Whether this error is safe to retry.
+    /// Whether calling again is expected to help without repeating an effect. Defaults to `true` only for
+    /// `RateLimited` and `Unavailable` (the request was not processed); set it for a `Timeout` or `ExternalFailure`
+    /// only when the operation is idempotent, since the failed attempt may have taken effect.
     pub retryable: bool,
     /// Parsed `Retry-After` delay, if known.
     pub retry_after: Option<Duration>,
@@ -138,7 +162,7 @@ pub struct DomainError {
 impl DomainError {
     /// Create a domain error.
     pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
-        Self {
+        let mut err = Self {
             retryable: code.is_retryable_by_default(),
             code,
             message: message.into(),
@@ -146,6 +170,20 @@ impl DomainError {
             hints: Vec::new(),
             recovery: None,
             retry_after: None,
+        };
+        err.sync_effect_hint();
+        err
+    }
+
+    /// Keeps [`MAY_HAVE_TAKEN_EFFECT_HINT`] present exactly while the error's code may have taken effect and it is not
+    /// marked retryable.
+    fn sync_effect_hint(&mut self) {
+        let wanted = self.code.may_have_taken_effect() && !self.retryable;
+        let present = self.hints.iter().any(|h| h.as_str() == MAY_HAVE_TAKEN_EFFECT_HINT);
+        if wanted && !present {
+            self.hints.push(Hint::new(MAY_HAVE_TAKEN_EFFECT_HINT));
+        } else if !wanted && present {
+            self.hints.retain(|h| h.as_str() != MAY_HAVE_TAKEN_EFFECT_HINT);
         }
     }
 
@@ -209,10 +247,12 @@ impl DomainError {
         self
     }
 
-    /// Override the default retryability for this error instance.
+    /// Override the default retryability for this error instance. Pass `true` for a `Timeout` or `ExternalFailure`
+    /// only when repeating the operation is safe (it is idempotent, or known not to have taken effect).
     #[must_use]
     pub fn retryable(mut self, retryable: bool) -> Self {
         self.retryable = retryable;
+        self.sync_effect_hint();
         self
     }
 
@@ -348,7 +388,7 @@ struct DomainErrorWire {
     message: String,
     /// Why it happened, outermost first; `[]` when unknown.
     causes: Vec<String>,
-    /// Whether this error is safe to retry.
+    /// Whether calling again is expected to help without repeating an effect.
     retryable: bool,
     /// Contextual hints.
     hints: Vec<String>,
@@ -518,7 +558,8 @@ impl Error {
         }
     }
 
-    /// Whether this error is safe to retry automatically.
+    /// Whether this error is [`ErrorClass::Transient`]: calling again is expected to help without repeating an
+    /// effect. A `Timeout` or `ExternalFailure` is retryable only when its `DomainError` was marked so.
     #[must_use]
     pub fn is_retryable(&self) -> bool {
         matches!(self.class(), ErrorClass::Transient)
@@ -719,7 +760,7 @@ mod tests {
         assert_eq!(Conflict.default_class(), ErrorClass::User);
         assert_eq!(RateLimited.default_class(), ErrorClass::Internal);
         assert_eq!(Unavailable.default_class(), ErrorClass::Internal);
-        assert_eq!(Timeout.default_class(), ErrorClass::Internal);
+        assert_eq!(Timeout.default_class(), ErrorClass::Ambiguous);
         assert_eq!(ExternalFailure.default_class(), ErrorClass::Internal);
     }
 
@@ -778,12 +819,12 @@ mod tests {
     }
 
     #[test]
-    fn ac006_is_retryable_by_default_matches_the_transient_codes() {
+    fn ac006_is_retryable_by_default_matches_the_not_processed_codes() {
         use ErrorCode::*;
         assert!(RateLimited.is_retryable_by_default());
         assert!(Unavailable.is_retryable_by_default());
-        assert!(Timeout.is_retryable_by_default());
-        assert!(ExternalFailure.is_retryable_by_default());
+        assert!(!Timeout.is_retryable_by_default(), "a timed-out request may have taken effect");
+        assert!(!ExternalFailure.is_retryable_by_default(), "a downstream failure may have taken effect");
         assert!(!InvalidInput.is_retryable_by_default());
         assert!(!NotFound.is_retryable_by_default());
         assert!(!Unauthorized.is_retryable_by_default());
@@ -1061,11 +1102,44 @@ mod tests {
     #[test]
     fn ac032_all_transient_default_codes_are_transient_and_retryable() {
         use ErrorCode::*;
-        for code in [RateLimited, Unavailable, Timeout, ExternalFailure] {
+        for code in [RateLimited, Unavailable] {
             let err = Error::Domain(DomainError::new(code, "m"));
             assert_eq!(err.class(), ErrorClass::Transient, "{code:?}");
             assert!(err.is_retryable(), "{code:?}");
         }
+    }
+
+    // A timeout or downstream failure may have applied the request (RFC 9110 §15.6), so by default it must not tell
+    // an agent that retrying is safe. Callers that know the operation is idempotent opt in with `.retryable(true)`.
+    #[test]
+    fn ambiguous_codes_do_not_claim_retry_is_safe_by_default() {
+        for code in [ErrorCode::Timeout, ErrorCode::ExternalFailure] {
+            let d = DomainError::new(code, "POST /charge timed out");
+            assert!(!d.retryable, "{code:?}");
+            assert!(d.render_json().contains("\"retryable\":false"), "{code:?}");
+            let err = Error::Domain(d);
+            assert!(!err.is_retryable(), "{code:?}");
+            let idempotent = Error::Domain(DomainError::new(code, "GET /items timed out").retryable(true));
+            assert_eq!(idempotent.class(), ErrorClass::Transient, "{code:?} opt-in");
+            assert!(idempotent.is_retryable(), "{code:?} opt-in");
+        }
+    }
+
+    // A timeout is its own class, not an internal error, and says to verify before retrying until the caller marks
+    // the operation idempotent. A broader ExternalFailure (a failed local walk, say) gets no such hint.
+    #[test]
+    fn a_timeout_is_ambiguous_and_says_to_verify_first() {
+        let t = DomainError::new(ErrorCode::Timeout, "POST /charge timed out");
+        assert_eq!(t.hints.iter().map(Hint::as_str).collect::<Vec<_>>(), [MAY_HAVE_TAKEN_EFFECT_HINT]);
+        assert_eq!(Error::Domain(t).class(), ErrorClass::Ambiguous);
+        let idempotent = DomainError::new(ErrorCode::Timeout, "GET /items timed out").retryable(true);
+        assert!(idempotent.hints.is_empty(), "an idempotent operation needs no verify-first hint");
+        let back = DomainError::new(ErrorCode::Timeout, "x").retryable(true).retryable(false);
+        assert_eq!(back.hints.len(), 1, "unmarking restores the hint once");
+        let walk = DomainError::new(ErrorCode::ExternalFailure, "walk failed");
+        assert!(walk.hints.is_empty());
+        assert!(!walk.retryable);
+        assert_eq!(Error::Domain(walk).class(), ErrorClass::Internal);
     }
 
     #[test]

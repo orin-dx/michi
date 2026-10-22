@@ -63,12 +63,24 @@ fn small_and_fractional_floats_round_trip_exactly() {
 
 #[test]
 fn values_the_model_cannot_represent_are_rejected_not_rewritten() {
-    for json in [
-        r#"{"tool":"t","params":{"x":[1,2]}}"#,
-        r#"{"tool":"t","params":{"x":{"a":1}}}"#,
-        r#"{"tool":"t","params":{"x":9223372036854775808}}"#,
-    ] {
+    for json in [r#"{"tool":"t","params":{"x":[1,2]}}"#, r#"{"tool":"t","params":{"x":{"a":1}}}"#] {
         assert!(serde_json::from_str::<RecoveryHint>(json).is_err(), "must reject, not coerce: {json}");
+    }
+}
+
+// Every JSON number is accepted, as the schema says: one outside i64 is a float with the value any JSON reader gives
+// it, never rounded further. 2^63 is exact; tiny values need more than 255 places and used to be rejected.
+#[test]
+fn numbers_outside_i64_and_tiny_floats_keep_their_value() {
+    for (json, expected) in [
+        (r#"{"tool":"t","params":{"x":9223372036854775808}}"#, 9_223_372_036_854_775_808.0_f64),
+        (r#"{"tool":"t","params":{"x":-9223372036854775809}}"#, -9_223_372_036_854_775_808.0),
+        (r#"{"tool":"t","params":{"x":1e-300}}"#, 1e-300),
+        (r#"{"tool":"t","params":{"x":5e-324}}"#, 5e-324),
+    ] {
+        let hint: RecoveryHint = serde_json::from_str(json).unwrap_or_else(|e| panic!("{json}: {e}"));
+        let KvValue::Float(f, _) = hint.params[0].1 else { panic!("{json} read as {:?}", hint.params[0].1) };
+        assert_eq!(f.to_bits(), expected.to_bits(), "{json}");
     }
 }
 

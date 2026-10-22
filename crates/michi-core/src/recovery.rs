@@ -4,10 +4,10 @@ use crate::kv::KvValue;
 ///
 /// With the `serde` feature it serializes to the same JSON as the structured companions of `AgentResponse` and
 /// `DomainError`: `{"tool": ..., "params": {key: value, ...}, "reason": ...}`, with `reason` omitted when absent and
-/// each parameter as a plain JSON value. Deserializing maps strings to `Text`, integers that fit `i64` to `Int`, other
-/// numbers to `Float` with enough decimal places to reproduce the value exactly, booleans to `Bool` and `null` to
-/// `Missing`. Values `KvValue` cannot hold exactly (arrays, objects, integers outside `i64`) are rejected, never
-/// rewritten.
+/// each parameter as a plain JSON value. Deserializing maps strings to `Text`, integers that fit `i64` to `Int`, every
+/// other number to `Float` with enough decimal places to reproduce its f64 reading exactly (the value `JSON.parse`
+/// and serde_json give it; [`KvValue::FULL_PRECISION`] when that needs more than 254 places), booleans to `Bool` and
+/// `null` to `Missing`. Arrays and objects are rejected. The JSON Schema admits exactly these values.
 ///
 /// `#[non_exhaustive]`: build it with [`RecoveryHint::new`] and its builder methods; the fields stay public.
 #[derive(Debug, Clone, PartialEq)]
@@ -82,14 +82,33 @@ impl From<RecoveryHint> for RecoveryHintWire {
     }
 }
 
-/// Schema for parameter values: the scalar JSON types `json_to_kv_value` accepts.
+/// Schema for parameter values: the scalar JSON types `json_to_kv_value` accepts. Every JSON number is accepted, so
+/// the schema needs no numeric bounds.
 #[cfg(feature = "schemars")]
 fn param_values_schema(_: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
     serde_json::from_value(serde_json::json!({
         "type": "object",
-        "additionalProperties": { "type": ["string", "integer", "number", "boolean", "null"] }
+        "additionalProperties": {
+            "type": ["string", "number", "boolean", "null"],
+            "description": "An integer past i64 must have an exact float form; one that doesn't is rejected rather than rounded. Send such values as strings."
+        }
     }))
     .unwrap_or(schemars::schema::Schema::Bool(true))
+}
+
+/// `u` as an f64 when that loses nothing: the f64 is exactly `u`, or `u`'s digits are exactly the canonical form
+/// michi writes for that f64 (`9223372036854776000` for 2^63), so they came from a float, not a longer integer.
+#[cfg(feature = "serde")]
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn exact_u64_as_f64(u: u64) -> Option<f64> {
+    let f = u as f64;
+    // 2^64 itself is the nearest f64 to values near u64::MAX, and does not convert back.
+    if f < 18_446_744_073_709_551_616.0 && f as u64 == u {
+        return Some(f);
+    }
+    let mut canonical = String::with_capacity(24);
+    crate::toon::push_f64(&mut canonical, f);
+    (canonical == u.to_string()).then_some(f)
 }
 
 #[cfg(feature = "serde")]
@@ -99,14 +118,23 @@ fn json_to_kv_value(key: &str, v: serde_json::Value) -> Result<KvValue, String> 
         serde_json::Value::Bool(b) => Ok(KvValue::Bool(b)),
         serde_json::Value::String(s) => Ok(KvValue::Text(s)),
         serde_json::Value::Number(n) => {
+            // Integers keep their exact digits: one past i64::MAX becomes a `Float` only when an f64 holds it exactly
+            // (a `Float` michi wrote, such as `1e19`, prints as `10000000000000000000` and reads back), and is
+            // rejected rather than rounded otherwise. An integer past u64::MAX or below i64::MIN reaches michi already
+            // read as an f64 by serde_json, so its original digits cannot be checked.
             if let Some(i) = n.as_i64() {
                 Ok(KvValue::Int(i))
-            } else if let (true, Some(f)) = (n.is_f64(), n.as_f64()) {
-                let decimals = u8::try_from(crate::kv::shortest_decimals(f))
-                    .map_err(|_| format!("parameter `{key}`: {n} needs more than 255 decimal places"))?;
-                Ok(KvValue::Float(f, decimals))
+            } else if let Some(u) = n.as_u64() {
+                match exact_u64_as_f64(u) {
+                    Some(f) => Ok(KvValue::Float(f, crate::kv::exact_decimals(f))),
+                    None => Err(format!(
+                        "parameter `{key}`: integer {u} is past i64 and has no exact float form; send it as a string"
+                    )),
+                }
+            } else if let Some(f) = n.as_f64() {
+                Ok(KvValue::Float(f, crate::kv::exact_decimals(f)))
             } else {
-                Err(format!("parameter `{key}`: integer {n} is outside the i64 range"))
+                Err(format!("parameter `{key}`: number {n} is not representable as f64"))
             }
         }
         serde_json::Value::Array(_) | serde_json::Value::Object(_) => Err(format!(
@@ -197,12 +225,16 @@ pub(crate) fn params_json(params: &[(String, KvValue)]) -> String {
 /// last value -- what [`RecoveryHint::param`] would have produced -- so the object never holds a duplicate key.
 pub(crate) fn push_params_json(out: &mut String, params: &[(String, KvValue)]) {
     out.push('{');
+    // Each key's last value, then one pass in order writing a key the first time it is seen: O(P), not O(P²).
+    // Internal lookup state only; the output order comes from `params`.
+    #[allow(clippy::disallowed_types)]
+    let mut last: std::collections::HashMap<&str, &KvValue> = std::collections::HashMap::with_capacity(params.len());
+    for (k, v) in params {
+        last.insert(k.as_str(), v);
+    }
     let mut first = true;
-    for (i, (k, _)) in params.iter().enumerate() {
-        if params[..i].iter().any(|(earlier, _)| earlier == k) {
-            continue;
-        }
-        let Some((_, v)) = params[i..].iter().rev().find(|(later, _)| later == k) else { continue };
+    for (k, _) in params {
+        let Some(v) = last.remove(k.as_str()) else { continue };
         if !first {
             out.push(',');
         }
@@ -364,6 +396,22 @@ mod tests {
         hint.params.push(("y".to_string(), KvValue::Int(2)));
         hint.params.push(("x".to_string(), KvValue::Int(3)));
         assert_eq!(params_json(&hint.params), "{\"x\":3,\"y\":2}");
+    }
+
+    // Deduplication used to rescan earlier params for every param: 40k params took 1.77 s to render. 50k distinct
+    // params is over 1e9 comparisons that way, and milliseconds when linear.
+    #[test]
+    fn rendering_many_params_is_linear() {
+        let mut hint = RecoveryHint::new("t");
+        hint.params = (0..50_000).map(|i| (format!("k{i}"), KvValue::Int(i))).collect();
+        hint.params.push(("k7".to_string(), KvValue::Int(-1)));
+        let start = std::time::Instant::now();
+        let json = params_json(&hint.params);
+        let elapsed = start.elapsed();
+        assert!(elapsed < std::time::Duration::from_secs(2), "took {elapsed:?}");
+        assert!(json.starts_with("{\"k0\":0,"), "{}", &json[..20]);
+        assert!(json.contains("\"k7\":-1,\"k8\":8"), "a repeated key keeps its first position and last value");
+        assert_eq!(json.matches("\"k7\"").count(), 1);
     }
 
     #[test]

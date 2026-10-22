@@ -19,10 +19,10 @@ pub enum Value {
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     Str(CompactString),
     /// Signed integer.
-    Int(i64),
+    Int(#[cfg_attr(feature = "schemars", schemars(schema_with = "crate::int_schema::i64"))] i64),
     /// Unsigned integer, used by `From<u64>`/`From<usize>` (and `toon::list()`) for values above `i64::MAX`, so they
     /// stay exact unquoted numbers instead of being clamped, rounded or stringified.
-    UInt(u64),
+    UInt(#[cfg_attr(feature = "schemars", schemars(schema_with = "crate::int_schema::u64"))] u64),
     /// Floating-point number. NaN and ±Infinity render as `null` (TOON 4.4 §3).
     ///
     /// With the `serde` feature, `Value` itself serializes a non-finite float as the string `"NaN"`, `"Infinity"` or
@@ -313,7 +313,7 @@ mod proof {
         /// [`crate::toon::MAX_FIELDS`] fields,
         /// [`crate::toon::ToonError::InvalidFieldName`] if a field name appears
         /// more than once, [`crate::toon::ToonError::TooManyCells`] if
-        /// `rows × fields` is past [`crate::toon::MAX_CELLS`],
+        /// `rows × fields` (at least one cell per row) is past [`crate::toon::MAX_CELLS`],
         /// [`crate::toon::ToonError::TruncationHintTooLong`] if the truncation
         /// hint is past [`crate::toon::MAX_TRUNCATION_HINT_CHARS`] chars, and
         /// [`crate::toon::ToonError::RowLengthMismatch`] if any row's length
@@ -332,7 +332,7 @@ mod proof {
                     return Err(ToonError::InvalidFieldName { name: field.clone() });
                 }
             }
-            if opts.rows.len().saturating_mul(opts.fields.len()) > MAX_CELLS {
+            if crate::toon::cell_count(opts.rows.len(), opts.fields.len()) > MAX_CELLS {
                 return Err(ToonError::TooManyCells {
                     rows: opts.rows.len(),
                     fields: opts.fields.len(),

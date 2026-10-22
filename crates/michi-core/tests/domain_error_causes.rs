@@ -46,7 +46,7 @@ fn from_error_keeps_the_message_and_one_cause_per_link_outermost_first() {
     assert_eq!(e.message, "walk failed");
     assert_eq!(causes(&e), ["io error", "permission denied"]);
     assert!(e.hints.is_empty(), "causes are diagnosis, never hints");
-    assert!(e.retryable, "retryable still defaults from the code");
+    assert!(!e.retryable, "retryable still defaults from the code (external_failure: not retryable)");
 }
 
 #[test]

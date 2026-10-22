@@ -22,10 +22,16 @@ pub use render::{ToonDocument, Value};
 /// it, and `list()` checks it against the union of item keys before building any row.
 pub const MAX_FIELDS: usize = 1_000;
 
-/// Most cells (`rows × fields`) one TOON list may hold. [`ToonOptions::validate()`] returns
-/// [`ToonError::TooManyCells`] past it, before looking at any row, and `list()` checks it before building rows, so a
-/// sparse item set whose key union is wide cannot expand into a huge table.
+/// Most cells (`rows × fields`) one TOON list may hold, where a list with no fields counts one cell per row (an empty
+/// row still renders a line). [`ToonOptions::validate()`] returns [`ToonError::TooManyCells`] past it, before looking
+/// at any row, and `list()` checks it before building rows, so a sparse item set whose key union is wide cannot
+/// expand into a huge table, and neither can a long list of empty items.
 pub const MAX_CELLS: usize = 1_000_000;
+
+/// The cells [`MAX_CELLS`] counts: `rows × fields`, with at least one cell per row.
+pub(crate) fn cell_count(rows: usize, fields: usize) -> usize {
+    rows.saturating_mul(fields.max(1))
+}
 
 /// Longest [`ToonOptions::truncation_hint`], in chars. The hint is copied into every truncated cell, so its length
 /// multiplies by the cell count; [`ToonOptions::validate()`] returns [`ToonError::TruncationHintTooLong`] past it.
@@ -73,7 +79,7 @@ pub enum ToonError {
         /// The limit, [`MAX_FIELDS`].
         max: usize,
     },
-    /// `rows × fields` is more than [`MAX_CELLS`].
+    /// `rows × fields` (at least one cell per row) is more than [`MAX_CELLS`].
     TooManyCells {
         /// Number of rows.
         rows: usize,
@@ -108,7 +114,7 @@ impl std::fmt::Display for ToonError {
             }
             Self::TooManyFields { count, max } => write!(f, "fields length {count} exceeds maximum of {max}"),
             Self::TooManyCells { rows, fields, max } => {
-                let cells = rows.saturating_mul(*fields);
+                let cells = cell_count(*rows, *fields);
                 write!(f, "{rows} rows x {fields} fields = {cells} cells exceeds maximum of {max}")
             }
             Self::TruncationHintTooLong { len, max } => {
@@ -324,7 +330,7 @@ pub fn list<T: serde::Serialize>(type_name: impl Into<String>, items: &[T]) -> R
         if fields.len() > MAX_FIELDS {
             return Err(ToonError::TooManyFields { count: fields.len(), max: MAX_FIELDS });
         }
-        if objects.len().saturating_mul(fields.len()) > MAX_CELLS {
+        if cell_count(objects.len(), fields.len()) > MAX_CELLS {
             return Err(ToonError::TooManyCells { rows: objects.len(), fields: fields.len(), max: MAX_CELLS });
         }
     }
@@ -579,6 +585,15 @@ mod validate_tests {
     }
 
     #[test]
+    fn validate_counts_an_empty_row_as_one_cell() {
+        let o = ToonOptions::new("t", vec![], vec![Vec::new(); MAX_CELLS + 1]);
+        let err = o.validate().unwrap_err();
+        assert_eq!(err, ToonError::TooManyCells { rows: MAX_CELLS + 1, fields: 0, max: MAX_CELLS });
+        assert_eq!(err.to_string(), "1000001 rows x 0 fields = 1000001 cells exceeds maximum of 1000000");
+        assert!(ToonOptions::new("t", vec![], vec![Vec::new(); MAX_CELLS]).validate().is_ok());
+    }
+
+    #[test]
     fn validate_caps_truncation_hint_in_chars_not_bytes() {
         // 256 two-byte chars (512 bytes) is at the cap; one more char is over it.
         let at_cap = ToonOptions::new("t", vec![], vec![]).truncation_hint("é".repeat(MAX_TRUNCATION_HINT_CHARS));
@@ -761,6 +776,15 @@ mod list_tests {
         let items: Vec<serde_json::Value> =
             (0..2_000).map(|i| serde_json::json!({ format!("k{}", i % 1_000): 1 })).collect();
         assert_eq!(list("t", &items), Err(ToonError::TooManyCells { rows: 2_000, fields: 1_000, max: MAX_CELLS }));
+    }
+
+    // Zero fields used to make every row zero cells, so `list()` of 2M empty structs rendered 8 MB unchecked. An empty
+    // row still renders a line, so it counts as one cell.
+    #[test]
+    fn list_counts_rows_of_items_with_no_fields() {
+        let items = vec![serde_json::json!({}); MAX_CELLS + 1];
+        assert_eq!(list("t", &items), Err(ToonError::TooManyCells { rows: MAX_CELLS + 1, fields: 0, max: MAX_CELLS }));
+        assert!(list("t", &items[..MAX_CELLS]).is_ok());
     }
 
     #[test]
