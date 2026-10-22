@@ -134,14 +134,26 @@ async fn retry_after_hints_are_honoured_including_inside_step_failed() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_step_that_reports_cancelled_is_skipped_not_failed() {
+async fn a_step_that_reports_cancelled_is_skipped_only_when_the_run_was_cancelled() {
     let log = Log::new();
     let (record, calls) =
         run_one(Scripted::new(&log, "s", vec![Act::Err(ExecutionError::Cancelled)]), ExecOptions::new()).await;
-    assert_eq!(calls, 1);
+    assert_eq!(calls, 1, "not executed, but not retried either");
     let s = &record.steps()[0];
-    assert_eq!(s.status(), StepStatus::Skipped(SkipReason::Cancelled));
+    assert_eq!(s.status(), StepStatus::Failed, "it cancelled itself: a root cause, not a consequence");
     assert_eq!(s.attempts()[0].class(), Some(ReplayClass::NotExecuted));
+    assert!(s.reason().unwrap().contains("the run was not cancelled"), "{:?}", s.reason());
+
+    let token = michi_pipeline::CancellationToken::new();
+    let opts = ExecOptions::new().cancellation(token.clone());
+    let step = Scripted::new(&log, "s", vec![Act::Cooperative]);
+    let run = run_one(step, opts);
+    let cancel = async {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        token.cancel();
+    };
+    let ((record, _), ()) = tokio::join!(run, cancel);
+    assert_eq!(record.steps()[0].status(), StepStatus::Skipped(SkipReason::Cancelled));
 }
 
 #[tokio::test(start_paused = true)]

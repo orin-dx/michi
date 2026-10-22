@@ -72,7 +72,7 @@ pub struct ExecOptions {
     pub(crate) retry: RetryConfig,
     pub(crate) attempt_timeout: Duration,
     pub(crate) step_deadline: Option<Duration>,
-    pub(crate) jitter_seed: f64,
+    pub(crate) jitter_seed: Option<f64>,
     pub(crate) cancellation: CancellationToken,
     pub(crate) cancel_grace: Duration,
     pub(crate) retry_budget: Option<RetryBudget>,
@@ -88,7 +88,7 @@ impl Default for ExecOptions {
             retry: RetryConfig::default(),
             attempt_timeout: Duration::from_secs(30),
             step_deadline: None,
-            jitter_seed: 0.0,
+            jitter_seed: None,
             cancellation: CancellationToken::new(),
             cancel_grace: Duration::from_secs(5),
             retry_budget: Some(RetryBudget::default()),
@@ -117,7 +117,7 @@ impl std::fmt::Debug for ExecOptions {
 
 impl ExecOptions {
     /// The defaults: sequential, skip dependents, `RetryConfig::default()`, 30 s per attempt, no step deadline,
-    /// jitter seed 0, 5 s cancellation grace, `RetryBudget::default()`, no breakers, no observer.
+    /// jitter seeded per run, step and attempt, 5 s cancellation grace, `RetryBudget::default()`, no breakers, no observer.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -151,18 +151,22 @@ impl ExecOptions {
         self
     }
 
-    /// A total time bound per step across all attempts and backoff, for steps without their own.
+    /// A total time bound per step across all attempts and backoff, for steps without their own. A deadline too far
+    /// away for the clock to represent (such as `Duration::MAX`) means no deadline.
     #[must_use]
     pub fn step_deadline(mut self, deadline: Duration) -> Self {
         self.step_deadline = Some(deadline);
         self
     }
 
-    /// The jitter seed in `[0, 1]` passed to `next_retry_delay`. Defaults to 0 (no jitter); pass a random value per
-    /// run to decorrelate retries.
+    /// A fixed jitter seed in `[0, 1]`, passed to `next_retry_delay` for every retry of every step.
+    ///
+    /// Without one (the default), each retry gets its own seed derived from the run id, step id and attempt number,
+    /// so steps that fail together do not retry in lockstep, yet the same run and plan always wait the same delays.
+    /// A fixed seed makes every step's backoff identical; use it only when that is what you want (tests, say).
     #[must_use]
     pub fn jitter_seed(mut self, seed: f64) -> Self {
-        self.jitter_seed = seed;
+        self.jitter_seed = Some(seed);
         self
     }
 
@@ -242,7 +246,7 @@ impl ResumeOptions {
     }
 }
 
-/// Why [`resume`] refused to run.
+/// Why [`resume`] refused to run, or [`RunRecord::from_parts`] refused to rebuild a record.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum ResumeError {
@@ -309,18 +313,18 @@ pub async fn resume(prior: &RunRecord, plan: &Plan, opts: &ResumeOptions) -> Res
     if let Some(unknown) = prior.steps().iter().find(|s| plan.index_of(s.step_id()).is_none()) {
         return Err(ResumeError::UnknownStep { step_id: unknown.step_id().clone() });
     }
-    // One index instead of a linear `prior.step()` per plan step and per verdict, which made resume O(N²). The first
-    // record for an id wins, as with `RunRecord::step`.
+    // One index instead of a linear `prior.step()` per plan step and per verdict, which made resume O(N²). Every way
+    // to build a record (execute, from_parts, deserializing) lists each step once.
     let mut by_id: BTreeMap<&StepId, &StepRecord> = BTreeMap::new();
     for record in prior.steps() {
         by_id.entry(record.step_id()).or_insert(record);
     }
     for step_id in opts.verified.keys() {
-        let status = by_id.get(step_id).map(|r| r.status());
-        if !matches!(status, Some(StepStatus::OutcomeUnknown(_) | StepStatus::Panicked | StepStatus::Running)) {
+        let prev = by_id.get(step_id);
+        if !prev.is_some_and(|r| r.awaits_verification()) {
             return Err(ResumeError::NotAwaitingVerification {
                 step_id: step_id.clone(),
-                status: status.map_or("missing", |s| s.label()),
+                status: prev.map_or("missing", |r| r.status().label()),
             });
         }
     }

@@ -59,12 +59,10 @@ async fn resume_refuses_a_changed_plan_before_running_anything() {
     let forged = RunRecord::from_parts(
         rid("r"),
         p.fingerprint(),
+        &p,
         vec![StepRecord::in_flight(sid("a"), "A"), StepRecord::in_flight(sid("zzz"), "Z")],
     );
-    assert_eq!(
-        resume(&forged, &p, &ResumeOptions::default()).await.unwrap_err(),
-        ResumeError::UnknownStep { step_id: sid("zzz") }
-    );
+    assert_eq!(forged.unwrap_err(), ResumeError::UnknownStep { step_id: sid("zzz") });
 }
 
 #[tokio::test(start_paused = true)]
@@ -129,7 +127,7 @@ async fn after_a_crash_a_step_left_running_is_ambiguous_unless_idempotent() {
     let crashed = tokio::time::timeout(Duration::from_millis(10), execute(&p, rid("r"), &opts)).await;
     assert!(crashed.is_err());
     let saved = store.0.lock().unwrap().clone();
-    let rebuilt = RunRecord::from_parts(rid("r"), p.fingerprint(), saved);
+    let rebuilt = RunRecord::from_parts(rid("r"), p.fingerprint(), &p, saved).unwrap();
     assert_eq!(status(&rebuilt, "idem"), StepStatus::Running);
 
     let resumed = resume(&rebuilt, &p, &ResumeOptions::default()).await.unwrap();
@@ -193,28 +191,33 @@ async fn a_cancelled_run_resumes_to_completion_and_the_observer_sees_carried_ove
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_record_listing_a_step_twice_resumes_from_its_first_entry() {
-    // `resume` looks prior steps up through an index built once; with duplicate entries (possible via `from_parts`)
-    // it must keep `RunRecord::step`'s first-match answer.
+async fn a_step_saved_twice_is_rebuilt_from_its_last_entry() {
+    // `from_parts` keeps the last record saved for a step, so the rebuilt record (and resume's index over it) lists
+    // each step once with its latest status.
     let log = Log::new();
     let p = plan(vec![act(&log, "a", &[], Act::Ok), act(&log, "b", &["a"], Act::Ok)]);
     let first = execute(&p, rid("r"), &ExecOptions::new()).await;
     let completed_a = first.step(&sid("a")).unwrap().clone();
 
-    let done_first = RunRecord::from_parts(
+    let done_last = RunRecord::from_parts(
         rid("r"),
         p.fingerprint(),
-        vec![completed_a.clone(), StepRecord::in_flight(sid("a"), "A")],
-    );
-    assert_eq!(done_first.step(&sid("a")).unwrap().status(), StepStatus::Completed);
-    let resumed = resume(&done_first, &p, &ResumeOptions::default()).await.unwrap();
+        &p,
+        vec![StepRecord::in_flight(sid("a"), "A"), completed_a.clone()],
+    )
+    .unwrap();
+    assert_eq!(done_last.steps().len(), 2, "a once, b pending");
+    assert_eq!(done_last.step(&sid("a")).unwrap().status(), StepStatus::Completed);
+    let resumed = resume(&done_last, &p, &ResumeOptions::default()).await.unwrap();
     assert_eq!(status(&resumed, "a"), StepStatus::CompletedEarlier);
     assert_eq!(status(&resumed, "b"), StepStatus::Completed);
 
-    let running_first =
-        RunRecord::from_parts(rid("r"), p.fingerprint(), vec![StepRecord::in_flight(sid("a"), "A"), completed_a]);
+    let running_last =
+        RunRecord::from_parts(rid("r"), p.fingerprint(), &p, vec![completed_a, StepRecord::in_flight(sid("a"), "A")])
+            .unwrap();
+    assert_eq!(running_last.step(&sid("a")).unwrap().status(), StepStatus::Running);
     let verified = ResumeOptions::default().verified(sid("a"), Verification::Applied);
-    let resumed = resume(&running_first, &p, &verified).await.unwrap();
-    assert_eq!(status(&resumed, "a"), StepStatus::CompletedEarlier, "the first entry is the one awaiting verification");
+    let resumed = resume(&running_last, &p, &verified).await.unwrap();
+    assert_eq!(status(&resumed, "a"), StepStatus::CompletedEarlier, "the last entry is the one awaiting verification");
     assert_eq!(log.starts().iter().filter(|s| *s == "a").count(), 1, "a never ran again");
 }

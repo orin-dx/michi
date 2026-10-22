@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use michi_core::pipeline::{Pipeline, PipelineStep, StepStatus};
 
-use crate::{ExecutionError, PlanFingerprint, ReplayClass, RunId, StepId};
+use crate::{ExecutionError, Plan, PlanFingerprint, ReplayClass, ResumeError, RunId, StepId};
 
 /// One attempt of one step.
 #[derive(Debug, Clone, PartialEq)]
@@ -137,13 +137,25 @@ impl StepRecord {
         self.caused_by.as_ref()
     }
 
-    /// Whether this step failed in its own right: `Failed`, `OutcomeUnknown`, `NotRun` or `Panicked`.
+    /// Whether this step failed in its own right: `Failed`, `OutcomeUnknown`, `NotRun`, `Panicked`, or `Running` (a
+    /// rebuilt record's step that was in flight when the process stopped).
     #[must_use]
     pub fn is_root_cause(&self) -> bool {
         matches!(
             self.status,
-            StepStatus::Failed | StepStatus::OutcomeUnknown(_) | StepStatus::NotRun(_) | StepStatus::Panicked
+            StepStatus::Failed
+                | StepStatus::OutcomeUnknown(_)
+                | StepStatus::NotRun(_)
+                | StepStatus::Panicked
+                | StepStatus::Running
         )
+    }
+
+    /// Whether resume keeps this step as it is until the caller verifies it (unless the step is idempotent), because
+    /// its effect may have happened: `OutcomeUnknown`, `Panicked` or `Running`.
+    #[must_use]
+    pub fn awaits_verification(&self) -> bool {
+        matches!(self.status, StepStatus::OutcomeUnknown(_) | StepStatus::Panicked | StepStatus::Running)
     }
 }
 
@@ -155,11 +167,12 @@ impl StepRecord {
 pub enum RunOutcome {
     /// Every step is `Completed` or `CompletedEarlier`. Nothing to do.
     Succeeded,
-    /// Some step's outcome is unknown. Verify it, then resume.
+    /// Some step's outcome is unknown, including a step a rebuilt record shows as still `Running`. Verify it, then
+    /// resume.
     OutcomeUnknown,
     /// The caller cancelled the run before it finished. Resume.
     Cancelled,
-    /// Some step failed, was not run, panicked or was skipped. Fix the root cause, then resume.
+    /// Some step failed, was not run, panicked, was skipped or is still pending. Fix the root cause, then resume.
     Failed,
 }
 
@@ -176,38 +189,124 @@ impl RunOutcome {
     }
 }
 
-/// What happened in one run: a step record per plan step, in declaration order.
+/// What happened in one run: exactly one step record per plan step, in declaration order.
 ///
-/// Returned by [`crate::execute`] and [`crate::resume`]. A plain value: persisting it (with the `serde` feature) is
-/// the caller's job.
+/// Returned by [`crate::execute`] and [`crate::resume`], or rebuilt with [`RunRecord::from_parts`]. A plain value:
+/// persisting it (with the `serde` feature) is the caller's job. The record stores how many steps its plan has
+/// (`plan_steps` in the serialized form), so a record that lost steps can never read as a success: deserializing one
+/// whose `steps` do not list `plan_steps` distinct steps is an error.
 #[must_use = "a run record says which steps failed or need verification"]
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "RunRecordWire"))]
 pub struct RunRecord {
     pub(crate) run_id: RunId,
     pub(crate) plan_fingerprint: PlanFingerprint,
+    pub(crate) plan_steps: usize,
     pub(crate) steps: Vec<StepRecord>,
     pub(crate) completion_order: Vec<StepId>,
     pub(crate) cancelled: bool,
     pub(crate) elapsed: Duration,
-    #[cfg_attr(feature = "serde", serde(default))]
     pub(crate) observer_panics: u32,
+}
+
+/// The serialized form of a [`RunRecord`], checked before it becomes one.
+#[cfg(feature = "serde")]
+#[derive(serde::Deserialize)]
+struct RunRecordWire {
+    run_id: RunId,
+    plan_fingerprint: PlanFingerprint,
+    plan_steps: usize,
+    steps: Vec<StepRecord>,
+    completion_order: Vec<StepId>,
+    cancelled: bool,
+    elapsed: Duration,
+    #[serde(default)]
+    observer_panics: u32,
+}
+
+#[cfg(feature = "serde")]
+impl TryFrom<RunRecordWire> for RunRecord {
+    type Error = String;
+
+    fn try_from(wire: RunRecordWire) -> Result<Self, String> {
+        if wire.steps.len() != wire.plan_steps {
+            return Err(format!(
+                "run record lists {} steps but its plan has {}; a record must list every plan step once",
+                wire.steps.len(),
+                wire.plan_steps
+            ));
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        if let Some(dup) = wire.steps.iter().find(|s| !seen.insert(&s.step_id)) {
+            return Err(format!("step {} is listed twice in the run record", dup.step_id));
+        }
+        Ok(Self {
+            run_id: wire.run_id,
+            plan_fingerprint: wire.plan_fingerprint,
+            plan_steps: wire.plan_steps,
+            steps: wire.steps,
+            completion_order: wire.completion_order,
+            cancelled: wire.cancelled,
+            elapsed: wire.elapsed,
+            observer_panics: wire.observer_panics,
+        })
+    }
 }
 
 impl RunRecord {
     /// Rebuilds a record from step records saved one at a time (from a [`crate::StepObserver`]), after a crash.
-    /// Steps the plan has but `steps` lacks count as `Pending`; a step saved as `Running` counts as possibly applied.
-    /// [`crate::resume`] checks the fingerprint and step ids against the plan.
-    pub fn from_parts(run_id: RunId, plan_fingerprint: PlanFingerprint, steps: Vec<StepRecord>) -> Self {
-        Self {
+    ///
+    /// `plan_fingerprint` is the fingerprint saved when the run started; `plan` is the plan about to be resumed. The
+    /// result has one record per plan step, in declaration order:
+    ///
+    /// - When `steps` holds several records for one step, the **last** one wins. An append-only log of
+    ///   [`StepRecord::in_flight`] on start and the finished record on finish therefore rebuilds each step's latest
+    ///   status.
+    /// - A plan step with no saved record is `Pending`, so a record missing steps never reads as a success.
+    /// - A step saved as `Running` may have taken effect: it is a root cause awaiting verification.
+    ///
+    /// # Errors
+    ///
+    /// [`ResumeError::FingerprintMismatch`] if `plan_fingerprint` is not `plan`'s, and [`ResumeError::UnknownStep`]
+    /// if a saved record names a step the plan does not have.
+    pub fn from_parts(
+        run_id: RunId,
+        plan_fingerprint: PlanFingerprint,
+        plan: &Plan,
+        steps: Vec<StepRecord>,
+    ) -> Result<Self, ResumeError> {
+        if plan_fingerprint != plan.fingerprint() {
+            return Err(ResumeError::FingerprintMismatch { record: plan_fingerprint, plan: plan.fingerprint() });
+        }
+        let mut latest: Vec<Option<StepRecord>> = vec![None; plan.len()];
+        for record in steps {
+            let Some(i) = plan.index_of(&record.step_id) else {
+                return Err(ResumeError::UnknownStep { step_id: record.step_id });
+            };
+            latest[i] = Some(record);
+        }
+        let steps = latest
+            .into_iter()
+            .zip(plan.steps())
+            .map(|(saved, step)| {
+                saved.unwrap_or_else(|| {
+                    let mut pending = StepRecord::new(step.id().clone(), step.name().to_string(), StepStatus::Pending);
+                    pending.reason = Some("no record was saved for this step".to_string());
+                    pending
+                })
+            })
+            .collect();
+        Ok(Self {
             run_id,
             plan_fingerprint,
+            plan_steps: plan.len(),
             steps,
             completion_order: Vec::new(),
             cancelled: false,
             elapsed: Duration::ZERO,
             observer_panics: 0,
-        }
+        })
     }
 
     /// The run's id.
@@ -220,12 +319,13 @@ impl RunRecord {
         self.plan_fingerprint
     }
 
-    /// The overall verdict: `Succeeded` only if every step is `Completed` or `CompletedEarlier`; otherwise
-    /// `OutcomeUnknown` if any step's outcome is unknown, else `Cancelled` if the caller cancelled, else `Failed`.
+    /// The overall verdict: `Succeeded` only if the record lists every plan step and each is `Completed` or
+    /// `CompletedEarlier`; otherwise `OutcomeUnknown` if any step's outcome is unknown (`OutcomeUnknown`, or
+    /// `Running` in a rebuilt record), else `Cancelled` if the caller cancelled, else `Failed`.
     pub fn outcome(&self) -> RunOutcome {
-        if self.steps.iter().all(|s| s.status.is_success()) {
+        if self.steps.len() == self.plan_steps && self.steps.iter().all(|s| s.status.is_success()) {
             RunOutcome::Succeeded
-        } else if self.steps.iter().any(|s| matches!(s.status, StepStatus::OutcomeUnknown(_))) {
+        } else if self.steps.iter().any(|s| matches!(s.status, StepStatus::OutcomeUnknown(_) | StepStatus::Running)) {
             RunOutcome::OutcomeUnknown
         } else if self.cancelled {
             RunOutcome::Cancelled
@@ -239,14 +339,15 @@ impl RunRecord {
         &self.steps
     }
 
-    /// The record for `id`, if the run has that step (the first one, if a rebuilt record lists it twice).
+    /// The record for `id`, if the run has that step.
     ///
     /// A linear scan: to look up many steps, index [`RunRecord::steps`] once instead of calling this in a loop.
     pub fn step(&self, id: &StepId) -> Option<&StepRecord> {
         self.steps.iter().find(|s| s.step_id == *id)
     }
 
-    /// Steps that failed in their own right (`Failed`, `OutcomeUnknown`, `NotRun`, `Panicked`), in declaration order.
+    /// Steps that failed in their own right (`Failed`, `OutcomeUnknown`, `NotRun`, `Panicked`, `Running`), in
+    /// declaration order.
     pub fn root_causes(&self) -> impl Iterator<Item = &StepRecord> {
         self.steps.iter().filter(|s| s.is_root_cause())
     }
@@ -256,9 +357,11 @@ impl RunRecord {
         self.steps.iter().filter(|s| matches!(s.status, StepStatus::Skipped(_)))
     }
 
-    /// Steps whose outcome is unknown and must be verified before resume will run them again (unless idempotent).
+    /// Steps whose effect may have happened, which resume keeps as they are until the caller verifies them (unless
+    /// the step is idempotent): `OutcomeUnknown`, `Panicked` and `Running`, in declaration order. These are exactly
+    /// the steps [`crate::ResumeOptions::verified`] accepts.
     pub fn needs_verification(&self) -> impl Iterator<Item = &StepRecord> {
-        self.steps.iter().filter(|s| matches!(s.status, StepStatus::OutcomeUnknown(_)))
+        self.steps.iter().filter(|s| s.awaits_verification())
     }
 
     /// Ids of steps that completed in this run, in the order they finished. Steps carried over by resume are not
@@ -284,16 +387,27 @@ impl RunRecord {
         self.observer_panics
     }
 
-    /// The first root cause in declaration order, as [`ExecutionError::StepFailed`], for conversion into a
-    /// `DomainError`. `None` if no step failed in its own right.
+    /// Why the run did not succeed, as [`ExecutionError::StepFailed`] for conversion into a `DomainError`: the first
+    /// root cause in declaration order or, when no step failed in its own right (a cancelled run, or a rebuilt record
+    /// with pending steps), the first step that did not succeed. `None` only for a [`RunOutcome::Succeeded`] run.
     pub fn error(&self) -> Option<ExecutionError> {
-        self.root_causes().next().map(|s| ExecutionError::StepFailed {
-            step_id: s.step_id.to_string(),
-            step_name: s.name.clone(),
-            source: Box::new(s.error.clone().unwrap_or_else(|| ExecutionError::Failed {
-                message: s.reason.clone().unwrap_or_default(),
-                retryable: false,
-            })),
+        let step = self.root_causes().next().or_else(|| self.steps.iter().find(|s| !s.status.is_success()))?;
+        let source = step.error.clone().unwrap_or_else(|| match step.status {
+            StepStatus::Skipped(michi_core::pipeline::SkipReason::Cancelled) => ExecutionError::Cancelled,
+            StepStatus::Running => {
+                ExecutionError::AmbiguousOutcome { source: Box::new(ExecutionError::Interrupted { elapsed_ms: 0 }) }
+            }
+            // A pending step never ran, so running it is safe.
+            StepStatus::Pending => ExecutionError::Failed {
+                message: step.reason.clone().unwrap_or_else(|| "the step has not run".to_string()),
+                retryable: true,
+            },
+            _ => ExecutionError::Failed { message: step.reason.clone().unwrap_or_default(), retryable: false },
+        });
+        Some(ExecutionError::StepFailed {
+            step_id: step.step_id.to_string(),
+            step_name: step.name.clone(),
+            source: Box::new(source),
         })
     }
 

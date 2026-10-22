@@ -12,6 +12,7 @@ use tokio::time::Instant;
 use crate::breaker::AdmissionGuard;
 use crate::error::millis;
 use crate::exec::{ExecOptions, FailurePolicy, Mode, StepObserver};
+use crate::plan::Fnv;
 use crate::{
     AttemptRecord, CancellationToken, CircuitBreaker, ExecutionError, Plan, Replay, ReplayClass, RunId, RunRecord,
     Step, StepContext, StepId, StepRecord,
@@ -40,7 +41,7 @@ struct Job {
     retry: RetryConfig,
     attempt_timeout: Duration,
     deadline: Option<Duration>,
-    jitter_seed: f64,
+    jitter_seed: Option<f64>,
     breaker: Option<(String, Arc<CircuitBreaker>)>,
     budget: Option<Arc<Mutex<RetryBudget>>>,
     grace: Duration,
@@ -315,6 +316,7 @@ impl<'a> Scheduler<'a> {
         RunRecord {
             run_id: self.run_id,
             plan_fingerprint: self.plan.fingerprint(),
+            plan_steps: self.plan.len(),
             steps: self.records.into_iter().flatten().collect(),
             completion_order: self.completion_order,
             cancelled: self.opts.cancellation.is_cancelled(),
@@ -351,7 +353,7 @@ fn harness_outcome(join_err: tokio::task::JoinError, replay: Replay) -> Outcome 
         let error = ExecutionError::Panicked { message };
         return Outcome { status: StepStatus::Panicked, reason: Some(error.to_string()), error: Some(error) };
     }
-    classify(ExecutionError::Interrupted { elapsed_ms: 0 }, replay, "task aborted")
+    classify(ExecutionError::Interrupted { elapsed_ms: 0 }, replay, "task aborted", true)
 }
 
 /// Whether the executor may run the step again after `err`: the error must be retryable, and an ambiguous one only
@@ -405,7 +407,8 @@ async fn run_step(job: Job) -> Outcome {
     };
     let probe = guard.as_ref().is_some_and(AdmissionGuard::is_probe);
     let started = Instant::now();
-    let deadline = job.deadline.map(|d| started + d);
+    // A deadline too far away for the clock to represent is no deadline, rather than an overflow panic.
+    let deadline = job.deadline.and_then(|d| started.checked_add(d));
     let mut attempt = 0u32;
     let (err, stop) = loop {
         let ctx =
@@ -445,10 +448,11 @@ async fn run_step(job: Job) -> Outcome {
         if probe {
             break (err, "a half-open breaker allows one probe attempt");
         }
-        let Some(delay) = next_retry_delay(&job.retry, attempt, job.jitter_seed, err.retry_after()) else {
+        let seed = job.jitter_seed.unwrap_or_else(|| derived_jitter_seed(&job.run_id, &job.step_id, attempt));
+        let Some(delay) = retry_delay(&job.retry, attempt, seed, err.retry_after()) else {
             break (err, "retries exhausted");
         };
-        if deadline.is_some_and(|d| Instant::now() + delay >= d) {
+        if deadline.is_some_and(|d| Instant::now().checked_add(delay).is_none_or(|wake| wake >= d)) {
             break (err, "step deadline reached");
         }
         if let Some(budget) = &job.budget {
@@ -466,17 +470,68 @@ async fn run_step(job: Job) -> Outcome {
         attempt += 1;
     };
     if let Some(guard) = guard {
-        // Cancellation says nothing about the downstream's health: release a probe, report nothing.
-        if !matches!(err.innermost(), ExecutionError::Cancelled | ExecutionError::Interrupted { .. }) {
-            guard.complete(false);
+        match err.innermost() {
+            // Cancellation says nothing about the downstream's health: release a probe, report nothing.
+            ExecutionError::Cancelled | ExecutionError::Interrupted { .. } => {}
+            // The downstream answered and rejected the request itself: it is up, so this is not a failure.
+            ExecutionError::Http { status, .. } if is_client_error(*status) => guard.complete(true),
+            _ => guard.complete(false),
         }
     }
-    classify(err, job.replay, stop)
+    classify(err, job.replay, stop, job.token.is_cancelled())
 }
 
-/// The terminal status and final error for a step whose last attempt failed with `err`.
-fn classify(err: ExecutionError, replay: Replay, stop: &str) -> Outcome {
+/// Whether an HTTP status is the caller's own mistake (4xx other than 408 Request Timeout and 429 Too Many Requests):
+/// proof the downstream is up and answering, so it never counts as a breaker failure. 408 and 429 say the downstream
+/// is slow or overloaded, and 5xx says it failed, so those do count.
+fn is_client_error(status: u16) -> bool {
+    (400..500).contains(&status) && status != 408 && status != 429
+}
+
+/// The backoff before retry `attempt + 1`: michi-core's [`next_retry_delay`], except that a server's `retry_after` is
+/// honoured in full even past `RetryConfig::max_delay`, which caps only the exponential backoff. The step deadline
+/// still bounds it: the caller stops retrying if the wait would end past the deadline.
+fn retry_delay(retry: &RetryConfig, attempt: u32, seed: f64, retry_after: Option<Duration>) -> Option<Duration> {
+    let backoff = next_retry_delay(retry, attempt, seed, retry_after)?;
+    Some(retry_after.map_or(backoff, |hint| backoff.max(ceil_to_millis(hint))))
+}
+
+/// `d` rounded up to whole milliseconds, as `next_retry_delay` rounds a hint, so a hint is never shortened.
+fn ceil_to_millis(d: Duration) -> Duration {
+    let whole = Duration::from_millis(millis(d));
+    if whole < d {
+        whole.saturating_add(Duration::from_millis(1))
+    } else {
+        whole
+    }
+}
+
+/// A jitter seed in `[0, 1)` for one retry, derived from the run id, step id and attempt: steps that fail together
+/// back off by different amounts, and the same run always waits the same delays.
+fn derived_jitter_seed(run_id: &RunId, step_id: &StepId, attempt: u32) -> f64 {
+    let mut h = Fnv::new();
+    h.write(run_id.as_str().as_bytes());
+    h.write(b":");
+    h.write(step_id.as_str().as_bytes());
+    h.write(b":");
+    h.write(&attempt.to_le_bytes());
+    // FNV-1a mixes its last bytes poorly; the splitmix64 finalizer spreads them over every bit.
+    let mut z = h.finish();
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^= z >> 31;
+    // The top 53 bits as a fraction of 2^53, both exact in an f64.
+    #[allow(clippy::cast_precision_loss, reason = "53-bit values fit an f64 mantissa exactly")]
+    let fraction = (z >> 11) as f64 / (1u64 << 53) as f64;
+    fraction
+}
+
+/// The terminal status and final error for a step whose last attempt failed with `err`. `cancelled` says whether the
+/// step's cancellation token had fired. A step that returns [`ExecutionError::Cancelled`] while it had not stopped on
+/// its own, so it ends `Failed`: a root cause that resume runs again, not a `Skipped(Cancelled)` consequence.
+fn classify(err: ExecutionError, replay: Replay, stop: &str, cancelled: bool) -> Outcome {
     let class = err.replay_class();
+    let mut stop = stop;
     let (status, error) = match class {
         ReplayClass::Ambiguous if replay == Replay::NotIdempotent => {
             let cause = match err.innermost() {
@@ -491,7 +546,13 @@ fn classify(err: ExecutionError, replay: Replay, stop: &str) -> Outcome {
         }
         ReplayClass::NotExecuted => match err.innermost() {
             ExecutionError::CircuitOpen { .. } => (StepStatus::NotRun(NotRunReason::CircuitOpen), err),
-            _ => (StepStatus::Skipped(SkipReason::Cancelled), err),
+            _ if cancelled => (StepStatus::Skipped(SkipReason::Cancelled), err),
+            _ => {
+                if stop.is_empty() {
+                    stop = "the step cancelled itself although the run was not cancelled";
+                }
+                (StepStatus::Failed, err)
+            }
         },
         _ => (StepStatus::Failed, err),
     };

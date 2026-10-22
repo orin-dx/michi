@@ -69,7 +69,8 @@ impl ExecStep {
         self
     }
 
-    /// Bounds this step's total time across all attempts and backoff, overriding the run's step deadline.
+    /// Bounds this step's total time across all attempts and backoff, overriding the run's step deadline. A deadline
+    /// too far away for the clock to represent (such as `Duration::MAX`) means no deadline.
     #[must_use]
     pub fn deadline(mut self, deadline: Duration) -> Self {
         self.deadline = Some(deadline);
@@ -257,17 +258,20 @@ impl From<PlanFingerprint> for String {
 }
 
 /// FNV-1a, 64-bit.
-struct Fnv(u64);
+pub(crate) struct Fnv(u64);
 
 impl Fnv {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self(0xcbf2_9ce4_8422_2325)
     }
-    fn write(&mut self, bytes: &[u8]) {
+    pub(crate) fn write(&mut self, bytes: &[u8]) {
         for &b in bytes {
             self.0 ^= u64::from(b);
             self.0 = self.0.wrapping_mul(0x0100_0000_01b3);
         }
+    }
+    pub(crate) fn finish(&self) -> u64 {
+        self.0
     }
 }
 
