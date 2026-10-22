@@ -1,5 +1,29 @@
 # michi-core
 
+## 0.5.0
+
+- Fix review findings: a per-object byte budget for Node's `AgentResponse`, tiny floats that rendered `0`, schemas that disagreed with serde, and retry defaults that claimed a timeout was safe to retry.
+  
+  - @orin-dx/michi: one `AgentResponse` now holds at most 64 MiB of strings across all its calls, not 64 MiB per call (65 separate 1 MiB hints were accepted and rendered 68 MB). Replacing `items`, `kvItems`, `truncationHint` or `humanContent` gives the old value's bytes back. Over the total, a call throws `cumulative byte total N exceeds maximum of 67108864` and leaves the builder unchanged. The constructor's `typeName` and `emptyState`'s `typeName` are capped at 4 KiB, `humanContent` at 1 MiB.
+  - michi-core, @orin-dx/michi: floats needing more than 255 decimal places no longer render `0`. Without `decimalsVal`, `1e-300` and `5e-324` render as themselves. New `KvValue::FULL_PRECISION` (255) never rounds, in TOON and the JSON companions; a smaller decimals count still rounds as asked.
+  - michi-core: `RecoveryHint` deserialization accepts floats of any size (tiny ones such as `1e-300` were rejected) and integers past `i64::MAX` that have an exact float form, so a hint's own serialized floats (`Float(1e19, 0)`) read back. An integer past `i64::MAX` that would be rounded (`18446744073709551615`) is still rejected; send it as a string. The schema says so in its description.
+  - michi-core: the JSON Schemas of `KvValue::Int`, `toon::Value::Int`, `toon::Value::UInt` and `KvValue::Float`'s decimals state the bounds serde enforces.
+  - michi-core: `DomainError::new` defaults `retryable` to `false` for `Timeout` and `ExternalFailure` (it was `true`): the request may have taken effect. `retryable` means calling again is expected to help without repeating an effect; pass `.retryable(true)` when the operation is idempotent. `RateLimited` and `Unavailable` stay retryable. A `Timeout` not marked retryable is the new `ErrorClass::Ambiguous` (it was classed `Transient` through the old default), and carries the hint `MAY_HAVE_TAKEN_EFFECT_HINT` until `.retryable(true)` removes it. `is_retryable_status` documents that 502 and 504 are safe to retry only for idempotent requests.
+  - michi-core, @orin-dx/michi: `parse_retry_after` treats a pre-1970 HTTP-date as a past date (zero delay), rejects unpadded or signed digit fields such as `+8:+9:+7`, and saturates delay-seconds past `u64::MAX` instead of returning `None`.
+  - michi-core: rendering recovery params with repeated-key de-duplication is linear (40,000 params took 1.77 s).
+  - michi-core: `MAX_CELLS` counts one cell per row when a list has no fields, so `toon::list` of millions of empty items is rejected with `TooManyCells`.
+- michi-pipeline: retries and resume no longer repeat an effect that may already have landed.
+  
+  - **Breaking:** `ExecutionError::Failed` has a third field, `effect: Effect` (`NotApplied` or `Unknown`). Build it with the new constructors: `failed(msg)` (not retryable, effect unknown, the default), `refused(msg)` (not retryable, not applied), `rejected(msg)` (retryable, not applied) or `transient(msg)` (retryable, effect unknown). `ExecutionError::effect()` reports the effect of any error.
+  - **Breaking:** a non-idempotent step that fails with an unknown effect (`failed(msg)`, an HTTP 500 or other 5xx) now ends `OutcomeUnknown(StepFailed)`, not `Failed`, and resume holds it until verified. Before, resume ran it again and could commit twice. Use `refused(msg)` for failures that certainly had no effect.
+  - **Breaking:** `ReplayClass::Definitive` is replaced by `Refused` (not applied) and `Ambiguous` (effect unknown).
+  - **Breaking:** `ExecutionError::refused` counts as healthy for the circuit breaker (like an HTTP 4xx), so validation failures no longer open it. `PlanFingerprint` parses only 16 lowercase hex digits (it used to accept a leading `+` and uppercase).
+  - Precheck: a `Replay::Prechecked` step implements `Step::precheck`, which runs before every attempt and answers `Precheck::Applied` (the step ends `CompletedEarlier` without running), `NotApplied` (it runs) or `Unknown` (it doesn't; `NotRun(Unverified)` if nothing ran yet). Resume uses it instead of a manual verdict.
+  - Durable starts: `ExecOptions::durable_starts(observer)` takes a `DurableObserver`, and a step runs only after its `record_start` saves the in-flight marker; if that fails or panics, the step ends `NotRun(StartNotRecorded)` without being invoked. This closes the gap where a crash rebuilt a step that ran as `Pending`.
+  - Records saved by 0.4 still load: a `Failed` error without `effect` reads as `Unknown`, and the attempt class `definitive` reads as `Ambiguous`, so resume holds such steps instead of re-running them.
+  
+  michi-core: `UnknownCause::StepFailed` (rendered `step_failed`) and `NotRunReason::{Unverified, StartNotRecorded}` (rendered `unverified`, `start_not_recorded`), on enums that were already `#[non_exhaustive]`. `@orin-dx/michi`'s `renderPipeline` accepts the three new reasons.
+
 ## 0.4.0
 
 - michi-core: public types can now grow in 0.4.x without breaking callers.
