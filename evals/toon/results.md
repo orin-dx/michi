@@ -26,7 +26,7 @@ The spec sentence is accurate only if "equivalent JSON" means indented JSON.
 `gen_corpus.py` builds the corpus with seeded `random.Random` (seed `20261021` plus the dataset index). The 5- and 25-row files are the first rows of the 100-row file, so the output is the same on every run. There are 9 datasets, each at 5, 25 and 100 rows, for 27 files in `corpus/`. Every string is under 200 chars, so michi's default `max_cell_len=200` never truncates. That keeps the TOON output lossless and comparable; the renderer asserts that nothing was truncated.
 
 | dataset | michi type name | shape |
-|---|---|---|
+| --- | --- | --- |
 | code_search | `matches` | path, line, column, language, snippet (code with `(){}:,`), score (float) |
 | github_issues | `issues` | number, title (some contain `:`), state, author, **labels (array)**, comments, created_at |
 | package_search | `packages` | name, version, description (with commas), downloads, license, updated |
@@ -66,7 +66,7 @@ The full tables for both tokenizers are in `results/summary.md`; the raw counts 
 Each cell is TOON's saving: the median, then the min..max across the 9 datasets. Positive means TOON is smaller.
 
 | tokenizer | rows | vs pretty JSON | vs minified JSON | vs Markdown-KV | vs Markdown table |
-|---|---:|---|---|---|---|
+| --- | --: | --- | --- | --- | --- |
 | cl100k_base | 5 | 43.9% (22.8..47.0) | 18.4% (0.0..22.3) | 27.5% (0.0..29.4) | 11.3% (8.0..26.7) |
 | cl100k_base | 25 | 46.4% (19.9..50.1) | 22.7% (-4.3..26.2) | 32.5% (-0.8..33.9) | 8.2% (1.4..20.5) |
 | cl100k_base | 100 | 47.2% (20.9..50.4) | 23.4% (-4.3..26.8) | 33.2% (-0.4..35.0) | 7.7% (0.1..20.2) |
@@ -78,15 +78,15 @@ Each cell is TOON's saving: the median, then the min..max across the 9 datasets.
 
 **List datasets only (excludes the KV dataset), 100 rows:**
 
-| tokenizer | vs pretty JSON | vs minified JSON | vs Markdown-KV | vs Markdown table |
-|---|---|---|---|---|
-| cl100k_base | 47.3% (43.8..50.4) | 23.5% (8.5..26.8) | 33.4% (25.5..35.0) | 7.4% (0.1..20.2) |
-| o200k_base | 47.1% (43.7..50.3) | 23.4% (8.2..26.9) | 33.3% (25.1..35.1) | 7.5% (-0.6..19.7) |
+| tokenizer   | vs pretty JSON     | vs minified JSON  | vs Markdown-KV     | vs Markdown table |
+| ----------- | ------------------ | ----------------- | ------------------ | ----------------- |
+| cl100k_base | 47.3% (43.8..50.4) | 23.5% (8.5..26.8) | 33.4% (25.5..35.0) | 7.4% (0.1..20.2)  |
+| o200k_base  | 47.1% (43.7..50.3) | 23.4% (8.2..26.9) | 33.3% (25.1..35.1) | 7.5% (-0.6..19.7) |
 
 ### Per-dataset token counts (cl100k_base)
 
 | dataset | rows | toon | json_pretty | json_min | md_kv | md_table | vs pretty | vs min | vs MD-KV | vs MD table |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| --- | --: | --: | --: | --: | --: | --: | --: | --: | --: | --: |
 | code_search | 5 | 199 | 359 | 244 | 274 | 226 | +44.6% | +18.4% | +27.4% | +11.9% |
 | code_search | 25 | 914 | 1734 | 1187 | 1357 | 1009 | +47.3% | +23.0% | +32.6% | +9.4% |
 | code_search | 100 | 3663 | 6969 | 4787 | 5481 | 4008 | +47.4% | +23.5% | +33.2% | +8.6% |
@@ -120,7 +120,7 @@ Each cell is TOON's saving: the median, then the min..max across the 9 datasets.
 `ablation.py` renders variants of three datasets through the same michi build, to isolate what costs TOON tokens.
 
 | variant | TOON vs min JSON (cl100k) | TOON vs MD table (cl100k) |
-|---|---:|---:|
+| --- | --: | --: |
 | github_issues (labels array → JSON-string cell) | +21.0% | +0.1% |
 | github_issues, labels flattened to one string `"bug, docs"` | +26.0% | +7.0% |
 | github_issues, labels column dropped | +25.8% | +7.8% |
