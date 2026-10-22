@@ -14,7 +14,6 @@ import sys
 ALLOWED = {
     "MIT",
     "Apache-2.0",
-    "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",
     "BSD-3-Clause",
     "ISC",
@@ -24,15 +23,68 @@ ALLOWED = {
     "CC0-1.0",
 }
 
+# License exceptions that keep an allowed license permissive.
+ALLOWED_WITH = {"Apache-2.0 WITH LLVM-exception"}
+
 
 def permissive(expr: str) -> bool:
-    """An SPDX expression is permissive if some OR-alternative has only allowed AND-terms."""
-    expr = expr.replace("/", " OR ").replace("(", " ").replace(")", " ")
-    for alternative in re.split(r"\s+OR\s+", expr.strip()):
-        terms = [t.strip() for t in re.split(r"\s+AND\s+", alternative) if t.strip()]
-        if terms and all(t in ALLOWED for t in terms):
-            return True
-    return False
+    """Whether an SPDX license expression can be satisfied using only allowed licenses.
+
+    Precedence follows the SPDX spec: WITH binds tighter than AND, which binds tighter than OR, and parentheses
+    group. `A OR B` needs one side allowed; `A AND B` needs both. The legacy `/` separator means OR. An expression
+    that does not parse is not permissive.
+    """
+    tokens = re.findall(r"\(|\)|[^\s()]+", expr.replace("/", " OR "))
+    pos = 0
+
+    def peek():
+        return tokens[pos] if pos < len(tokens) else None
+
+    def take():
+        nonlocal pos
+        token = peek()
+        pos += 1
+        return token
+
+    def or_expr():
+        value = and_expr()
+        while peek() == "OR":
+            take()
+            right = and_expr()
+            value = value or right
+        return value
+
+    def and_expr():
+        value = term()
+        while peek() == "AND":
+            take()
+            right = term()
+            value = value and right
+        return value
+
+    def term():
+        token = take()
+        if token == "(":
+            value = or_expr()
+            if take() != ")":
+                raise ValueError("unbalanced parentheses")
+            return value
+        if token is None or token in ("AND", "OR", "WITH", ")"):
+            raise ValueError(f"unexpected {token!r}")
+        name = token
+        if peek() == "WITH":
+            take()
+            exception = take()
+            if exception is None or exception in ("AND", "OR", "WITH", "(", ")"):
+                raise ValueError("WITH needs an exception")
+            name = f"{token} WITH {exception}"
+        return name in ALLOWED or name in ALLOWED_WITH
+
+    try:
+        value = or_expr()
+        return value and pos == len(tokens)
+    except ValueError:
+        return False
 
 
 def main() -> int:

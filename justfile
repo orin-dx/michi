@@ -32,6 +32,7 @@ test-crates-default:
 
 # michi-graph is MIT: fail if a non-permissive license enters its normal or build dependencies.
 check-graph-license:
+    python3 scripts/test_check_permissive_deps.py
     cargo metadata --format-version 1 --all-features | python3 scripts/check-permissive-deps.py michi-graph
 
 test-rust-release:
