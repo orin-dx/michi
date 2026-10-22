@@ -49,24 +49,10 @@ pub enum FailurePolicy {
 pub trait StepObserver: Send + Sync {
     /// A step is about to be dispatched. Persist [`StepRecord::in_flight`] here to make a crash mid-step visible.
     ///
-    /// Without [`ExecOptions::durable_starts`], the step is dispatched whatever happens here, even if this panics. If
-    /// saving the marker can fail, implement [`StepObserver::record_start`] and turn on durable starts instead.
+    /// The step is dispatched whatever happens here, even if this panics. If saving the marker can fail and the step
+    /// must not run without it, implement [`DurableObserver`] and pass it to [`ExecOptions::durable_starts`].
     fn on_step_started(&self, run_id: &RunId, step_id: &StepId) {
         let _ = (run_id, step_id);
-    }
-
-    /// With [`ExecOptions::durable_starts`], called instead of [`StepObserver::on_step_started`]: persist the
-    /// in-flight marker ([`StepRecord::in_flight`]) and return `Ok` only once it is saved. `Err(reason)` or a panic
-    /// stops the step: it ends `NotRun(StartNotRecorded)` without being invoked.
-    ///
-    /// The default calls `on_step_started` and returns `Ok`.
-    ///
-    /// # Errors
-    ///
-    /// Why the marker could not be saved.
-    fn record_start(&self, run_id: &RunId, step_id: &StepId) -> Result<(), String> {
-        self.on_step_started(run_id, step_id);
-        Ok(())
     }
 
     /// A step reached its terminal status in this run: ran, was skipped, or (on resume) was carried over.
@@ -77,16 +63,33 @@ impl<F> StepObserver for F
 where
     F: Fn(&RunId, &StepRecord) + Send + Sync,
 {
-    /// A closure sees finish events only, so it cannot save an in-flight marker: with durable starts, every step is
-    /// refused rather than run without one.
-    fn record_start(&self, run_id: &RunId, step_id: &StepId) -> Result<(), String> {
-        let _ = (run_id, step_id);
-        Err("a closure observer sees finish events only and cannot record starts".to_string())
-    }
-
     fn on_step_finished(&self, run_id: &RunId, record: &StepRecord) {
         self(run_id, record);
     }
+}
+
+/// An observer that saves each step's in-flight marker before the step may run. Pass it to
+/// [`ExecOptions::durable_starts`]: a step then runs only once [`DurableObserver::record_start`] returns `Ok`, so a
+/// record rebuilt after a crash never shows a step that ran as `Pending`.
+///
+/// A closure observer cannot be one: it sees finish events only, so durable starts with it do not compile.
+///
+/// ```compile_fail
+/// use std::sync::Arc;
+/// use michi_pipeline::{ExecOptions, RunId, StepRecord};
+///
+/// let finish_only = |_: &RunId, _: &StepRecord| {};
+/// let _ = ExecOptions::new().durable_starts(Arc::new(finish_only));
+/// ```
+pub trait DurableObserver: StepObserver {
+    /// Persist the in-flight marker ([`StepRecord::in_flight`]) and return `Ok` only once it is saved. Called instead
+    /// of [`StepObserver::on_step_started`]. `Err(reason)` or a panic stops the step: it ends
+    /// `NotRun(StartNotRecorded)` without being invoked, and resume runs it again.
+    ///
+    /// # Errors
+    ///
+    /// Why the marker could not be saved.
+    fn record_start(&self, run_id: &RunId, step_id: &StepId) -> Result<(), String>;
 }
 
 /// Options for [`execute`]. Every field has a default; builder methods override them.
@@ -103,7 +106,8 @@ pub struct ExecOptions {
     pub(crate) retry_budget: Option<RetryBudget>,
     pub(crate) breakers: Option<Arc<BreakerRegistry>>,
     pub(crate) observer: Option<Arc<dyn StepObserver>>,
-    pub(crate) durable_starts: bool,
+    /// Set with the observer by `durable_starts`: the same observer, which records starts.
+    pub(crate) durable: Option<Arc<dyn DurableObserver>>,
 }
 
 impl Default for ExecOptions {
@@ -120,7 +124,7 @@ impl Default for ExecOptions {
             retry_budget: Some(RetryBudget::default()),
             breakers: None,
             observer: None,
-            durable_starts: false,
+            durable: None,
         }
     }
 }
@@ -138,7 +142,7 @@ impl std::fmt::Debug for ExecOptions {
             .field("retry_budget", &self.retry_budget)
             .field("breakers", &self.breakers.is_some())
             .field("observer", &self.observer.is_some())
-            .field("durable_starts", &self.durable_starts)
+            .field("durable_starts", &self.durable.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -234,22 +238,26 @@ impl ExecOptions {
         self
     }
 
-    /// The step observer.
+    /// The step observer. Replaces any observer set before, including one from [`ExecOptions::durable_starts`], which
+    /// turns durable starts off.
     #[must_use]
     pub fn observer(mut self, observer: Arc<dyn StepObserver>) -> Self {
         self.observer = Some(observer);
+        self.durable = None;
         self
     }
 
-    /// Runs a step only once the observer's [`StepObserver::record_start`] has saved its in-flight marker. If that
-    /// returns `Err` or panics, or there is no observer, the step ends `NotRun(StartNotRecorded)` without being
-    /// invoked, its dependents are skipped and other branches carry on; resume runs it again.
+    /// Makes `observer` the step observer and runs a step only once its [`DurableObserver::record_start`] has saved
+    /// the in-flight marker. If that returns `Err` or panics, the step ends `NotRun(StartNotRecorded)` without being
+    /// invoked, its dependents are skipped and other branches carry on; resume runs it again. Replaces any observer
+    /// set before.
     ///
     /// This closes the crash gap: a step that ran always has a saved marker, so a record rebuilt with
     /// [`RunRecord::from_parts`] after a crash shows it `Running` (verify, then resume), never `Pending`.
     #[must_use]
-    pub fn durable_starts(mut self) -> Self {
-        self.durable_starts = true;
+    pub fn durable_starts(mut self, observer: Arc<dyn DurableObserver>) -> Self {
+        self.observer = Some(Arc::clone(&observer) as Arc<dyn StepObserver>);
+        self.durable = Some(observer);
         self
     }
 }

@@ -9,9 +9,9 @@ use std::time::Duration;
 
 use common::*;
 use michi_pipeline::{
-    execute, resume, BreakerConfig, BreakerPhase, BreakerRegistry, Effect, ExecOptions, ExecutionError, NotRunReason,
-    Precheck, ReplayClass, ResumeError, ResumeOptions, RunId, RunOutcome, RunRecord, SkipReason, StepId, StepObserver,
-    StepRecord, StepStatus, UnknownCause, Verification,
+    execute, resume, BreakerConfig, BreakerPhase, BreakerRegistry, DurableObserver, Effect, ExecOptions,
+    ExecutionError, NotRunReason, Precheck, ReplayClass, ResumeError, ResumeOptions, RunId, RunOutcome, RunRecord,
+    SkipReason, StepId, StepObserver, StepRecord, StepStatus, UnknownCause, Verification,
 };
 
 // ---- Two facts per failure ----
@@ -277,7 +277,7 @@ struct Journal {
     saved: Mutex<Vec<StepRecord>>,
 }
 
-impl StepObserver for Journal {
+impl DurableObserver for Journal {
     fn record_start(&self, _: &RunId, step_id: &StepId) -> Result<(), String> {
         if self.panic_start {
             panic!("disk on fire");
@@ -290,6 +290,9 @@ impl StepObserver for Journal {
         self.saved.lock().unwrap().push(StepRecord::in_flight(step_id.clone(), "in flight"));
         Ok(())
     }
+}
+
+impl StepObserver for Journal {
     fn on_step_finished(&self, _: &RunId, record: &StepRecord) {
         self.saved.lock().unwrap().push(record.clone());
     }
@@ -307,7 +310,7 @@ async fn a_start_that_cannot_be_recorded_never_invokes_the_step() {
         let calls = Arc::clone(&s.calls);
         let journal = Arc::new(journal);
         let p = plan(vec![exec("charge", &[], s), act(&log, "email", &["charge"], Act::Ok)]);
-        let opts = ExecOptions::new().observer(journal.clone()).durable_starts();
+        let opts = ExecOptions::new().durable_starts(journal.clone());
         let record = execute(&p, rid("r"), &opts).await;
         assert_eq!(calls.load(Ordering::SeqCst), 0, "panic={panics}: the step was never invoked");
         let step = record.step(&sid("charge")).unwrap();
@@ -330,13 +333,13 @@ async fn an_unrecorded_start_leaves_independent_branches_running_and_resume_runs
     let p = plan(vec![exec("charge", &[], s), act(&log, "other", &[], Act::Ok)]);
     let failing =
         Arc::new(Journal { fail_start: Some("write failed"), fail_only: Some("charge"), ..Journal::default() });
-    let first = execute(&p, rid("r"), &ExecOptions::new().observer(failing).durable_starts()).await;
+    let first = execute(&p, rid("r"), &ExecOptions::new().durable_starts(failing)).await;
     assert_eq!(status(&first, "charge"), StepStatus::NotRun(NotRunReason::StartNotRecorded));
     assert_eq!(status(&first, "other"), StepStatus::Completed, "an independent branch carries on");
     assert_eq!(calls.load(Ordering::SeqCst), 0);
 
     let healthy = Arc::new(Journal::default());
-    let opts = ResumeOptions::new(ExecOptions::new().observer(healthy).durable_starts());
+    let opts = ResumeOptions::new(ExecOptions::new().durable_starts(healthy));
     let second = resume(&first, &p, &opts).await.unwrap();
     assert_eq!(calls.load(Ordering::SeqCst), 1, "it never ran before, so it runs exactly once now");
     assert_eq!(second.outcome(), RunOutcome::Succeeded);
@@ -349,7 +352,7 @@ async fn a_crash_after_a_recorded_start_rebuilds_the_step_as_running_never_pendi
     let calls = Arc::clone(&s.calls);
     let p = plan(vec![act(&log, "first", &[], Act::Ok), exec("charge", &["first"], s)]);
     let journal = Arc::new(Journal::default());
-    let opts = ExecOptions::new().observer(journal.clone()).durable_starts();
+    let opts = ExecOptions::new().durable_starts(journal.clone());
     let crashed = tokio::time::timeout(Duration::from_millis(10), execute(&p, rid("r"), &opts)).await;
     assert!(crashed.is_err(), "the run was dropped mid-step");
     let saved = journal.saved.lock().unwrap().clone();
@@ -363,17 +366,15 @@ async fn a_crash_after_a_recorded_start_rebuilds_the_step_as_running_never_pendi
 }
 
 #[tokio::test(start_paused = true)]
-async fn durable_starts_refuse_to_run_without_an_observer_that_records_starts() {
+async fn setting_another_observer_turns_durable_starts_off() {
+    // Durable starts and their observer are set together, so they cannot be misconfigured (a closure observer, which
+    // cannot record starts, does not compile there). A later `observer(..)` replaces both.
     let log = Log::new();
-    let s = Scripted::new(&log, "a", vec![Act::Ok]);
-    let calls = Arc::clone(&s.calls);
-    let p = plan(vec![exec("a", &[], s)]);
-    let none = execute(&p, rid("r"), &ExecOptions::new().durable_starts()).await;
-    assert_eq!(status(&none, "a"), StepStatus::NotRun(NotRunReason::StartNotRecorded));
+    let p = plan(vec![act(&log, "a", &[], Act::Ok)]);
+    let refusing = Arc::new(Journal { fail_start: Some("no"), ..Journal::default() });
     let closure = |_: &RunId, _: &StepRecord| {};
-    let finish_only = execute(&p, rid("r"), &ExecOptions::new().observer(Arc::new(closure)).durable_starts()).await;
-    assert_eq!(status(&finish_only, "a"), StepStatus::NotRun(NotRunReason::StartNotRecorded));
-    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    let opts = ExecOptions::new().durable_starts(refusing).observer(Arc::new(closure));
+    assert_eq!(status(&execute(&p, rid("r"), &opts).await, "a"), StepStatus::Completed);
 }
 
 #[tokio::test(start_paused = true)]
@@ -426,7 +427,7 @@ async fn every_new_status_renders_as_toon_and_no_run_with_them_succeeds() {
          unverified,Step unverified,not_run,unverified\n  applied,Step applied,completed_earlier,null"
     );
     assert_eq!(record.outcome(), RunOutcome::OutcomeUnknown);
-    let refused = execute(&p, rid("r"), &ExecOptions::new().observer(journal).durable_starts()).await;
+    let refused = execute(&p, rid("r"), &ExecOptions::new().durable_starts(journal)).await;
     assert!(refused.steps().iter().all(|s| s.status() == StepStatus::NotRun(NotRunReason::StartNotRecorded)));
     assert_eq!(refused.outcome(), RunOutcome::Failed);
     assert!(refused.error().is_some());

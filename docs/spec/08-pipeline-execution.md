@@ -116,7 +116,7 @@ Precheck is verification the step performs for itself, before it acts. It only r
 | Status | Meaning | Agent verb |
 | --- | --- | --- |
 | `Pending` | not started | none yet |
-| `Running` | in flight (only seen in records persisted from `record_start` or `on_step_started`) | resume treats it as ambiguous |
+| `Running` | in flight (only seen in records persisted from `DurableObserver::record_start` or `on_step_started`) | resume treats it as ambiguous |
 | `Completed` | ran and succeeded in this run | none |
 | `CompletedEarlier` | its effect was already in place, so it was not run: succeeded earlier in this run, verified as applied, or found applied by precheck | none |
 | `Failed` | ran and failed without effect (`NotApplied`), or an idempotent step failed | fix the cause, then resume |
@@ -205,20 +205,18 @@ The observer is caller code, so a panic in it is caught (`std::panic::catch_unwi
 
 ### Durable starts
 
-Without durable starts, a start hook that fails to save the in-flight marker (it panics, or swallows a storage error) does not stop the step. After a crash, the rebuilt record shows that step `Pending` and resume runs it again. `ExecOptions::durable_starts()` closes that gap:
+Without durable starts, a start hook that fails to save the in-flight marker (it panics, or swallows a storage error) does not stop the step. After a crash, the rebuilt record shows that step `Pending` and resume runs it again. `ExecOptions::durable_starts(observer)` closes that gap:
 
 ```rust
-pub trait StepObserver: Send + Sync {
-    fn on_step_started(&self, run_id: &RunId, step_id: &StepId) { let _ = (run_id, step_id); }
-    /// With `ExecOptions::durable_starts()`: persist the in-flight marker. `Err` or a panic stops the step.
-    fn record_start(&self, run_id: &RunId, step_id: &StepId) -> Result<(), String> { self.on_step_started(run_id, step_id); Ok(()) }
-    fn on_step_finished(&self, run_id: &RunId, record: &StepRecord);
+pub trait DurableObserver: StepObserver {
+    /// Persist the in-flight marker; return `Ok` only once it is saved. `Err` or a panic stops the step.
+    fn record_start(&self, run_id: &RunId, step_id: &StepId) -> Result<(), String>;
 }
 ```
 
-- Without `durable_starts()` nothing changes: `on_step_started` is called, a panic is caught and counted, and the step is dispatched.
-- With it, the scheduler calls `record_start` instead, before dispatching. `Ok` dispatches the step. `Err(reason)` or a panic does not: the step ends `NotRun(StartNotRecorded)` with the reason, its dependents are skipped, other branches carry on (fail-fast stops the run, as for any failure), and a panic is counted in `observer_panics()`. Nothing was invoked, so resume runs it again.
-- With no observer, or a closure observer (which sees finish events only), there is nowhere to save the marker, so every step ends `NotRun(StartNotRecorded)` rather than running without one.
+- Without durable starts nothing changes: `on_step_started` is called, a panic is caught and counted, and the step is dispatched.
+- `durable_starts(observer)` takes the observer itself, so durable starts cannot be turned on without one that records starts: a closure observer (finish events only) is not a `DurableObserver` and does not compile there. A later `observer(..)` replaces it and turns durable starts off.
+- With it, the scheduler calls `record_start` instead of `on_step_started`, before dispatching. `Ok` dispatches the step. `Err(reason)` or a panic does not: the step ends `NotRun(StartNotRecorded)` with the reason, its dependents are skipped, other branches carry on (fail-fast stops the run, as for any failure), and a panic is counted in `observer_panics()`. Nothing was invoked, so resume runs it again.
 
 A step can then only run once its marker is saved, so a rebuilt record never shows a step that ran as `Pending`.
 

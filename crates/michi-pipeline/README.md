@@ -87,7 +87,7 @@ impl Step for Publish {
 }
 ```
 
-To make sure a step only runs once its start is saved, implement `StepObserver::record_start` and set `ExecOptions::durable_starts()`.
+To make sure a step only runs once its start is saved, implement `DurableObserver::record_start` and pass the observer to `ExecOptions::durable_starts(observer)`.
 
 ## Docs
 

@@ -98,18 +98,17 @@ Resume uses precheck instead of a manual verdict: an `OutcomeUnknown`, `Panicked
 
 ## Durable starts
 
-`StepObserver` gains a fallible start hook used only when the caller asks for durable starts:
+A fallible start hook, used only when the caller asks for durable starts. As built, it is the one required method of a separate trait, and `durable_starts` takes the observer, so durable starts cannot be turned on without one that records starts (the proposal's flag plus a defaulted `StepObserver::record_start` would have refused every step at run time with no observer or a closure one):
 
 ```rust
-pub trait StepObserver: Send + Sync {
-    fn on_step_started(&self, run_id: &RunId, step_id: &StepId) { let _ = (run_id, step_id); }
-    /// With `ExecOptions::durable_starts()`: persist the in-flight marker. `Err` or a panic stops the step.
-    fn record_start(&self, run_id: &RunId, step_id: &StepId) -> Result<(), String> { self.on_step_started(run_id, step_id); Ok(()) }
-    fn on_step_finished(&self, run_id: &RunId, record: &StepRecord);
+pub trait DurableObserver: StepObserver {
+    /// Persist the in-flight marker; return `Ok` only once it is saved. `Err` or a panic stops the step.
+    fn record_start(&self, run_id: &RunId, step_id: &StepId) -> Result<(), String>;
 }
+// ExecOptions::durable_starts(observer: Arc<dyn DurableObserver>)
 ```
 
-- Without `durable_starts()` nothing changes: `on_step_started` is called, a panic is caught and counted, and the step is dispatched.
+- Without durable starts nothing changes: `on_step_started` is called, a panic is caught and counted, and the step is dispatched.
 - With it, the scheduler calls `record_start` before dispatching. `Ok` dispatches the step. `Err(reason)` or a panic does not: the step ends `NotRun(NotRunReason::StartNotRecorded)` with the reason, its dependents are skipped, and other branches carry on. Nothing was invoked, so resume runs it again.
 - This closes the crash gap: a step can only run once its in-flight marker is saved, so a rebuilt record never shows a step that ran as `Pending`. It is Callisto's rule ("`Attempting` only after a proof") applied to michi's records.
 
@@ -135,7 +134,7 @@ Breaking (fine before 1.0, listed in the changeset):
 - A non-idempotent step that returns `Failed { retryable: false }` (now `failed(msg)`) or gets an HTTP 500 ends `OutcomeUnknown(StepFailed)`, not `Failed`. Use `refused(msg)` for failures that certainly had no effect.
 - `ReplayClass::Definitive` becomes `Refused` (not applied) or `Ambiguous` (unknown).
 
-Additive: `Effect`, `ExecutionError::effect()`, the four constructors, `Replay::Prechecked`, `Step::precheck`, `Precheck`, `UnknownCause::StepFailed`, `NotRunReason::{Unverified, StartNotRecorded}`, `StepObserver::record_start`, `ExecOptions::durable_starts()`.
+Additive: `Effect`, `ExecutionError::effect()`, the four constructors, `Replay::Prechecked`, `Step::precheck`, `Precheck`, `UnknownCause::StepFailed`, `NotRunReason::{Unverified, StartNotRecorded}`, `DurableObserver`, `ExecOptions::durable_starts(observer)`.
 
 michi-core gains three reason variants and their render labels, all on `#[non_exhaustive]` enums.
 

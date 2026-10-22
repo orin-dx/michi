@@ -159,8 +159,8 @@ impl<'a> Scheduler<'a> {
             }
             while !self.stopping && join_set.len() < cap {
                 let Some(i) = self.ready.pop_first() else { break };
-                if self.opts.durable_starts {
-                    if let Err(reason) = self.record_start(i) {
+                if let Some(durable) = self.opts.durable.as_deref() {
+                    if let Err(reason) = self.record_start(durable, i) {
                         self.start_not_recorded(i, &reason);
                         continue;
                     }
@@ -202,12 +202,8 @@ impl<'a> Scheduler<'a> {
     }
 
     /// With durable starts: asks the observer to save step `i`'s in-flight marker. `Err` says why the step must not
-    /// run: the observer refused or panicked, or there is no observer to save it.
-    fn record_start(&mut self, i: usize) -> Result<(), String> {
-        let opts = self.opts;
-        let Some(observer) = opts.observer.as_deref() else {
-            return Err("durable starts need an observer to record them".to_string());
-        };
+    /// run: the observer refused or panicked.
+    fn record_start(&mut self, observer: &dyn crate::DurableObserver, i: usize) -> Result<(), String> {
         let step_id = self.plan.steps()[i].id();
         // AssertUnwindSafe: as in `observe`, the scheduler's own state is untouched by the observer.
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| observer.record_start(&self.run_id, step_id))) {

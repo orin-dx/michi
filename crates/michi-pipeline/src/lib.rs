@@ -62,7 +62,8 @@ pub use breaker::{BreakerConfig, BreakerPhase, BreakerRegistry, CircuitBreaker};
 pub use cancel::CancellationToken;
 pub use error::{Effect, ExecutionError, ReplayClass};
 pub use exec::{
-    execute, resume, ExecOptions, FailurePolicy, Mode, ResumeError, ResumeOptions, StepObserver, Verification,
+    execute, resume, DurableObserver, ExecOptions, FailurePolicy, Mode, ResumeError, ResumeOptions, StepObserver,
+    Verification,
 };
 pub use id::{IdError, RunId, StepId, MAX_ID_LEN};
 pub use plan::{ExecStep, ParseFingerprintError, Plan, PlanError, PlanFingerprint, PlanViolation};
