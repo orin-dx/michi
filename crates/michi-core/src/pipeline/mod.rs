@@ -16,7 +16,8 @@ pub enum StepStatus {
     Running,
     /// Ran and succeeded in this run.
     Completed,
-    /// Succeeded in an earlier attempt of the same run and was not re-run on resume.
+    /// Its effect was already in place, so it was not run: it succeeded earlier in the same run (carried over by
+    /// resume), the caller verified it as applied, or its precheck found the effect already applied.
     CompletedEarlier,
     /// Ran and failed: definitively, or with an error that is safe to replay.
     Failed,
@@ -52,6 +53,11 @@ pub enum SkipReason {
 pub enum NotRunReason {
     /// Its circuit breaker was open.
     CircuitOpen,
+    /// Its precheck could not tell whether its effect was already in place, so it was not run. Rendered
+    /// `unverified`.
+    Unverified,
+    /// Its start could not be recorded durably, so it was not run. Rendered `start_not_recorded`.
+    StartNotRecorded,
 }
 
 /// Why a step's outcome is unknown.
@@ -69,6 +75,9 @@ pub enum UnknownCause {
     Cancelled,
     /// The step was in flight when the process running it stopped.
     Interrupted,
+    /// The step failed with an error that does not say whether its effect landed (an HTTP 500, say). Rendered
+    /// `step_failed`.
+    StepFailed,
 }
 
 impl StepStatus {
@@ -98,6 +107,9 @@ impl StepStatus {
             Self::OutcomeUnknown(UnknownCause::Timeout) => Some("timeout"),
             Self::OutcomeUnknown(UnknownCause::Gateway) => Some("gateway"),
             Self::OutcomeUnknown(UnknownCause::Interrupted) => Some("interrupted"),
+            Self::OutcomeUnknown(UnknownCause::StepFailed) => Some("step_failed"),
+            Self::NotRun(NotRunReason::Unverified) => Some("unverified"),
+            Self::NotRun(NotRunReason::StartNotRecorded) => Some("start_not_recorded"),
             Self::Pending
             | Self::Running
             | Self::Completed
@@ -237,6 +249,23 @@ mod tests {
             }],
         };
         assert!(p.render().ends_with(",skipped,prerequisite_failed"), "got: {}", p.render());
+    }
+
+    #[test]
+    fn effect_model_reasons_render_snake_case_labels() {
+        let p = Pipeline::new(
+            "p",
+            vec![
+                PipelineStep::new("a", "A", StepStatus::OutcomeUnknown(UnknownCause::StepFailed)),
+                PipelineStep::new("b", "B", StepStatus::NotRun(NotRunReason::Unverified)),
+                PipelineStep::new("c", "C", StepStatus::NotRun(NotRunReason::StartNotRecorded)),
+            ],
+        );
+        assert_eq!(
+            p.render(),
+            "step[3]{id,name,status,reason}:\n  a,A,outcome_unknown,step_failed\n  b,B,not_run,unverified\n  \
+             c,C,not_run,start_not_recorded"
+        );
     }
 
     #[test]

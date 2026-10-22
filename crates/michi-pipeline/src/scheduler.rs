@@ -14,8 +14,8 @@ use crate::error::millis;
 use crate::exec::{ExecOptions, FailurePolicy, Mode, StepObserver};
 use crate::plan::Fnv;
 use crate::{
-    AttemptRecord, CancellationToken, CircuitBreaker, ExecutionError, Plan, Replay, ReplayClass, RunId, RunRecord,
-    Step, StepContext, StepId, StepRecord,
+    AttemptRecord, CancellationToken, CircuitBreaker, Effect, ExecutionError, Plan, Precheck, Replay, ReplayClass,
+    RunId, RunRecord, Step, StepContext, StepId, StepRecord,
 };
 
 /// How a step enters the scheduler: to be run, or already terminal (carried over by resume).
@@ -159,11 +159,19 @@ impl<'a> Scheduler<'a> {
             }
             while !self.stopping && join_set.len() < cap {
                 let Some(i) = self.ready.pop_first() else { break };
-                let (job, entry) = self.job(i);
-                let opts = self.opts;
-                if observe(opts, |o| o.on_step_started(&self.run_id, &job.step_id)) {
-                    self.observer_panics = self.observer_panics.saturating_add(1);
+                if self.opts.durable_starts {
+                    if let Err(reason) = self.record_start(i) {
+                        self.start_not_recorded(i, &reason);
+                        continue;
+                    }
+                } else {
+                    let opts = self.opts;
+                    let step_id = self.plan.steps()[i].id();
+                    if observe(opts, |o| o.on_step_started(&self.run_id, step_id)) {
+                        self.observer_panics = self.observer_panics.saturating_add(1);
+                    }
                 }
+                let (job, entry) = self.job(i);
                 let handle = join_set.spawn(run_step(job));
                 running.insert(handle.id(), entry);
             }
@@ -191,6 +199,37 @@ impl<'a> Scheduler<'a> {
                 }
             }
         }
+    }
+
+    /// With durable starts: asks the observer to save step `i`'s in-flight marker. `Err` says why the step must not
+    /// run: the observer refused or panicked, or there is no observer to save it.
+    fn record_start(&mut self, i: usize) -> Result<(), String> {
+        let opts = self.opts;
+        let Some(observer) = opts.observer.as_deref() else {
+            return Err("durable starts need an observer to record them".to_string());
+        };
+        let step_id = self.plan.steps()[i].id();
+        // AssertUnwindSafe: as in `observe`, the scheduler's own state is untouched by the observer.
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| observer.record_start(&self.run_id, step_id))) {
+            Ok(result) => result,
+            Err(payload) => {
+                self.observer_panics = self.observer_panics.saturating_add(1);
+                Err(format!("record_start panicked: {}", panic_message(payload.as_ref())))
+            }
+        }
+    }
+
+    /// Step `i`'s start could not be recorded, so it was not dispatched: it ends `NotRun(StartNotRecorded)` and
+    /// counts as a failure (its dependents are skipped, and fail-fast stops the run).
+    fn start_not_recorded(&mut self, i: usize, reason: &str) {
+        let step = &self.plan.steps()[i];
+        let mut record = StepRecord::new(
+            step.id().clone(),
+            step.name().to_string(),
+            StepStatus::NotRun(NotRunReason::StartNotRecorded),
+        );
+        record.reason = Some(format!("its start could not be recorded, so it was not run: {reason}"));
+        self.failed(i, record);
     }
 
     /// Builds the job for step `i` and the scheduler's bookkeeping for it.
@@ -254,6 +293,11 @@ impl<'a> Scheduler<'a> {
             }
             return;
         }
+        self.failed(i, record);
+    }
+
+    /// Records step `i`'s unsuccessful terminal record, skips its dependents and applies the failure policy.
+    fn failed(&mut self, i: usize, record: StepRecord) {
         self.set_terminal(i, record);
         if !self.run_token.is_cancelled() {
             self.skip_dependents(i);
@@ -345,21 +389,83 @@ fn root_of(record: &StepRecord) -> StepId {
 fn harness_outcome(join_err: tokio::task::JoinError, replay: Replay) -> Outcome {
     if join_err.is_panic() {
         let payload = join_err.into_panic();
-        let message = payload
-            .downcast_ref::<&str>()
-            .map(|s| (*s).to_string())
-            .or_else(|| payload.downcast_ref::<String>().cloned())
-            .unwrap_or_else(|| "non-string panic payload".to_string());
-        let error = ExecutionError::Panicked { message };
+        let error = ExecutionError::Panicked { message: panic_message(payload.as_ref()) };
         return Outcome { status: StepStatus::Panicked, reason: Some(error.to_string()), error: Some(error) };
     }
     classify(ExecutionError::Interrupted { elapsed_ms: 0 }, replay, "task aborted", true)
 }
 
-/// Whether the executor may run the step again after `err`: the error must be retryable, and an ambiguous one only
-/// for an idempotent step.
+/// A panic payload as text, if it was a string.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|s| (*s).to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "non-string panic payload".to_string())
+}
+
+/// Whether the executor may run the step again after `err`: the error must be retryable, and one whose effect is
+/// unknown only for a step that is idempotent or prechecked (its precheck runs before the retry).
 fn may_reinvoke(replay: Replay, err: &ExecutionError) -> bool {
-    err.is_retryable() && (replay == Replay::Idempotent || err.replay_class() != ReplayClass::Ambiguous)
+    err.is_retryable()
+        && (err.effect() == Effect::NotApplied || matches!(replay, Replay::Idempotent | Replay::Prechecked))
+}
+
+/// What a precheck decided, with timeouts and errors folded in.
+enum Checked {
+    Applied,
+    NotApplied,
+    /// Can't tell, and why.
+    Unknown(String),
+    /// The precheck returned [`ExecutionError::refused`]: a blocking precondition that fails the step.
+    Refused(ExecutionError),
+}
+
+/// One precheck under the attempt's time limit, racing cancellation plus the grace period like an attempt.
+async fn precheck_once(
+    step: &dyn Step,
+    ctx: &StepContext,
+    limit: Duration,
+    token: &CancellationToken,
+    grace: Duration,
+) -> Checked {
+    let check = tokio::time::timeout(limit, step.precheck(ctx));
+    let interrupted = async {
+        token.cancelled().await;
+        tokio::time::sleep(grace).await;
+    };
+    let result = tokio::select! {
+        biased;
+        result = check => result.unwrap_or(Err(ExecutionError::Timeout { elapsed_ms: millis(limit) })),
+        () = interrupted => return Checked::Unknown("the precheck was still running after cancellation".to_string()),
+    };
+    match result {
+        Ok(Precheck::Applied) => Checked::Applied,
+        Ok(Precheck::NotApplied) => Checked::NotApplied,
+        Ok(_) => Checked::Unknown("the precheck answered unknown".to_string()),
+        Err(err) if err.replay_class() == ReplayClass::Refused => Checked::Refused(err),
+        Err(err) => Checked::Unknown(format!("the precheck failed: {err}")),
+    }
+}
+
+/// Reports a failed step's last error to its breaker, if it holds an admission.
+///
+/// Healthy: a client error (the downstream answered and rejected this request, so it is up) and
+/// [`ExecutionError::refused`] (the step rejected the work before any call, so it says nothing about the downstream).
+/// Neither: cancellation and interruption. Failure: everything else, including [`ExecutionError::rejected`] (a
+/// dependency turned the request away) and [`ExecutionError::failed`] (the step can't say what happened).
+fn report_failure(guard: Option<AdmissionGuard>, err: &ExecutionError) {
+    if let Some(guard) = guard {
+        match err.innermost() {
+            // Cancellation says nothing about the downstream's health: release a probe, report nothing.
+            ExecutionError::Cancelled | ExecutionError::Interrupted { .. } => {}
+            // The downstream answered and rejected the request itself: it is up, so this is not a failure.
+            ExecutionError::Http { status, .. } if is_client_error(*status) => guard.complete(true),
+            // The step refused the work itself, before reaching the downstream.
+            ExecutionError::Failed { retryable: false, effect: Effect::NotApplied, .. } => guard.complete(true),
+            _ => guard.complete(false),
+        }
+    }
 }
 
 /// One attempt under a timeout, racing cancellation plus the grace period.
@@ -409,17 +515,68 @@ async fn run_step(job: Job) -> Outcome {
     let started = Instant::now();
     // A deadline too far away for the clock to represent is no deadline, rather than an overflow panic.
     let deadline = job.deadline.and_then(|d| started.checked_add(d));
+    let limit_from = |now: Instant| match deadline {
+        Some(d) => job.attempt_timeout.min(d.saturating_duration_since(now)).max(Duration::from_millis(1)),
+        None => job.attempt_timeout,
+    };
     let mut attempt = 0u32;
+    // The last failed attempt's error, which decides the outcome when a later precheck cannot run the step again.
+    let mut prior: Option<ExecutionError> = None;
     let (err, stop) = loop {
         let ctx =
             StepContext::for_attempt(job.run_id.clone(), job.step_id.clone(), attempt, job.token.clone(), deadline);
-        let attempt_start = Instant::now();
-        let limit = match deadline {
-            Some(d) => {
-                job.attempt_timeout.min(d.saturating_duration_since(attempt_start)).max(Duration::from_millis(1))
+        if job.replay == Replay::Prechecked {
+            let checked =
+                precheck_once(job.runner.as_ref(), &ctx, limit_from(Instant::now()), &job.token, job.grace).await;
+            let not_runnable = match checked {
+                Checked::NotApplied if !job.token.is_cancelled() => None,
+                Checked::Applied => {
+                    if let Some(err) = &prior {
+                        report_failure(guard, err);
+                    }
+                    return Outcome {
+                        status: StepStatus::CompletedEarlier,
+                        error: None,
+                        reason: Some("already applied (precheck)".to_string()),
+                    };
+                }
+                Checked::NotApplied => Some("run cancelled".to_string()),
+                Checked::Unknown(why) => Some(why),
+                Checked::Refused(refusal) => match prior {
+                    // An earlier attempt may have taken effect: the refusal cannot clear that doubt.
+                    Some(err) if err.effect() == Effect::Unknown => {
+                        break (err, format!("the precheck refused to continue: {refusal}"));
+                    }
+                    _ => {
+                        let reason = format!("precheck: {refusal}");
+                        return Outcome { status: StepStatus::Failed, error: Some(refusal), reason: Some(reason) };
+                    }
+                },
+            };
+            if let Some(why) = not_runnable {
+                match prior {
+                    Some(err) => break (err, format!("{why}, so the step was not tried again after this attempt")),
+                    None if job.token.is_cancelled() => {
+                        return Outcome {
+                            status: StepStatus::Skipped(SkipReason::Cancelled),
+                            error: None,
+                            reason: Some("run cancelled before the step started".to_string()),
+                        };
+                    }
+                    None => {
+                        return Outcome {
+                            status: StepStatus::NotRun(NotRunReason::Unverified),
+                            error: None,
+                            reason: Some(format!(
+                                "{why}: whether the effect is already in place is unknown, so the step was not run"
+                            )),
+                        };
+                    }
+                }
             }
-            None => job.attempt_timeout,
-        };
+        }
+        let attempt_start = Instant::now();
+        let limit = limit_from(attempt_start);
         let result = attempt_once(job.runner.as_ref(), &ctx, limit, &job.token, job.grace).await;
         lock(&job.attempts).push(AttemptRecord {
             attempt,
@@ -440,24 +597,24 @@ async fn run_step(job: Job) -> Outcome {
             Err(err) => err,
         };
         if job.token.is_cancelled() {
-            break (err, "run cancelled");
+            break (err, "run cancelled".to_string());
         }
         if !may_reinvoke(job.replay, &err) {
-            break (err, "");
+            break (err, String::new());
         }
         if probe {
-            break (err, "a half-open breaker allows one probe attempt");
+            break (err, "a half-open breaker allows one probe attempt".to_string());
         }
         let seed = job.jitter_seed.unwrap_or_else(|| derived_jitter_seed(&job.run_id, &job.step_id, attempt));
         let Some(delay) = retry_delay(&job.retry, attempt, seed, err.retry_after()) else {
-            break (err, "retries exhausted");
+            break (err, "retries exhausted".to_string());
         };
         if deadline.is_some_and(|d| Instant::now().checked_add(delay).is_none_or(|wake| wake >= d)) {
-            break (err, "step deadline reached");
+            break (err, "step deadline reached".to_string());
         }
         if let Some(budget) = &job.budget {
             if !lock(budget).try_withdraw() {
-                break (err, "retry budget exhausted");
+                break (err, "retry budget exhausted".to_string());
             }
         }
         let cancelled = tokio::select! {
@@ -465,20 +622,13 @@ async fn run_step(job: Job) -> Outcome {
             () = job.token.cancelled() => true,
         };
         if cancelled {
-            break (err, "run cancelled during backoff");
+            break (err, "run cancelled during backoff".to_string());
         }
         attempt += 1;
+        prior = Some(err);
     };
-    if let Some(guard) = guard {
-        match err.innermost() {
-            // Cancellation says nothing about the downstream's health: release a probe, report nothing.
-            ExecutionError::Cancelled | ExecutionError::Interrupted { .. } => {}
-            // The downstream answered and rejected the request itself: it is up, so this is not a failure.
-            ExecutionError::Http { status, .. } if is_client_error(*status) => guard.complete(true),
-            _ => guard.complete(false),
-        }
-    }
-    classify(err, job.replay, stop, job.token.is_cancelled())
+    report_failure(guard, &err);
+    classify(err, job.replay, &stop, job.token.is_cancelled())
 }
 
 /// Whether an HTTP status is the caller's own mistake (4xx other than 408 Request Timeout and 429 Too Many Requests):
@@ -529,21 +679,13 @@ fn derived_jitter_seed(run_id: &RunId, step_id: &StepId, attempt: u32) -> f64 {
 /// The terminal status and final error for a step whose last attempt failed with `err`. `cancelled` says whether the
 /// step's cancellation token had fired. A step that returns [`ExecutionError::Cancelled`] while it had not stopped on
 /// its own, so it ends `Failed`: a root cause that resume runs again, not a `Skipped(Cancelled)` consequence.
+///
+/// An error whose effect is unknown ends a step that is not idempotent `OutcomeUnknown`, wrapped in
+/// [`ExecutionError::AmbiguousOutcome`], so resume holds it (or, for a prechecked step, runs its precheck) instead of
+/// repeating an effect that may have landed. An idempotent step ends `Failed` with the error as it is.
 fn classify(err: ExecutionError, replay: Replay, stop: &str, cancelled: bool) -> Outcome {
-    let class = err.replay_class();
     let mut stop = stop;
-    let (status, error) = match class {
-        ReplayClass::Ambiguous if replay == Replay::NotIdempotent => {
-            let cause = match err.innermost() {
-                ExecutionError::Http { status: 502 | 504, .. } => UnknownCause::Gateway,
-                ExecutionError::Interrupted { .. } => UnknownCause::Cancelled,
-                ExecutionError::Panicked { .. } => UnknownCause::Interrupted,
-                _ => UnknownCause::Timeout,
-            };
-            let error =
-                if err.is_retryable() { ExecutionError::AmbiguousOutcome { source: Box::new(err) } } else { err };
-            (StepStatus::OutcomeUnknown(cause), error)
-        }
+    let (status, error) = match err.replay_class() {
         ReplayClass::NotExecuted => match err.innermost() {
             ExecutionError::CircuitOpen { .. } => (StepStatus::NotRun(NotRunReason::CircuitOpen), err),
             _ if cancelled => (StepStatus::Skipped(SkipReason::Cancelled), err),
@@ -554,6 +696,21 @@ fn classify(err: ExecutionError, replay: Replay, stop: &str, cancelled: bool) ->
                 (StepStatus::Failed, err)
             }
         },
+        _ if err.effect() == Effect::Unknown && replay != Replay::Idempotent => {
+            let cause = match err.innermost() {
+                ExecutionError::Http { status: 502 | 504, .. } => UnknownCause::Gateway,
+                ExecutionError::Interrupted { .. } => UnknownCause::Cancelled,
+                ExecutionError::Panicked { .. } => UnknownCause::Interrupted,
+                ExecutionError::Timeout { .. } => UnknownCause::Timeout,
+                _ => UnknownCause::StepFailed,
+            };
+            let error = match err {
+                already @ ExecutionError::AmbiguousOutcome { .. } => already,
+                panicked @ ExecutionError::Panicked { .. } => panicked,
+                other => ExecutionError::AmbiguousOutcome { source: Box::new(other) },
+            };
+            (StepStatus::OutcomeUnknown(cause), error)
+        }
         _ => (StepStatus::Failed, err),
     };
     let reason = if stop.is_empty() { error.to_string() } else { format!("{error}; {stop}") };

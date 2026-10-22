@@ -1197,10 +1197,11 @@ pub struct JsPipelineStep {
         ts_type = "'pending' | 'running' | 'completed' | 'completed_earlier' | 'failed' | 'outcome_unknown' | 'skipped' | 'not_run' | 'panicked'"
     )]
     pub status: String,
-    /// Reason label: required for `outcome_unknown` (`timeout`, `gateway`, `cancelled`, `interrupted`), `skipped`
-    /// (`prerequisite_failed`, `cancelled`) and `not_run` (`circuit_open`); absent or `null` for every other status.
+    /// Reason label: required for `outcome_unknown` (`timeout`, `gateway`, `cancelled`, `interrupted`,
+    /// `step_failed`), `skipped` (`prerequisite_failed`, `cancelled`) and `not_run` (`circuit_open`, `unverified`,
+    /// `start_not_recorded`); absent or `null` for every other status.
     #[napi(
-        ts_type = "'timeout' | 'gateway' | 'cancelled' | 'interrupted' | 'prerequisite_failed' | 'circuit_open' | null"
+        ts_type = "'timeout' | 'gateway' | 'cancelled' | 'interrupted' | 'step_failed' | 'prerequisite_failed' | 'circuit_open' | 'unverified' | 'start_not_recorded' | null"
     )]
     pub reason: Option<String>,
 }
@@ -1233,12 +1234,13 @@ fn parse_step_status(status: &str, reason: Option<&str>) -> napi::Result<crate::
         "failed" => plain(StepStatus::Failed),
         "panicked" => plain(StepStatus::Panicked),
         "outcome_unknown" => {
-            const EXPECTED: &str = "timeout, gateway, cancelled or interrupted";
+            const EXPECTED: &str = "timeout, gateway, cancelled, interrupted or step_failed";
             let cause = match with_reason(EXPECTED)? {
                 "timeout" => UnknownCause::Timeout,
                 "gateway" => UnknownCause::Gateway,
                 "cancelled" => UnknownCause::Cancelled,
                 "interrupted" => UnknownCause::Interrupted,
+                "step_failed" => UnknownCause::StepFailed,
                 other => return Err(unknown_reason(other, EXPECTED)),
             };
             Ok(StepStatus::OutcomeUnknown(cause))
@@ -1253,9 +1255,11 @@ fn parse_step_status(status: &str, reason: Option<&str>) -> napi::Result<crate::
             Ok(StepStatus::Skipped(why))
         }
         "not_run" => {
-            const EXPECTED: &str = "circuit_open";
+            const EXPECTED: &str = "circuit_open, unverified or start_not_recorded";
             let why = match with_reason(EXPECTED)? {
                 "circuit_open" => NotRunReason::CircuitOpen,
+                "unverified" => NotRunReason::Unverified,
+                "start_not_recorded" => NotRunReason::StartNotRecorded,
                 other => return Err(unknown_reason(other, EXPECTED)),
             };
             Ok(StepStatus::NotRun(why))

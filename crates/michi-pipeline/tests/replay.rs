@@ -84,14 +84,25 @@ async fn a_step_returned_timeout_is_ambiguous_too() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_definitive_failure_is_one_attempt_in_zero_time() {
+async fn a_refused_failure_is_one_attempt_in_zero_time() {
+    let log = Log::new();
+    let (record, calls) =
+        run_one(Scripted::new(&log, "s", vec![Act::Err(http(400))]), ExecOptions::new().retry(retries(3, 1_000))).await;
+    assert_eq!(calls, 1);
+    assert_eq!(record.elapsed(), Duration::ZERO);
+    assert_eq!(record.steps()[0].attempts()[0].class(), Some(ReplayClass::Refused));
+    assert_eq!(record.steps()[0].status(), StepStatus::Failed);
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_http_500_is_one_attempt_and_ends_outcome_unknown_for_a_non_idempotent_step() {
     let log = Log::new();
     let (record, calls) =
         run_one(Scripted::new(&log, "s", vec![Act::Err(http(500))]), ExecOptions::new().retry(retries(3, 1_000))).await;
-    assert_eq!(calls, 1);
-    assert_eq!(record.elapsed(), Duration::ZERO);
-    assert_eq!(record.steps()[0].attempts()[0].class(), Some(ReplayClass::Definitive));
-    assert_eq!(record.steps()[0].status(), StepStatus::Failed);
+    assert_eq!(calls, 1, "a 500 is not retryable");
+    assert_eq!(record.steps()[0].attempts()[0].class(), Some(ReplayClass::Ambiguous));
+    assert_eq!(record.steps()[0].status(), StepStatus::OutcomeUnknown(UnknownCause::StepFailed));
+    assert_eq!(record.render(), "step[1]{id,name,status,reason}:\n  s,Step s,outcome_unknown,step_failed");
 }
 
 #[tokio::test(start_paused = true)]
@@ -251,7 +262,7 @@ async fn a_step_failed_wrapping_a_timeout_is_ambiguous_and_retried_only_if_idemp
 #[tokio::test(start_paused = true)]
 async fn a_retryable_failed_error_retries_a_non_idempotent_step() {
     let log = Log::new();
-    let flaky = ExecutionError::Failed { message: "flaky".into(), retryable: true };
+    let flaky = ExecutionError::rejected("flaky");
     let step = Scripted::new(&log, "s", vec![Act::Err(flaky.clone()), Act::Err(flaky), Act::Ok]);
     let (record, calls) = run_one(step, ExecOptions::new().retry(retries(5, 10))).await;
     assert_eq!(calls, 3, "the step vouched that retrying is safe");

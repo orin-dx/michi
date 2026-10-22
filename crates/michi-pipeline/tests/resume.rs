@@ -142,7 +142,8 @@ async fn not_run_skipped_and_panicked_steps_on_resume() {
     let log = Log::new();
     let registry = Arc::new(BreakerRegistry::new(BreakerConfig::new(1, Duration::from_secs(5))));
     let p = plan(vec![
-        exec("trip", &[], Scripted::new(&log, "trip", vec![Act::Err(fatal("x")), Act::Ok])).breaker_key("svc"),
+        exec("trip", &[], Scripted::new(&log, "trip", vec![Act::Err(down("x")), Act::Ok]).idempotent())
+            .breaker_key("svc"),
         exec("open", &[], Scripted::new(&log, "open", vec![Act::Ok])).breaker_key("svc"),
         exec("boom", &[], Scripted::new(&log, "boom", vec![Act::Panic, Act::Ok])),
     ]);

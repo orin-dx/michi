@@ -1,6 +1,6 @@
-# Effects, precheck and durable starts (proposed amendment to 08)
+# Effects, precheck and durable starts (amendment to 08)
 
-Status: **proposed, not implemented.** This amends [08-pipeline-execution.md](08-pipeline-execution.md). Once accepted and built, its rules move into 08 and the reasoning into [06-decisions.md](06-decisions.md).
+Status: **implemented in 0.5.** The rules are in [08-pipeline-execution.md](08-pipeline-execution.md) and the decision record, including the choices made while building it, is "Two facts per failure" in [06-decisions.md](06-decisions.md). This document stays as the rationale; where it and 08 differ, 08 is current. The differences are listed under "Deviations" at the end.
 
 ## The problem
 
@@ -159,3 +159,15 @@ Callisto's other requests stay separate and land only as its spike needs them: a
 - Durable starts: `record_start` returning `Err` or panicking leaves the step `NotRun(StartNotRecorded)` and never invokes it; with an append-only log, a crash after a successful `record_start` rebuilds the step as `Running`, never `Pending`.
 - A 0.4 record whose `Failed` error lacks `effect` deserializes as `Unknown` and resume holds the step.
 - Every new status renders as TOON 4.4 and the overall outcome is never `Succeeded` with a `NotRun` or held step.
+
+## Deviations in the implementation
+
+Each is the safer reading where this proposal was silent or the code disagreed:
+
+- **HTTP 408** stays non-retryable, as michi-core's `is_retryable_status` says. It is `NotApplied`. Changing retry policy was not needed for the defects.
+- **A held `Failed` step** becomes `OutcomeUnknown(StepFailed)` when resume keeps it, so the record names the recovery resume will follow.
+- **`awaits_verification()`** lists every `Failed` whose effect is not `NotApplied`, including idempotent steps, because a `StepRecord` does not know its step's `Replay`. Resume still runs idempotent ones.
+- **Precheck after an attempt:** when precheck says `Unknown` after an attempt whose effect was not applied, the step ends `Failed` with that attempt's error (the proposal only covered an unknown earlier attempt). A `refused` precheck after an attempt with an unknown effect ends `OutcomeUnknown`, not `Failed`.
+- **A `NotApplied` verdict on a prechecked step** still runs the precheck before the attempt, instead of the verdict skipping it.
+- **Durable starts without a start-recording observer** (none, or a closure) refuse every step with `NotRun(StartNotRecorded)`.
+- **Breaker:** found in the same sweep, `refused` now counts as a success for the breaker, like an HTTP 4xx.

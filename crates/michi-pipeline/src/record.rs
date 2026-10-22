@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use michi_core::pipeline::{Pipeline, PipelineStep, StepStatus};
 
-use crate::{ExecutionError, Plan, PlanFingerprint, ReplayClass, ResumeError, RunId, StepId};
+use crate::{Effect, ExecutionError, Plan, PlanFingerprint, ReplayClass, ResumeError, RunId, StepId};
 
 /// One attempt of one step.
 #[derive(Debug, Clone, PartialEq)]
@@ -72,8 +72,8 @@ impl StepRecord {
         }
     }
 
-    /// A `Running` record for a step that has started. Persist one from
-    /// [`crate::StepObserver::on_step_started`] so that, after a crash, [`RunRecord::from_parts`] and resume treat
+    /// A `Running` record for a step that has started. Persist one from [`crate::StepObserver::record_start`] (with
+    /// [`crate::ExecOptions::durable_starts`]) or [`crate::StepObserver::on_step_started`] so that, after a crash, [`RunRecord::from_parts`] and resume treat
     /// the step as possibly applied instead of re-running it blindly.
     #[must_use]
     pub fn in_flight(step_id: StepId, name: impl Into<String>) -> Self {
@@ -151,11 +151,20 @@ impl StepRecord {
         )
     }
 
-    /// Whether resume keeps this step as it is until the caller verifies it (unless the step is idempotent), because
-    /// its effect may have happened: `OutcomeUnknown`, `Panicked` or `Running`.
+    /// Whether resume keeps this step as it is until the caller verifies it (unless the step is idempotent or
+    /// prechecked), because its effect may have happened: `OutcomeUnknown`, `Panicked`, `Running`, or `Failed` with a
+    /// final error whose effect is not [`crate::Effect::NotApplied`].
+    ///
+    /// The executor ends a step that is not idempotent `OutcomeUnknown` rather than `Failed` when its effect is
+    /// unknown, so a `Failed` step here is either idempotent (resume runs it anyway) or comes from a record saved
+    /// before 0.5.
     #[must_use]
     pub fn awaits_verification(&self) -> bool {
-        matches!(self.status, StepStatus::OutcomeUnknown(_) | StepStatus::Panicked | StepStatus::Running)
+        match self.status {
+            StepStatus::OutcomeUnknown(_) | StepStatus::Panicked | StepStatus::Running => true,
+            StepStatus::Failed => self.error.as_ref().is_none_or(|e| e.effect() != Effect::NotApplied),
+            _ => false,
+        }
     }
 }
 
@@ -363,8 +372,9 @@ impl RunRecord {
     }
 
     /// Steps whose effect may have happened, which resume keeps as they are until the caller verifies them (unless
-    /// the step is idempotent): `OutcomeUnknown`, `Panicked` and `Running`, in declaration order. These are exactly
-    /// the steps [`crate::ResumeOptions::verified`] accepts.
+    /// the step is idempotent or prechecked): `OutcomeUnknown`, `Panicked`, `Running`, and `Failed` with an error whose
+    /// effect is unknown, in declaration order. These are exactly the steps [`crate::ResumeOptions::verified`]
+    /// accepts ([`StepRecord::awaits_verification`]).
     pub fn needs_verification(&self) -> impl Iterator<Item = &StepRecord> {
         self.steps.iter().filter(|s| s.awaits_verification())
     }
@@ -408,11 +418,15 @@ impl RunRecord {
                 ExecutionError::AmbiguousOutcome { source: Box::new(ExecutionError::Interrupted { elapsed_ms: 0 }) }
             }
             // A pending step never ran, so running it is safe.
-            StepStatus::Pending => ExecutionError::Failed {
-                message: step.reason.clone().unwrap_or_else(|| "the step has not run".to_string()),
-                retryable: true,
-            },
-            _ => ExecutionError::Failed { message: step.reason.clone().unwrap_or_default(), retryable: false },
+            StepStatus::Pending => {
+                ExecutionError::rejected(step.reason.clone().unwrap_or_else(|| "the step has not run".to_string()))
+            }
+            // Never invoked, so nothing took effect.
+            StepStatus::Skipped(_) | StepStatus::NotRun(_) => {
+                ExecutionError::refused(step.reason.clone().unwrap_or_default())
+            }
+            // Anything else without an error came from a hand-built record: don't vouch for its effect.
+            _ => ExecutionError::failed(step.reason.clone().unwrap_or_default()),
         });
         Some(ExecutionError::StepFailed {
             step_id: step.step_id.to_string(),

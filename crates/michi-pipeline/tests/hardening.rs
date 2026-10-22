@@ -287,7 +287,8 @@ async fn a_client_error_resets_the_consecutive_failure_count() {
     let registry = Arc::new(BreakerRegistry::new(BreakerConfig::new(2, Duration::from_secs(30))));
     let log = Log::new();
     let acts = vec![Act::Err(http(500)), Act::Err(http(400)), Act::Err(http(500)), Act::Ok];
-    let p = plan(vec![exec("a", &[], Scripted::new(&log, "a", acts)).retry(retries(0, 1))]);
+    // Idempotent so a 500 ends `Failed` rather than `OutcomeUnknown`: this test is about the breaker, not replay.
+    let p = plan(vec![exec("a", &[], Scripted::new(&log, "a", acts).idempotent()).retry(retries(0, 1))]);
     let opts = ExecOptions::new().breakers(Arc::clone(&registry));
     for i in 0..3 {
         let run = execute(&p, rid(&format!("r{i}")), &opts).await;
@@ -304,4 +305,36 @@ fn fn_step_is_debug_without_requiring_a_debug_closure() {
     let shown = format!("{step:?}");
     assert!(shown.starts_with("FnStep"), "got: {shown}");
     assert!(shown.contains("Idempotent"), "the replay class is shown: {shown}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_refused_step_counts_as_healthy_for_the_breaker() {
+    // A step that rejects its own input before any call says nothing about the downstream: three validation failures
+    // on `registry-api` used to open the breaker and stop a healthy step on the same key.
+    let registry = Arc::new(BreakerRegistry::new(BreakerConfig::new(3, Duration::from_secs(30))));
+    let log = Log::new();
+    let opts = ExecOptions::new().breakers(Arc::clone(&registry));
+    let bad = plan(vec![exec(
+        "bad",
+        &[],
+        Scripted::new(&log, "bad", vec![Act::Err(ExecutionError::refused("invalid version"))]),
+    )
+    .breaker_key("registry-api")]);
+    for i in 0..3 {
+        let _ = execute(&bad, rid(&format!("bad{i}")), &opts).await;
+    }
+    let good = plan(vec![act(&log, "good", &[], Act::Ok).breaker_key("registry-api")]);
+    let run = execute(&good, rid("good"), &opts).await;
+    assert_eq!(status(&run, "good"), StepStatus::Completed);
+
+    // `rejected` (a dependency turned the request away) and `failed` (unknown) still count as failures.
+    for err in [ExecutionError::rejected("busy"), ExecutionError::failed("lost reply")] {
+        let registry = Arc::new(BreakerRegistry::new(BreakerConfig::new(2, Duration::from_secs(30))));
+        let opts = ExecOptions::new().breakers(Arc::clone(&registry));
+        let p = plan(vec![exec("b", &[], Scripted::new(&log, "b", vec![Act::Err(err.clone())])).retry(retries(0, 1))]);
+        let _ = execute(&p, rid("x0"), &opts).await;
+        let _ = execute(&p, rid("x1"), &opts).await;
+        let third = execute(&p, rid("x2"), &opts).await;
+        assert_eq!(status(&third, "b"), StepStatus::NotRun(NotRunReason::CircuitOpen), "{err:?}");
+    }
 }

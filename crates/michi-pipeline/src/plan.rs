@@ -231,13 +231,15 @@ impl fmt::Display for PlanFingerprint {
 
 /// Why a string is not a [`PlanFingerprint`].
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("a plan fingerprint is 16 hex digits, got {0:?}")]
+#[error("a plan fingerprint is 16 lowercase hex digits, got {0:?}")]
 pub struct ParseFingerprintError(String);
 
 impl std::str::FromStr for PlanFingerprint {
     type Err = ParseFingerprintError;
+    /// Accepts exactly what `Display` writes: 16 lowercase hex digits. `u64::from_str_radix` alone would also take a
+    /// leading `+` and uppercase digits, which do not round-trip.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if s.len() != 16 {
+        if s.len() != 16 || !s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
             return Err(ParseFingerprintError(s.to_string()));
         }
         u64::from_str_radix(s, 16).map(Self).map_err(|_| ParseFingerprintError(s.to_string()))
