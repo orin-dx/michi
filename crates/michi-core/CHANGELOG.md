@@ -1,5 +1,41 @@
 # michi-core
 
+## 0.4.0
+
+- michi-core: public types can now grow in 0.4.x without breaking callers.
+  
+  - **Breaking:** `toon::Value`, `KvValue` and `RetryConfigError` are `#[non_exhaustive]`. A `match` on them outside michi-core needs a `_` arm.
+  - **Breaking:** `FailedOp`, `PartialSuccess`, `KvItem`, `StatusItem`, `RecoveryHint`, `pipeline::PipelineStep` and `pipeline::Pipeline` are `#[non_exhaustive]`. Struct literals no longer compile outside michi-core; use the constructors below. Fields stay public, so reading and assigning them still works.
+  - New constructors: `FailedOp::new(operation, reason)` with `.recovery(hint)`, `PartialSuccess::new(completed, failed, skipped)` and `PartialSuccess::default()`, `KvItem::new(key, value)`, `StatusItem::new(key, value)` with `.health(health)`, `PipelineStep::new(id, name, status)`, `Pipeline::new(id, steps)`. `RecoveryHint::new(tool)` is unchanged.
+    - Before: `KvItem { key: "id".into(), value: KvValue::Int(1) }`
+    - After: `KvItem::new("id", KvValue::Int(1))`
+  - **Breaking (paths):** the crate root re-exports `resilience` and `truncate` items by explicit list instead of `pub use resilience::*` and `pub use truncate::*`. Every path that worked before still works (`michi_core::RetryConfig`, `michi_core::already_done`, `michi_core::truncate`, …); items added to those modules later appear only under their module.
+  - `RetryConfig` and `toon::ToonOptions` implement `PartialEq`, `PipelineStep` and `Pipeline` implement `PartialEq` and `Eq`.
+  - More functions are `#[must_use]` (for example `RecoveryHint::new`, `Hint::as_str`, `IdempotencyKey::as_str`), so discarding their result now warns.
+- michi-core: values survive every wire, and invalid TOON is never emitted.
+  
+  - **Breaking (`schemars`):** `StatusResponse`, `StatusItem`, `Health`, `toon::ToonOptions`, `ErrorClass`, `KvItem`, `OutputFormat`, `pipeline::Pipeline` and `pipeline::PipelineStep` no longer implement `JsonSchema`. Nothing serializes them, so their schemas described no real wire form. Every remaining schema describes what serde emits.
+  - `toon::Value::Float` NaN and ±Infinity now round-trip through serde as `"NaN"`, `"Infinity"` and `"-Infinity"` (they serialized as `null` and failed to read back), the same form `KvValue` uses. Rendered TOON still shows `null`, and the schema lists the three strings.
+  - `Value::from(f32)` and f32 fields in `toon::list()` keep the f32's shortest digits: `0.1f32` renders `0.1`, not `0.10000000149011612`.
+  - `AgentResponse` on the KV path with no items keeps a total count: `kv_items(vec![]).total_count(0)` renders `totalCount: 0` in the text and JSON body instead of an empty body.
+  - `KvValue` NaN and ±Infinity round-trip through serde as named strings; the JSON companions write `null` for them, matching the TOON body, instead of the quoted strings `"NaN"`/`"inf"`.
+  - `empty_state` with a reserved type name (`totalCount`, `help`, `recovery`) renders a `toon_validation_failed` error block instead of invalid TOON. New `try_empty_state` and `try_empty_state_with_hints` return the `ToonError`.
+  - `RecoveryHint::param` replaces an existing key in place instead of adding a second one, and every renderer writes a repeated key once, so the JSON never holds duplicate keys.
+  - MCP serde accepts what MCP allows: only `content` is required, `isError` defaults to `false`, `structuredContent` may be absent or `null`, and `annotations`/`audience` are optional. `structuredContent` is omitted when empty, and serializing a non-object `structuredContent` is an error instead of invalid MCP. New `CallToolResult::try_new` and `StructuredContentError`.
+  - With `serde`, `DomainError` serializes to exactly the object `render_json()` writes, and its `schemars` schema describes that object.
+  - GitHub annotations escape `%` (and `:`/`,` in the title), so a literal `%0A` in a message no longer becomes a line break.
+  - `parse_retry_after` accepts the RFC 850 and asctime HTTP-date forms as well as IMF-fixdate.
+  - `next_retry_delay` rounds `base_delay` and `retry_after` up to whole milliseconds, so a sub-millisecond delay no longer becomes zero.
+  - Correction to the 0.3.0 notes: `toon::list()` rows missing a field get a `null` cell, not an empty one.
+- Packaging and docs: the minimum supported Rust version is now 1.93 (was 1.96). The crates and npm packages ship their license text, michi-pipeline ships a README, docs.rs builds michi-core with the `serde`, `schemars` and `miette` features, the READMEs' links work on crates.io and npm, and michi-pipeline re-exports `RetryConfig`, `RetryConfigError`, `RetryBudget` and `IdempotencyKey`, so configuring retries needs no direct michi-core dependency.
+- Report what a list cap cut, and keep an error's cause chain apart from its hints.
+  
+  - michi-core: new `TruncationOutcome<T>` (`kept`, `total_before`, `truncated()`, `omitted()`) reports what a cap on a list cut, however you chose the survivors. `truncate_by_count(items, max)` keeps the first `max`; `truncate_by_size(items, budget, size_of)` keeps items in order while your `size_of` (bytes, tokens, …) fits the budget. Wrap your own selection with `TruncationOutcome::new(kept, total_before)`. `hint(guidance)` returns `showing 2 of 5; {guidance}`, or `None` when nothing was cut.
+  - michi-core: `AgentResponse::truncation(&outcome, guidance)` sets `totalCount` and adds that hint in one call, so the two always agree. Pass `outcome.kept` to `.items(...)` as before.
+  - michi-core: `DomainError` has a `causes` field and a `.cause(text)` builder for why an error happened, separate from `hints` (what to do next). `render()` writes them as `causes[N]: …` after `message`; `render_json()`, serde and the JSON Schema add a `causes` array (`[]` when empty); with `miette`, `help()` lists them as `caused by: …` lines after the hints.
+  - michi-core: `DomainError::from_error(code, &err)` takes the message from `err` and one cause per `source()` link, outermost first, skipping a link whose text the previous one already includes (common with `#[error("…: {0}")]`).
+  - @orin-dx/michi: `renderDomainError` takes an optional fifth argument, `causes` (string array), rendered as `causes[N]: …`. Each cause is capped at 1 MiB and counts toward the call's 64 MiB limit.
+
 ## 0.3.1
 
 - First published release. 0.3.0 was never published; its changes, listed below, ship in 0.3.1.

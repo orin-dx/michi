@@ -1,6 +1,6 @@
 {
   "name": "@orin-dx/michi",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "AXI response primitives for agent-ergonomic tools",
   "main": "index.js",
   "types": "index.d.ts",
@@ -60,11 +60,11 @@
     "CHANGELOG.md"
   ],
   "optionalDependencies": {
-    "@orin-dx/michi-darwin-arm64": "0.3.1",
-    "@orin-dx/michi-darwin-x64": "0.3.1",
-    "@orin-dx/michi-linux-arm64-gnu": "0.3.1",
-    "@orin-dx/michi-linux-arm64-musl": "0.3.1",
-    "@orin-dx/michi-linux-x64-gnu": "0.3.1",
-    "@orin-dx/michi-linux-x64-musl": "0.3.1"
+    "@orin-dx/michi-darwin-arm64": "0.4.0",
+    "@orin-dx/michi-darwin-x64": "0.4.0",
+    "@orin-dx/michi-linux-arm64-gnu": "0.4.0",
+    "@orin-dx/michi-linux-arm64-musl": "0.4.0",
+    "@orin-dx/michi-linux-x64-gnu": "0.4.0",
+    "@orin-dx/michi-linux-x64-musl": "0.4.0"
   }
 }

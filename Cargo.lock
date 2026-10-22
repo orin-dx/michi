@@ -376,7 +376,7 @@ checksum = "88904434abc2901f197fe8cc55f0445e7ded921dba5911dad2e2b39b48e663c4"
 
 [[package]]
 name = "michi-core"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "compact_str",
  "divan",
@@ -394,7 +394,7 @@ dependencies = [
 
 [[package]]
 name = "michi-node"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "michi-core",
  "napi",
@@ -404,7 +404,7 @@ dependencies = [
 
 [[package]]
 name = "michi-pipeline"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "divan",
  "michi-core",
