@@ -75,11 +75,12 @@ No async runtime dependency, no tokio, no async-std — every public function is
 
 ## Versioning and release
 
-- Intended to publish to [crates.io](https://crates.io) as two crates, `michi-core` and `michi-pipeline` — not yet published. The name `michi` on crates.io belongs to an unrelated project
-- Intended to publish the npm package to [npmjs.com](https://npmjs.com) as `@orin-dx/michi` — not yet published
-- NAPI binary cross-compiled via `cargo-zigbuild`:
-  - `darwin-arm64` (`aarch64-apple-darwin`)
-  - `linux-x64-musl` (`x86_64-unknown-linux-musl`)
+- Published to [crates.io](https://crates.io) as two crates, `michi-core` and `michi-pipeline` (first release 0.3.1). The name `michi` on crates.io belongs to an unrelated project
+- Published to [npmjs.com](https://npmjs.com) as `@orin-dx/michi`, with one native package per platform
+- NAPI binaries for six targets, built natively or cross-compiled with `cargo-zigbuild` (see [04-mcp-and-napi.md](04-mcp-and-napi.md)):
+  - macOS: `darwin-arm64`, `darwin-x64`
+  - Linux glibc: `linux-x64-gnu`, `linux-arm64-gnu`
+  - Linux musl: `linux-x64-musl`, `linux-arm64-musl`
 
 **SemVer contract:**
 
@@ -167,7 +168,7 @@ Benchmarks live in `crates/michi-core/benches/` and run via `divan`; CI builds t
 - Every NAPI export with representative inputs
 - Error cases: mismatched row lengths, oversized inputs, null values
 - `AgentResponse` builder via NAPI, every path — including the `Option`/`take` "already rendered" guard
-- Platform binary loading on the CI matrix (darwin-arm64, linux-x64-musl)
+- Platform binary loading on the CI matrix, on every target whose runner can execute the binary (darwin-arm64, linux-x64-gnu, linux-arm64-gnu)
 
 **Consumer integration tests:**
 

@@ -12,7 +12,8 @@ preserve-npm-ranges = true
 # Rust library crates, published to crates.io.
 [[package]]
 match = "cargo/michi-core"
-publish-to = ["crates-io"]
+# One GitHub release per version, attached to the first package of the fixed group.
+publish-to = ["crates-io", "github-release"]
 release-trigger = "changeset"
 
 [[package]]

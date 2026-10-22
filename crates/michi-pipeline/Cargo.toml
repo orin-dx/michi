@@ -8,6 +8,14 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace   = true
 authors.workspace = true
+readme = "README.md"
+documentation = "https://docs.rs/michi-pipeline"
+keywords = ["async", "pipeline", "retry", "circuit-breaker", "tokio"]
+categories = ["asynchronous"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [lints]
 workspace = true

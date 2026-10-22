@@ -187,6 +187,22 @@ A string cell longer than `max_cell_len` chars (default 200) is cut, and its tex
 - The cap counts chars **before** escaping and quoting: a truncated cell is then quoted and escaped by the rules above, so a cell holding `"`, `\`, a line break or a comma is written longer than `max_cell_len`.
 - Numbers, booleans and `null` are never truncated.
 
+## Size limits
+
+`ToonOptions::validate()` rejects a list whose shape would make rendering unreasonably large, before it looks at any row. The limits are public constants in `michi_core::toon`:
+
+| Limit | Constant | Error |
+| --- | --- | --- |
+| At most 1,000 header fields | `MAX_FIELDS` | `ToonError::TooManyFields { count, max }` |
+| At most 1,000,000 cells (`rows × fields`) | `MAX_CELLS` | `ToonError::TooManyCells { rows, fields, max }` |
+| A `truncation_hint` of at most 256 chars | `MAX_TRUNCATION_HINT_CHARS` | `ToonError::TruncationHintTooLong { len, max }` |
+
+- Checks run in a fixed order and the first failure wins: reserved type name, field count, repeated field, cell count, truncation hint length, row length.
+- Every check is linear: repeated field names are found with a set, so the largest accepted header costs 1,000 lookups instead of ~500,000 comparisons.
+- serde `list()` checks the field and cell limits against the union of the items' keys before it builds any row, so a sparse item set (each item with a few distinct keys) cannot expand into a huge table of `null` cells.
+- `AgentResponse` reports a violation like any other validation failure: an `error: toon_validation_failed` body with `isError` set on the text, JSON and MCP surfaces.
+- The truncation hint is copied into every truncated cell, which is why its length is capped. The renderer also measures it once per document, not once per cell.
+
 ## Numbers, booleans and null
 
 - Integers render with their exact digits, including `u64`/`usize` values above `i64::MAX` (`Value::UInt`, also produced by serde `list()`). Numeric cells are never truncated.

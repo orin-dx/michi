@@ -460,3 +460,26 @@ The "Not TOON" bullet of "TOON output conforms to TOON 4.4" left the KV, status,
 - **Already done:** `operation`, `status: already_done`, `summary` (quoted per §7.2), `help`.
 - **Line breaks:** every caller string now goes through §7.2 quoting and §7.1 escaping, so the CR/LF-only escape (`text::escape_line_breaks`) is gone; a line break can still never start a new line. A recovery param key or value is escaped twice — JSON, then TOON — and round-trips through both decoders (`tests/line_injection.rs`).
 - **Supersedes** the "Not TOON" bullet and the block-helper sentence of the "Root document and whitespace" bullet of "TOON output conforms to TOON 4.4" above, and the `primitives#38` harness limit: serde_json's `float_roundtrip` is enabled for michi-core's `serde` feature (and its dev-dependency), so the fixture runs.
+
+### Resolved 2026-10-21 — Capacity limits
+
+A capacity investigation found inputs that cost far more than their size suggested. Measured on an Apple Silicon laptop, release builds:
+
+| Case | Before | After |
+| --- | --- | --- |
+| `ToonOptions::validate` with 50,000 fields (O(F²) duplicate scan) | 1.12–1.35 s | rejected in ~1 µs (`TooManyFields`); 1,000 fields validate in ~14 µs (was ~0.7 ms) |
+| serde `list()` over 10,000 items with one distinct key each (10k × 10k table) | 2.84 GiB | rejected in ~1.3 ms after the key-union pass (`TooManyFields`) |
+| 1 MB `truncation_hint` × 100,000 truncated cells (hint counted per cell) | 3.0 s | rejected in validation (`TruncationHintTooLong`); a 256-char hint over 100k truncated cells renders in ~28 ms |
+| NAPI `renderToon` / `AgentResponse.items` rejecting 100,001 × 100 rows | 3.0–3.4 s, 2.4–2.6 GiB | ~0.1 ms, no allocation |
+| NAPI 10k × 10 cells sharing one 100 KB JS string | 1.6 s, +11 GiB RSS (copied per cell) | rejected in ~11 ms at 64 MiB (`input byte total …`) |
+| `AgentResponse::is_error()` on 1,000,000 cells (cloned rows and rendered) | ~14 ms | ~30 µs (validates only) |
+| `michi_pipeline::resume` over 50,000 carried-over steps (linear `prior.step()` per step) | 1.6–2.4 s | ~21 ms |
+| `Plan::new`, one step depending on 50,000 others (O(deg²) dedup) | ~107 ms | ~21 ms |
+
+Decisions:
+
+- **Core shape caps (michi-core):** `toon::MAX_FIELDS` = 1,000 header fields, `toon::MAX_CELLS` = 1,000,000 cells (`rows × fields`), `toon::MAX_TRUNCATION_HINT_CHARS` = 256 chars, enforced by `ToonDocument::validate` as `ToonError::TooManyFields`, `TooManyCells` and `TruncationHintTooLong` (`ToonError` is `#[non_exhaustive]`, so adding variants is not breaking). 1,000 fields matches the NAPI per-row cap that already existed; 1,000,000 cells is far beyond any list an agent should read in one response but keeps a worst-case render in the tens of milliseconds; 256 chars is ample for an instruction like `full=true` or `--no-truncate`. Duplicate fields are found with a set. `list()` checks the field and cell caps right after the key-union pass, before materializing rows. Considered: no cap, documenting the cost — rejected, since one oversized call blocks a server's thread and a sparse `list()` input is easy to produce by accident.
+- **Render path:** `AgentResponse` stores its TOON slot as `ToonOptions` and renders by reference instead of cloning rows per render; `is_error()` validates without rendering; hints and recovery are appended to the body in place. The truncation hint's char count is measured once per document. Output is byte-identical for valid input.
+- **NAPI budgets:** exports that take collections (`renderToon`, `renderHints`, `appendHints`, `renderRecovery`, `renderKv`, `renderAlreadyDone`, `renderDomainError`, `renderStatus`, `AgentResponse.items`/`kvItems`) take untyped napi values and convert incrementally, because napi-derive converts typed parameters in full before the body runs. Lengths are checked first; then each call gets 1,000,000 cells and 64 MiB of string bytes, with 1 MiB per cell, hint, reason, description or message and 4 KiB per name (type name, field name, key, tool, code, operation, truncation hint). A string's UTF-8 length is charged before it is copied, so shared JS strings cannot amplify. The single-string `AgentResponse` setters keep `String` parameters (napi copies their one argument exactly once) and apply the same caps after the copy. `index.d.ts` declares the same types (`ts_args_type`); the Rust-typed functions keep their names for Rust callers. Considered: checking lengths in the body of the typed exports — rejected, the conversion has already happened by then.
+- **Pipeline:** `resume` indexes the prior record once (first record wins, as with `RunRecord::step`); `Plan::new` dedups dependencies with an O(1) stamp per edge. `RunRecord::step` stays a linear scan, documented as such, rather than adding a cached index to a serialized, `PartialEq` type.
+- **Compatibility:** previously accepted oversize inputs are now rejected, so this ships as a minor release of the fixed `michi` group.

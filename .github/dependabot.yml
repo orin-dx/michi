@@ -1,0 +1,45 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      cargo:
+        patterns: ["*"]
+
+  - package-ecosystem: npm
+    directory: /packages/michi-node
+    schedule:
+      interval: weekly
+    # The platform packages are this package's own; Callisto bumps them in lockstep.
+    ignore:
+      - dependency-name: "@orin-dx/*"
+    cooldown:
+      default-days: 7
+    groups:
+      npm-michi-node:
+        patterns: ["*"]
+
+  # Root tooling only (oxfmt).
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      npm-root:
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      github-actions:
+        patterns: ["*"]

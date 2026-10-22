@@ -53,9 +53,13 @@ A thin napi-rs wrapper around `michi-core`, built with its `napi` feature enable
 - Typed `#[napi(object)]` structs (`JsToonValue`, `JsKvItem`, ...) for the dynamic FFI boundary (cell values, recovery params) — kept as tagged Rust enums converted by hand, not `serde_json::Value`. `serde_json` does enter the tree once `napi` is enabled (for `toCallToolResult()`'s typed `structuredContent`), but the two are independent choices — `JsToonValue`/`JsKvItem` stay their own explicit shape because a `Value` would silently accept malformed input instead of matching a documented variant.
 - Platform-aware binary loading via the generated `index.js`
 - TypeScript fallback export for environments without the native binary
-- Cross-compiled via `cargo-zigbuild`:
+- Six published targets, one `packages/michi-node/npm/<platform>` package each (`napi.targets` in `package.json`):
   - `aarch64-apple-darwin` (`darwin-arm64`)
+  - `x86_64-apple-darwin` (`darwin-x64`)
+  - `x86_64-unknown-linux-gnu` (`linux-x64-gnu`)
   - `x86_64-unknown-linux-musl` (`linux-x64-musl`)
+  - `aarch64-unknown-linux-gnu` (`linux-arm64-gnu`)
+  - `aarch64-unknown-linux-musl` (`linux-arm64-musl`)
 
 ### Why `napi` v3 / the `napi6` feature
 
@@ -159,6 +163,21 @@ Any `#[napi]` function returning `napi::Result<T>` throws a JS `Error` on `Err`.
   - Without it: **a Rust panic crashes the entire Node process** — there's no isolation boundary.
   - With it: a panic becomes a thrown JS `Error` (or a rejected `Promise` for async) instead of process death.
 
+### Input limits
+
+`catch_unwind` does not stop a single call from blocking Node's event loop with a huge allocation, so every export that takes caller collections bounds the work before doing it. napi-derive converts a typed parameter such as `Vec<Vec<JsToonValue>>` or `String` in full before the export's body runs; a check in the body comes too late (a rejected 100,001 × 100 `rows` array cost 3.4 s and 2.6 GiB that way, and 10k × 10 cells sharing one 100 KB JS string were copied out once per cell, ~10 GB). These exports therefore take untyped napi values and convert them incrementally (`crates/michi-core/src/napi/input.rs`):
+
+- `renderToon`, `renderHints`, `appendHints`, `renderRecovery`, `renderKv`, `renderAlreadyDone`, `renderDomainError`, `renderStatus`, and `AgentResponse.items` / `AgentResponse.kvItems`.
+- Array lengths are checked first: at most 100,000 rows, 1,000 fields, values per row, KV items or status items, and 10,000 hints. For rows, every row's length is read and summed before any cell is converted.
+- Then each value is converted against a per-call budget: at most **1,000,000 cells** and **64 MiB of string data** in all. A string's UTF-8 length is read, and charged, before it is copied, so a JS string referenced many times is counted every time it is used.
+- Per-string caps: **1 MiB** for a cell value (`strVal`), hint, recovery `reason`, status `description`/`health`, error `message` or `summary`; **4 KiB** for `typeName`, a field name, a KV or status key, `truncationHint`, a recovery `tool`, `toolName`, an error `code` and `operation`. `appendHints`' `body` counts toward the 64 MiB budget only.
+- Errors keep the usual wording: `rows length 100001 exceeds maximum of 100000`, `cell count 1000100 exceeds maximum of 1000000`, `input byte total 67202037 exceeds maximum of 67108864`, `strVal byte length 1200000 exceeds maximum of 1048576`. A string whose UTF-16 length already exceeds the cap is rejected without scanning it, reported as `byte length (at least N)`.
+- Only the payload a cell's `type` names is read (`strVal` for `"str"`, `floatVal` and `decimalsVal` for `"float"`, …). As before, an object field set to `null` is a wrong-typed value, not an absent one.
+- The single-string `AgentResponse` setters (`hint`, `recoveryHint`, `truncationHint`) keep plain `string` parameters, since napi copies their one argument exactly once; they reject a value over the same caps after the copy. `AgentResponse.hint`/`recoveryHint` also keep their cumulative 10,000-call caps.
+- michi-core's own shape caps (1,000 fields, 1,000,000 cells, a 256-char truncation hint; see [02 — Size limits](02-toon-format.md#size-limits)) still apply after conversion and surface as `toon_validation_failed: …`.
+
+The typed Rust functions (`render_toon(JsToonOptions)`, `JsAgentResponse::items(Vec<Vec<JsToonValue>>, Vec<String>)`, …) keep their names and signatures for Rust callers and unit tests; the JS exports are separate Rust functions (`render_toon_js`, `items_js`, …) with `js_name` and `ts_args_type`, so `index.d.ts` still declares the same plain types.
+
 ### Numeric boundary
 
 Every JavaScript number that crosses into a rendering or resilience call is validated at the boundary through a newtype in `crates/michi-core/src/napi/num.rs` before any michi code runs; an out-of-domain value throws a JS `Error` instead of being narrowed. `napi_get_value_double` (a non-coercing read) is used for every converted position, so `napi_get_value_int32`'s `ToInt32` wraparound is never in the path.
@@ -198,9 +217,9 @@ None of these thirteen inputs is ever silently clamped, truncated, or defaulted 
 
 `@napi-rs/cli`'s `--cross-compile` flag selects `cargo-zigbuild` as the linker for non-native Linux targets (and `cargo-xwin` for Windows, unused here).
 
-CI builds three NAPI targets: `aarch64-apple-darwin` and `x86_64-unknown-linux-gnu` natively, plus `x86_64-unknown-linux-musl` with `cargo-zigbuild`.
+CI builds all six NAPI targets. The macOS targets build on the arm64 `macos-latest` runner, `x86_64-apple-darwin` through rustup's target and Apple's universal SDK (no extra linker); `x86_64-unknown-linux-gnu` builds natively on `ubuntu-latest`; the musl targets and `aarch64-unknown-linux-gnu` link with `cargo-zigbuild`, `aarch64-unknown-linux-gnu` on GitHub's `ubuntu-24.04-arm` runner. The Node tests run where the runner loads the binary natively: `darwin-arm64`, `linux-x64-gnu` and `linux-arm64-gnu`.
 
-`.github/workflows/callisto-release.yml` uses Callisto 0.11. Ordinary pushes to `main` create or update a version PR when changesets are present. A verified merge of that managed PR, carrying its `.callisto/release-decision.json`, runs Callisto's CI release: `callisto release plan`, a release build of all three targets, then `callisto release execute`, which publishes the committed `packages/michi-node/npm/<platform>` packages before `@orin-dx/michi`, then pushes the release tags (no GitHub releases: no package lists `github-release` in `publish-to`). The build's generated `index.js` and `index.d.ts` ship in the npm package; neither they nor the `.node` files are committed.
+`.github/workflows/callisto-release.yml` uses Callisto 0.11. Ordinary pushes to `main` create or update a version PR when changesets are present. A verified merge of that managed PR, carrying its `.callisto/release-decision.json`, runs Callisto's CI release: `callisto release plan`, a release build of all six targets (the runner and cross-compile choice per target come from `callisto matrix`, except that `x86_64-apple-darwin` builds on `macos-latest` rather than Callisto 0.11's retired `macos-13`; `aarch64` Linux cross-compiles with `cargo-zigbuild` on `ubuntu-latest`), then `callisto release execute`, which publishes the committed `packages/michi-node/npm/<platform>` packages before `@orin-dx/michi`, then pushes the release tags (no GitHub releases: no package lists `github-release` in `publish-to`). The build's generated `index.js` and `index.d.ts` ship in the npm package; neither they nor the `.node` files are committed.
 
 The pipeline has not produced a release yet: neither `michi-core`/`michi-pipeline` on crates.io nor `@orin-dx/michi` on npm exists. The three packages ship one version through the Callisto fixed group, and the first release establishes the published versions for downstream integration; consumer integration follows publication (see [ADR 4](../adr/0004-publish-before-consumer-integration.md)). The `version-sync` CI job checks that the npm package version matches the workspace version in the root `Cargo.toml`.
 

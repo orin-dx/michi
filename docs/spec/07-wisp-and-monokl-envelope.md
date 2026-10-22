@@ -357,7 +357,7 @@ Each conversion is a few dozen lines of field copying in a crate that imports co
 
 ## The Wisp arrangement
 
-Wisp's `wisp-output` crate depends on michi through a **local path dependency during coordinated development**, and the publish order runs one way: michi publishes first, and Wisp is not published until michi has a versioned release compatible with Wisp's license and MSRV (Wisp D-006). michi's declared MSRV is `1.96`.
+Wisp's `wisp-output` crate depends on michi through a **local path dependency during coordinated development**, and the publish order runs one way: michi publishes first, and Wisp is not published until michi has a versioned release compatible with Wisp's license and MSRV (Wisp D-006). michi's declared MSRV is `1.93`.
 
 Nothing in Wisp gates a michi release, and no consumer integration gates it either (see [ADR 4](../adr/0004-publish-before-consumer-integration.md)). michi publishes first so Wisp can integrate against a versioned dependency, then Wisp can publish its own package. A tagged Git dependency (`michi-core = { git = "…", tag = "v0.x.y" }`) remains useful during coordinated development.
 

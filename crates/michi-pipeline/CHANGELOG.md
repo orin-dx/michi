@@ -2,10 +2,12 @@
 
 ## 0.3.1
 
-- Released together with the `michi` fixed group.
+- First published release. 0.3.0 was never published; its changes, listed below, ship in 0.3.1.
 - Joined the `michi` group at this version.
 
 ## 0.3.0
+
+The removed or changed APIs named below (`execute_pipeline`, `execute_pipeline_parallel`, `StepDependencies`, `CircuitBreaker::call` and the old error variants) describe pre-release history: they never shipped in a published version, so nothing published needs migrating.
 
 - **Breaking:** the execution API is redesigned (see `docs/spec/08-pipeline-execution.md`). `execute_pipeline`, `execute_pipeline_parallel`, `StepDependencies`, positional runner lists, `CircuitBreaker::call`/`CircuitBreaker::new(retry, timeout, threshold, open)` and the `StepCountMismatch`, `UnknownStepId`, `DuplicateStepId` and `CyclicDependency` error variants are removed. In their place:
   - `StepId` and `RunId` are validated slugs (1 to 64 ASCII letters, digits, `_`, `-`, `.`). `RunId::unique(prefix)` builds one without a UUID dependency.

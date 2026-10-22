@@ -3,9 +3,6 @@ $schema: "https://moonrepo.dev/schemas/project.json"
 language: typescript
 
 tasks:
-  publish:
-    script: "echo 'michi-node npm publish not yet configured'"
-
   build:
     script: "just build-node"
     inputs:
@@ -13,7 +10,6 @@ tasks:
       - "__test__/**/*"
       - "package.json"
       - "Cargo.toml"
-      - "/src/**/*"
       - "/crates/**/*"
       - "/Cargo.toml"
       - "/Cargo.lock"
@@ -24,7 +20,6 @@ tasks:
       - "index.d.ts"
       - "__test__/**/*"
       - "package.json"
-      - "/src/**/*"
       - "/crates/**/*"
     deps:
       - build
