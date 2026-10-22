@@ -1,11 +1,12 @@
 //! Step definitions (`ExecStep`) and the validated, immutable `Plan`.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
 use michi_core::resilience::RetryConfig;
+use michi_graph::{Dag, GraphBuilder, NodeIx, Order, UnknownTargets, Violation};
 
 use crate::{Step, StepId};
 
@@ -155,6 +156,13 @@ pub enum PlanViolation {
         /// The steps on a cycle.
         step_ids: Vec<StepId>,
     },
+    /// More steps than a plan can index (`u32::MAX - 1`).
+    TooManySteps,
+    /// A graph problem this version of michi-pipeline does not know by name, rendered by michi-graph.
+    Other {
+        /// The problem, as michi-graph describes it.
+        message: String,
+    },
 }
 
 impl fmt::Display for PlanViolation {
@@ -175,6 +183,8 @@ impl fmt::Display for PlanViolation {
                 }
                 Ok(())
             }
+            Self::TooManySteps => write!(f, "more than {} steps", u32::MAX - 1),
+            Self::Other { message } => f.write_str(message),
         }
     }
 }
@@ -281,99 +291,39 @@ impl Fnv {
 #[derive(Debug)]
 pub struct Plan {
     steps: Vec<ExecStep>,
-    prerequisites: Vec<Vec<usize>>,
-    dependents: Vec<Vec<usize>>,
-    order: Vec<usize>,
-    index: BTreeMap<StepId, usize>,
+    /// Node indices are declaration positions, so they index `steps` directly.
+    dag: Dag<StepId>,
     fingerprint: PlanFingerprint,
 }
 
 impl Plan {
     /// Validates `steps` and returns the plan, or every violation at once: duplicate ids, unknown dependencies,
-    /// self-dependencies and cycles (found with an iterative Kahn pass, so depth is bounded by memory).
+    /// self-dependencies and cycles (found without recursion, so depth is bounded by memory).
     ///
     /// # Errors
     ///
     /// A [`PlanError`] listing every [`PlanViolation`] when the steps do not form a valid graph.
     pub fn new(steps: Vec<ExecStep>) -> Result<Self, PlanError> {
-        let n = steps.len();
-        let mut violations = Vec::new();
-        let mut index: BTreeMap<StepId, usize> = BTreeMap::new();
-        let mut duplicate = vec![false; n];
-        for (i, step) in steps.iter().enumerate() {
-            if index.contains_key(&step.id) {
-                violations.push(PlanViolation::DuplicateStepId { step_id: step.id.clone() });
-                duplicate[i] = true;
-            } else {
-                index.insert(step.id.clone(), i);
-            }
-        }
-
-        let mut prerequisites: Vec<Vec<usize>> = vec![Vec::new(); n];
-        // `added_by[j] == i + 1` once step `i` has listed `j`: an O(1) repeat check instead of scanning its
-        // prerequisites so far, which made a wide fan-in O(deg²).
-        let mut added_by: Vec<usize> = vec![0; n];
-        for (i, step) in steps.iter().enumerate() {
-            if duplicate[i] {
-                continue;
-            }
-            let mut reported_self = false;
+        let mut b = GraphBuilder::<StepId>::with_capacity(steps.len());
+        for step in &steps {
+            let node = b.node(step.id.clone());
             for dep in &step.depends_on {
-                if *dep == step.id {
-                    if !reported_self {
-                        violations.push(PlanViolation::SelfDependency { step_id: step.id.clone() });
-                        reported_self = true;
-                    }
-                    continue;
-                }
-                match index.get(dep) {
-                    Some(&j) if added_by[j] != i + 1 => {
-                        added_by[j] = i + 1;
-                        prerequisites[i].push(j);
-                    }
-                    Some(_) => {}
-                    None => violations
-                        .push(PlanViolation::UnknownDependency { step_id: step.id.clone(), dependency: dep.clone() }),
-                }
+                b.depends_on(node, dep.clone(), ());
             }
         }
-        let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); n];
-        for (i, prereqs) in prerequisites.iter().enumerate() {
-            for &p in prereqs {
-                dependents[p].push(i);
-            }
-        }
-
-        // Kahn with the lowest declaration index first: the order sequential mode dispatches in.
-        let mut indegree: Vec<usize> = prerequisites.iter().map(Vec::len).collect();
-        let mut ready: BTreeSet<usize> = (0..n).filter(|&i| !duplicate[i] && indegree[i] == 0).collect();
-        let mut order = Vec::with_capacity(n);
-        while let Some(i) = ready.pop_first() {
-            order.push(i);
-            for &d in &dependents[i] {
-                indegree[d] -= 1;
-                if indegree[d] == 0 {
-                    ready.insert(d);
-                }
-            }
-        }
-        let live = n - duplicate.iter().filter(|d| **d).count();
-        if order.len() < live {
-            violations.push(PlanViolation::Cycle { step_ids: cycle_members(&steps, &duplicate, &order, &dependents) });
-        }
-
-        if !violations.is_empty() {
-            return Err(PlanError { violations });
-        }
-        let fingerprint = fingerprint(&steps, &index, &prerequisites);
-        Ok(Self { steps, prerequisites, dependents, order, index, fingerprint })
+        let dag = b
+            .build(UnknownTargets::Error)
+            .validate(Order::Declaration)
+            .map_err(|violations| plan_error(&steps, violations))?;
+        let fingerprint = fingerprint(&dag);
+        Ok(Self { steps, dag, fingerprint })
     }
 
     /// The dry run: step ids in the order sequential mode dispatches them, which is topological order with ties
     /// broken by declaration order. Nothing runs.
     #[must_use]
     pub fn execution_order(&self) -> Vec<&StepId> {
-        self.order.iter().map(|&i| &self.steps[i].id).collect()
+        self.dag.order().iter().filter_map(|ix| self.steps.get(ix.index())).map(|s| &s.id).collect()
     }
 
     /// The plan's structural fingerprint.
@@ -391,7 +341,7 @@ impl Plan {
     /// The step with `id`, if any.
     #[must_use]
     pub fn step(&self, id: &StepId) -> Option<&ExecStep> {
-        self.index.get(id).map(|&i| &self.steps[i])
+        self.dag.index_of(id).and_then(|ix| self.steps.get(ix.index()))
     }
 
     /// Number of steps.
@@ -407,70 +357,63 @@ impl Plan {
     }
 
     pub(crate) fn index_of(&self, id: &StepId) -> Option<usize> {
-        self.index.get(id).copied()
+        self.dag.index_of(id).map(NodeIx::index)
     }
 
-    pub(crate) fn prerequisites_of(&self, i: usize) -> &[usize] {
-        &self.prerequisites[i]
+    pub(crate) fn prerequisites_of(&self, i: usize) -> impl Iterator<Item = usize> + '_ {
+        self.node(i).map(|ix| self.dag.prerequisites(ix)).unwrap_or_default().iter().map(|p| p.index())
     }
 
-    pub(crate) fn dependents_of(&self, i: usize) -> &[usize] {
-        &self.dependents[i]
+    pub(crate) fn dependents_of(&self, i: usize) -> impl Iterator<Item = usize> + '_ {
+        self.node(i).map(|ix| self.dag.dependents(ix)).unwrap_or_default().iter().map(|d| d.index())
     }
 
-    pub(crate) fn topological_order(&self) -> &[usize] {
-        &self.order
+    pub(crate) fn topological_order(&self) -> impl Iterator<Item = usize> + '_ {
+        self.dag.order().iter().map(|ix| ix.index())
+    }
+
+    fn node(&self, i: usize) -> Option<NodeIx> {
+        self.dag.node_at(i)
     }
 }
 
-/// The steps Kahn left over that lie on a cycle: peel off, in reverse, every leftover step none of whose dependents
-/// is left over (it only hangs off a cycle), until none remain to peel.
-fn cycle_members(steps: &[ExecStep], duplicate: &[bool], order: &[usize], dependents: &[Vec<usize>]) -> Vec<StepId> {
-    let n = steps.len();
-    let mut left = vec![false; n];
-    for i in 0..n {
-        left[i] = !duplicate[i];
-    }
-    for &i in order {
-        left[i] = false;
-    }
-    let mut outdegree: Vec<usize> =
-        (0..n).map(|i| if left[i] { dependents[i].iter().filter(|&&d| left[d]).count() } else { 0 }).collect();
-    let mut prereqs_left: Vec<Vec<usize>> = vec![Vec::new(); n];
-    for i in 0..n {
-        if left[i] {
-            for &d in &dependents[i] {
-                if left[d] {
-                    prereqs_left[d].push(i);
-                }
+/// Maps michi-graph's violations onto michi's, keeping michi's shape: one `Cycle` listing every step on any cycle,
+/// in declaration order.
+fn plan_error(steps: &[ExecStep], violations: michi_graph::Violations<StepId>) -> PlanError {
+    let mut out = Vec::new();
+    let mut on_cycle: Vec<StepId> = Vec::new();
+    for v in violations {
+        match v {
+            Violation::DuplicateNode { key } => out.push(PlanViolation::DuplicateStepId { step_id: key }),
+            Violation::UnknownDependency { dependent, prerequisite } => {
+                out.push(PlanViolation::UnknownDependency { step_id: dependent, dependency: prerequisite });
             }
+            Violation::SelfDependency { key } => out.push(PlanViolation::SelfDependency { step_id: key }),
+            Violation::Cycle(cycle) => on_cycle.extend(cycle.members().iter().cloned()),
+            Violation::TooManyNodes => out.push(PlanViolation::TooManySteps),
+            // michi-graph's violations are non-exhaustive: name a new one by its own message, never as another kind.
+            other => out.push(PlanViolation::Other { message: other.to_string() }),
         }
     }
-    let mut peel: Vec<usize> = (0..n).filter(|&i| left[i] && outdegree[i] == 0).collect();
-    while let Some(i) = peel.pop() {
-        left[i] = false;
-        for &p in &prereqs_left[i] {
-            if left[p] {
-                outdegree[p] -= 1;
-                if outdegree[p] == 0 {
-                    peel.push(p);
-                }
-            }
+    if !on_cycle.is_empty() {
+        let mut position: BTreeMap<&StepId, usize> = BTreeMap::new();
+        for (i, step) in steps.iter().enumerate() {
+            position.entry(&step.id).or_insert(i);
         }
+        on_cycle.sort_by_key(|id| position.get(id).copied().unwrap_or(usize::MAX));
+        out.push(PlanViolation::Cycle { step_ids: on_cycle });
     }
-    (0..n).filter(|&i| left[i]).map(|i| steps[i].id.clone()).collect()
+    PlanError { violations: out }
 }
 
 /// FNV-1a over each step's id and prerequisite ids, both sorted by id.
-fn fingerprint(steps: &[ExecStep], index: &BTreeMap<StepId, usize>, prerequisites: &[Vec<usize>]) -> PlanFingerprint {
+fn fingerprint(dag: &Dag<StepId>) -> PlanFingerprint {
     let mut h = Fnv::new();
-    for (id, &i) in index {
+    for (id, deps) in dag.canonical() {
         h.write(id.as_str().as_bytes());
         h.write(&[0x1f]);
-        let mut deps: Vec<&str> = prerequisites[i].iter().map(|&p| steps[p].id.as_str()).collect();
-        deps.sort_unstable();
         for dep in deps {
-            h.write(dep.as_bytes());
+            h.write(dep.as_str().as_bytes());
             h.write(&[0x1e]);
         }
         h.write(&[0x1d]);

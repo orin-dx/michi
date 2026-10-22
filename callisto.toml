@@ -21,6 +21,13 @@ match = "cargo/michi-pipeline"
 publish-to = ["crates-io"]
 release-trigger = "changeset"
 
+# MIT graph crate. Versions on its own, outside the fixed group: permissive crates outside the michi release cycle
+# depend on it.
+[[package]]
+match = "cargo/michi-graph"
+publish-to = ["crates-io"]
+release-trigger = "changeset"
+
 # michi-node: NAPI cdylib + npm package
 [[package]]
 match = "npm/michi-node"
@@ -30,4 +37,4 @@ release-trigger = "changeset"
 # Every michi package ships one version: a change to any of them releases all three.
 [[fixed-group]]
 name = "michi"
-members = ["michi-core", "michi-pipeline", "michi-node"]
+members = ["cargo/michi-core", "cargo/michi-pipeline", "npm/@orin-dx/michi"]
