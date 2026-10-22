@@ -97,7 +97,7 @@ impl CallToolResult {
     /// Create a new CallToolResult.
     ///
     /// `structured_content` is not checked here: the caller is responsible for passing the text of a JSON object or
-    /// the empty string. Anything else makes serialization fail. Use [`CallToolResult::try_new`] (`serde` feature) to
+    /// the empty string. Anything else makes serialization fail. Use `CallToolResult::try_new` (`serde` feature) to
     /// check it up front.
     pub fn new(content: Vec<ContentBlock>, is_error: bool, structured_content: impl Into<String>) -> Self {
         Self { content, is_error, structured_content: structured_content.into() }
