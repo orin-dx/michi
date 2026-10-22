@@ -36,15 +36,15 @@ proptest! {
     }
 
     #[test]
-    fn call_tool_result_with_invalid_structured_content_uses_string_fallback(
+    fn call_tool_result_with_non_object_structured_content_fails_to_serialize(
         content in proptest::collection::vec(content_block_strategy(), 1..3),
         is_error in any::<bool>(),
-        garbage in "[^{][^}]{0,40}", // guaranteed not valid JSON
+        garbage in "[^{][^}]{0,40}", // never a JSON object: does not start with `{`
     ) {
-        // The serde fallback path: invalid structured_content must not panic
-        // and must produce a serializable result (stored as JSON string).
-        let r = CallToolResult::new(content, is_error, &garbage);
-        let json = serde_json::to_string(&r).expect("must serialize even with invalid structured_content");
-        prop_assert!(json.contains("\"structuredContent\""), "structuredContent must always appear: {json}");
+        // MCP requires `structuredContent` to be an object, so anything else is a serialization error (never a
+        // panic, never a string or number on the wire), and `try_new` reports the same thing up front.
+        let r = CallToolResult::new(content.clone(), is_error, &garbage);
+        prop_assert!(serde_json::to_string(&r).is_err(), "{garbage:?} must not serialize");
+        prop_assert!(CallToolResult::try_new(content, is_error, &garbage).is_err());
     }
 }

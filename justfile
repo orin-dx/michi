@@ -102,21 +102,13 @@ doc: doc-check
 
 doc-check:
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
+    # Default features alone: intra-doc links to feature-gated items only break here.
+    RUSTDOCFLAGS="-D warnings" cargo doc -p michi-core --no-deps
 
-
-# API SemVer check against the last published baseline. Not yet meaningful:
-# michi has never published to crates.io, and the only existing tag
-# (v0.1.0) predates the Cargo-workspace crate split (see
-# docs/spec/06-decisions.md's "Resolved at v0.1 — Cargo workspace crate
-# splitting"), so comparing against it produces false "removed" findings
-# for every re-exported item (verified: `--baseline-rev v0.1.0` reports 100%
-# of the public API as removed, since semver-checks can't see through a
-# cross-crate re-export the way it can a same-crate `pub use`). Becomes
-# meaningful starting from the first real crates.io publish onward -- run
-# ahead of any release after that; no --baseline-rev needed once published,
-# since the default baseline is whatever's live on crates.io.
+# API SemVer check of the published crates against their latest crates.io release (the default baseline). CI runs the
+# same check.
 check-api:
-    cargo semver-checks check-release --workspace
+    cargo semver-checks check-release -p michi-core -p michi-pipeline
 
 # Unused-dependency check.
 machete:

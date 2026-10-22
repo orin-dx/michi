@@ -51,6 +51,29 @@ Ensure all lints and tests pass cleanly.
 | Tests, benches, examples | `crates/michi-core/{tests,benches,examples}/` |
 | TOON spec & grammar      | `docs/spec/02-toon-format.md`                 |
 
+## Releasing
+
+[Callisto](https://github.com/orin-dx/callisto) versions and publishes `michi-core`, `michi-pipeline` and `@orin-dx/michi`. They're a fixed group, so a change to any of them releases all three on one version.
+
+1. With your change, add a changeset: a Markdown file in `.changeset/` (any name, e.g. `.changeset/toon-quote-tabs.md`). The front matter maps each changed package to a bump (`major`, `minor`, `patch` or `none`); the body is the changelog entry, written for users of the package.
+
+   ```markdown
+   ---
+   michi-core: patch
+   ---
+
+   `render_toon` quotes cells that contain a tab.
+   ```
+
+   Package names are `michi-core`, `michi-pipeline` and `michi-node` (the npm package). Changes with no user-facing effect don't need one.
+
+2. Merging to `main` opens or updates Callisto's version PR (`callisto/version-packages`), which bumps versions and writes the changelogs.
+3. Merging the version PR runs the Release workflow (`.github/workflows/callisto-release.yml`): it builds the native binaries and publishes to crates.io and npm.
+
+The first publish of a brand-new npm package can fail with Callisto error E157: npm accepted the upload but doesn't show the version yet. That's registry propagation lag. Wait a few minutes, then use "Re-run failed jobs" on the Release run. It adopts what already landed and publishes the rest. Don't regenerate the release intent.
+
+Each published package carries a copy of the root `LICENSE` (`crates/*/LICENSE`, `packages/michi-node/LICENSE`, `packages/michi-node/npm/*/LICENSE`). If the license changes, copy it to each; `crates/michi-core/tests/license_copies.rs` fails until they match.
+
 ## Commit Style
 
 Use imperative conventional commit prefixes: `feat:`, `fix:`, `chore:`, `test:`, `docs:`, `ci:`.

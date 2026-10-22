@@ -644,7 +644,7 @@ mod tests {
 
     #[test]
     fn napi_numeric_docs_are_consistent() {
-        let docs = include_str!("../../../../docs/spec/04-mcp-and-napi.md");
+        let Some(docs) = crate::test_support::workspace_file("docs/spec/04-mcp-and-napi.md") else { return };
         assert!(!docs.contains("clamped non-negative"), "docs still describe clamping");
         assert!(!docs.contains("n.max(0) as usize"), "docs still show the deleted clamp expression");
         assert!(!docs.contains("silently lose precision"), "docs still describe silent precision loss");

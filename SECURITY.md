@@ -26,4 +26,11 @@ Out of scope: issues in consuming applications that misuse the API in ways the t
 
 ## Supported Versions
 
-`michi` is not yet published to crates.io or npm (see the README). Until a first tagged release ships, security fixes land on `main` only — there is no older version to backport to.
+`michi-core`, `michi-pipeline` and `@orin-dx/michi` release together on one version.
+
+| Version | Supported            |
+| ------- | -------------------- |
+| 0.3.x   | Yes                  |
+| < 0.3   | No (never published) |
+
+Security fixes ship as a new 0.3.x patch release. Older versions were never published, so there is nothing to backport to.

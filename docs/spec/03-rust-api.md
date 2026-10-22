@@ -41,12 +41,17 @@ impl ToonOptions {
     pub fn hints(self, hints: Vec<String>) -> Self;
     pub fn max_cell_len(self, len: usize) -> Self;
     pub fn truncation_hint(self, hint: impl Into<String>) -> Self;
-    /// Validate structural invariants before rendering.
+    /// Validate structural invariants before rendering; rendering consumes the returned proof.
     /// Returns Err if type_name is a reserved document key (`totalCount`, `help`, `recovery`),
-    /// a field name is repeated, or any row's length differs from fields.len().
-    /// Any other name is valid and is quoted per TOON 4.4 §7.3.
-    pub fn validate(&self) -> Result<(), ToonError>;
+    /// there are more than MAX_FIELDS fields, a field name is repeated, rows × fields is more than
+    /// MAX_CELLS, truncation_hint is longer than MAX_TRUNCATION_HINT_CHARS chars, or any row's length
+    /// differs from fields.len() (checked in that order). Any other name is valid and is quoted per TOON 4.4 §7.3.
+    pub fn validate(&self) -> Result<ToonDocument<'_>, ToonError>;
 }
+
+pub const MAX_FIELDS: usize = 1_000;
+pub const MAX_CELLS: usize = 1_000_000;
+pub const MAX_TRUNCATION_HINT_CHARS: usize = 256;
 
 pub enum Value {
     Str(compact_str::CompactString),
@@ -69,8 +74,13 @@ pub enum ToonError {
     InvalidFieldName { name: String },
     RowLengthMismatch { row_index: usize, expected: usize, actual: usize },
     InvalidItem { row_index: usize, reason: String },
+    TooManyFields { count: usize, max: usize },
+    TooManyCells { rows: usize, fields: usize, max: usize },
+    TruncationHintTooLong { len: usize, max: usize },
 }
 ```
+
+See [02 — Size limits](02-toon-format.md#size-limits) for why the caps exist and how they surface.
 
 ### Serde Integration (`list()`)
 
@@ -84,7 +94,7 @@ pub fn list<T: serde::Serialize>(
 ) -> Result<String, ToonError>;
 ```
 
-Items are serialized via `serde_json::to_value()` and must produce JSON objects (structs or maps). Non-object items and a reserved `type_name` (`totalCount`, `help`, `recovery`) return `Err(ToonError)`. A key missing from some items renders as `null` in those rows; nested arrays/objects become their compact JSON text, quoted.
+Items are serialized via `serde_json::to_value()` and must produce JSON objects (structs or maps). Non-object items and a reserved `type_name` (`totalCount`, `help`, `recovery`) return `Err(ToonError)`, and so does a key union wider than `MAX_FIELDS` or an `items.len() × fields` table larger than `MAX_CELLS` (checked before any row is built). A key missing from some items renders as `null` in those rows; nested arrays/objects become their compact JSON text, quoted.
 
 ## Response Compositor (`error`, `response`, `idempotency`)
 
@@ -163,6 +173,8 @@ impl AgentResponse {
 ```
 
 `render_json()` is not part of the public API — it's reached only via `render(OutputFormat::Json)`.
+
+The TOON slot is stored as a `ToonOptions` and validated and rendered by reference, so a render never copies the rows. `is_error()` validates without rendering. Hints and recovery are appended to the rendered body in place.
 
 ### Idempotency
 

@@ -5,15 +5,11 @@
 # Cargo's shared target/ file lock (measured: 116s vs. 17.5s for one
 # workspace-wide invocation). Those live once, workspace-wide, in root
 # `moon.yml`; `justfile`'s `lint-affected` covers the incremental case.
+#
+# No publish task: Callisto publishes every package (see CONTRIBUTING.md's "Releasing").
 tasks:
   audit:
     script: "cargo deny check advisories"
     inputs:
       - "Cargo.lock"
-      - "Cargo.toml"
-
-  publish:
-    script: "cargo publish -p $MOON_PROJECT_ID --no-verify"
-    inputs:
-      - "src/**/*"
       - "Cargo.toml"

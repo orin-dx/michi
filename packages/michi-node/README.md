@@ -2,14 +2,13 @@
 
 TypeScript/JavaScript bindings for [`michi`](https://github.com/orin-dx/michi) — AXI response primitives for agent-ergonomic tools. Native binary via NAPI-RS: no WASM, no JS reimplementation of the rendering logic.
 
-> [!IMPORTANT]\
-> Not yet published to npm. See the [main repo](https://github.com/orin-dx/michi) for building from source in the meantime.
-
 ## Install
 
 ```bash
-pnpm add @orin-dx/michi
+npm i @orin-dx/michi
 ```
+
+npm installs the matching prebuilt binary as an optional dependency; see [Supported platforms](#supported-platforms).
 
 ## Quick start
 
@@ -92,7 +91,16 @@ Full type definitions ship in `index.d.ts`. See the [main repo](https://github.c
 
 ## Supported platforms
 
-Prebuilt native binaries: `darwin-arm64`, `linux-x64-musl`. Building from source requires a Rust toolchain (see [`rust-toolchain.toml`](../../rust-toolchain.toml) in the main repo).
+Prebuilt native binaries ship for:
+
+- macOS on Apple silicon (`darwin-arm64`, package `@orin-dx/michi-darwin-arm64`)
+- macOS on Intel (`darwin-x64`, package `@orin-dx/michi-darwin-x64`)
+- Linux x64 with glibc (`linux-x64-gnu`, package `@orin-dx/michi-linux-x64-gnu`)
+- Linux x64 with musl (`linux-x64-musl`, package `@orin-dx/michi-linux-x64-musl`)
+- Linux arm64 with glibc (`linux-arm64-gnu`, package `@orin-dx/michi-linux-arm64-gnu`)
+- Linux arm64 with musl (`linux-arm64-musl`, package `@orin-dx/michi-linux-arm64-musl`)
+
+Windows isn't supported yet. Building from source needs a Rust toolchain (see [`rust-toolchain.toml`](https://github.com/orin-dx/michi/blob/main/rust-toolchain.toml) in the main repo).
 
 ## License
 

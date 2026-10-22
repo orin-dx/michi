@@ -42,6 +42,7 @@
 #![warn(missing_docs)]
 #![warn(clippy::unwrap_used, clippy::expect_used)]
 #![warn(clippy::disallowed_types)]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod breaker;
 mod cancel;
@@ -66,3 +67,12 @@ pub use step::{step_fn, FnStep, Replay, Step, StepContext, StepFuture};
 
 /// The michi-core status types a [`RunRecord`] reports, re-exported for convenience.
 pub use michi_core::pipeline::{NotRunReason, SkipReason, StepStatus, UnknownCause};
+
+/// The michi-core retry types [`ExecOptions`] and [`StepContext`] take and return, re-exported so configuring retries
+/// doesn't need a direct michi-core dependency.
+pub use michi_core::resilience::{IdempotencyKey, RetryBudget, RetryConfig, RetryConfigError};
+
+// Runs the README example as a doctest without making it the rendered crate docs.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;

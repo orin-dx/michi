@@ -1,13 +1,13 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/hero-dark.png">
-    <img src="assets/brand/hero-light.png" alt="michi, an Orin DX tool" width="360">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/orin-dx/michi/main/assets/brand/hero-dark.png">
+    <img src="https://raw.githubusercontent.com/orin-dx/michi/main/assets/brand/hero-light.png" alt="michi, an Orin DX tool" width="360">
   </picture>
 </p>
 
 <p align="center">道</p>
 
-[![CI](https://github.com/orin-dx/michi/actions/workflows/ci.yml/badge.svg)](https://github.com/orin-dx/michi/actions/workflows/ci.yml) [![License: FSL-1.1-MIT](https://img.shields.io/badge/license-FSL--1.1--MIT-blue.svg)](LICENSE)
+[![CI](https://github.com/orin-dx/michi/actions/workflows/ci.yml/badge.svg)](https://github.com/orin-dx/michi/actions/workflows/ci.yml) [![License: FSL-1.1-MIT](https://img.shields.io/badge/license-FSL--1.1--MIT-blue.svg)](https://github.com/orin-dx/michi/blob/main/LICENSE)
 
 AXI response primitives for agent-ergonomic tools — TOON lists, key-value blocks, truncation, structured errors, status, and `help[]` hints.
 
@@ -15,10 +15,33 @@ AXI response primitives for agent-ergonomic tools — TOON lists, key-value bloc
 
 Available as Rust crates (`michi-core`, plus `michi-pipeline` for async execution) or a Node.js package (`@orin-dx/michi`).
 
-For developer docs, start with the [documentation map](docs/README.md).
+For developer docs, start with the [documentation map](https://github.com/orin-dx/michi/blob/main/docs/README.md). API reference: [michi-core](https://docs.rs/michi-core) and [michi-pipeline](https://docs.rs/michi-pipeline) on docs.rs.
 
-> [!IMPORTANT]\
-> Not yet published to crates.io or npm. Clone the repo and build from source to try it — see [Local Development](#local-development).
+## Install
+
+Rust:
+
+```bash
+cargo add michi-core
+cargo add michi-pipeline   # optional: async pipeline execution on Tokio
+```
+
+Node.js:
+
+```bash
+npm i @orin-dx/michi
+```
+
+The npm package ships prebuilt native binaries for these platforms:
+
+- macOS on Apple silicon (`darwin-arm64`)
+- macOS on Intel (`darwin-x64`)
+- Linux x64 with glibc (`linux-x64-gnu`)
+- Linux x64 with musl (`linux-x64-musl`)
+- Linux arm64 with glibc (`linux-arm64-gnu`)
+- Linux arm64 with musl (`linux-arm64-musl`)
+
+Windows isn't supported yet.
 
 ## Why TOON?
 
@@ -149,4 +172,4 @@ just bench       # Run Divan performance benchmarks
 
 ## License
 
-FSL-1.1-MIT — Functional Source License, converting to MIT two years after each release. See [`LICENSE`](LICENSE).
+FSL-1.1-MIT — Functional Source License, converting to MIT two years after each release. See [`LICENSE`](https://github.com/orin-dx/michi/blob/main/LICENSE).

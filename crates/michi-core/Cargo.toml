@@ -11,6 +11,14 @@ license.workspace      = true
 repository.workspace   = true
 homepage.workspace     = true
 authors.workspace      = true
+documentation          = "https://docs.rs/michi-core"
+# Integration tests read files outside the crate (the repo README and workspace manifest), so they stay repo-only.
+exclude = ["moon.yml", "tests/"]
+
+[package.metadata.docs.rs]
+# Not `napi`: it needs a Node toolchain to build.
+features     = ["serde", "schemars", "miette"]
+rustdoc-args = ["--cfg", "docsrs"]
 
 [lints]
 workspace = true

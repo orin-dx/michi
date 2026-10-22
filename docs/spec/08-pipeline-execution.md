@@ -122,6 +122,18 @@ Retries are budgeted per run with `michi_core::resilience::RetryBudget`, a pure 
 
 Retry only at one layer: a step whose own HTTP client already retries should use `RetryConfig` with zero retries here.
 
+`michi-pipeline` re-exports `RetryConfig`, `RetryConfigError`, `RetryBudget` and `IdempotencyKey` from `michi_core::resilience`, so callers configure retries without a direct `michi-core` dependency:
+
+```rust
+use std::time::Duration;
+
+use michi_pipeline::{ExecOptions, RetryBudget, RetryConfig};
+
+let options = ExecOptions::new()
+    .retry(RetryConfig::new(3, Duration::from_millis(100), Duration::from_secs(5), 0.2))
+    .retry_budget(RetryBudget::new(0.1, 10, 100));
+```
+
 ## Observer
 
 `ExecOptions::observer(Arc<dyn StepObserver>)` is called synchronously from the scheduler loop. `on_step_started` fires before a step is spawned and `on_step_finished` fires with each step's terminal `StepRecord`, including skipped steps and, on resume, steps carried over. A closure `Fn(&RunId, &StepRecord)` implements it. Persisting each finished record, plus `StepRecord::in_flight(id, name)` for each started one, lets a caller rebuild the run with `RunRecord::from_parts` after a crash. Resume then treats a step still `Running` as ambiguous instead of re-running it blindly.
@@ -136,6 +148,8 @@ The observer is caller code, so a panic in it is caught (`std::panic::catch_unwi
 - `Completed` and `CompletedEarlier` steps are never re-run; they become `CompletedEarlier`.
 - `Failed`, `Skipped`, `NotRun` and `Pending` steps (and steps missing from the record) run again.
 - `OutcomeUnknown`, `Panicked` and `Running` steps run again only if the step is `Replay::Idempotent`. Otherwise they keep their prior record, and their dependents are skipped, until the caller marks them with `ResumeOptions::verified(id, Verification::Applied)` (treated as `CompletedEarlier`) or `Verification::NotApplied` (run again).
+
+Resume indexes the prior record's steps once (the first record wins if a rebuilt record lists a step twice), so preparing a resume is O(N log N) in the step count: 50,000 carried-over steps took 1.6 s with a linear lookup per step and take about 20 ms now. `RunRecord::step(id)` is still a linear scan; index `steps()` yourself to look up many. `Plan::new` likewise drops repeated dependencies with an O(1) check per edge, so a wide fan-in is linear.
 
 Resume is forward recovery and at least once per step: michi has no atomic commit between a step's effect and the record, so a step can run again if the process stopped after its effect but before its record was saved. Effects are exactly once only when the step hands `idempotency_key()` to a downstream that deduplicates. Resume is not incremental recomputation: it does not notice that a completed step's inputs changed.
 

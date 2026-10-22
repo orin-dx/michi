@@ -5,6 +5,19 @@
   "main": "index.js",
   "types": "index.d.ts",
   "license": "FSL-1.1-MIT",
+  "homepage": "https://orin-dx.com/tools/michi/",
+  "bugs": {
+    "url": "https://github.com/orin-dx/michi/issues"
+  },
+  "keywords": [
+    "axi",
+    "agent",
+    "llm",
+    "mcp",
+    "toon",
+    "cli",
+    "napi"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/orin-dx/michi.git",
@@ -17,8 +30,11 @@
     "binaryName": "michi",
     "targets": [
       "aarch64-apple-darwin",
+      "x86_64-apple-darwin",
       "x86_64-unknown-linux-gnu",
-      "x86_64-unknown-linux-musl"
+      "x86_64-unknown-linux-musl",
+      "aarch64-unknown-linux-gnu",
+      "aarch64-unknown-linux-musl"
     ]
   },
   "scripts": {
@@ -45,6 +61,9 @@
   ],
   "optionalDependencies": {
     "@orin-dx/michi-darwin-arm64": "0.3.1",
+    "@orin-dx/michi-darwin-x64": "0.3.1",
+    "@orin-dx/michi-linux-arm64-gnu": "0.3.1",
+    "@orin-dx/michi-linux-arm64-musl": "0.3.1",
     "@orin-dx/michi-linux-x64-gnu": "0.3.1",
     "@orin-dx/michi-linux-x64-musl": "0.3.1"
   }

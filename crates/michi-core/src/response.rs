@@ -29,16 +29,14 @@ pub const DEFAULT_TRUNCATE_CELLS: usize = 200;
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct AgentResponse {
-    type_name: String,
+    /// The TOON list slot: type name, fields, rows, total count, cell cap and truncation hint, kept as the options
+    /// the renderer validates and renders by reference, so a render never copies the rows. Its `hints` stay empty:
+    /// the response's hints are appended after the body instead.
+    toon: crate::toon::ToonOptions,
     target: RenderTarget,
-    items: Vec<Vec<Value>>,
-    fields: Vec<String>,
     single_item: Vec<KvItem>,
-    total_count: Option<usize>,
     hints: Vec<Hint>,
     recovery: Vec<RecoveryHint>,
-    truncate_cells_at: usize,
-    truncation_hint: Option<String>,
     is_error: bool,
     human_content: Option<String>,
 }
@@ -47,16 +45,11 @@ impl AgentResponse {
     /// Create a new, empty response for the given type name.
     pub fn new(type_name: impl Into<String>) -> Self {
         Self {
-            type_name: type_name.into(),
+            toon: crate::toon::ToonOptions::new(type_name, Vec::new(), Vec::new()).max_cell_len(DEFAULT_TRUNCATE_CELLS),
             target: RenderTarget::Unset,
-            items: Vec::new(),
-            fields: Vec::new(),
             single_item: Vec::new(),
-            total_count: None,
             hints: Vec::new(),
             recovery: Vec::new(),
-            truncate_cells_at: DEFAULT_TRUNCATE_CELLS,
-            truncation_hint: None,
             is_error: false,
             human_content: None,
         }
@@ -65,8 +58,8 @@ impl AgentResponse {
     /// Populate the TOON list path.
     #[must_use]
     pub fn items(mut self, rows: Vec<Vec<Value>>, fields: &[&str]) -> Self {
-        self.items = rows;
-        self.fields = fields.iter().map(|s| (*s).to_string()).collect();
+        self.toon.rows = rows;
+        self.toon.fields = fields.iter().map(|s| (*s).to_string()).collect();
         self.target = RenderTarget::Toon;
         self
     }
@@ -74,7 +67,7 @@ impl AgentResponse {
     /// Set the total available count.
     #[must_use]
     pub fn total_count(mut self, n: usize) -> Self {
-        self.total_count = Some(n);
+        self.toon.total_count = Some(n);
         self
     }
 
@@ -114,7 +107,7 @@ impl AgentResponse {
     /// written longer than `limit` (see [`crate::toon::ToonOptions::max_cell_len`]). The KV path is never truncated.
     #[must_use]
     pub fn truncate_cells_at(mut self, limit: usize) -> Self {
-        self.truncate_cells_at = limit;
+        self.toon.max_cell_len = limit;
         self
     }
 
@@ -123,7 +116,7 @@ impl AgentResponse {
     /// reports how many chars were cut, since michi never invents a parameter the tool may not have.
     #[must_use]
     pub fn truncation_hint(mut self, hint: impl Into<String>) -> Self {
-        self.truncation_hint = Some(hint.into());
+        self.toon.truncation_hint = Some(hint.into());
         self
     }
 
@@ -143,13 +136,7 @@ impl AgentResponse {
 
     /// The TOON body, and whether it is a validation-failure error block instead of the requested rows.
     fn toon_body(&self) -> (String, bool) {
-        let mut opts = crate::toon::ToonOptions::new(self.type_name.clone(), self.fields.clone(), self.items.clone())
-            .total_count(self.total_count)
-            .max_cell_len(self.truncate_cells_at);
-        if let Some(hint) = &self.truncation_hint {
-            opts = opts.truncation_hint(hint.clone());
-        }
-        match opts.validate() {
+        match self.toon.validate() {
             Ok(doc) => (doc.render(), false),
             Err(e) => (validation_error_body("toon_validation_failed", &e.to_string()), true),
         }
@@ -158,7 +145,7 @@ impl AgentResponse {
     /// The KV body, and whether it is a validation-failure error block instead of the requested items (a duplicate
     /// or reserved key, see [`crate::kv::KvError`]).
     fn kv_body(&self) -> (String, bool) {
-        match crate::kv::render_kv(&self.single_item, self.total_count, &[]) {
+        match crate::kv::render_kv(&self.single_item, self.toon.total_count, &[]) {
             Ok(body) => (body, false),
             Err(e) => (validation_error_body("kv_validation_failed", &e.to_string()), true),
         }
@@ -176,13 +163,14 @@ impl AgentResponse {
 
     /// Compose the text document: body, help block, recovery block. Each part is a TOON 4.4 document without a
     /// trailing newline and the append helpers join them with one LF, so the result is one root object whose keys
-    /// are unique (the body cannot use `totalCount`, `help` or `recovery`).
-    fn finish_text(&self, body: &str) -> String {
-        let mut out = String::with_capacity(body.len() + 1 + self.hints.len() * 60 + self.recovery.len() * 80);
-        out.push_str(body);
-        crate::hints::append_hints(&mut out, &self.hints);
-        crate::recovery::append_recovery(&mut out, &self.recovery);
-        out
+    /// are unique (the body cannot use `totalCount`, `help` or `recovery`). Appends to `body` in place.
+    fn finish_text(&self, mut body: String) -> String {
+        if !self.hints.is_empty() || !self.recovery.is_empty() {
+            body.reserve(1 + self.hints.len() * 60 + self.recovery.len() * 80);
+        }
+        crate::hints::append_hints(&mut body, &self.hints);
+        crate::recovery::append_recovery(&mut body, &self.recovery);
+        body
     }
 
     /// Render the response in the requested format.
@@ -197,24 +185,28 @@ impl AgentResponse {
     /// Render via the TOON path.
     #[must_use]
     pub fn render_toon(&self) -> String {
-        self.finish_text(&self.toon_body().0)
+        self.finish_text(self.toon_body().0)
     }
 
     /// Render via the KV path.
     #[must_use]
     pub fn render_kv(&self) -> String {
-        self.finish_text(&self.kv_body().0)
+        self.finish_text(self.kv_body().0)
     }
 
     fn render_text(&self) -> String {
-        self.finish_text(&self.body().0)
+        self.finish_text(self.body().0)
     }
 
     /// Whether this response is an error: `as_error()` was called, or the TOON rows or KV items failed validation and
-    /// the body is a `toon_validation_failed` or `kv_validation_failed` error block.
+    /// the body is a `toon_validation_failed` or `kv_validation_failed` error block. Validates without rendering.
     #[must_use]
     pub fn is_error(&self) -> bool {
-        self.body().1
+        self.is_error
+            || match self.target {
+                RenderTarget::Toon | RenderTarget::Unset => self.toon.validate().is_err(),
+                RenderTarget::Kv => crate::kv::validate_keys(&self.single_item).is_err(),
+            }
     }
 
     /// Render just the `help[N]:` block for `self.hints`.
@@ -242,8 +234,9 @@ impl AgentResponse {
     #[must_use]
     pub fn to_call_tool_result(&self) -> crate::mcp::CallToolResult {
         let (body, is_error) = self.body();
+        let structured_content = self.json_from_body(&body, is_error);
         let mut content = vec![crate::mcp::ContentBlock {
-            text: self.finish_text(&body),
+            text: self.finish_text(body),
             audience: vec![crate::audience::Audience::Assistant],
         }];
         if let Some(human) = &self.human_content {
@@ -252,7 +245,7 @@ impl AgentResponse {
                 audience: vec![crate::audience::Audience::User],
             });
         }
-        crate::mcp::CallToolResult { content, is_error, structured_content: self.json_from_body(&body, is_error) }
+        crate::mcp::CallToolResult { content, is_error, structured_content }
     }
 
     fn render_json(&self) -> String {
@@ -282,16 +275,8 @@ impl AgentResponse {
             }
             out.push_str("{\"tool\":");
             json_string(&mut out, &r.tool);
-            out.push_str(",\"params\":{");
-            for (j, (k, v)) in r.params.iter().enumerate() {
-                if j > 0 {
-                    out.push(',');
-                }
-                json_string(&mut out, k);
-                out.push(':');
-                crate::kv::kv_value_to_json(&mut out, v);
-            }
-            out.push('}');
+            out.push_str(",\"params\":");
+            crate::recovery::push_params_json(&mut out, &r.params);
             if let Some(reason) = &r.reason {
                 out.push_str(",\"reason\":");
                 json_string(&mut out, reason);
@@ -323,6 +308,48 @@ fn json_string(out: &mut String, s: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capacity_violations_are_toon_validation_errors_on_every_surface() {
+        let fields: Vec<String> = (0..=crate::toon::MAX_FIELDS).map(|i| format!("f{i}")).collect();
+        let field_refs: Vec<&str> = fields.iter().map(String::as_str).collect();
+        let too_wide = AgentResponse::new("t").items(vec![], &field_refs);
+        let long_hint = AgentResponse::new("t")
+            .items(vec![vec![Value::from("x")]], &["a"])
+            .truncation_hint("h".repeat(crate::toon::MAX_TRUNCATION_HINT_CHARS + 1));
+        for (r, message) in [
+            (too_wide, "fields length 1001 exceeds maximum of 1000"),
+            (long_hint, "truncation_hint length 257 chars exceeds maximum of 256"),
+        ] {
+            assert!(r.is_error(), "{message}");
+            let text = r.render(OutputFormat::Text);
+            assert_eq!(text, format!("error: toon_validation_failed\nmessage: {message}"));
+            assert!(r.render(OutputFormat::Json).contains("\"isError\":true"), "{message}");
+            let result = r.to_call_tool_result();
+            assert!(result.is_error, "{message}");
+            assert_eq!(result.content[0].text, text);
+            assert!(result.structured_content.contains("\"isError\":true"), "{message}");
+        }
+    }
+
+    #[test]
+    fn is_error_agrees_with_the_rendered_flag_for_every_target() {
+        use crate::kv::{KvItem, KvValue};
+        let kv = |key: &str| KvItem { key: key.into(), value: KvValue::Int(1) };
+        let cases = [
+            AgentResponse::new("t"),
+            AgentResponse::new("help"),
+            AgentResponse::new("t").items(vec![vec![Value::Int(1)]], &["a"]),
+            AgentResponse::new("t").items(vec![vec![Value::Int(1)]], &["a", "b"]),
+            AgentResponse::new("t").kv_items(vec![]),
+            AgentResponse::new("t").kv_items(vec![kv("a")]),
+            AgentResponse::new("t").kv_items(vec![kv("a"), kv("a")]),
+            AgentResponse::new("t").kv_items(vec![kv("a")]).as_error(),
+        ];
+        for r in cases {
+            assert_eq!(r.is_error(), r.to_call_tool_result().is_error, "{r:?}");
+        }
+    }
 
     #[test]
     fn items_path_renders_toon() {
@@ -509,8 +536,8 @@ mod tests {
     }
 
     // AC-041 through AC-045: RecoveryHint params through AgentResponse's Json
-    // path use kv_value_to_json (bare null/quoted-token/bare bool), in
-    // contrast to kv_items' plain-text/embedded-token body rendering above.
+    // path use kv_value_to_json (bare null for missing and non-finite floats, bare bool), in
+    // contrast to kv_items' plain-text body rendering above.
     #[test]
     #[cfg(feature = "serde")]
     fn ac041_to_ac045_recovery_params_use_kv_value_to_json_typing() {
@@ -518,9 +545,9 @@ mod tests {
         use crate::recovery::RecoveryHint;
         let cases: Vec<(KvValue, serde_json::Value)> = vec![
             (KvValue::Missing, serde_json::Value::Null),
-            (KvValue::Float(f64::NAN, 2), serde_json::json!("NaN")),
-            (KvValue::Float(f64::INFINITY, 0), serde_json::json!("inf")),
-            (KvValue::Float(f64::NEG_INFINITY, 0), serde_json::json!("-inf")),
+            (KvValue::Float(f64::NAN, 2), serde_json::Value::Null),
+            (KvValue::Float(f64::INFINITY, 0), serde_json::Value::Null),
+            (KvValue::Float(f64::NEG_INFINITY, 0), serde_json::Value::Null),
             (KvValue::Duration(std::time::Duration::from_millis(1500)), serde_json::json!("1.5s")),
             (KvValue::Bool(true), serde_json::json!(true)),
         ];

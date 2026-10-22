@@ -300,6 +300,9 @@ impl Plan {
         }
 
         let mut prerequisites: Vec<Vec<usize>> = vec![Vec::new(); n];
+        // `added_by[j] == i + 1` once step `i` has listed `j`: an O(1) repeat check instead of scanning its
+        // prerequisites so far, which made a wide fan-in O(deg²).
+        let mut added_by: Vec<usize> = vec![0; n];
         for (i, step) in steps.iter().enumerate() {
             if duplicate[i] {
                 continue;
@@ -314,7 +317,10 @@ impl Plan {
                     continue;
                 }
                 match index.get(dep) {
-                    Some(&j) if !prerequisites[i].contains(&j) => prerequisites[i].push(j),
+                    Some(&j) if added_by[j] != i + 1 => {
+                        added_by[j] = i + 1;
+                        prerequisites[i].push(j);
+                    }
                     Some(_) => {}
                     None => violations
                         .push(PlanViolation::UnknownDependency { step_id: step.id.clone(), dependency: dep.clone() }),

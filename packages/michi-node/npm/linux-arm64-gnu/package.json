@@ -1,0 +1,44 @@
+{
+  "name": "@orin-dx/michi-linux-arm64-gnu",
+  "version": "0.3.1",
+  "cpu": [
+    "arm64"
+  ],
+  "main": "michi.linux-arm64-gnu.node",
+  "files": [
+    "michi.linux-arm64-gnu.node",
+    "LICENSE"
+  ],
+  "description": "AXI response primitives for agent-ergonomic tools",
+  "keywords": [
+    "axi",
+    "agent",
+    "llm",
+    "mcp",
+    "toon",
+    "cli",
+    "napi"
+  ],
+  "homepage": "https://orin-dx.com/tools/michi/",
+  "license": "FSL-1.1-MIT",
+  "engines": {
+    "node": ">= 18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/orin-dx/michi.git",
+    "directory": "packages/michi-node"
+  },
+  "bugs": {
+    "url": "https://github.com/orin-dx/michi/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "os": [
+    "linux"
+  ],
+  "libc": [
+    "glibc"
+  ]
+}

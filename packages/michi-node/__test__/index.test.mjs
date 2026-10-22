@@ -724,6 +724,146 @@ void describe('index.d.ts keeps plain number types for the resilience domain (SP
   })
 })
 
+void describe('input limits bound the work (capacity limits)', () => {
+  // Loose bound: the old eager conversion took 3.4 s and 2.6 GiB to reject a 100,001-row input.
+  const FAST_MS = 1000
+  const timed = (fn) => {
+    const start = performance.now()
+    let error
+    try {
+      fn()
+    } catch (e) {
+      error = e
+    }
+    return { error, ms: performance.now() - start }
+  }
+  const nullCell = { type: 'null' }
+  const wideRows = (n, width) => Array.from({ length: n }, () => Array.from({ length: width }, () => nullCell))
+
+  void it('rejects a 100,001 x 100 renderToon input before converting it', () => {
+    const rows = wideRows(100_001, 100)
+    const { error, ms } = timed(() => renderToon({ typeName: 't', fields: ['a'], rows, hints: [] }))
+    assert.ok(error, 'expected a rejection')
+    assert.strictEqual(error.message, 'rows length 100001 exceeds maximum of 100000')
+    assert.ok(ms < FAST_MS, `rejection took ${ms} ms`)
+  })
+
+  void it('rejects 100,000 x 100 cells by the per-call cell cap before reading any cell', () => {
+    const rows = wideRows(100_000, 100)
+    const fields = Array.from({ length: 100 }, (_, i) => `f${i}`)
+    const viaRender = timed(() => renderToon({ typeName: 't', fields, rows, hints: [] }))
+    assert.match(viaRender.error?.message ?? '', /^cell count \d+ exceeds maximum of 1000000$/)
+    assert.ok(viaRender.ms < FAST_MS, `renderToon rejection took ${viaRender.ms} ms`)
+
+    const r = new AgentResponse('t')
+    const viaItems = timed(() => r.items(rows, fields))
+    assert.match(viaItems.error?.message ?? '', /^cell count \d+ exceeds maximum of 1000000$/)
+    assert.ok(viaItems.ms < FAST_MS, `AgentResponse.items rejection took ${viaItems.ms} ms`)
+  })
+
+  void it('charges a JS string shared by many cells once per cell against the 64 MiB byte budget', () => {
+    // 10k x 10 cells referencing one 100 KB string would copy out ~10 GB.
+    const shared = { type: 'str', strVal: 'x'.repeat(100_000) }
+    const rows = Array.from({ length: 10_000 }, () => Array.from({ length: 10 }, () => shared))
+    const fields = Array.from({ length: 10 }, (_, i) => `f${i}`)
+    const { error, ms } = timed(() => renderToon({ typeName: 't', fields, rows, hints: [] }))
+    assert.match(error?.message ?? '', /^input byte total \d+ exceeds maximum of 67108864$/)
+    assert.ok(ms < FAST_MS, `rejection took ${ms} ms`)
+
+    const r = new AgentResponse('t')
+    r.items([[{ type: 'int', intVal: 1 }]], ['id'])
+    assert.throws(() => r.items(rows, fields), /^Error: input byte total \d+ exceeds maximum of 67108864$/)
+    assert.strictEqual(r.renderToon(), 't[1]{id}:\n  1', 'a rejected items() call leaves the builder unchanged')
+
+    const hint = 'h'.repeat(1_000_000)
+    assert.throws(
+      () => renderHints(Array.from({ length: 100 }, () => hint)),
+      /input byte total \d+ exceeds maximum of 67108864/
+    )
+  })
+
+  void it('caps each cell and hint at 1 MiB, counted in UTF-8 bytes', () => {
+    const big = 'x'.repeat(1_048_577)
+    assert.throws(
+      () => renderToon({ typeName: 't', fields: ['a'], rows: [[{ type: 'str', strVal: big }]], hints: [] }),
+      (err) => err.message === 'strVal byte length (at least 1048577) exceeds maximum of 1048576'
+    )
+    // 600,000 two-byte chars: under the cap in UTF-16 units, over it in UTF-8 bytes.
+    const wide = 'é'.repeat(600_000)
+    assert.throws(
+      () => renderToon({ typeName: 't', fields: ['a'], rows: [[{ type: 'str', strVal: wide }]], hints: [] }),
+      (err) => err.message === 'strVal byte length 1200000 exceeds maximum of 1048576'
+    )
+    assert.throws(() => renderHints([big]), /hint byte length .* exceeds maximum of 1048576/)
+    assert.throws(() => renderKv([{ key: 'k', value: { type: 'str', strVal: big } }], null, []), /strVal byte length/)
+    assert.throws(() => new AgentResponse('t').hint(big), /hint byte length 1048577 exceeds maximum of 1048576/)
+    assert.throws(() => renderRecovery([{ tool: 'retry', reason: big }]), /reason byte length/)
+    assert.throws(() => renderDomainError('not_found', big, []), /message byte length/)
+    // Exactly 1 MiB is accepted.
+    const atCap = 'x'.repeat(1_048_576)
+    const out = renderToon({ typeName: 't', fields: ['a'], rows: [[{ type: 'str', strVal: atCap }]], hints: [] })
+    assert.ok(out.startsWith('t[1]{a}:\n  xxx'))
+  })
+
+  void it('caps type names, field names, keys and truncation hints at 4 KiB', () => {
+    const long = 'n'.repeat(4097)
+    const opts = (over) => ({ typeName: 't', fields: ['a'], rows: [], hints: [], ...over })
+    assert.throws(() => renderToon(opts({ typeName: long })), /^Error: typeName byte length .* exceeds maximum of 4096$/)
+    assert.throws(() => renderToon(opts({ fields: [long] })), /^Error: field name byte length .* exceeds maximum of 4096$/)
+    assert.throws(
+      () => renderToon(opts({ truncationHint: long })),
+      /^Error: truncationHint byte length .* exceeds maximum of 4096$/
+    )
+    assert.throws(() => renderKv([{ key: long, value: { type: 'null' } }], null, []), /key byte length/)
+    assert.throws(() => new AgentResponse('t').items([], [long]), /field name byte length/)
+    assert.throws(() => new AgentResponse('t').truncationHint(long), /truncationHint byte length 4097 exceeds maximum of 4096/)
+    assert.throws(() => new AgentResponse('t').recoveryHint(long), /tool byte length 4097 exceeds maximum of 4096/)
+    assert.strictEqual(renderToon(opts({ typeName: 'n'.repeat(4096) })), `${'n'.repeat(4096)}: []`)
+  })
+
+  void it('surfaces michi-core shape caps as toon_validation_failed', () => {
+    const hint = 'h'.repeat(257)
+    assert.throws(
+      () => renderToon({ typeName: 't', fields: ['a'], rows: [], hints: [], truncationHint: hint }),
+      (err) => err.message === 'toon_validation_failed: truncation_hint length 257 chars exceeds maximum of 256'
+    )
+    const r = new AgentResponse('t')
+    r.items([[{ type: 'str', strVal: 'x' }]], ['a'])
+    r.truncationHint(hint)
+    const result = r.toCallToolResult()
+    assert.ok(result.content[0].text.startsWith('error: toon_validation_failed\n'), result.content[0].text)
+    assert.strictEqual(result.isError, true)
+    assert.strictEqual(result.structuredContent.isError, true)
+  })
+
+  void it('rejects non-array collection arguments with a plain message', () => {
+    assert.throws(() => renderHints('nope'), /^Error: hints must be an array$/)
+    assert.throws(() => renderToon({ typeName: 't', fields: 'a', rows: [], hints: [] }), /fields must be an array/)
+    assert.throws(() => renderToon({ typeName: 't', fields: ['a'], rows: [5], hints: [] }), /each row must be an array/)
+    assert.throws(() => renderToon({ typeName: 't', fields: ['a'], rows: [[5]], hints: [] }), /JsToonValue must be an object/)
+    assert.throws(() => renderToon({ fields: [], rows: [], hints: [] }), /Missing field `typeName`/)
+  })
+
+  void it('keeps optional arguments optional', () => {
+    const item = { key: 'db', value: { type: 'int', intVal: 3 } }
+    assert.strictEqual(renderStatus('t', 'd', [item], null), renderStatus('t', 'd', [item]))
+    assert.strictEqual(renderStatus('t', 'd', [item], undefined), renderStatus('t', 'd', [item]))
+    assert.strictEqual(renderDomainError('not_found', 'm', [], undefined), renderDomainError('not_found', 'm', []))
+    const out = renderToon({
+      typeName: 't',
+      fields: ['a'],
+      rows: [[{ type: 'str', strVal: 'x', intVal: undefined }]],
+      hints: [],
+      totalCount: undefined,
+      truncationHint: undefined,
+    })
+    assert.strictEqual(out, 't[1]{a}:\n  x')
+    // As before, an object field set to null is a wrong-typed value, not an absent one.
+    assert.throws(() => renderToon({ typeName: 't', fields: ['a'], rows: [[{ type: 'int', intVal: null }]], hints: [] }))
+    assert.throws(() => renderToon({ typeName: 't', fields: ['a'], rows: [[{ type: 'str', strVal: null }]], hints: [] }))
+  })
+})
+
 void describe('full in-domain regression (SPEC-ARCH-004 AC-021)', () => {
   void it('nextRetryDelay and isRetryableStatus in-domain results are unchanged from before this spec', () => {
     assert.strictEqual(nextRetryDelay(3, 100, 1000, 0.0, 0.5, 0), 100)

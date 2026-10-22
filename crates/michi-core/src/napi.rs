@@ -34,6 +34,12 @@ use napi_derive::napi;
 /// both the rendering and resilience domains).
 pub mod num;
 
+/// Bounded, incremental conversion of the exports' collection and string arguments.
+mod input;
+
+use self::input::{Budget, List, MAX_NAME_BYTES, MAX_STRING_BYTES};
+use napi::bindgen_prelude::Unknown;
+
 /// Maximum row count accepted for a single call's `rows`: [`render_toon`]'s
 /// `opts.rows` and [`JsAgentResponse::items`]'s `rows`.
 const MAX_ROWS: usize = 100_000;
@@ -47,6 +53,15 @@ const MAX_FIELDS: usize = 1_000;
 /// cumulative count enforced across calls by [`JsAgentResponse::hint`] and
 /// [`JsAgentResponse::recovery_hint`].
 const MAX_HINTS: usize = 10_000;
+
+/// `"{what} byte length {len} exceeds maximum of {max}"` for a string argument napi has already copied. Used by the
+/// single-string builder methods: their one argument is copied once, so the cap bounds what is kept, not the copy.
+fn check_bytes(what: &str, s: &str, max: usize) -> napi::Result<()> {
+    if s.len() > max {
+        return Err(napi::Error::from_reason(format!("{what} byte length {} exceeds maximum of {max}", s.len())));
+    }
+    Ok(())
+}
 
 /// Value type for a TOON row cell (JavaScript-friendly).
 ///
@@ -129,13 +144,45 @@ fn js_value_to_rust(v: JsToonValue) -> napi::Result<crate::toon::Value> {
 /// exceeds this module's hard size limits (`MAX_ROWS`, `MAX_FIELDS`,
 /// `MAX_HINTS`) — an unbounded caller-supplied collection here would let a
 /// single JS call force unbounded synchronous allocation on Node's event
-/// loop, which `#[napi(catch_unwind)]` alone does not guard against. Also
+/// loop, which `#[napi(catch_unwind)]` alone does not guard against. The
+/// limits are checked on the JS arrays before anything is converted, and
+/// the call's cells (at most 1,000,000) and string bytes (at most 64 MiB in
+/// all, 1 MiB per cell or hint, 4 KiB for `typeName`, a field name or
+/// `truncationHint`) are counted as they are read. Also
 /// returns an error if `ToonOptions::validate()` rejects the input — a row
 /// whose value count differs from `fields.len()`, a field name repeated in
-/// `fields`, or a reserved `type_name` (`totalCount`, `help`). Any other type
+/// `fields`, a reserved `type_name` (`totalCount`, `help`), or a document over
+/// michi-core's shape caps. Any other type
 /// or field name is valid and is quoted when TOON 4.4 §7.3 requires.
 /// The error `reason` is the `ToonError` Display text verbatim.
-#[napi(catch_unwind)]
+#[napi(catch_unwind, js_name = "renderToon", ts_args_type = "opts: JsToonOptions")]
+pub fn render_toon_js(opts: Unknown<'_>) -> napi::Result<String> {
+    let mut budget = Budget::new();
+    let obj = input::object(opts, "opts")?;
+    let rows = input::list_prop(&obj, "rows")?;
+    let fields = input::list_prop(&obj, "fields")?;
+    let hints = input::list_prop(&obj, "hints")?;
+    input::check_len("rows", rows.len(), MAX_ROWS)?;
+    input::check_len("fields", fields.len(), MAX_FIELDS)?;
+    input::check_len("hints", hints.len(), MAX_HINTS)?;
+    let opts = JsToonOptions {
+        type_name: budget.string_prop(&obj, "typeName", "typeName", MAX_NAME_BYTES)?,
+        total_count: input::typed_prop::<JsCount>(&obj, "totalCount")?,
+        truncation_hint: budget.opt_string_prop(&obj, "truncationHint", "truncationHint", MAX_NAME_BYTES)?,
+        fields: budget.strings(&fields, "fields", MAX_FIELDS, "field name", MAX_NAME_BYTES)?,
+        hints: budget.strings(&hints, "hints", MAX_HINTS, "hint", MAX_STRING_BYTES)?,
+        rows: budget.rows(&rows, MAX_ROWS, MAX_FIELDS, "maximum fields per row")?,
+    };
+    render_toon(opts)
+}
+
+/// The Rust-typed core of the `renderToon` export, for Rust callers that already hold a [`JsToonOptions`]. Applies
+/// the same collection-length limits; the per-call byte budget only applies to the JS export, which enforces it
+/// while converting.
+///
+/// # Errors
+///
+/// See the `renderToon` export ([`render_toon_js`]).
 pub fn render_toon(opts: JsToonOptions) -> napi::Result<String> {
     if opts.rows.len() > MAX_ROWS {
         return Err(napi::Error::from_reason(format!("rows length {} exceeds maximum of {MAX_ROWS}", opts.rows.len())));
@@ -184,8 +231,20 @@ pub fn empty_state(type_name: String) -> String {
 ///
 /// # Errors
 ///
+/// Returns an error if `hints` exceeds `MAX_HINTS` entries, a hint exceeds 1 MiB, or the call's strings exceed
+/// 64 MiB in all.
+#[napi(catch_unwind, js_name = "renderHints", ts_args_type = "hints: Array<string>")]
+pub fn render_hints_js(hints: Unknown<'_>) -> napi::Result<String> {
+    let mut budget = Budget::new();
+    let hints = List::new(hints, "hints")?;
+    render_hints(budget.strings(&hints, "hints", MAX_HINTS, "hint", MAX_STRING_BYTES)?)
+}
+
+/// The Rust-typed core of the `renderHints` export.
+///
+/// # Errors
+///
 /// Returns an error if `hints` exceeds `MAX_HINTS` entries.
-#[napi(catch_unwind)]
 pub fn render_hints(hints: Vec<String>) -> napi::Result<String> {
     if hints.len() > MAX_HINTS {
         return Err(napi::Error::from_reason(format!("hints length {} exceeds maximum of {MAX_HINTS}", hints.len())));
@@ -198,9 +257,23 @@ pub fn render_hints(hints: Vec<String>) -> napi::Result<String> {
 ///
 /// # Errors
 ///
+/// Returns an error if `hints` exceeds `MAX_HINTS` entries, a hint exceeds 1 MiB, or the call's strings (`body`
+/// included) exceed 64 MiB in all.
+#[napi(catch_unwind, js_name = "appendHints", ts_args_type = "body: string, hints: Array<string>")]
+pub fn append_hints_js(body: Unknown<'_>, hints: Unknown<'_>) -> napi::Result<String> {
+    let mut budget = Budget::new();
+    let hints = List::new(hints, "hints")?;
+    input::check_len("hints", hints.len(), MAX_HINTS)?;
+    let body = budget.string(body, "body", input::MAX_INPUT_BYTES)?;
+    append_hints(body, budget.strings(&hints, "hints", MAX_HINTS, "hint", MAX_STRING_BYTES)?)
+}
+
+/// The Rust-typed core of the `appendHints` export.
+///
+/// # Errors
+///
 /// Returns an error if `hints` exceeds `MAX_HINTS` entries.
-#[napi(catch_unwind)]
-#[allow(clippy::needless_pass_by_value)] // napi-derive requires owned String for JS string params
+#[allow(clippy::needless_pass_by_value)] // takes ownership of `body` to append in place
 pub fn append_hints(body: String, hints: Vec<String>) -> napi::Result<String> {
     if hints.len() > MAX_HINTS {
         return Err(napi::Error::from_reason(format!("hints length {} exceeds maximum of {MAX_HINTS}", hints.len())));
@@ -226,8 +299,20 @@ pub struct JsRecoveryHint {
 ///
 /// # Errors
 ///
+/// Returns an error if `hints` exceeds `MAX_HINTS` entries, a `tool` exceeds 4 KiB, a `reason` exceeds 1 MiB, or the
+/// call's strings exceed 64 MiB in all.
+#[napi(catch_unwind, js_name = "renderRecovery", ts_args_type = "hints: Array<JsRecoveryHint>")]
+pub fn render_recovery_js(hints: Unknown<'_>) -> napi::Result<String> {
+    let mut budget = Budget::new();
+    let hints = List::new(hints, "hints")?;
+    render_recovery(budget.recovery_hints(&hints, MAX_HINTS)?)
+}
+
+/// The Rust-typed core of the `renderRecovery` export.
+///
+/// # Errors
+///
 /// Returns an error if `hints` exceeds `MAX_HINTS` entries.
-#[napi(catch_unwind)]
 pub fn render_recovery(hints: Vec<JsRecoveryHint>) -> napi::Result<String> {
     if hints.len() > MAX_HINTS {
         return Err(napi::Error::from_reason(format!("hints length {} exceeds maximum of {MAX_HINTS}", hints.len())));
@@ -295,13 +380,30 @@ fn js_kv_value_to_rust(v: JsToonValue) -> napi::Result<crate::kv::KvValue> {
 /// # Errors
 ///
 /// Rejects a duplicate key or the reserved keys `totalCount`, `help` and `recovery` (`kv_validation_failed: …`),
-/// and inputs over the caps.
-#[napi(catch_unwind)]
-pub fn render_kv(
-    items: Vec<JsKvItem>,
-    #[napi(ts_arg_type = "number | undefined | null")] total_count: Option<JsCount>,
-    hints: Vec<String>,
-) -> napi::Result<String> {
+/// and inputs over the caps: 1,000 items, 10,000 hints, 4 KiB per key, 1 MiB per value or hint, 64 MiB of strings
+/// per call.
+#[napi(
+    catch_unwind,
+    js_name = "renderKv",
+    ts_args_type = "items: Array<JsKvItem>, totalCount: number | undefined | null, hints: Array<string>"
+)]
+pub fn render_kv_js(items: Unknown<'_>, total_count: Option<JsCount>, hints: Unknown<'_>) -> napi::Result<String> {
+    let mut budget = Budget::new();
+    let items = List::new(items, "items")?;
+    let hints = List::new(hints, "hints")?;
+    input::check_len("items", items.len(), MAX_FIELDS)?;
+    input::check_len("hints", hints.len(), MAX_HINTS)?;
+    let items = budget.kv_items(&items, MAX_FIELDS)?;
+    let hints = budget.strings(&hints, "hints", MAX_HINTS, "hint", MAX_STRING_BYTES)?;
+    render_kv(items, total_count, hints)
+}
+
+/// The Rust-typed core of the `renderKv` export.
+///
+/// # Errors
+///
+/// See the `renderKv` export ([`render_kv_js`]).
+pub fn render_kv(items: Vec<JsKvItem>, total_count: Option<JsCount>, hints: Vec<String>) -> napi::Result<String> {
     if items.len() > MAX_FIELDS {
         return Err(napi::Error::from_reason(format!("items length {} exceeds maximum of {MAX_FIELDS}", items.len())));
     }
@@ -318,7 +420,34 @@ pub fn render_kv(
 }
 
 /// Render the TOON 4.4 `already_done` document: `operation`, `status: already_done`, `summary`, `help`.
-#[napi(catch_unwind)]
+///
+/// # Errors
+///
+/// Rejects more than 10,000 hints, an `operation` over 4 KiB, a `summary` or hint over 1 MiB, and more than 64 MiB
+/// of strings per call.
+#[napi(
+    catch_unwind,
+    js_name = "renderAlreadyDone",
+    ts_args_type = "operation: string, summary: string, hints: Array<string>"
+)]
+pub fn render_already_done_js(
+    operation: Unknown<'_>,
+    summary: Unknown<'_>,
+    hints: Unknown<'_>,
+) -> napi::Result<String> {
+    let mut budget = Budget::new();
+    let hints = List::new(hints, "hints")?;
+    input::check_len("hints", hints.len(), MAX_HINTS)?;
+    let operation = budget.string(operation, "operation", MAX_NAME_BYTES)?;
+    let summary = budget.string(summary, "summary", MAX_STRING_BYTES)?;
+    render_already_done(operation, summary, budget.strings(&hints, "hints", MAX_HINTS, "hint", MAX_STRING_BYTES)?)
+}
+
+/// The Rust-typed core of the `renderAlreadyDone` export.
+///
+/// # Errors
+///
+/// Returns an error if `hints` exceeds `MAX_HINTS` entries.
 pub fn render_already_done(operation: String, summary: String, hints: Vec<String>) -> napi::Result<String> {
     if hints.len() > MAX_HINTS {
         return Err(napi::Error::from_reason(format!("hints length {} exceeds maximum of {MAX_HINTS}", hints.len())));
@@ -367,7 +496,36 @@ pub fn is_retryable_status(#[napi(ts_arg_type = "number")] status: JsHttpStatus)
 
 /// Render a classified `DomainError` as a TOON 4.4 document (`error`, `message`, `exit_code`, `help`), or as a
 /// GitHub annotation.
-#[napi(catch_unwind)]
+///
+/// # Errors
+///
+/// Rejects an unknown `code`, more than 10,000 hints, a `code` over 4 KiB, a `message` or hint over 1 MiB, and more
+/// than 64 MiB of strings per call.
+#[napi(
+    catch_unwind,
+    js_name = "renderDomainError",
+    ts_args_type = "code: string, message: string, hints: Array<string>, githubAnnotation?: boolean | undefined | null"
+)]
+pub fn render_domain_error_js(
+    code: Unknown<'_>,
+    message: Unknown<'_>,
+    hints: Unknown<'_>,
+    github_annotation: Option<bool>,
+) -> napi::Result<String> {
+    let mut budget = Budget::new();
+    let hints = List::new(hints, "hints")?;
+    input::check_len("hints", hints.len(), MAX_HINTS)?;
+    let code = budget.string(code, "code", MAX_NAME_BYTES)?;
+    let message = budget.string(message, "message", MAX_STRING_BYTES)?;
+    let hints = budget.strings(&hints, "hints", MAX_HINTS, "hint", MAX_STRING_BYTES)?;
+    render_domain_error(code, message, hints, github_annotation)
+}
+
+/// The Rust-typed core of the `renderDomainError` export.
+///
+/// # Errors
+///
+/// Rejects an unknown `code` and more than `MAX_HINTS` hints.
 pub fn render_domain_error(
     code: String,
     message: String,
@@ -418,7 +576,42 @@ pub struct JsStatusItem {
 
 /// Render a P8 content-first orientation response: `tool`, `description`, the TOON 4.4 table
 /// `items[N]{key,value,health,reason}:` and `help`. An item without `health` renders `ok`.
-#[napi(catch_unwind)]
+///
+/// # Errors
+///
+/// Rejects an unknown `health`, more than 1,000 items or 10,000 hints, a `toolName` or key over 4 KiB, a
+/// `description`, value, `health` or hint over 1 MiB, and more than 64 MiB of strings per call.
+#[napi(
+    catch_unwind,
+    js_name = "renderStatus",
+    ts_args_type = "toolName: string, description: string, items: Array<JsStatusItem>, hints?: Array<string> | undefined | null"
+)]
+pub fn render_status_js(
+    tool_name: Unknown<'_>,
+    description: Unknown<'_>,
+    items: Unknown<'_>,
+    hints: Option<Unknown<'_>>,
+) -> napi::Result<String> {
+    let mut budget = Budget::new();
+    let items = List::new(items, "items")?;
+    let hints = List::optional(hints, "hints")?;
+    input::check_len("items", items.len(), MAX_FIELDS)?;
+    input::check_len("hints", hints.as_ref().map_or(0, List::len), MAX_HINTS)?;
+    let tool_name = budget.string(tool_name, "toolName", MAX_NAME_BYTES)?;
+    let description = budget.string(description, "description", MAX_STRING_BYTES)?;
+    let items = budget.status_items(&items, MAX_FIELDS)?;
+    let hints = match hints {
+        Some(hints) => Some(budget.strings(&hints, "hints", MAX_HINTS, "hint", MAX_STRING_BYTES)?),
+        None => None,
+    };
+    render_status(tool_name, description, items, hints)
+}
+
+/// The Rust-typed core of the `renderStatus` export.
+///
+/// # Errors
+///
+/// Rejects an unknown `health` and more than `MAX_FIELDS` items or `MAX_HINTS` hints.
 pub fn render_status(
     tool_name: String,
     description: String,
@@ -521,8 +714,30 @@ impl JsAgentResponse {
     }
 
     /// Populate the TOON list path.
-    #[napi(catch_unwind)]
-    #[allow(clippy::needless_pass_by_value)] // napi-derive requires owned Vec<String> for JS array params
+    ///
+    /// # Errors
+    ///
+    /// Rejects, before converting anything, more than 100,000 rows, 1,000 fields or 1,000 values in a row, and
+    /// more than 1,000,000 cells in all; while converting, a field name over 4 KiB, a cell over 1 MiB, more than
+    /// 64 MiB of strings in the call, or an invalid cell. The builder is unchanged on error.
+    #[napi(catch_unwind, js_name = "items", ts_args_type = "rows: Array<Array<JsToonValue>>, fields: Array<string>")]
+    pub fn items_js(&mut self, rows: Unknown<'_>, fields: Unknown<'_>) -> napi::Result<()> {
+        let mut budget = Budget::new();
+        let rows = List::new(rows, "rows")?;
+        let fields = List::new(fields, "fields")?;
+        input::check_len("rows", rows.len(), MAX_ROWS)?;
+        input::check_len("fields", fields.len(), MAX_FIELDS)?;
+        let fields = budget.strings(&fields, "fields", MAX_FIELDS, "field name", MAX_NAME_BYTES)?;
+        let rows = budget.rows(&rows, MAX_ROWS, MAX_FIELDS, "maximum")?;
+        self.items(rows, fields)
+    }
+
+    /// The Rust-typed core of the `items` method.
+    ///
+    /// # Errors
+    ///
+    /// Rejects more than `MAX_ROWS` rows or `MAX_FIELDS` fields or values in a row, or an invalid cell.
+    #[allow(clippy::needless_pass_by_value)] // mirrors the JS method, which hands over owned values
     pub fn items(&mut self, rows: Vec<Vec<JsToonValue>>, fields: Vec<String>) -> napi::Result<()> {
         if rows.len() > MAX_ROWS {
             return Err(napi::Error::from_reason(format!("rows length {} exceeds maximum of {MAX_ROWS}", rows.len())));
@@ -560,7 +775,24 @@ impl JsAgentResponse {
     }
 
     /// Populate the KV single-item path.
-    #[napi(catch_unwind)]
+    ///
+    /// # Errors
+    ///
+    /// Rejects more than 1,000 items before converting any, a key over 4 KiB, a value over 1 MiB, more than 64 MiB
+    /// of strings in the call, or an invalid value. The builder is unchanged on error.
+    #[napi(catch_unwind, js_name = "kvItems", ts_args_type = "items: Array<JsKvItem>")]
+    pub fn kv_items_js(&mut self, items: Unknown<'_>) -> napi::Result<()> {
+        let mut budget = Budget::new();
+        let items = List::new(items, "items")?;
+        let items = budget.kv_items(&items, MAX_FIELDS)?;
+        self.kv_items(items)
+    }
+
+    /// The Rust-typed core of the `kvItems` method.
+    ///
+    /// # Errors
+    ///
+    /// Rejects more than `MAX_FIELDS` items or an invalid value.
     pub fn kv_items(&mut self, items: Vec<JsKvItem>) -> napi::Result<()> {
         if items.len() > MAX_FIELDS {
             return Err(napi::Error::from_reason(format!(
@@ -578,11 +810,16 @@ impl JsAgentResponse {
     }
 
     /// Append a contextual hint.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a hint over 1 MiB, and any hint after the 10,000th.
     #[napi(catch_unwind)]
     pub fn hint(&mut self, hint: String) -> napi::Result<()> {
         if self.hint_count >= MAX_HINTS {
             return Err(napi::Error::from_reason(format!("cumulative hint count exceeds maximum of {MAX_HINTS}")));
         }
+        check_bytes("hint", &hint, MAX_STRING_BYTES)?;
         let b = self.take()?;
         self.inner = Some(b.hint(hint));
         self.hint_count += 1;
@@ -590,12 +827,20 @@ impl JsAgentResponse {
     }
 
     /// Append a recovery hint naming a tool.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a `tool` over 4 KiB, a `reason` over 1 MiB, and any recovery hint after the 10,000th.
     #[napi(catch_unwind)]
     pub fn recovery_hint(&mut self, tool: String, reason: Option<String>) -> napi::Result<()> {
         if self.recovery_count >= MAX_HINTS {
             return Err(napi::Error::from_reason(format!(
                 "cumulative recovery hint count exceeds maximum of {MAX_HINTS}"
             )));
+        }
+        check_bytes("tool", &tool, MAX_NAME_BYTES)?;
+        if let Some(reason) = &reason {
+            check_bytes("reason", reason, MAX_STRING_BYTES)?;
         }
         let b = self.take()?;
         let mut hint = crate::recovery::RecoveryHint::new(tool);
@@ -609,8 +854,14 @@ impl JsAgentResponse {
 
     /// Set the caller's instruction for getting a truncated TOON cell in full (e.g. `"full=true"`), appended to the
     /// truncation suffix as `" — use {hint}"`. Not called: the suffix only reports how many chars were cut.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a hint over 4 KiB. A hint over 256 chars is accepted here but renders as a `toon_validation_failed`
+    /// error block, like any other options michi-core's TOON validation rejects.
     #[napi(catch_unwind)]
     pub fn truncation_hint(&mut self, hint: String) -> napi::Result<()> {
+        check_bytes("truncationHint", &hint, MAX_NAME_BYTES)?;
         let b = self.take()?;
         self.inner = Some(b.truncation_hint(hint));
         Ok(())
@@ -1771,7 +2022,7 @@ mod tests {
 
     #[test]
     fn ac032_michi_node_lib_rs_contains_only_the_reexport() {
-        let src = include_str!("../../../packages/michi-node/src/lib.rs");
+        let Some(src) = crate::test_support::workspace_file("packages/michi-node/src/lib.rs") else { return };
         let non_comment_non_blank: Vec<&str> =
             src.lines().map(str::trim).filter(|line| !line.is_empty() && !line.starts_with("//")).collect();
         assert_eq!(
@@ -1829,12 +2080,14 @@ mod tests {
     fn ac033a_unsafe_confined_to_napi_num_ffi_trait_impls() {
         let lib_src = include_str!("lib.rs");
         let napi_src = include_str!("napi.rs");
-        let node_src = include_str!("../../../packages/michi-node/src/lib.rs");
+        let node_src = crate::test_support::workspace_file("packages/michi-node/src/lib.rs");
         let num_src = include_str!("napi/num.rs");
 
-        for (name, src) in
-            [("src/lib.rs", lib_src), ("src/napi.rs", napi_src), ("packages/michi-node/src/lib.rs", node_src)]
-        {
+        let mut sources = vec![("src/lib.rs", lib_src), ("src/napi.rs", napi_src)];
+        if let Some(node_src) = node_src.as_deref() {
+            sources.push(("packages/michi-node/src/lib.rs", node_src));
+        }
+        for (name, src) in sources {
             let hits: Vec<&str> = src.lines().filter(|l| line_has_unsafe_qualifier(l)).collect();
             assert!(hits.is_empty(), "{name} must contain no hand-written `unsafe` qualifiers, found: {hits:?}");
         }
@@ -1872,16 +2125,20 @@ mod tests {
         // unsafe_code = "deny" lives in [workspace.lints.rust] (Cargo.toml),
         // not a #![deny(unsafe_code)] attribute in lib.rs -- see Cargo.toml's
         // comment on why only unsafe_code is centralized this way.
-        let workspace_toml = include_str!("../../../Cargo.toml");
-        let cargo_toml = include_str!("../Cargo.toml");
-        assert!(
-            workspace_toml.contains("unsafe_code = \"deny\""),
-            "Cargo.toml's [workspace.lints.rust] must set unsafe_code = \"deny\""
-        );
-        assert!(
-            cargo_toml.contains("[lints]\nworkspace = true"),
-            "Cargo.toml's [package] must opt into workspace lints via [lints]\\nworkspace = true"
-        );
+        // Read from the workspace: the packaged crate has no root manifest and inlines the workspace lints.
+        if let (Some(workspace_toml), Some(cargo_toml)) = (
+            crate::test_support::workspace_file("Cargo.toml"),
+            crate::test_support::workspace_file("crates/michi-core/Cargo.toml"),
+        ) {
+            assert!(
+                workspace_toml.contains("unsafe_code = \"deny\""),
+                "Cargo.toml's [workspace.lints.rust] must set unsafe_code = \"deny\""
+            );
+            assert!(
+                cargo_toml.contains("[lints]\nworkspace = true"),
+                "Cargo.toml's [package] must opt into workspace lints via [lints]\\nworkspace = true"
+            );
+        }
 
         let napi_src = include_str!("napi.rs");
         let idx = napi_src.find("#![allow(unsafe_code)]").expect("src/napi.rs must contain #![allow(unsafe_code)]");

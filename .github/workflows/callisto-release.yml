@@ -181,7 +181,13 @@ jobs:
               callisto --format json matrix --package "$package"
             done < <(jq -r '[.operations[].id.package] | unique[]' "$intent")
           } | jq -s '{platformTargets: (map(.platformTargets) | add // {})}' > "$RUNNER_TEMP/matrix.json"
-          matrix=$(jq -c '[.platformTargets[] | select(.kind == "napi") | .targets[]] | unique_by(.artifactName)' \
+          # Callisto 0.11 schedules x86_64-apple-darwin on macos-13, a retired
+          # runner image: build it on the arm64 macos-latest instead, where
+          # rustup's x86_64-apple-darwin target links with Apple's universal SDK.
+          # Every other target keeps Callisto's hostRunner/useCross (aarch64
+          # Linux cross-compiles with cargo-zigbuild on ubuntu-latest).
+          matrix=$(jq -c '[.platformTargets[] | select(.kind == "napi") | .targets[]] | unique_by(.artifactName) |
+            map(if .triple == "x86_64-apple-darwin" then .hostRunner = "macos-latest" | .useCross = false else . end)' \
             "$RUNNER_TEMP/matrix.json")
           # Execute places one package's JS binding; a second addon needs per-package placement.
           napi_dirs=$(jq -c '[.[].packageDir] | unique' <<< "$matrix")

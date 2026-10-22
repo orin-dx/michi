@@ -54,6 +54,40 @@ fn digits(mut n: usize) -> usize {
 /// `content.chars().count() <= max_chars`.
 #[must_use]
 pub fn truncate(content: &str, max_chars: usize, hint: &str) -> Truncated {
+    truncate_with(content, max_chars, hint, clause_chars(hint))
+}
+
+/// Chars in the `" — use {hint}"` clause, or 0 for an empty hint (no clause).
+fn clause_chars(hint: &str) -> usize {
+    if hint.is_empty() {
+        0
+    } else {
+        " \u{2014} use ".chars().count() + hint.chars().count()
+    }
+}
+
+/// A truncation hint whose suffix clause has been measured once, for callers that truncate many values with the same
+/// hint (the TOON renderer, once per document): counting the hint's chars per cell made a 1 MB hint over 100k cells
+/// take seconds.
+pub(crate) struct InlineHint<'h> {
+    hint: &'h str,
+    clause_chars: usize,
+}
+
+impl<'h> InlineHint<'h> {
+    /// Measure `hint` once.
+    pub(crate) fn new(hint: &'h str) -> Self {
+        Self { hint, clause_chars: clause_chars(hint) }
+    }
+
+    /// Same result as [`truncate_inline`]`(content, max_chars, hint)`.
+    pub(crate) fn truncate(&self, content: &str, max_chars: usize) -> String {
+        truncate_with(content, max_chars, self.hint, self.clause_chars).content
+    }
+}
+
+/// [`truncate()`] with the hint clause's char count already known.
+fn truncate_with(content: &str, max_chars: usize, hint: &str, clause_chars: usize) -> Truncated {
     // Byte length is always >= char count, so if it already fits within
     // max_chars the char count does too — skip the full UTF-8 scan.
     if content.len() <= max_chars {
@@ -80,7 +114,6 @@ pub fn truncate(content: &str, max_chars: usize, hint: &str) -> Truncated {
     }
 
     // Suffix length without the digits of `removed`: " (" + " more chars" + [" — use " + hint] + ")".
-    let clause_chars = if hint.is_empty() { 0 } else { " \u{2014} use ".chars().count() + hint.chars().count() };
     let fixed_chars = 2 + " more chars".len() + clause_chars + 1;
     let fits = |keep: usize| keep + fixed_chars + digits(char_count - keep) <= max_chars;
 
@@ -421,6 +454,25 @@ mod tests {
             for max_chars in 0..70 {
                 for hint in ["", "x", "full=true", "見よ"] {
                     check_rules(&content, max_chars, hint);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn prepared_hint_matches_truncate_inline_everywhere() {
+        // The TOON renderer counts the hint once per document through `InlineHint`; its output must be exactly
+        // `truncate_inline`'s for every content, cap and hint.
+        for n in [0usize, 1, 9, 10, 11, 99, 100, 101, 1000, 1001] {
+            let content = "é".repeat(n);
+            for max_chars in 0..70 {
+                for hint in ["", "x", "full=true", "見よ"] {
+                    let prepared = InlineHint::new(hint);
+                    assert_eq!(
+                        prepared.truncate(&content, max_chars),
+                        truncate_inline(&content, max_chars, hint),
+                        "n={n} max={max_chars} hint={hint:?}"
+                    );
                 }
             }
         }

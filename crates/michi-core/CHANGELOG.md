@@ -2,7 +2,7 @@
 
 ## 0.3.1
 
-- Released together with the `michi` fixed group.
+- First published release. 0.3.0 was never published; its changes, listed below, ship in 0.3.1.
 - Joined the `michi` group at this version.
 
 ## 0.3.0

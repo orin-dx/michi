@@ -38,8 +38,12 @@ impl<T> std::fmt::Display for Sensitive<T> {
 }
 
 /// The specific kind of domain error.
+///
+/// Rendered output uses the snake_case [`ErrorCode::label`]; with the `schemars` feature its schema is the enum of
+/// those labels, matching the `error` field of [`DomainError::render_json`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schemars", schemars(rename_all = "snake_case"))]
 #[non_exhaustive]
 pub enum ErrorCode {
     /// Bad parameters.
@@ -102,8 +106,13 @@ impl ErrorCode {
 }
 
 /// A domain-level error.
+///
+/// With the `serde` feature it serializes to exactly the JSON of [`DomainError::render_json`]
+/// (`{isError, error, message, retryable, hints, recovery}`), and with `schemars` its schema describes that form, so
+/// it can be used as an MCP `outputSchema`. `retry_after` is not part of that form.
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(into = "DomainErrorWire"))]
 #[non_exhaustive]
 pub struct DomainError {
     /// The error classification.
@@ -183,11 +192,16 @@ impl DomainError {
 
     /// Render formatted for GitHub Actions workflow annotations (`::error title=code::message`).
     ///
-    /// Newlines and carriage returns are percent-encoded (`%0A`, `%0D`) to
-    /// keep the annotation on a single line as required by the Actions runner.
+    /// The message is encoded as GitHub workflow command data: `%` becomes `%25` first, then CR and LF become `%0D`
+    /// and `%0A`, so the annotation stays on one line and a literal `%0A` in the message cannot decode to a line
+    /// break. The `title` property is encoded the same way plus `:` → `%3A` and `,` → `%2C`.
     #[must_use]
     pub fn render_github_annotation(&self) -> String {
-        format!("::error title={}::{}", self.code.label(), self.message.replace('\n', "%0A").replace('\r', "%0D"))
+        format!(
+            "::error title={}::{}",
+            escape_annotation_property(self.code.label()),
+            escape_annotation_data(&self.message)
+        )
     }
 
     /// Render as a JSON object matching `AgentResponse::render_json()` shape.
@@ -222,16 +236,8 @@ impl DomainError {
             Some(r) => {
                 out.push_str("{\"tool\":");
                 crate::kv::json_escape_str(&mut out, &r.tool);
-                out.push_str(",\"params\":{");
-                for (j, (k, v)) in r.params.iter().enumerate() {
-                    if j > 0 {
-                        out.push(',');
-                    }
-                    crate::kv::json_escape_str(&mut out, k);
-                    out.push(':');
-                    crate::kv::kv_value_to_json(&mut out, v);
-                }
-                out.push('}');
+                out.push_str(",\"params\":");
+                crate::recovery::push_params_json(&mut out, &r.params);
                 if let Some(reason) = &r.reason {
                     out.push_str(",\"reason\":");
                     crate::kv::json_escape_str(&mut out, reason);
@@ -263,6 +269,62 @@ impl DomainError {
     }
 }
 
+/// The wire form of [`DomainError`]: the object `render_json()` writes.
+#[cfg(feature = "serde")]
+#[derive(serde::Serialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schemars", schemars(rename = "DomainError"))]
+#[serde(rename_all = "camelCase")]
+struct DomainErrorWire {
+    /// Always `true`.
+    #[cfg_attr(feature = "schemars", schemars(schema_with = "const_true_schema"))]
+    is_error: bool,
+    /// The snake_case error code label.
+    #[cfg_attr(feature = "schemars", schemars(with = "ErrorCode"))]
+    error: &'static str,
+    /// Human-readable message.
+    message: String,
+    /// Whether this error is safe to retry.
+    retryable: bool,
+    /// Contextual hints.
+    hints: Vec<String>,
+    /// The structured recovery hint, or `null`.
+    recovery: Option<RecoveryHint>,
+}
+
+#[cfg(feature = "schemars")]
+fn const_true_schema(_: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+    serde_json::from_value(serde_json::json!({ "type": "boolean", "const": true }))
+        .unwrap_or(schemars::schema::Schema::Bool(true))
+}
+
+#[cfg(feature = "serde")]
+impl From<DomainError> for DomainErrorWire {
+    fn from(e: DomainError) -> Self {
+        Self {
+            is_error: true,
+            error: e.code.label(),
+            message: e.message,
+            retryable: e.retryable,
+            hints: e.hints.iter().map(|h| h.as_str().to_string()).collect(),
+            recovery: e.recovery,
+        }
+    }
+}
+
+// The schema describes the render_json()/serde wire form above, not the Rust field layout.
+#[cfg(feature = "schemars")]
+#[cfg_attr(docsrs, doc(cfg(feature = "schemars")))]
+impl schemars::JsonSchema for DomainError {
+    fn schema_name() -> String {
+        DomainErrorWire::schema_name()
+    }
+
+    fn json_schema(generator: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+        DomainErrorWire::json_schema(generator)
+    }
+}
+
 impl std::fmt::Display for DomainError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}: {}", self.code.label(), self.message)
@@ -270,6 +332,37 @@ impl std::fmt::Display for DomainError {
 }
 
 impl std::error::Error for DomainError {}
+
+/// Encode GitHub workflow command data (the message): `%` first, so an encoded sequence in the input stays literal,
+/// then CR and LF.
+fn escape_annotation_data(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 8);
+    for ch in s.chars() {
+        match ch {
+            '%' => out.push_str("%25"),
+            '\r' => out.push_str("%0D"),
+            '\n' => out.push_str("%0A"),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// Encode a GitHub workflow command property value: the data encoding plus `:` and `,`, which delimit properties.
+fn escape_annotation_property(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 8);
+    for ch in s.chars() {
+        match ch {
+            '%' => out.push_str("%25"),
+            '\r' => out.push_str("%0D"),
+            '\n' => out.push_str("%0A"),
+            ':' => out.push_str("%3A"),
+            ',' => out.push_str("%2C"),
+            other => out.push(other),
+        }
+    }
+    out
+}
 
 /// The fields every rendered error document starts with: `error: <code>`, `message: …`, `exit_code: 1`.
 fn push_error_fields(out: &mut String, code: &str, message: &str) {
@@ -281,6 +374,7 @@ fn push_error_fields(out: &mut String, code: &str, message: &str) {
 }
 
 #[cfg(feature = "miette")]
+#[cfg_attr(docsrs, doc(cfg(feature = "miette")))]
 impl miette::Diagnostic for DomainError {
     fn code<'a>(&'a self) -> Option<Box<dyn std::fmt::Display + 'a>> {
         Some(Box::new(self.code.label()))
@@ -439,6 +533,35 @@ mod tests {
         assert_eq!(
             DomainError::new(ErrorCode::InvalidInput, "line1\nline2\r\nline3").render_github_annotation(),
             "::error title=invalid_input::line1%0Aline2%0D%0Aline3"
+        );
+    }
+
+    // GitHub decodes `%25`, `%0D` and `%0A` in workflow command data, so a literal `%` must be encoded first or a
+    // message containing `%0A` would decode to a forged line break.
+    #[test]
+    fn github_annotation_encodes_percent_before_line_breaks() {
+        assert_eq!(
+            DomainError::new(ErrorCode::InvalidInput, "50%0Aforged").render_github_annotation(),
+            "::error title=invalid_input::50%250Aforged"
+        );
+        assert_eq!(
+            DomainError::new(ErrorCode::InvalidInput, "100%25").render_github_annotation(),
+            "::error title=invalid_input::100%2525"
+        );
+        assert_eq!(
+            DomainError::new(ErrorCode::InvalidInput, "a%\nb").render_github_annotation(),
+            "::error title=invalid_input::a%25%0Ab"
+        );
+    }
+
+    // Property values additionally encode `:` and `,`, which delimit properties.
+    #[test]
+    fn github_annotation_property_escaping_covers_colon_and_comma() {
+        assert_eq!(escape_annotation_property("a:b,c%d\ne\rf"), "a%3Ab%2Cc%25d%0Ae%0Df");
+        // The message (data) keeps `:` and `,` verbatim.
+        assert_eq!(
+            DomainError::new(ErrorCode::InvalidInput, "a:b,c").render_github_annotation(),
+            "::error title=invalid_input::a:b,c"
         );
     }
 
@@ -881,6 +1004,16 @@ mod tests {
         assert_eq!(format!("{d}"), "rate_limited: slow down");
         let e = Error::Domain(d);
         assert_eq!(format!("{e}"), "rate_limited: slow down");
+    }
+
+    // A repeated param key must not produce a JSON object with a duplicate key (parsers keep one value silently).
+    #[test]
+    fn render_json_never_repeats_a_recovery_param_key() {
+        let mut r = RecoveryHint::new("t");
+        r.params.push(("x".to_string(), crate::kv::KvValue::Int(1)));
+        r.params.push(("x".to_string(), crate::kv::KvValue::Int(2)));
+        let json = DomainError::new(ErrorCode::NotFound, "m").recovery(r).render_json();
+        assert!(json.contains("\"params\":{\"x\":2}"), "got: {json}");
     }
 
     #[test]
