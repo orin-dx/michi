@@ -508,47 +508,62 @@ pub fn is_retryable_status(#[napi(ts_arg_type = "number")] status: JsHttpStatus)
     crate::resilience::is_retryable_status(status.get_u16())
 }
 
-/// Render a classified `DomainError` as a TOON 4.4 document (`error`, `message`, `exit_code`, `help`), or as a
-/// GitHub annotation.
+/// Render a classified `DomainError` as a TOON 4.4 document (`error`, `message`, `causes`, `exit_code`, `help`), or
+/// as a GitHub annotation (message only).
+///
+/// `causes` (optional) are why the error happened, outermost first, rendered as their own `causes[N]: …` key after the
+/// message; `hints` are what to do next.
 ///
 /// # Errors
 ///
-/// Rejects an unknown `code`, more than 10,000 hints, a `code` over 4 KiB, a `message` or hint over 1 MiB, and more
-/// than 64 MiB of strings per call.
+/// Rejects an unknown `code`, more than 10,000 hints or causes, a `code` over 4 KiB, a `message`, hint or cause over
+/// 1 MiB, and more than 64 MiB of strings per call.
 #[napi(
     catch_unwind,
     js_name = "renderDomainError",
-    ts_args_type = "code: string, message: string, hints: Array<string>, githubAnnotation?: boolean | undefined | null"
+    ts_args_type = "code: string, message: string, hints: Array<string>, githubAnnotation?: boolean | undefined | null, \
+                    causes?: Array<string> | undefined | null"
 )]
 pub fn render_domain_error_js(
     code: Unknown<'_>,
     message: Unknown<'_>,
     hints: Unknown<'_>,
     github_annotation: Option<bool>,
+    causes: Option<Unknown<'_>>,
 ) -> napi::Result<String> {
     let mut budget = Budget::new();
     let hints = List::new(hints, "hints")?;
     input::check_len("hints", hints.len(), MAX_HINTS)?;
+    let causes = List::optional(causes, "causes")?;
+    if let Some(causes) = &causes {
+        input::check_len("causes", causes.len(), MAX_HINTS)?;
+    }
     let code = budget.string(code, "code", MAX_NAME_BYTES)?;
     let message = budget.string(message, "message", MAX_STRING_BYTES)?;
     let hints = budget.strings(&hints, "hints", MAX_HINTS, "hint", MAX_STRING_BYTES)?;
-    render_domain_error(code, message, hints, github_annotation)
+    let causes = match &causes {
+        Some(causes) => budget.strings(causes, "causes", MAX_HINTS, "cause", MAX_STRING_BYTES)?,
+        None => Vec::new(),
+    };
+    render_domain_error(code, message, hints, github_annotation, causes)
 }
 
 /// The Rust-typed core of the `renderDomainError` export.
 ///
 /// # Errors
 ///
-/// Rejects an unknown `code` and more than `MAX_HINTS` hints.
+/// Rejects an unknown `code` and more than `MAX_HINTS` hints or causes.
 pub fn render_domain_error(
     code: String,
     message: String,
     hints: Vec<String>,
     github_annotation: Option<bool>,
+    causes: Vec<String>,
 ) -> napi::Result<String> {
     if hints.len() > MAX_HINTS {
         return Err(napi::Error::from_reason(format!("hints length {} exceeds maximum of {MAX_HINTS}", hints.len())));
     }
+    input::check_len("causes", causes.len(), MAX_HINTS)?;
     let error_code = match code.as_str() {
         "invalid_input" => crate::error::ErrorCode::InvalidInput,
         "unauthorized" => crate::error::ErrorCode::Unauthorized,
@@ -567,6 +582,7 @@ pub fn render_domain_error(
         }
     };
     let mut err = crate::error::DomainError::new(error_code, message);
+    err.causes = causes;
     for h in hints {
         err = err.hint(h);
     }
@@ -2106,7 +2122,7 @@ mod tests {
 
     #[test]
     fn ac038_render_domain_error_rejects_unknown_code_with_enumerated_message() {
-        let err = render_domain_error("bogus_code".into(), "msg".into(), vec![], None)
+        let err = render_domain_error("bogus_code".into(), "msg".into(), vec![], None, vec![])
             .expect_err("unrecognized error code must be rejected");
         assert_eq!(
             err.reason,
@@ -2298,13 +2314,41 @@ mod tests {
 
     #[test]
     fn render_domain_error_hints_cap_boundary() {
-        let err = render_domain_error("invalid_input".into(), "bad".into(), vec!["h".to_string(); MAX_HINTS + 1], None)
-            .expect_err("hints over MAX_HINTS must be rejected");
+        let err = render_domain_error(
+            "invalid_input".into(),
+            "bad".into(),
+            vec!["h".to_string(); MAX_HINTS + 1],
+            None,
+            vec![],
+        )
+        .expect_err("hints over MAX_HINTS must be rejected");
         assert!(err.reason.contains("hints length"), "got: {}", err.reason);
 
-        let out = render_domain_error("invalid_input".into(), "bad".into(), vec!["h".to_string(); MAX_HINTS], None)
-            .expect("hints at exactly MAX_HINTS must be accepted");
+        let out =
+            render_domain_error("invalid_input".into(), "bad".into(), vec!["h".to_string(); MAX_HINTS], None, vec![])
+                .expect("hints at exactly MAX_HINTS must be accepted");
         assert!(!out.is_empty());
+    }
+
+    #[test]
+    fn render_domain_error_renders_causes_and_caps_them() {
+        let out = render_domain_error(
+            "external_failure".into(),
+            "walk failed".into(),
+            vec!["check permissions".into()],
+            None,
+            vec!["io error".into(), "a\nb".into()],
+        )
+        .expect("valid causes");
+        assert_eq!(
+            out,
+            "error: external_failure\nmessage: walk failed\ncauses[2]: io error,\"a\\nb\"\nexit_code: 1\n\
+             help[1]: check permissions"
+        );
+        let err =
+            render_domain_error("not_found".into(), "m".into(), vec![], None, vec!["c".to_string(); MAX_HINTS + 1])
+                .expect_err("causes over MAX_HINTS must be rejected");
+        assert_eq!(err.reason, format!("causes length {} exceeds maximum of {MAX_HINTS}", MAX_HINTS + 1));
     }
 
     // --- AC-008i/AC-009i: render_already_done hints cap (MAX_HINTS). ---

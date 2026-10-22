@@ -46,28 +46,11 @@ Where the final shape diverges from the original ask or an earlier draft, it goe
 
 Gate 1's ceiling ("stay generic" vs. "real tools need real sophistication") isn't a tension to compromise on — it's usually an architecture problem. Separate the _domain-specific decision_ from the _universal signal_.
 
-**Worked example: truncation.** Deciding _which_ items survive a budget is tool-specific — personalized-PageRank over a call graph, a statistical outlier-preserving sampler, a simple first-N cutoff. None of that belongs in michi. But _reporting_ what got cut, in a consistent agent-readable shape, is exactly what every tool needs regardless of how it decided:
+**Worked example: truncation.** Deciding _which_ items survive a budget is tool-specific — personalized-PageRank over a call graph, a statistical outlier-preserving sampler, a simple first-N cutoff. None of that belongs in michi. But _reporting_ what got cut, in a consistent agent-readable shape, is exactly what every tool needs regardless of how it decided.
 
-```rust
-/// What survived some truncation/budget decision, however it was made.
-pub struct TruncationOutcome<T> {
-    pub kept: Vec<T>,
-    pub total_before: usize,
-    pub truncated: bool,
-}
+That split shipped as `michi_core::truncation` (API in [`docs/spec/03-rust-api.md`](docs/spec/03-rust-api.md#truncation--what-a-list-cap-cut)): `TruncationOutcome<T>` holds what was kept and the total before the cut, `hint(guidance)` gives the standard `help[]` line, `truncate_by_count` and `truncate_by_size` are the two strategies michi ships, and `AgentResponse::truncation` sets the count and the hint together. Where the shipped shape differs from the first sketch (a derived `truncated()` instead of a stored flag, a public `new()`, `truncate_by_size` instead of `truncate_by_bytes`), the reasons are in [`docs/spec/06-decisions.md`](docs/spec/06-decisions.md).
 
-impl<T> TruncationOutcome<T> {
-    /// Michi's standard help[]-shaped signal for what got cut — same
-    /// contract regardless of which strategy produced this outcome.
-    pub fn hint(&self, guidance: impl Into<String>) -> Option<Hint> { /* ... */ }
-}
-
-// "Best practice" strategies michi ships, with no extra dependencies, for the common case:
-pub fn truncate_by_count<T>(items: Vec<T>, max: usize) -> TruncationOutcome<T>;
-pub fn truncate_by_bytes<T>(items: Vec<T>, max_bytes: usize, size_of: impl Fn(&T) -> usize) -> TruncationOutcome<T>;
-```
-
-A caller with a genuinely novel heuristic never has to fit their algorithm into michi's shape — they wrap whatever they decided in `TruncationOutcome` and get the same hint/report format everyone else gets. Michi owns the contract, not the heuristic.
+A caller with a genuinely novel heuristic never has to fit their algorithm into michi's shape — they wrap whatever they decided with `TruncationOutcome::new` and get the same hint/report format everyone else gets. Michi owns the contract, not the heuristic.
 
 **When a new primitive seems too domain-specific to generalize, ask whether it splits this way first.** Often only half of it actually is.
 

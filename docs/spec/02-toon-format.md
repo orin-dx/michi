@@ -119,13 +119,14 @@ recovery[2]{tool,params,reason}:
 ```
 error: not_found
 message: "Issue #9999 not found: check the number"
+causes[1]: issue index last synced 2 days ago
 exit_code: 1
 help[1]: Call list_issues to see available numbers
 recovery[1]{tool,params,reason}:
   list_issues,"{\"state\":\"open\"}",null
 ```
 
-`Error::InvalidInput(m)` and `Error::NotFound(m)` render the same shape with `error: invalid_input` / `error: not_found` and `message: m`. `AgentResponse`'s validation failures are `error: toon_validation_failed` / `error: kv_validation_failed` plus a quoted `message`.
+`causes[N]` is an inline array of strings (§9.1), present only when the error has causes: why it happened, outermost first. `help[N]` is what to do next. Keeping them under separate keys lets an agent tell diagnosis from guidance. `Error::InvalidInput(m)` and `Error::NotFound(m)` render the same shape with `error: invalid_input` / `error: not_found` and `message: m`. `AgentResponse`'s validation failures are `error: toon_validation_failed` / `error: kv_validation_failed` plus a quoted `message`.
 
 **Status (`StatusResponse::render`)** — item keys are cells of a table, not root keys, so any key is valid; `health` is `ok`, `degraded`, `error`, or `null` for no signal, and `reason` is `null` unless degraded or error:
 

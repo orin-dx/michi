@@ -75,18 +75,28 @@ pub(crate) fn append_help_block<'a, I>(out: &mut String, hints: I)
 where
     I: ExactSizeIterator<Item = &'a str>,
 {
-    if hints.len() == 0 {
+    append_inline_strings(out, "help", hints);
+}
+
+/// Shared writer for a root-level inline array of strings (TOON 4.4 §9.1): `key[N]: s1,s2` with no trailing newline,
+/// each string encoded per §7.2. `key` must be a bare §7.3 key. Does nothing for an empty iterator.
+pub(crate) fn append_inline_strings<'a, I>(out: &mut String, key: &str, items: I)
+where
+    I: ExactSizeIterator<Item = &'a str>,
+{
+    if items.len() == 0 {
         return;
     }
     start_block(out);
-    out.push_str("help[");
-    out.push_str(&hints.len().to_string());
+    out.push_str(key);
+    out.push('[');
+    out.push_str(&items.len().to_string());
     out.push_str("]: ");
-    for (i, hint) in hints.enumerate() {
+    for (i, item) in items.enumerate() {
         if i > 0 {
             out.push(',');
         }
-        out.push_str(&crate::toon::escape_value(hint));
+        out.push_str(&crate::toon::escape_value(item));
     }
 }
 

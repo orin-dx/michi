@@ -69,6 +69,8 @@ fn domain_errors() -> Vec<DomainError> {
     vec![
         DomainError::new(ErrorCode::NotFound, "missing"),
         DomainError::new(ErrorCode::RateLimited, "slow down")
+            .cause("upstream returned 429")
+            .cause("quota window: 60s\nremaining: 0")
             .hint("wait")
             .hint("then retry")
             .retry_after(std::time::Duration::from_secs(3))

@@ -10,7 +10,7 @@ See the [documentation map](../README.md) for the role of this reference and rel
 | --- | --- |
 | [01-overview-and-setup.md](01-overview-and-setup.md) | What michi is, why it exists, what's deliberately out of scope, who consumes it, `Cargo.toml`, crate layout |
 | [02-toon-format.md](02-toon-format.md) | The TOON grammar — the agent-facing list format |
-| [03-rust-api.md](03-rust-api.md) | Every `michi-core` module: `toon`, `kv`, `hints`, `truncate`, `empty`, `error`, `idempotency`, `resilience`, `status`, `recovery`, `response` |
+| [03-rust-api.md](03-rust-api.md) | Every `michi-core` module: `toon`, `kv`, `hints`, `truncate`, `truncation`, `empty`, `error`, `idempotency`, `resilience`, `status`, `recovery`, `response` |
 | [04-mcp-and-napi.md](04-mcp-and-napi.md) | The `mcp` module, the NAPI/npm boundary, and the builder-across-FFI problem |
 | [05-scope-and-quality.md](05-scope-and-quality.md) | What's formalized vs. what stays in your app, feature flags, versioning, performance, testing |
 | [06-decisions.md](06-decisions.md) | Open questions and API design rationale |
