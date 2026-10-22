@@ -140,6 +140,7 @@ impl<const MIN: i64, const MAX: i64> JsRanged<MIN, MAX> {
     // NOT `const fn`: `u8::try_from` cannot be called inside a const fn on
     // this workspace's pinned rustc 1.96 (E0658 — `TryFrom` is not yet a
     // const trait).
+    #[must_use]
     pub fn get_u8(self) -> u8 {
         let () = Self::U8_FITS;
         u8::try_from(self.0).unwrap_or(u8::MAX)
@@ -151,6 +152,7 @@ impl<const MIN: i64, const MAX: i64> JsRanged<MIN, MAX> {
     /// `MIN >= 0 && MAX <= u16::MAX`; instantiating this function with
     /// bounds that don't fit `u16` is a compile error (`E0080`) via
     /// `U16_FITS`.
+    #[must_use]
     pub fn get_u16(self) -> u16 {
         let () = Self::U16_FITS;
         u16::try_from(self.0).unwrap_or(u16::MAX)
@@ -162,6 +164,7 @@ impl<const MIN: i64, const MAX: i64> JsRanged<MIN, MAX> {
     /// `MIN >= 0 && MAX <= u32::MAX`; instantiating this function with
     /// bounds that don't fit `u32` is a compile error (`E0080`) via
     /// `U32_FITS`.
+    #[must_use]
     pub fn get_u32(self) -> u32 {
         let () = Self::U32_FITS;
         u32::try_from(self.0).unwrap_or(u32::MAX)
