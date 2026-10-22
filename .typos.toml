@@ -3,3 +3,7 @@ extend-ignore-identifiers-re = ["[0-9a-f]{16}"]
 
 [files]
 extend-exclude = ["*.snap", "*.stderr", "Cargo.lock"]
+
+[default.extend-words]
+# A given name in the synthetic TOON evaluation corpus (evals/toon/gen_corpus.py), not a typo of "lines".
+ines = "ines"

@@ -1,0 +1,9 @@
+corpus/
+renders/
+ablation/
+pilot/prompts/
+pilot/runs/
+tiktoken_cache/
+michi-render/target/
+michi-render/Cargo.lock
+__pycache__/
