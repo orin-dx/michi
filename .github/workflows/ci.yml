@@ -73,8 +73,20 @@ jobs:
       - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2
         with:
           tool: cargo-semver-checks
-      # The baseline is the latest version of each crate published on crates.io.
-      - run: cargo semver-checks check-release -p michi-core -p michi-pipeline
+      # The baseline is the latest version of each crate published on crates.io. The release type comes from the
+      # pending changesets: a minor or major changeset allows the breaking changes that release type permits (pre-1.0,
+      # a minor bump may break), otherwise the change must be patch-compatible.
+      - name: Check API compatibility against the pending release type
+        run: |
+          set -euo pipefail
+          release_type=patch
+          if grep -hqE '^[^:]+:[[:space:]]*major[[:space:]]*$' .changeset/*.md 2>/dev/null; then
+            release_type=major
+          elif grep -hqE '^[^:]+:[[:space:]]*minor[[:space:]]*$' .changeset/*.md 2>/dev/null; then
+            release_type=minor
+          fi
+          echo "Pending release type: $release_type"
+          cargo semver-checks check-release -p michi-core -p michi-pipeline --release-type "$release_type"
 
   msrv:
     name: MSRV
