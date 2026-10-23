@@ -35,7 +35,7 @@ let graph = b.build(UnknownTargets::Error);
 
 ## Graph and Dag
 
-A `Graph<K, E>` may contain cycles. A `Dag<K>` is proven acyclic and carries no kinds, because validation has already chosen which edges count.
+A `Graph<K, E>` may contain cycles. A `Dag<K, E>` (`E` defaults to `()`) is proven acyclic and keeps the kinds of the edges validation kept, so callers can judge readiness per kind; validating copies the kinds, so it needs `E: Clone`.
 
 - `graph.validate(order)` uses every edge; `graph.validate_filtered(keep, order)` keeps only the edges for which `keep(EdgeRef)` returns true. `EdgeRef` has named fields: `dependent`, `prerequisite`, `kind` and both `NodeIx`s. Keys are shared between the graph and its dags, so validating does not copy them.
 - One graph can produce several dags. Callisto validates its package graph once without dev edges for cascade order, and once with them for publish order.
@@ -58,9 +58,11 @@ Everything the crate outputs follows that one order: the topological order, each
 | --- | --- |
 | `order()` | `&[NodeIx]` in topological order, computed at validation |
 | `keys_in_order()` | the keys in that order |
-| `prerequisites(ix)`, `dependents(ix)` | `&[NodeIx]` neighbours, in the chosen order |
+| `prerequisites(ix)`, `dependents(ix)` | `&[NodeIx]` neighbours, in the chosen order, each once |
+| `prerequisite_edges(ix)` | `&[(NodeIx, E)]`: every kept edge to a prerequisite with its kind, in the chosen order then by kind; a pair joined by several kinds appears once per kind |
 | `layers()` | layer 0 has no prerequisites; a node's layer is one more than its deepest prerequisite's. Nodes in one layer don't depend on each other, so they can run together |
 | `ready(satisfied, eligible)` | nodes for which `eligible(key)` holds and `satisfied(p)` holds for every prerequisite, in order |
+| `ready_by_edge(eligible, satisfied)` | the same, but `satisfied(prerequisite, kind)` is asked for every kept edge, so kinds can be met at different times (a sibling publish needs a publish issued; a tag needs it confirmed) |
 | `ancestors(roots)`, `descendants(roots)` | every node upstream or downstream of `roots`, not including them |
 | `key(ix)`, `index_of(&key)`, `node_at(position)`, `len()` | lookups; `node_at` maps a declaration position to its node, for callers that keep per-node data in declaration order |
 | `canonical()` | each node's key with its prerequisites' keys, nodes and prerequisites sorted by key, for callers that hash the structure with their own hasher. Isolated nodes are included |
