@@ -332,7 +332,8 @@ impl<'a> Scheduler<'a> {
         record
     }
 
-    fn set_terminal(&mut self, i: usize, record: StepRecord) {
+    fn set_terminal(&mut self, i: usize, mut record: StepRecord) {
+        record.replay = self.plan.steps().get(i).map(|s| s.runner().replay());
         let opts = self.opts;
         if observe(opts, |o| o.on_step_finished(&self.run_id, &record)) {
             self.observer_panics = self.observer_panics.saturating_add(1);

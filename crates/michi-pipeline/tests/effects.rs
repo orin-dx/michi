@@ -10,8 +10,8 @@ use std::time::Duration;
 use common::*;
 use michi_pipeline::{
     execute, resume, BreakerConfig, BreakerPhase, BreakerRegistry, DurableObserver, Effect, ExecOptions,
-    ExecutionError, NotRunReason, Precheck, ReplayClass, ResumeError, ResumeOptions, RunId, RunOutcome, RunRecord,
-    SkipReason, StepId, StepObserver, StepRecord, StepStatus, UnknownCause, Verification,
+    ExecutionError, NotRunReason, Precheck, Replay, ReplayClass, ResumeError, ResumeOptions, RunId, RunOutcome,
+    RunRecord, SkipReason, StepId, StepObserver, StepRecord, StepStatus, UnknownCause, Verification,
 };
 
 // ---- Two facts per failure ----
@@ -431,4 +431,26 @@ async fn every_new_status_renders_as_toon_and_no_run_with_them_succeeds() {
     assert!(refused.steps().iter().all(|s| s.status() == StepStatus::NotRun(NotRunReason::StartNotRecorded)));
     assert_eq!(refused.outcome(), RunOutcome::Failed);
     assert!(refused.error().is_some());
+}
+
+#[tokio::test(start_paused = true)]
+async fn needs_verification_leaves_out_idempotent_steps_resume_reruns_anyway() {
+    // Resume re-runs an idempotent step whatever happened, so listing it for verification only made callers do
+    // needless work (and a verdict for it is refused as not awaiting one). Records now carry each step's replay.
+    let log = Log::new();
+    let p = plan(vec![
+        exec("safe_fail", &[], Scripted::new(&log, "safe_fail", vec![Act::Err(down("x"))]).idempotent()),
+        exec("safe_panic", &[], Scripted::new(&log, "safe_panic", vec![Act::Panic]).idempotent()),
+        exec("risky", &[], Scripted::new(&log, "risky", vec![Act::Err(down("x"))])),
+    ]);
+    let record = execute(&p, rid("r"), &ExecOptions::new()).await;
+    let listed: Vec<&str> = record.needs_verification().map(|s| s.step_id().as_str()).collect();
+    assert_eq!(listed, ["risky"]);
+    assert_eq!(record.step(&sid("safe_panic")).unwrap().replay(), Some(Replay::Idempotent));
+
+    // A rebuilt record takes each step's replay from the plan, even for a hand-saved in-flight marker.
+    let saved = vec![StepRecord::in_flight(sid("safe_fail"), "in flight"), StepRecord::in_flight(sid("risky"), "x")];
+    let rebuilt = RunRecord::from_parts(rid("r"), p.fingerprint(), &p, saved).unwrap();
+    let listed: Vec<&str> = rebuilt.needs_verification().map(|s| s.step_id().as_str()).collect();
+    assert_eq!(listed, ["risky"]);
 }
