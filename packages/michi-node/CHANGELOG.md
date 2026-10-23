@@ -1,5 +1,9 @@
 # michi-node
 
+## 0.6.0
+
+- Released together with the `michi` fixed group.
+
 ## 0.5.0
 
 - Fix review findings: a per-object byte budget for Node's `AgentResponse`, tiny floats that rendered `0`, schemas that disagreed with serde, and retry defaults that claimed a timeout was safe to retry.

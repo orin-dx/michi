@@ -1,5 +1,12 @@
 # michi-core
 
+## 0.6.0
+
+- Breaking: michi-core now uses `compact_str` 0.10 (was 0.8). `toon::Value::Str` holds a 0.10 `CompactString` and `From<CompactString> for Value` takes one, so code that builds these from its own `CompactString` must upgrade `compact_str` to 0.10. Conversions from `&str` and `String` are unchanged.
+- Breaking for users of the `schemars` feature: michi-core now implements schemars 1.x's `JsonSchema` (was 0.8). Upgrade your own `schemars` dependency to 1.x; `schemars::gen::SchemaGenerator` and `schemars::schema::Schema` are now `schemars::SchemaGenerator` and `schemars::Schema`.
+  
+  Generated schemas are JSON Schema 2020-12 instead of draft-07. They describe the same wire form, spelled differently: subschemas under `$defs`, `const` for unit variants, `prefixItems` for tuples, and a `$ref` beside `default` without an `allOf` wrapper.
+
 ## 0.5.0
 
 - Fix review findings: a per-object byte budget for Node's `AgentResponse`, tiny floats that rendered `0`, schemas that disagreed with serde, and retry defaults that claimed a timeout was safe to retry.
