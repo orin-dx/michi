@@ -7,13 +7,14 @@ use core::borrow::Borrow;
 
 use crate::algo::Csr;
 use crate::builder::lookup;
-use crate::graph::Kept;
+use crate::graph::{EdgeKinds, Kept};
 use crate::violation::Violations;
 use crate::{GraphBuilder, NodeIx, Order, UnknownTargets};
 
-/// A graph proven to have no cycles, with the edges validation kept. Immutable; cheap to clone.
+/// A graph proven to have no cycles, with the edges validation kept and their kinds (`E`, `()` unless the graph used
+/// kinds). Immutable; cheap to clone.
 #[derive(Debug, Clone)]
-pub struct Dag<K> {
+pub struct Dag<K, E = ()> {
     keys: Arc<[K]>,
     by_key: Arc<[u32]>,
     prerequisites: Arc<Csr>,
@@ -21,6 +22,7 @@ pub struct Dag<K> {
     order: Arc<[NodeIx]>,
     rank: Arc<[u32]>,
     by_rank: Arc<[u32]>,
+    edges: Arc<EdgeKinds<E>>,
 }
 
 /// The layers of a [`Dag`]: layer 0 holds nodes without prerequisites, and a node's layer is one more than its deepest
@@ -58,18 +60,6 @@ impl Layers {
 }
 
 impl<K: Ord + Clone> Dag<K> {
-    pub(crate) fn new(keys: Arc<[K]>, by_key: Arc<[u32]>, kept: Kept, order: Vec<NodeIx>) -> Self {
-        Self {
-            keys,
-            by_key,
-            prerequisites: Arc::new(kept.prerequisites),
-            dependents: Arc::new(kept.dependents),
-            order: Arc::from(order),
-            rank: Arc::from(kept.rank),
-            by_rank: Arc::from(kept.by_rank),
-        }
-    }
-
     /// Builds and validates in one call, for graphs without edge kinds where an unknown dependency is an error.
     ///
     /// # Errors
@@ -89,6 +79,21 @@ impl<K: Ord + Clone> Dag<K> {
             }
         }
         b.build(UnknownTargets::Error).validate(order)
+    }
+}
+
+impl<K: Ord + Clone, E> Dag<K, E> {
+    pub(crate) fn new(keys: Arc<[K]>, by_key: Arc<[u32]>, kept: Kept, order: Vec<NodeIx>, edges: EdgeKinds<E>) -> Self {
+        Self {
+            keys,
+            by_key,
+            prerequisites: Arc::new(kept.prerequisites),
+            dependents: Arc::new(kept.dependents),
+            order: Arc::from(order),
+            rank: Arc::from(kept.rank),
+            by_rank: Arc::from(kept.by_rank),
+            edges: Arc::new(edges),
+        }
     }
 
     /// Number of nodes.
@@ -203,6 +208,32 @@ impl<K: Ord + Clone> Dag<K> {
         self.by_rank.iter().map(|&i| NodeIx(i)).filter(move |&ix| {
             self.key(ix).is_some_and(&eligible)
                 && self.prerequisites(ix).iter().all(|&p| self.key(p).is_some_and(&satisfied))
+        })
+    }
+
+    /// Every kept edge from `ix` to a prerequisite, with its kind, in the dag's [`Order`] (then by kind). A pair joined
+    /// by several kinds appears once per kind; [`Dag::prerequisites`] lists each prerequisite once. Empty for an index
+    /// the dag does not have.
+    #[must_use]
+    pub fn prerequisite_edges(&self, ix: NodeIx) -> &[(NodeIx, E)] {
+        self.edges.of(ix.u())
+    }
+
+    /// Like [`Dag::ready`], but each prerequisite edge is judged with its kind: a node is ready when `eligible(key)`
+    /// holds and `satisfied(prerequisite, kind)` holds for every kept edge. Use it when some kinds are met earlier
+    /// than others, such as a publish that only needs its prerequisite's publish issued while a tag needs it
+    /// confirmed. One pass over the graph.
+    pub fn ready_by_edge<'a, R, S>(&'a self, eligible: R, satisfied: S) -> impl Iterator<Item = NodeIx> + 'a
+    where
+        R: Fn(&K) -> bool + 'a,
+        S: Fn(&K, &E) -> bool + 'a,
+    {
+        self.by_rank.iter().map(|&i| NodeIx(i)).filter(move |&ix| {
+            self.key(ix).is_some_and(&eligible)
+                && self
+                    .prerequisite_edges(ix)
+                    .iter()
+                    .all(|(p, kind)| self.key(*p).is_some_and(|key| satisfied(key, kind)))
         })
     }
 

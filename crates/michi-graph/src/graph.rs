@@ -87,6 +87,8 @@ pub(crate) struct Kept {
     dangling_kept: Vec<bool>,
     pub(crate) rank: Vec<u32>,
     pub(crate) by_rank: Vec<u32>,
+    /// Indices into `Graph::edges` of the kept edges that are not self-loops.
+    pub(crate) kept_edges: Vec<usize>,
 }
 
 impl<K: Ord + Clone, E: Ord> Graph<K, E> {
@@ -134,7 +136,10 @@ impl<K: Ord + Clone, E: Ord> Graph<K, E> {
     /// # Errors
     ///
     /// [`Violations`] listing every problem when the graph is not a valid dag.
-    pub fn validate(&self, order: Order) -> Result<Dag<K>, Violations<K>> {
+    pub fn validate(&self, order: Order) -> Result<Dag<K, E>, Violations<K>>
+    where
+        E: Clone,
+    {
         self.validate_filtered(|_| true, order)
     }
 
@@ -151,7 +156,10 @@ impl<K: Ord + Clone, E: Ord> Graph<K, E> {
         &self,
         keep: impl FnMut(EdgeRef<'_, K, E>) -> bool,
         order: Order,
-    ) -> Result<Dag<K>, Violations<K>> {
+    ) -> Result<Dag<K, E>, Violations<K>>
+    where
+        E: Clone,
+    {
         let kept = self.kept(keep, order);
         let n = self.len();
         // Duplicates in declaration order, or by key under `Order::Key` so shuffling declarations changes nothing.
@@ -220,7 +228,8 @@ impl<K: Ord + Clone, E: Ord> Graph<K, E> {
         if !violations.is_empty() {
             return Err(Violations::new(violations));
         }
-        Ok(Dag::new(Arc::clone(&self.keys), Arc::clone(&self.by_key), kept, topo))
+        let edges = self.edge_kinds(&kept);
+        Ok(Dag::new(Arc::clone(&self.keys), Arc::clone(&self.by_key), kept, topo, edges))
     }
 
     /// The cycles among the edges `keep` accepts, for graphs that may legitimately contain them. Each strongly
@@ -302,7 +311,8 @@ impl<K: Ord + Clone, E: Ord> Graph<K, E> {
         let mut self_loop = vec![false; n];
         let mut self_loop_seq: Vec<Option<usize>> = vec![None; n];
         let mut forward = Vec::with_capacity(self.edges.len());
-        for e in &self.edges {
+        let mut kept_edges = Vec::with_capacity(self.edges.len());
+        for (idx, e) in self.edges.iter().enumerate() {
             let Some(edge) = self.edge_ref(e) else { continue };
             if !keep(edge) {
                 continue;
@@ -316,6 +326,7 @@ impl<K: Ord + Clone, E: Ord> Graph<K, E> {
                 }
             } else {
                 forward.push((e.dependent, e.prerequisite));
+                kept_edges.push(idx);
             }
         }
         let dangling_kept = self
@@ -342,6 +353,50 @@ impl<K: Ord + Clone, E: Ord> Graph<K, E> {
             dangling_kept,
             rank,
             by_rank,
+            kept_edges,
         }
+    }
+
+    /// The kept edges with their kinds, grouped by dependent and ordered by prerequisite rank, then kind.
+    fn edge_kinds(&self, kept: &Kept) -> EdgeKinds<E>
+    where
+        E: Clone,
+    {
+        let n = self.len();
+        let rank = |i: u32| kept.rank.get(i as usize).copied().unwrap_or(u32::MAX);
+        let mut items: Vec<(u32, u32, &E)> = kept
+            .kept_edges
+            .iter()
+            .filter_map(|&i| self.edges.get(i))
+            .map(|e| (e.dependent, e.prerequisite, &e.kind))
+            .collect();
+        items.sort_by(|a, b| (a.0, rank(a.1), a.2).cmp(&(b.0, rank(b.1), b.2)));
+        let mut offsets = vec![0u32; n + 1];
+        for &(d, _, _) in &items {
+            if let Some(o) = offsets.get_mut(d as usize + 1) {
+                *o += 1;
+            }
+        }
+        for i in 1..offsets.len() {
+            let prev = offsets.get(i - 1).copied().unwrap_or(0);
+            if let Some(o) = offsets.get_mut(i) {
+                *o += prev;
+            }
+        }
+        EdgeKinds { offsets, items: items.into_iter().map(|(_, p, k)| (NodeIx(p), k.clone())).collect() }
+    }
+}
+
+/// Each node's kept prerequisite edges with their kinds, compressed like [`Csr`].
+#[derive(Debug, Clone)]
+pub(crate) struct EdgeKinds<E> {
+    offsets: Vec<u32>,
+    items: Vec<(NodeIx, E)>,
+}
+
+impl<E> EdgeKinds<E> {
+    pub(crate) fn of(&self, i: usize) -> &[(NodeIx, E)] {
+        let (Some(&start), Some(&end)) = (self.offsets.get(i), self.offsets.get(i + 1)) else { return &[] };
+        self.items.get(start as usize..end as usize).unwrap_or(&[])
     }
 }
