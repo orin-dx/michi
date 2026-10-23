@@ -42,6 +42,22 @@ pub enum Precheck {
     Unknown,
 }
 
+/// What bounds one attempt of a step: the executor's attempt timeout, or the step's deadline.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AttemptBound {
+    /// Each attempt runs under the attempt timeout ([`crate::ExecOptions::attempt_timeout`] or
+    /// [`crate::ExecStep::attempt_timeout`]), cut to the time left before the step's deadline. The default.
+    #[default]
+    Timeout,
+    /// The attempt runs until the step's deadline (its own or its deadline group's, whichever is earlier), however
+    /// long the attempt timeout is. For a step that waits by design, such as [`crate::poll_step`]. Without a deadline,
+    /// the attempt timeout bounds the attempt as usual. The step sees its bound in
+    /// [`StepContext::attempt_deadline`] and should finish before it: an attempt the executor has to cut ends with
+    /// [`ExecutionError::Timeout`], whose effect is unknown.
+    Deadline,
+}
+
 /// What a step attempt gets from the executor.
 #[derive(Debug, Clone)]
 pub struct StepContext {
@@ -50,14 +66,27 @@ pub struct StepContext {
     attempt: u32,
     cancellation: CancellationToken,
     deadline: Option<tokio::time::Instant>,
+    attempt_deadline: Option<tokio::time::Instant>,
+    attempt_timeout: Duration,
 }
 
+/// The attempt timeout a context made outside the executor reports: the executor's default.
+const DEFAULT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(30);
+
 impl StepContext {
-    /// A context for attempt 0 with a fresh token and no deadline, for exercising a [`Step`] on its own (in tests,
-    /// say). The executor builds its own.
+    /// A context for attempt 0 with a fresh token, no deadline and the default 30 s attempt timeout, for exercising
+    /// a [`Step`] on its own (in tests, say). The executor builds its own.
     #[must_use]
     pub fn new(run_id: RunId, step_id: StepId) -> Self {
-        Self { run_id, step_id, attempt: 0, cancellation: CancellationToken::new(), deadline: None }
+        Self {
+            run_id,
+            step_id,
+            attempt: 0,
+            cancellation: CancellationToken::new(),
+            deadline: None,
+            attempt_deadline: None,
+            attempt_timeout: DEFAULT_ATTEMPT_TIMEOUT,
+        }
     }
 
     pub(crate) fn for_attempt(
@@ -67,7 +96,14 @@ impl StepContext {
         cancellation: CancellationToken,
         deadline: Option<tokio::time::Instant>,
     ) -> Self {
-        Self { run_id, step_id, attempt, cancellation, deadline }
+        Self { attempt, cancellation, deadline, ..Self::new(run_id, step_id) }
+    }
+
+    /// Sets when the executor cuts this attempt, and the step's configured attempt timeout.
+    pub(crate) fn bounded(mut self, attempt_deadline: Option<tokio::time::Instant>, attempt_timeout: Duration) -> Self {
+        self.attempt_deadline = attempt_deadline;
+        self.attempt_timeout = attempt_timeout;
+        self
     }
 
     /// The run this attempt belongs to.
@@ -107,6 +143,22 @@ impl StepContext {
     #[must_use]
     pub fn remaining(&self) -> Option<Duration> {
         self.deadline.map(|d| d.saturating_duration_since(tokio::time::Instant::now()))
+    }
+
+    /// When the executor cuts this attempt (or this precheck): the attempt timeout from its start, or the step's
+    /// deadline if that comes first or the step is [`AttemptBound::Deadline`]. `None` outside the executor. A step
+    /// that wants to stop on its own terms, with its own error, finishes before it.
+    #[must_use]
+    pub fn attempt_deadline(&self) -> Option<tokio::time::Instant> {
+        self.attempt_deadline
+    }
+
+    /// The attempt timeout configured for this step ([`crate::ExecStep::attempt_timeout`] or
+    /// [`crate::ExecOptions::attempt_timeout`]). An [`AttemptBound::Deadline`] step is not cut by it, so it can apply
+    /// it to each unit of its own work: [`crate::poll_step`] bounds each check with it.
+    #[must_use]
+    pub fn attempt_timeout(&self) -> Duration {
+        self.attempt_timeout
     }
 
     /// `run_id:step_id`: the same on every attempt and on resume, unique across runs. Pass it to a downstream that
@@ -168,6 +220,12 @@ pub trait Step: Send + Sync {
     fn precheck<'a>(&'a self, ctx: &'a StepContext) -> PrecheckFuture<'a> {
         let _ = ctx;
         Box::pin(async { Ok(Precheck::Unknown) })
+    }
+
+    /// What bounds each attempt. Defaults to [`AttemptBound::Timeout`]; a step that waits by design until its deadline
+    /// returns [`AttemptBound::Deadline`]. A precheck always runs under the attempt timeout.
+    fn attempt_bound(&self) -> AttemptBound {
+        AttemptBound::Timeout
     }
 }
 

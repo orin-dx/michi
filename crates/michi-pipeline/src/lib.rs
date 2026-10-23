@@ -54,6 +54,7 @@ mod error;
 mod exec;
 mod id;
 mod plan;
+mod poll;
 mod record;
 mod scheduler;
 mod step;
@@ -67,8 +68,9 @@ pub use exec::{
 };
 pub use id::{IdError, RunId, StepId, MAX_ID_LEN};
 pub use plan::{ExecStep, ParseFingerprintError, Plan, PlanError, PlanFingerprint, PlanViolation};
+pub use poll::{poll_step, PollSchedule, PollStep, Readiness};
 pub use record::{AttemptRecord, RunOutcome, RunRecord, StepRecord};
-pub use step::{step_fn, FnStep, Precheck, PrecheckFuture, Replay, Step, StepContext, StepFuture};
+pub use step::{step_fn, AttemptBound, FnStep, Precheck, PrecheckFuture, Replay, Step, StepContext, StepFuture};
 
 /// The michi-core status types a [`RunRecord`] reports, re-exported for convenience.
 pub use michi_core::pipeline::{NotRunReason, SkipReason, StepStatus, UnknownCause};

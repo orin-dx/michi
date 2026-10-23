@@ -82,8 +82,9 @@ pub enum ExecutionError {
         /// The panic payload, if it was a string.
         message: String,
     },
-    /// A deadline ended before the step did anything: the executor did not start it because its deadline group's
-    /// window had closed. Not applied and not retryable in this run; resume runs the step again in a new window.
+    /// A deadline came before the step could finish its work, and nothing was applied: the executor did not start the
+    /// step because its deadline group's window had closed, or a [`crate::poll_step`] stopped polling before its
+    /// deadline. Not applied and not retryable in this run; resume runs the step again (in a new window).
     #[error("deadline passed: {message}")]
     DeadlinePassed {
         /// Which deadline, and what was left undone.

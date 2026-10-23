@@ -87,6 +87,28 @@ impl Step for Publish {
 }
 ```
 
+## Waiting for something
+
+`poll_step` checks on a fixed schedule (by default at once, then after 2 s, 4 s, 8 s, 16 s, then every 30 s) until the check says it's ready, a non-retryable error, the step's deadline or cancellation. The whole poll is one attempt, so it never uses the retry budget, and it runs until its deadline rather than the attempt timeout. A deadline group gives several polls one shared window:
+
+```rust
+use std::time::Duration;
+
+use michi_pipeline::{poll_step, ExecOptions, ExecStep, PollSchedule, Readiness, StepId};
+
+let verify = ExecStep::new(
+    StepId::try_new("verify-a").unwrap(),
+    "Verify a@1.2.3 is visible",
+    poll_step(PollSchedule::default(), |_ctx| async {
+        Ok(Readiness::NotYet("registry serves 1.2.2".to_string()))
+    }),
+)
+.deadline_group("verify");
+let options = ExecOptions::new().group_deadline("verify", Duration::from_secs(360));
+```
+
+If the deadline comes first, the step fails with `ExecutionError::DeadlinePassed` and the last thing the check saw, and resume polls again.
+
 To make sure a step only runs once its start is saved, implement `DurableObserver::record_start` and pass the observer to `ExecOptions::durable_starts(observer)`.
 
 ## Docs

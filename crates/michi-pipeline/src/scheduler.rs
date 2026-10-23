@@ -14,8 +14,8 @@ use crate::error::millis;
 use crate::exec::{ExecOptions, FailurePolicy, Mode, StepObserver};
 use crate::plan::Fnv;
 use crate::{
-    AttemptRecord, CancellationToken, CircuitBreaker, Effect, ExecutionError, Plan, Precheck, Replay, ReplayClass,
-    RunId, RunRecord, Step, StepContext, StepId, StepRecord,
+    AttemptBound, AttemptRecord, CancellationToken, CircuitBreaker, Effect, ExecutionError, Plan, Precheck, Replay,
+    ReplayClass, RunId, RunRecord, Step, StepContext, StepId, StepRecord,
 };
 
 /// How a step enters the scheduler: to be run, or already terminal (carried over by resume).
@@ -35,6 +35,7 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 struct Job {
     runner: Arc<dyn Step>,
     replay: Replay,
+    bound: AttemptBound,
     run_id: RunId,
     step_id: StepId,
     token: CancellationToken,
@@ -404,6 +405,7 @@ impl<'a> Scheduler<'a> {
         let job = Job {
             runner: Arc::clone(step.runner()),
             replay,
+            bound: step.runner().attempt_bound(),
             run_id: self.run_id.clone(),
             step_id: step.id().clone(),
             token: self.run_token.child_token(),
@@ -692,6 +694,12 @@ async fn run_step(job: Job) -> Outcome {
         Some(d) => job.attempt_timeout.min(d.saturating_duration_since(now)).max(Duration::from_millis(1)),
         None => job.attempt_timeout,
     };
+    // A deadline-bound step's attempt runs until its deadline, not the attempt timeout; without a deadline it falls
+    // back to the timeout.
+    let attempt_limit_from = |now: Instant| match (job.bound, deadline) {
+        (AttemptBound::Deadline, Some(d)) => d.saturating_duration_since(now).max(Duration::from_millis(1)),
+        _ => limit_from(now),
+    };
     let mut attempt = 0u32;
     // The last failed attempt's error, which decides the outcome when a later precheck cannot run the step again.
     let mut prior: Option<ExecutionError> = None;
@@ -699,8 +707,10 @@ async fn run_step(job: Job) -> Outcome {
         let ctx =
             StepContext::for_attempt(job.run_id.clone(), job.step_id.clone(), attempt, job.token.clone(), deadline);
         if job.replay == Replay::Prechecked {
-            let checked =
-                precheck_once(job.runner.as_ref(), &ctx, limit_from(Instant::now()), &job.token, job.grace).await;
+            let now = Instant::now();
+            let limit = limit_from(now);
+            let ctx = ctx.clone().bounded(now.checked_add(limit), job.attempt_timeout);
+            let checked = precheck_once(job.runner.as_ref(), &ctx, limit, &job.token, job.grace).await;
             let not_runnable = match checked {
                 Checked::NotApplied if !job.token.is_cancelled() => None,
                 Checked::Applied => {
@@ -749,7 +759,8 @@ async fn run_step(job: Job) -> Outcome {
             }
         }
         let attempt_start = Instant::now();
-        let limit = limit_from(attempt_start);
+        let limit = attempt_limit_from(attempt_start);
+        let ctx = ctx.bounded(attempt_start.checked_add(limit), job.attempt_timeout);
         let result = attempt_once(job.runner.as_ref(), &ctx, limit, &job.token, job.grace).await;
         lock(&job.attempts).push(AttemptRecord {
             attempt,
