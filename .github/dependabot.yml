@@ -4,12 +4,6 @@ updates:
     directory: /
     schedule:
       interval: weekly
-    # Held until the next breaking michi-core release. compact_str's types are in michi-core's public API
-    # (`toon::Value::Str(CompactString)` and `From<CompactString> for Value`), so a major bump breaks downstream code
-    # even when michi itself compiles.
-    ignore:
-      - dependency-name: compact_str
-        versions: [">= 0.9"]
     cooldown:
       default-days: 7
     groups:

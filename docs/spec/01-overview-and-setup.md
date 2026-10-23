@@ -100,7 +100,7 @@ version = "0.3.0"
 # Exact pin: workspace crates release in lockstep, so a mixed set must never resolve.
 michi-core = { path = "crates/michi-core", version = "=0.3.0" }
 thiserror = "2"
-compact_str = "0.8"
+compact_str = "0.10"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.150", features = ["preserve_order"] }
 schemars = "1.2.2"
