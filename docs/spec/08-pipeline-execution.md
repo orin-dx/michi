@@ -37,16 +37,49 @@ pub trait Step: Send + Sync {
     fn replay(&self) -> Replay { Replay::NotIdempotent }
     /// Looks at the outside world before an attempt. Only consulted for `Replay::Prechecked` steps.
     fn precheck<'a>(&'a self, ctx: &'a StepContext) -> PrecheckFuture<'a> { Box::pin(async { Ok(Precheck::Unknown) }) }
+    /// What bounds an attempt: the attempt timeout (default) or the step's deadline (see Poll steps).
+    fn attempt_bound(&self) -> AttemptBound { AttemptBound::Timeout }
 }
 ```
 
 Steps return `()`: they act through side effects and share state through `Arc` captures. Outputs do not flow between steps.
 
-`StepContext` carries the run id, step id, attempt number (0-based), a cancellation token that is a child of the run's token, and the step's deadline if one is set. `idempotency_key()` is `run_id:step_id`. It stays the same across attempts and across resume, so a step that passes it to a deduplicating downstream gets each effect applied once. The attempt number is for logging and backoff only and is never part of the key.
+`StepContext` carries the run id, step id, attempt number (0-based), a cancellation token that is a child of the run's token, the step's deadline if one is set (the earlier of its own and its group's), when the executor will cut this attempt (`attempt_deadline()`) and the attempt timeout configured for the step (`attempt_timeout()`). `idempotency_key()` is `run_id:step_id`. It stays the same across attempts and across resume, so a step that passes it to a deduplicating downstream gets each effect applied once. The attempt number is for logging and backoff only and is never part of the key.
 
 `step_fn(|ctx| async move { ... })` adapts a closure. `FnStep::idempotent()` opts it in to `Replay::Idempotent`. A prechecked step implements `Step` itself.
 
 `Replay` has three values: `NotIdempotent` (the default), `Idempotent` (repeating the step is harmless) and `Prechecked` (repeating it is not harmless, but its precheck reliably tells whether the effect is already in place).
+
+### Poll steps
+
+`poll_step(schedule, check)` waits for something another step caused, such as a published version becoming visible in a registry. `check` is an async closure that reads the outside world and answers `Readiness::Ready` or `Readiness::NotYet(observed)`, where `observed` describes what it saw.
+
+```rust
+use std::time::Duration;
+
+use michi_pipeline::{poll_step, ExecStep, PollSchedule, Readiness, StepId};
+
+let verify = ExecStep::new(
+    StepId::try_new("verify-npm-a").unwrap(),
+    "Verify a@1.2.3 on npm",
+    poll_step(PollSchedule::default(), |_ctx| async {
+        // Read the registry; a 404 or an older version is "not yet", not an error.
+        Ok(Readiness::NotYet("registry serves 1.2.2".to_string()))
+    }),
+)
+.depends_on(StepId::try_new("publish-npm-a").unwrap())
+.deadline_group("verify-npm");
+```
+
+- **Schedule.** The first check runs at once. After that, `PollSchedule` waits each of its delays in turn, then a fixed interval. The default is 2 s, 4 s, 8 s and 16 s, then every 30 s. `PollSchedule::new(delays, then_every)` and `PollSchedule::every(interval)` build others. Each delay counts from the end of the previous check. A zero delay is floored to 1 ms, so a poll never spins.
+- **One attempt.** The whole poll is one attempt. It never draws from the retry budget, and `RetryConfig` never applies because the poll never returns a retryable error. It is recorded as one `AttemptRecord`.
+- **Bounded by the deadline, not the attempt timeout.** The step's `Step::attempt_bound()` is `AttemptBound::Deadline`. The executor lets such an attempt run until the step's deadline, its own or its group's, whichever is earlier, instead of cutting it at the attempt timeout. The attempt timeout bounds each check instead (`StepContext::attempt_timeout()`). Without any deadline, the attempt timeout bounds the whole poll, as it would any attempt. Give a poll step a `deadline` or a `deadline_group`.
+- **Stops early, not late.** The poll knows its bound (`StepContext::attempt_deadline()`). When the next check would start at or after it, the poll stops at once, so the executor never has to cut it and record an ambiguous `Timeout`. The error is `ExecutionError::DeadlinePassed`, saying how many checks ran over how long and what the last check observed (`not ready after 4 checks over 14000ms, and the next check would fall past the deadline; last observed: registry serves 1.2.2`). The step ends `Failed`, its dependents are skipped, and resume runs it again.
+- **Check errors.** A retryable error, such as a 503 or a check that timed out, counts as not ready yet, and its text becomes the last observation. Any other error ends the step with that error.
+- **Cancellation** stops the poll at once, during a check or a wait, with `ExecutionError::Cancelled`, so the step ends `Skipped(Cancelled)` without waiting out the grace period.
+- **Replay.** Polling only reads, so the step is `Replay::Idempotent`.
+
+Any `Step` can return `AttemptBound::Deadline` for the same treatment. It should watch `StepContext::attempt_deadline()` and finish before it, because an attempt the executor has to cut ends with `Timeout`, whose effect is unknown.
 
 ## Replay rule
 
@@ -196,7 +229,7 @@ A step that panics is caught through its `JoinError` and ends `Panicked`. Other 
 
 When the token fires, nothing new is dispatched and every step not yet started ends `Skipped(Cancelled)`. A running attempt can watch `ctx.cancellation()` and stop cooperatively by returning `ExecutionError::Cancelled`, which also ends `Skipped(Cancelled)`. If it is still running after the grace period (`ExecOptions::cancel_grace`, default 5 s), its future is dropped and it ends ambiguous. Backoff sleeps race the token, so a cancelled run never waits out a retry delay.
 
-Each attempt runs under `tokio::time::timeout` (`attempt_timeout`, default 30 s). An optional total deadline (`step_deadline`) bounds a step across all its attempts and backoff: no attempt starts or sleeps past it, and the last attempt is cut to the time left. A deadline too far away for the clock to represent (such as `Duration::MAX`) means no deadline; it never panics. All time is `tokio::time`, so tests run on a paused clock.
+Each attempt runs under `tokio::time::timeout` (`attempt_timeout`, default 30 s), except that an `AttemptBound::Deadline` step (a poll step) runs until its deadline (see Poll steps). `StepContext::attempt_deadline()` tells an attempt when it will be cut. An optional total deadline (`step_deadline`) bounds a step across all its attempts and backoff: no attempt starts or sleeps past it, and the last attempt is cut to the time left. A deadline too far away for the clock to represent (such as `Duration::MAX`) means no deadline; it never panics. All time is `tokio::time`, so tests run on a paused clock.
 
 ### Deadline groups
 
