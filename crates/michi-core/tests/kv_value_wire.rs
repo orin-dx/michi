@@ -62,7 +62,8 @@ fn schema_allows_the_named_non_finite_strings_for_the_float() {
         .iter()
         .find_map(|s| s["properties"].get("Float"))
         .expect("Float variant");
-    let number = &float["items"][0];
+    // A tuple is `prefixItems` under JSON Schema 2020-12.
+    let number = &float["prefixItems"][0];
     let alternatives =
         number["anyOf"].as_array().unwrap_or_else(|| panic!("f64 is number or named string: {number:#}"));
     assert!(alternatives.iter().any(|a| a["type"] == "number"), "{number:#}");

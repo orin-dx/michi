@@ -85,15 +85,14 @@ impl From<RecoveryHint> for RecoveryHintWire {
 /// Schema for parameter values: the scalar JSON types `json_to_kv_value` accepts. Every JSON number is accepted, so
 /// the schema needs no numeric bounds.
 #[cfg(feature = "schemars")]
-fn param_values_schema(_: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
-    serde_json::from_value(serde_json::json!({
+fn param_values_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
         "type": "object",
         "additionalProperties": {
             "type": ["string", "number", "boolean", "null"],
             "description": "An integer past i64 must have an exact float form; one that doesn't is rejected rather than rounded. Send such values as strings."
         }
-    }))
-    .unwrap_or(schemars::schema::Schema::Bool(true))
+    })
 }
 
 /// `u` as an f64 when that loses nothing: the f64 is exactly `u`, or `u`'s digits are exactly the canonical form
@@ -161,11 +160,15 @@ impl TryFrom<RecoveryHintWire> for RecoveryHint {
 #[cfg(feature = "schemars")]
 #[cfg_attr(docsrs, doc(cfg(feature = "schemars")))]
 impl schemars::JsonSchema for RecoveryHint {
-    fn schema_name() -> String {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
         RecoveryHintWire::schema_name()
     }
 
-    fn json_schema(generator: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+    fn schema_id() -> std::borrow::Cow<'static, str> {
+        RecoveryHintWire::schema_id()
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
         RecoveryHintWire::json_schema(generator)
     }
 }

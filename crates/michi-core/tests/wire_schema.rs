@@ -5,19 +5,24 @@ use michi_core::kv::KvValue;
 use michi_core::{Audience, CallToolResult, ContentBlock, DomainError, ErrorCode, RecoveryHint};
 use std::collections::BTreeSet;
 
-/// Resolve a `$ref` against the root schema's definitions, or return the schema itself.
+/// Resolve a `$ref` against the root schema's `$defs`, or return the schema itself. Under JSON Schema 2020-12 a
+/// `$ref` sits next to sibling keywords such as `default`, with no `allOf` wrapper.
 fn resolve<'a>(root: &'a serde_json::Value, schema: &'a serde_json::Value) -> &'a serde_json::Value {
-    // A `$ref` next to `default` is wrapped as `allOf: [{"$ref": …}]`.
-    if let Some([only]) = schema.get("allOf").and_then(serde_json::Value::as_array).map(Vec::as_slice) {
-        return resolve(root, only);
-    }
     match schema.get("$ref").and_then(serde_json::Value::as_str) {
         Some(r) => {
-            let name = r.rsplit('/').next().expect("ref has a name");
-            &root["definitions"][name]
+            let name = r.strip_prefix("#/$defs/").unwrap_or_else(|| panic!("ref {r} points into $defs"));
+            &root["$defs"][name]
         }
         None => schema,
     }
+}
+
+#[test]
+fn schemas_are_json_schema_2020_12() {
+    let root = serde_json::to_value(schemars::schema_for!(CallToolResult)).expect("schema serializes");
+    assert_eq!(root["$schema"], "https://json-schema.org/draft/2020-12/schema");
+    assert!(root.get("definitions").is_none(), "2020-12 keeps subschemas under $defs: {root:#}");
+    assert!(root["$defs"].get("ContentBlock").is_some(), "{root:#}");
 }
 
 fn keys(v: &serde_json::Value) -> BTreeSet<String> {
@@ -62,7 +67,7 @@ fn call_tool_result_schema_requires_only_what_input_requires() {
     assert_eq!(root["required"], serde_json::json!(["content"]), "isError and structuredContent are optional");
     assert_eq!(resolve(&root, &root)["properties"]["structuredContent"]["type"], "object");
     let block = serde_json::to_value(schemars::schema_for!(ContentBlock)).expect("schema serializes");
-    assert_eq!(block["required"], serde_json::json!(["text", "type"]), "annotations are optional");
+    assert_eq!(block["required"], serde_json::json!(["type", "text"]), "annotations are optional");
 }
 
 fn domain_errors() -> Vec<DomainError> {
@@ -105,9 +110,9 @@ fn domain_error_schema_matches_render_json() {
     .map(ErrorCode::label)
     .collect();
     let error_schema = resolve(&root, &resolve(&root, &root)["properties"]["error"]);
-    // Documented variants become `oneOf` single-value enums; collect them either way.
+    // Documented variants become a `oneOf` of `const` values; undocumented ones would be a plain `enum`.
     let values: Vec<&serde_json::Value> = match error_schema["oneOf"].as_array() {
-        Some(alts) => alts.iter().flat_map(|a| a["enum"].as_array().into_iter().flatten()).collect(),
+        Some(alts) => alts.iter().map(|a| &a["const"]).collect(),
         None => error_schema["enum"].as_array().into_iter().flatten().collect(),
     };
     let allowed: Vec<&str> = values.into_iter().filter_map(serde_json::Value::as_str).collect();
@@ -315,7 +320,7 @@ fn integer_schemas_carry_the_bounds_serde_enforces() {
             accepts: |n| serde_json::from_str::<KvValue>(&format!(r#"{{"Int":{n}}}"#)).is_ok(),
         },
         IntCase {
-            schema: &variant(&kv, "Float")["items"][1],
+            schema: &variant(&kv, "Float")["prefixItems"][1],
             min: "0",
             max: "255",
             below: "-1",

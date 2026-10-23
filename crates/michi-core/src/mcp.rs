@@ -181,9 +181,8 @@ struct CallToolResultWire {
 
 /// `structuredContent` is a JSON object (MCP); michi never emits `null` for it.
 #[cfg(feature = "schemars")]
-fn object_schema(_: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
-    serde_json::from_value(serde_json::json!({ "type": "object", "additionalProperties": true }))
-        .unwrap_or(schemars::schema::Schema::Bool(true))
+fn object_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({ "type": "object", "additionalProperties": true })
 }
 
 #[cfg(feature = "serde")]
@@ -210,11 +209,15 @@ impl From<CallToolResultWire> for CallToolResult {
 #[cfg(feature = "schemars")]
 #[cfg_attr(docsrs, doc(cfg(feature = "schemars")))]
 impl schemars::JsonSchema for ContentBlock {
-    fn schema_name() -> String {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
         ContentBlockWire::schema_name()
     }
 
-    fn json_schema(generator: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+    fn schema_id() -> std::borrow::Cow<'static, str> {
+        ContentBlockWire::schema_id()
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
         ContentBlockWire::json_schema(generator)
     }
 }
@@ -222,11 +225,15 @@ impl schemars::JsonSchema for ContentBlock {
 #[cfg(feature = "schemars")]
 #[cfg_attr(docsrs, doc(cfg(feature = "schemars")))]
 impl schemars::JsonSchema for CallToolResult {
-    fn schema_name() -> String {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
         CallToolResultWire::schema_name()
     }
 
-    fn json_schema(generator: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+    fn schema_id() -> std::borrow::Cow<'static, str> {
+        CallToolResultWire::schema_id()
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
         CallToolResultWire::json_schema(generator)
     }
 }

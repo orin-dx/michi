@@ -47,12 +47,11 @@ pub(crate) fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f64,
 
 /// The schema of the wire form: `anyOf` a number or one of the three named strings.
 #[cfg(feature = "schemars")]
-pub(crate) fn schema(_: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
-    serde_json::from_value(serde_json::json!({
+pub(crate) fn schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
         "anyOf": [
             { "type": "number", "format": "double" },
             { "type": "string", "enum": ["NaN", "Infinity", "-Infinity"] }
         ]
-    }))
-    .unwrap_or(schemars::schema::Schema::Bool(true))
+    })
 }

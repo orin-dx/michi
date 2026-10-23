@@ -397,9 +397,8 @@ struct DomainErrorWire {
 }
 
 #[cfg(feature = "schemars")]
-fn const_true_schema(_: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
-    serde_json::from_value(serde_json::json!({ "type": "boolean", "const": true }))
-        .unwrap_or(schemars::schema::Schema::Bool(true))
+fn const_true_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({ "type": "boolean", "const": true })
 }
 
 #[cfg(feature = "serde")]
@@ -421,11 +420,15 @@ impl From<DomainError> for DomainErrorWire {
 #[cfg(feature = "schemars")]
 #[cfg_attr(docsrs, doc(cfg(feature = "schemars")))]
 impl schemars::JsonSchema for DomainError {
-    fn schema_name() -> String {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
         DomainErrorWire::schema_name()
     }
 
-    fn json_schema(generator: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+    fn schema_id() -> std::borrow::Cow<'static, str> {
+        DomainErrorWire::schema_id()
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
         DomainErrorWire::json_schema(generator)
     }
 }

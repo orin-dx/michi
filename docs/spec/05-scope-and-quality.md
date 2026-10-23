@@ -66,7 +66,7 @@ napi = ["dep:napi", "dep:napi-derive", "serde"]
 No async runtime dependency, no tokio, no async-std — every public function is sync.
 
 - `serde` is opt-in Rust-side ergonomics: `Serialize`/`Deserialize` on the core value types, plus `toon::list()`. See [01-overview-and-setup.md](01-overview-and-setup.md) for the full dependency rationale.
-- `schemars` implements `JsonSchema` on the types serde serializes (`DomainError`, `CallToolResult`, `ContentBlock`, `RecoveryHint`, `KvValue`, `toon::Value`, the pipeline status types and others), each describing its serde wire form, for MCP `outputSchema` generation. Render-only types such as `StatusResponse` and `ToonOptions` have no schema.
+- `schemars` implements `JsonSchema` on the types serde serializes (`DomainError`, `CallToolResult`, `ContentBlock`, `RecoveryHint`, `KvValue`, `toon::Value`, the pipeline status types and others), each describing its serde wire form, for MCP `outputSchema` generation. It uses schemars 1.x, so schemas are JSON Schema 2020-12 (`$defs`, `prefixItems`, `const`). Render-only types such as `StatusResponse` and `ToonOptions` have no schema.
 - `miette` implements `miette::Diagnostic` for `DomainError` to render colorized CLI diagnostic cards.
 - `cli` is **not** a Cargo feature of `michi-core` at all. Terminal-aware rendering (line wrapping, colour codes for the `degraded`/`error` health signals in `status::StatusResponse`) is out of scope for v1, since michi v1 targets agent consumers only.
 - When that work is actually built, it lands as its own crate, downstream of `pipeline`, rather than a feature flag here — see [ARCHITECTURE.md](../../ARCHITECTURE.md) and [06-decisions.md](06-decisions.md) for the crate-boundary rule and the v2 scope sketch.

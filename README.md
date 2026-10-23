@@ -159,7 +159,7 @@ michi = { package = "michi-core", version = "0.3" }
 | Feature | Adds | Purpose |
 | --- | --- | --- |
 | `serde` | `serde`, `serde_json` | Enables `Serialize`/`Deserialize` on types and direct `toon::list()` generation. |
-| `schemars` | `schemars` | Derives `JsonSchema` on DTO types for automatic MCP `outputSchema` generation. |
+| `schemars` | `schemars` 1.x | Derives `JsonSchema` on DTO types for automatic MCP `outputSchema` generation (JSON Schema 2020-12). |
 | `miette` | `miette` | Implements `miette::Diagnostic` for `DomainError` to render colorized CLI diagnostic cards. |
 | `napi` | `napi`, `napi-derive`, `serde_json` | Enables Node.js native addon compilation. |
 

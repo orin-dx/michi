@@ -103,7 +103,7 @@ thiserror = "2"
 compact_str = "0.8"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.150", features = ["preserve_order"] }
-schemars = "0.8"
+schemars = "1.2.2"
 miette = "7"
 tokio = { version = "1", features = ["time"] }
 ```
@@ -143,7 +143,7 @@ Default features add no runtime dependencies beyond `thiserror` and `compact_str
 - `serde_json` only enters `michi-core`'s tree through `napi` (typed `structuredContent`, wire-conformant MCP types) or the `serde` feature — never unconditionally. (`michi-core` unconditionally enables `compact_str`'s own `serde` Cargo feature regardless of its own `serde` feature, so `serde` the _crate_ is transitively present in the default dependency graph even though no default-feature type derives `Serialize`/`Deserialize` — see `crates/michi-core/Cargo.toml`.)
 - `kv::KvValue` fills the role `serde_json::Value` would have for every consumer who doesn't opt in, at zero dependency cost.
 - `preserve_order` keeps `toon::list()`'s field order matching each struct's declared order instead of alphabetizing it.
-- `schemars` derives `JsonSchema` on DTO types; `miette` implements `miette::Diagnostic` for `DomainError`.
+- `schemars` (1.x) derives `JsonSchema` on DTO types, generating JSON Schema 2020-12; `miette` implements `miette::Diagnostic` for `DomainError`.
 
 Consumers who want to write `use michi::...` rename the dependency: `michi = { package = "michi-core", version = "0.3" }`.
 

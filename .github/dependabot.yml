@@ -4,16 +4,12 @@ updates:
     directory: /
     schedule:
       interval: weekly
-    # Held until the next breaking michi-core release (0.5). Both crates' types are in michi-core's public API, so a
-    # major bump breaks downstream code even when michi itself compiles:
-    # - compact_str: `toon::Value::Str(CompactString)` and `From<CompactString> for Value`.
-    # - schemars: the `JsonSchema` impls behind the `schemars` feature; 1.x also removes `schemars::gen` and the
-    #   `schemars::schema` types our hand-written impls use, and changes the generated schemas.
+    # Held until the next breaking michi-core release. compact_str's types are in michi-core's public API
+    # (`toon::Value::Str(CompactString)` and `From<CompactString> for Value`), so a major bump breaks downstream code
+    # even when michi itself compiles.
     ignore:
       - dependency-name: compact_str
         versions: [">= 0.9"]
-      - dependency-name: schemars
-        versions: [">= 1"]
     cooldown:
       default-days: 7
     groups:
