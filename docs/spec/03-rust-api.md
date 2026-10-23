@@ -150,7 +150,7 @@ impl DomainError {
 - `from_error(code, err)` sets `message` to `err.to_string()` and walks `err.source()`, adding each link's `Display` to `causes`. A link whose text the last kept text (the message or the previous kept cause) already contains is skipped, since `thiserror` messages often embed their source (`#[error("walk failed: {0}")]`). The walk stops after 128 links. Nothing is stored but text: `source()` on a `DomainError` stays `None`, and it stays `Clone + Send + Sync`. Line breaks stay inside their cause; `render()` escapes them.
 - With the `miette` feature, `Diagnostic::help()` lists the hints, then one `caused by: …` line per cause (`None` when there are neither). The GitHub annotation stays message-only.
 - `to_call_tool_result()` builds an MCP `CallToolResult` with `is_error:true` and the rendered JSON as `structured_content`.
-- When the `schemars` feature is enabled, `DomainError` implements `JsonSchema` (the schema of `render_json()`'s object). Only types serde actually serializes have a schema: `StatusResponse`, `ToonOptions`, `ErrorClass` and the other render-only types do not.
+- When the `schemars` feature is enabled, `DomainError` implements schemars 1.x's `JsonSchema` (the schema of `render_json()`'s object, as JSON Schema 2020-12). Only types serde actually serializes have a schema: `StatusResponse`, `ToonOptions`, `ErrorClass` and the other render-only types do not.
 
 ### `AgentResponse` Builder
 
