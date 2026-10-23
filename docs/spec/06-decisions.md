@@ -6,11 +6,9 @@ This file tracks open questions and API-shape rationale. Workspace-level decisio
 
 Tracked by what they block, not by sequence number — "Q1/Q2/Q3" reads too easily as calendar quarters, which these aren't.
 
-### Open until validated — TOON vs. Markdown-KV retrieval accuracy
+### Resolved 2026-10-23 — TOON keeps retrieval accuracy
 
-**Blocks:** recommending TOON as the default for MCP consumers
-
-Token savings have been measured; retrieval accuracy has not. The comparison method and decision scope are in the [research note](../research/toon-retrieval-accuracy.md).
+Measured on Claude Haiku, Sonnet and Opus 5.5 and OpenAI's GPT-6 Sol (94 questions × 5 formats × 3 repeats each): TOON is within noise of pretty and minified JSON, Markdown-KV and a Markdown table on every model, at the lowest token cost, so TOON stays the default for assistant-facing lists. Untested: Gemini and open-weight models, lists much longer than 100 rows, open-ended tasks. Details and limits are in the [research note](../research/toon-retrieval-accuracy.md).
 
 ### Open until two consumers agree — measurement-basis rendering
 

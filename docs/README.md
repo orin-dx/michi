@@ -12,6 +12,7 @@ Current API behavior belongs in the code and current API references. Proposals a
 | [`../ARCHITECTURE.md`](../ARCHITECTURE.md) | Current workspace structure and data flow. |
 | [`spec/README.md`](spec/README.md) | Index of current API and format references, with proposals listed separately. |
 | [`adr/README.md`](adr/README.md) | Accepted and proposed architectural decisions. |
+| [`toon-benchmarks.md`](toon-benchmarks.md) | TOON's measured token savings and retrieval accuracy, with method and how to reproduce. |
 | [`research/README.md`](research/README.md) | Open evidence-gathering work; it does not define product behavior. |
 | [`projects/`](projects/) | Project plans and records. Check status and superseded notices before treating them as active. |
 | [`superpowers/specs/`](superpowers/specs/) | Dated design records. They preserve rationale; they do not override the current API reference. |
