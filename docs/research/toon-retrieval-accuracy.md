@@ -17,7 +17,7 @@ Token counts are measured in [`evals/toon`](../../evals/toon/results.md) (2026-1
 Command: `python3 pilot/run_pilot.py --model-cmd 'claude -p --model <model>' --label <model> --jobs 6`.
 
 | Format | Haiku 5.5 | Sonnet 5.5 (strict) | Sonnet 5.5, right answer found but not given bare |
-| --- | ---: | ---: | ---: |
+| --- | --: | --: | --: |
 | TOON | 98.9% | 83.0% | 88.3% |
 | JSON, pretty | 98.9% | 92.6% | 94.7% |
 | JSON, minified | 98.9% | 88.3% | 93.6% |
