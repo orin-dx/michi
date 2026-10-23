@@ -708,3 +708,19 @@ Callisto verifies each publish by polling the registry on a fixed schedule (2 s,
 - **Check errors split by `is_retryable`.** A retryable error (503, a timed-out check) is "not yet" and polling continues, which is what a caller writing a retry loop would do by hand. A non-retryable one ends the step with that error. This needs no new error vocabulary and keeps one classification rule throughout the crate.
 - **Delays count from the end of a check.** Counting from the start would make a slow check eat into the next delay and could run checks back to back. Counting from the end keeps the minimum gap the schedule promises to the registry.
 - **No jitter.** The fixed schedule is what Callisto asked for, and checks are reads, so many verifies polling in lockstep cost the registry little. A caller who wants spread can build a `PollSchedule` per step.
+
+### Resolved 2026-10-23 — Blocking steps in michi-pipeline
+
+Some of Callisto's release steps shell out to blocking CLIs (`cargo publish`, `npm publish`, `twine upload`). Calling them inside an async step blocks a runtime worker. The usual fix is `spawn_blocking`, but its cancellation behaviour clashes with the executor's timeout and replay rules unless they are spelled out (brief item 6). API and rules: [08-pipeline-execution.md](08-pipeline-execution.md#blocking-steps).
+
+- **The adapter:** `step_blocking(|ctx| -> Result<(), ExecutionError>)` with `.idempotent()`, mirroring `step_fn`. It runs each attempt with `tokio::task::spawn_blocking`. A panic in the closure is resumed in the step's task, so the scheduler records `Panicked` as for any step.
+- **The closure gets its own token, which fires when the executor stops waiting.** The step's token fires only on run cancellation, but a timeout is the common way an attempt gets abandoned, and a closure running `cargo publish` needs to hear about it to kill the child. The adapter hands the closure a child of the step token and cancels it when the attempt's future is dropped. Considered: telling closures to watch `attempt_deadline()` instead. That misses the grace period running out and the run being dropped, and every closure would re-implement the same check.
+- **Non-idempotent attempts never overlap; the guard is in the adapter, not the scheduler.** Within a run the replay rules already make overlap impossible: an abandoned attempt's effect is unknown, and a non-idempotent step is never retried after one. The remaining hole is a `resume` in the same process right after a timeout, with a caller who marks the step `NotApplied` before the first closure has finished. The adapter keeps the idempotency keys of running closures, and an attempt that finds its key there fails with `ExecutionError::failed` (effect unknown) without calling the closure. Considered:
+  - Waiting for the earlier closure, then running. The earlier closure may have applied the effect, so running again after it is exactly the double effect the replay rule exists to prevent.
+  - A `Refused`/`NotApplied` error. It would claim nothing was applied while the earlier attempt may still apply it, and resume would run it again without asking.
+  - Tracking it in the scheduler. Only a blocking step can outlive its attempt, and the scheduler does not survive from `execute` to `resume`; the adapter value (held by the plan) does.
+
+  Keyed by `run_id:step_id` rather than by runner, so two steps sharing one runner through `from_arc` do not block each other. Process-local by nature, and documented as such.
+
+- **Idempotent attempts may overlap.** "Repeating is harmless" covers running concurrently with a straggler, and serializing would make a retry after a timeout wait for the hung closure, which defeats the retry.
+- **`JoinSet` drop is documented, not fought.** Tokio cannot abort a blocking task. Dropping `execute` aborts the async side and fires the closure's token. Whatever the closure does after that is up to it.
