@@ -62,6 +62,8 @@ issues[2]{number,title,state}:
   51812,dark mode request,open
 ```
 
+For a 100-row list TOON is a median 47% smaller than pretty JSON and 23% smaller than minified JSON, and Claude Haiku, Sonnet and Opus answer questions about it as accurately as about JSON or Markdown. Numbers and method: [TOON benchmarks](https://github.com/orin-dx/michi/blob/main/docs/toon-benchmarks.md).
+
 Output conforms to the [TOON 4.4 specification](https://github.com/toon-format/spec/blob/main/SPEC.md) — every agent-facing block, not just lists: key-value blocks, errors, status, recovery hints and partial-success reports are TOON documents too, so an agent parses one format. Values are quoted only when the spec requires it — a delimiter, colon, bracket, quote, line break, or a value that would otherwise read as a number, boolean or `null` — so the common case carries no quoting overhead.
 
 ## Quick start

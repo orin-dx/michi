@@ -17,7 +17,7 @@ Date: 2026-10-21. Location: `evals/toon/` in the michi repository. Generated fil
 
 The spec sentence is accurate only if "equivalent JSON" means indented JSON.
 
-**Retrieval accuracy was not measured.** No model was called. The harness, 94 questions with their answers, and 470 prompts are ready for a maintainer to run (see "How to run the retrieval pilot" below).
+**Retrieval accuracy (measured 2026-10-23):** on Claude Haiku, Sonnet and Opus 5.5, with three repeats, TOON answered 97.0% of the 94 questions correctly against 96.8% to 98.2% for the other formats, all within noise. Results: [`docs/toon-benchmarks.md`](../../docs/toon-benchmarks.md); evidence and the superseded first run: [`docs/research/toon-retrieval-accuracy.md`](../../docs/research/toon-retrieval-accuracy.md).
 
 ## Method
 
