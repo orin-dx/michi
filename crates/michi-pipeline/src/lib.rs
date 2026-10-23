@@ -12,6 +12,9 @@
 //! 4. [`resume`] an interrupted run from its record under the same run id: finished steps are not re-run, and steps
 //!    whose outcome is unknown are re-run only if idempotent, prechecked or verified by the caller.
 //!
+//! Steps are usually async closures ([`step_fn`]); [`poll_step`] waits for something on a fixed schedule and
+//! [`step_blocking`] runs blocking work on Tokio's blocking pool.
+//!
 //! The replay rule (see [`Step`]) keeps retries and resume from blindly repeating work that may already have taken
 //! effect: every failure says whether retrying could help and whether its [`Effect`] may have landed, a
 //! [`Replay::Prechecked`] step looks before it acts ([`Step::precheck`]), and [`ExecOptions::durable_starts`] runs a
@@ -48,6 +51,7 @@
 #![warn(missing_debug_implementations)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+mod blocking;
 mod breaker;
 mod cancel;
 mod error;
@@ -59,6 +63,7 @@ mod record;
 mod scheduler;
 mod step;
 
+pub use blocking::{step_blocking, BlockingStep};
 pub use breaker::{BreakerConfig, BreakerPhase, BreakerRegistry, CircuitBreaker};
 pub use cancel::CancellationToken;
 pub use error::{Effect, ExecutionError, ReplayClass};

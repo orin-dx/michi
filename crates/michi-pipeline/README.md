@@ -109,6 +109,23 @@ let options = ExecOptions::new().group_deadline("verify", Duration::from_secs(36
 
 If the deadline comes first, the step fails with `ExecutionError::DeadlinePassed` and the last thing the check saw, and resume polls again.
 
+## Blocking work
+
+`step_blocking` runs a synchronous closure on Tokio's blocking thread pool, for steps that shell out to `cargo`, `npm` or `twine`. A blocking closure can't be stopped from outside: after a timeout or cancellation the executor stops waiting, but the closure keeps running, so it should watch `ctx.cancellation()`, which fires then, and kill any child process it started. A non-idempotent blocking step never starts a second closure while an earlier one of the same run may still be running.
+
+```rust
+use michi_pipeline::{step_blocking, ExecutionError};
+
+let check = step_blocking(|ctx| {
+    if ctx.cancellation().is_cancelled() {
+        return Err(ExecutionError::Cancelled);
+    }
+    // Run the command here, polling `ctx.cancellation()` while it runs.
+    Ok(())
+})
+.idempotent();
+```
+
 To make sure a step only runs once its start is saved, implement `DurableObserver::record_start` and pass the observer to `ExecOptions::durable_starts(observer)`.
 
 ## Docs

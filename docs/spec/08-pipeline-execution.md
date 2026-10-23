@@ -81,6 +81,46 @@ let verify = ExecStep::new(
 
 Any `Step` can return `AttemptBound::Deadline` for the same treatment. It should watch `StepContext::attempt_deadline()` and finish before it, because an attempt the executor has to cut ends with `Timeout`, whose effect is unknown.
 
+### Blocking steps
+
+`step_blocking(|ctx| -> Result<(), ExecutionError>)` runs a synchronous closure on Tokio's blocking thread pool (`tokio::task::spawn_blocking`), for work that blocks a thread: shelling out to `cargo publish`, `npm publish` or `twine upload`, or a synchronous client. `.idempotent()` opts it in to `Replay::Idempotent`, like `step_fn`. The closure gets an owned `StepContext`, and its result is the attempt's result. A panic in it ends the step `Panicked`.
+
+Rust cannot stop a blocking closure from outside. When the executor stops waiting for an attempt (the attempt timeout, the cancellation grace period running out, or the whole run being dropped), it drops the await, but the closure keeps running on its thread until it returns. A child process it started keeps running too. The rules follow from that:
+
+- **The closure's token fires when the executor gives up.** `ctx.cancellation()` in the closure is a token for this attempt alone. It fires when the run is cancelled and also when the executor stops waiting for the attempt. A closure that starts a child process should poll `ctx.cancellation().is_cancelled()` (and can watch `ctx.attempt_deadline()`) and kill the child when it fires:
+
+  ```rust
+  use std::process::Command;
+  use std::time::Duration;
+
+  use michi_pipeline::{step_blocking, ExecutionError};
+
+  let publish = step_blocking(|ctx| {
+      let mut child = Command::new("cargo")
+          .args(["publish", "-p", "michi-core"])
+          .spawn()
+          .map_err(|e| ExecutionError::refused(format!("could not start cargo: {e}")))?;
+      loop {
+          match child.try_wait() {
+              Ok(Some(status)) if status.success() => return Ok(()),
+              Ok(Some(status)) => return Err(ExecutionError::failed(format!("cargo publish exited with {status}"))),
+              Ok(None) if ctx.cancellation().is_cancelled() => {
+                  let _ = child.kill();
+                  return Err(ExecutionError::failed("cargo publish was killed; it may have uploaded"));
+              }
+              Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+              Err(e) => return Err(ExecutionError::failed(format!("lost track of cargo: {e}"))),
+          }
+      }
+  });
+  ```
+
+- **An abandoned attempt's effect is unknown.** It ends with `Timeout` or `Interrupted` like any other attempt the executor cut, so a non-idempotent step ends `OutcomeUnknown` and is never retried in the run.
+- **No second closure while the first may still run.** For a step that is not idempotent, a new attempt does not start while an earlier closure with the same idempotency key (`run_id:step_id`) is still running in this process. The replay rules already rule this out within a run. It can happen when `resume` runs in the same process right after a timeout and the caller marks the step `Verification::NotApplied` too early. That attempt does not call the closure. It fails with an unknown effect (`ExecutionError::failed`, saying an earlier attempt is still running), so the step stays `OutcomeUnknown` until the caller verifies again once the first closure has finished.
+- **Idempotent steps may overlap.** A retry after a timeout starts a new closure while the old one may still run.
+- **Scope of the guard.** It lives in the `BlockingStep` value, so it covers one process. Steps that share one runner through `ExecStep::from_arc` have different step ids and do not block each other.
+- **`JoinSet` drop.** Each attempt runs inside the scheduler's `JoinSet`. Dropping the `execute` or `resume` future aborts the async side, but Tokio never aborts a `spawn_blocking` task, so the closure runs to completion and its result is discarded. The closure's token fires, so a closure that watches it can stop early. The runtime waits for blocking threads when it shuts down.
+
 ## Replay rule
 
 Every failed attempt carries two independent facts:
@@ -188,7 +228,7 @@ With the `serde` feature, `RunRecord`, `StepRecord`, `ExecutionError` and the id
 
 ## Scheduling
 
-One scheduler loop drives both modes. It keeps a remaining-prerequisite count per step and a ready set ordered by declaration index, and spawns ready steps onto a `tokio::task::JoinSet` owned by the call, so no step outlives `execute` or `resume`.
+One scheduler loop drives both modes. It keeps a remaining-prerequisite count per step and a ready set ordered by declaration index, and spawns ready steps onto a `tokio::task::JoinSet` owned by the call, so no step's async work outlives `execute` or `resume`. A `step_blocking` closure is the exception: its thread runs to completion (see Blocking steps).
 
 - `Mode::Sequential` (default): one step at a time, in `Plan::execution_order()`.
 - `Mode::Parallel { max_concurrency: NonZeroUsize }`: the loop dispatches ready steps in declaration order while fewer than `max_concurrency` are running. The cap lives in the dispatch loop, not in a semaphore inside spawned tasks, so admission order is declaration order rather than wake order.

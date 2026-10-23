@@ -99,6 +99,12 @@ impl StepContext {
         Self { attempt, cancellation, deadline, ..Self::new(run_id, step_id) }
     }
 
+    /// The same context with another cancellation token.
+    pub(crate) fn with_cancellation(mut self, cancellation: CancellationToken) -> Self {
+        self.cancellation = cancellation;
+        self
+    }
+
     /// Sets when the executor cuts this attempt, and the step's configured attempt timeout.
     pub(crate) fn bounded(mut self, attempt_deadline: Option<tokio::time::Instant>, attempt_timeout: Duration) -> Self {
         self.attempt_deadline = attempt_deadline;
