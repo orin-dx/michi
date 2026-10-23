@@ -673,3 +673,21 @@ Callisto's release DAG publishes to several registries at once and wants "at mos
 - **A slot is held through backoff.** Releasing it during a retry's backoff and taking it back later would need re-admission inside the task and could reorder steps of a key. Holding it is the conservative reading of "in flight".
 - **Per run.** Cross-run limits stay a non-goal; a caller can share a semaphore inside the step.
 - **Not changed:** statuses, records, the observer contract and resume. A step still waiting when the run stops is `Skipped(Cancelled)` like any undispatched step.
+
+### Resolved 2026-10-23 — Deadline groups in michi-pipeline
+
+Callisto verifies a batch of npm publishes by polling the registry, and npm may serve a stale package document for up to 300 s. A per-step deadline counts from each step's start, so seven verify steps started over a minute would expire over a minute too. Callisto wants them to share one window (brief item 4). API and rules: [08-pipeline-execution.md](08-pipeline-execution.md#deadline-groups).
+
+- **Shape: a group key on the step, the window on the options.** `ExecStep::deadline_group(key)` and `ExecOptions::group_deadline(key, Duration)`, the same split as concurrency keys and breakers: the plan names the group, the run sets the window.
+- **The window opens at the first dispatch, not at run start.** Counting from run start would charge the verify window for the publishes before it, which is how long the publishes took rather than how long the cache lasts. Counting from the first member's dispatch matches "about one window after the batch started verifying". Dispatch is after concurrency admission and a recorded start, so a member that never ran does not start the clock.
+- **Earliest deadline wins.** A step's own deadline and its group's window are both limits the caller asked for, so the tighter one applies. The reason names the one that ended the step.
+- **A member that would start after the window closed is not run, and ends `Failed` with a new `ExecutionError::DeadlinePassed`.** Considered:
+  - A new `NotRunReason` in michi-core. `NotRun` ("never invoked") would describe it best, but michi-core's enums feed the NAPI surface and TOON labels, and the brief asked for no michi-core changes. Reusing `Failed` keeps the change inside michi-pipeline.
+  - `Failed` with `refused(..)`. It has the right two facts (not retryable, not applied), but it would read as the step refusing its own input, convert to `ExternalFailure`, and count as a healthy breaker sample.
+  - `Timeout`. Its effect is `Unknown`, so a non-idempotent step would end `OutcomeUnknown` and resume would hold a step that never ran. That is dishonest in the other direction.
+
+  `DeadlinePassed` is `NotApplied` and not retryable (the window is closed for this run). It converts to `ErrorCode::Timeout`, not retryable, with a hint to resume. It is never reported to a breaker. Any step that stops because a deadline came before it did its work can use it.
+
+- **Windows are per run.** Nothing about them is saved, so resume opens new ones. This is honest because the resumed steps run against the registry as it is now. A `Failed`/`NotApplied` step is re-run by resume under the existing rules, so no resume change was needed.
+- **No absolute `deadline_at`.** A `tokio::time::Instant` cannot survive a restart, and a wall-clock time would bring a second clock into an executor that uses only `tokio::time`, which tests pause. Nothing needs it yet.
+- **Compatibility.** `ExecutionError` is `#[non_exhaustive]`, so the variant is additive. A record that contains it does not deserialize in 0.5.

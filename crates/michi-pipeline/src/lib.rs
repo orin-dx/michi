@@ -5,8 +5,8 @@
 //! 1. Define steps with [`ExecStep`] (a [`StepId`], a display name, prerequisites, a [`Step`] runner) and validate
 //!    them into a [`Plan`]. Validation reports every problem at once; [`Plan::execution_order`] is the dry run.
 //! 2. [`execute`] the plan under a caller-supplied [`RunId`] with [`ExecOptions`]: sequential or parallel with a
-//!    concurrency cap (overall and per key), skip-dependents or fail-fast, retry policy and budget, timeouts, keyed
-//!    circuit breakers, cancellation and a progress observer.
+//!    concurrency cap (overall and per key), skip-dependents or fail-fast, retry policy and budget, timeouts and
+//!    shared deadlines, keyed circuit breakers, cancellation and a progress observer.
 //! 3. Read the record: every step has one status from [`michi_core::pipeline::StepStatus`] with a reason, and the
 //!    run has a [`RunOutcome`] that is `Succeeded` only if every step succeeded.
 //! 4. [`resume`] an interrupted run from its record under the same run id: finished steps are not re-run, and steps

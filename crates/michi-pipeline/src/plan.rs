@@ -18,6 +18,7 @@ pub struct ExecStep {
     runner: Arc<dyn Step>,
     breaker_key: Option<String>,
     concurrency_key: Option<String>,
+    deadline_group: Option<String>,
     retry: Option<RetryConfig>,
     attempt_timeout: Option<Duration>,
     deadline: Option<Duration>,
@@ -38,6 +39,7 @@ impl ExecStep {
             runner,
             breaker_key: None,
             concurrency_key: None,
+            deadline_group: None,
             retry: None,
             attempt_timeout: None,
             deadline: None,
@@ -89,6 +91,17 @@ impl ExecStep {
         self
     }
 
+    /// The deadline group: every step of the group shares one window of [`crate::ExecOptions::group_deadline`],
+    /// which opens when the group's first step is dispatched. A step of the group is cut off when the window ends, and
+    /// one that is not dispatched before then is not run at all. With [`ExecStep::deadline`] as well, the earlier of
+    /// the two applies. A step has at most one group; a later call replaces the earlier one. A group with no
+    /// configured window has no deadline. Any string is a group, the empty string included.
+    #[must_use]
+    pub fn deadline_group(mut self, group: impl Into<String>) -> Self {
+        self.deadline_group = Some(group.into());
+        self
+    }
+
     /// The step's id.
     #[must_use]
     pub fn id(&self) -> &StepId {
@@ -111,6 +124,10 @@ impl ExecStep {
     #[must_use]
     pub fn effective_breaker_key(&self) -> &str {
         self.breaker_key.as_deref().unwrap_or(self.id.as_str())
+    }
+
+    pub(crate) fn deadline_group_of(&self) -> Option<&str> {
+        self.deadline_group.as_deref()
     }
 
     pub(crate) fn concurrency_key_of(&self) -> Option<&str> {
@@ -142,6 +159,7 @@ impl fmt::Debug for ExecStep {
             .field("depends_on", &self.depends_on)
             .field("breaker_key", &self.breaker_key)
             .field("concurrency_key", &self.concurrency_key)
+            .field("deadline_group", &self.deadline_group)
             .finish_non_exhaustive()
     }
 }

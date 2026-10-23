@@ -77,6 +77,7 @@ What each error means:
 | HTTP 500 and other 5xx, and any non-4xx/5xx status reported as an error | no | `Unknown` |
 | `Timeout`, `Interrupted` | yes | `Unknown` |
 | `Panicked`, `AmbiguousOutcome` | no | `Unknown` |
+| `DeadlinePassed` (a deadline group's window closed before the step started) | no | `NotApplied` |
 | `Failed { message, retryable, effect }` | as given | as given |
 | `StepFailed { source, .. }` | as `source` | as `source` |
 
@@ -122,7 +123,7 @@ Precheck is verification the step performs for itself, before it acts. It only r
 | `Running` | in flight (only seen in records persisted from `DurableObserver::record_start` or `on_step_started`) | resume treats it as ambiguous |
 | `Completed` | ran and succeeded in this run | none |
 | `CompletedEarlier` | its effect was already in place, so it was not run: succeeded earlier in this run, verified as applied, or found applied by precheck | none |
-| `Failed` | ran and failed without effect (`NotApplied`), or an idempotent step failed | fix the cause, then resume |
+| `Failed` | ran and failed without effect (`NotApplied`), an idempotent step failed, or its deadline group's window closed before it started (`DeadlinePassed`) | fix the cause, then resume |
 | `OutcomeUnknown(cause)` | may have taken effect: `Timeout`, `Gateway` (502/504), `Cancelled` (dropped mid-flight after cancellation), `Interrupted` (in flight when the process stopped), `StepFailed` (an error that does not say whether the effect landed) | verify, then resume |
 | `Skipped(PrerequisiteFailed)` | a prerequisite did not complete | fix the root cause, then resume |
 | `Skipped(Cancelled)` | cancelled before it took effect | resume |
@@ -196,6 +197,27 @@ A step that panics is caught through its `JoinError` and ends `Panicked`. Other 
 When the token fires, nothing new is dispatched and every step not yet started ends `Skipped(Cancelled)`. A running attempt can watch `ctx.cancellation()` and stop cooperatively by returning `ExecutionError::Cancelled`, which also ends `Skipped(Cancelled)`. If it is still running after the grace period (`ExecOptions::cancel_grace`, default 5 s), its future is dropped and it ends ambiguous. Backoff sleeps race the token, so a cancelled run never waits out a retry delay.
 
 Each attempt runs under `tokio::time::timeout` (`attempt_timeout`, default 30 s). An optional total deadline (`step_deadline`) bounds a step across all its attempts and backoff: no attempt starts or sleeps past it, and the last attempt is cut to the time left. A deadline too far away for the clock to represent (such as `Duration::MAX`) means no deadline; it never panics. All time is `tokio::time`, so tests run on a paused clock.
+
+### Deadline groups
+
+A step deadline starts when its step starts, so steps that start at different times end at different times. A deadline group gives several steps one window instead. Callisto's case: after a batch of npm publishes, each verify step polls the registry, and npm may serve a stale package document for up to 300 s, so every verify should give up at the same moment, about one cache window after the first verify began, not one window after each.
+
+```rust
+use std::time::Duration;
+
+use michi_pipeline::ExecOptions;
+
+// Every step with `.deadline_group("verify-npm")` shares one 6-minute window.
+let options = ExecOptions::new().group_deadline("verify-npm", Duration::from_secs(360));
+```
+
+- **When the clock starts.** The window opens when the group's first step is dispatched in this run (after its concurrency key admits it and its start is recorded), and ends `window` later. Steps dispatched later get what is left of it.
+- **Earliest wins.** A step's deadline is the earlier of its own (`deadline` or `step_deadline`, counted from its start) and its group's window end. Every existing deadline rule applies to it: no attempt or backoff runs past it, the last attempt is cut to the time left, and a retry whose wait would end at or past it is not made (the reason then ends `deadline group <key> reached`, or `step deadline reached` when the step's own deadline is the earlier). `StepContext::deadline()` reports the earlier one.
+- **A closed window does not start steps.** A step of the group that would be dispatched once the window has ended (it became ready late, or waited for its concurrency key or a global slot) is not invoked. It ends `Failed` with `ExecutionError::DeadlinePassed`, which is not retryable and `NotApplied`: nothing ran, so nothing was applied. It is a root cause: dependents are skipped and fail-fast stops the run. It gets no start event and no attempt, and it is not reported to a breaker.
+- **Resume opens a new window.** Windows are per run and are not saved in the record. A step that ended `DeadlinePassed` is `Failed` and `NotApplied`, so resume runs it again; its group's window opens anew when the first group step is dispatched in the resumed run.
+- **Configuration.** A step has at most one group; a later `deadline_group` call replaces it. A group with no configured window has no deadline, and a window for a group no step uses is ignored. A window too long for the clock to represent (such as `Duration::MAX`) means no deadline. A zero window behaves like a zero step deadline: the first step gets a 1 ms attempt and the others do not run.
+
+There is no absolute `deadline_at`. A tokio `Instant` means nothing after a restart, so a resumed run could not honour it, and the group window covers the shared-window case.
 
 ## Breakers and budgets
 

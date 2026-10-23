@@ -82,6 +82,13 @@ pub enum ExecutionError {
         /// The panic payload, if it was a string.
         message: String,
     },
+    /// A deadline ended before the step did anything: the executor did not start it because its deadline group's
+    /// window had closed. Not applied and not retryable in this run; resume runs the step again in a new window.
+    #[error("deadline passed: {message}")]
+    DeadlinePassed {
+        /// Which deadline, and what was left undone.
+        message: String,
+    },
 }
 
 /// Hint attached to the [`michi_core::DomainError`] converted from an [`ExecutionError::AmbiguousOutcome`].
@@ -91,6 +98,9 @@ const VERIFY_BEFORE_RETRY_HINT: &str = "verify whether the operation completed b
 /// Hint attached to the [`michi_core::DomainError`] converted from an [`ExecutionError::Panicked`].
 const PANIC_HINT: &str = "the step panicked, which is a bug in the step; fix it and verify whether it took effect \
      before resuming";
+
+/// Hint attached to the [`michi_core::DomainError`] converted from an [`ExecutionError::DeadlinePassed`].
+const DEADLINE_HINT: &str = "nothing was applied; resume the run to try the step again with a new deadline";
 
 /// Whether a failed attempt's effect may have landed. The second fact about every failure, next to whether retrying
 /// could help ([`ExecutionError::is_retryable`]); neither implies the other.
@@ -172,7 +182,9 @@ impl ExecutionError {
             Self::Timeout { .. } | Self::Interrupted { .. } | Self::CircuitOpen { .. } => true,
             Self::Failed { retryable, .. } => *retryable,
             Self::StepFailed { source, .. } => source.is_retryable(),
-            Self::Cancelled | Self::AmbiguousOutcome { .. } | Self::Panicked { .. } => false,
+            Self::Cancelled | Self::AmbiguousOutcome { .. } | Self::Panicked { .. } | Self::DeadlinePassed { .. } => {
+                false
+            }
         }
     }
 
@@ -185,7 +197,7 @@ impl ExecutionError {
     #[must_use]
     pub fn effect(&self) -> Effect {
         match self {
-            Self::CircuitOpen { .. } | Self::Cancelled => Effect::NotApplied,
+            Self::CircuitOpen { .. } | Self::Cancelled | Self::DeadlinePassed { .. } => Effect::NotApplied,
             Self::Http { status, .. } if (400..500).contains(status) || *status == 503 => Effect::NotApplied,
             Self::Failed { effect, .. } => *effect,
             Self::StepFailed { source, .. } => source.effect(),
@@ -239,7 +251,8 @@ impl ExecutionError {
             | Self::Cancelled
             | Self::Interrupted { .. }
             | Self::AmbiguousOutcome { .. }
-            | Self::Panicked { .. } => None,
+            | Self::Panicked { .. }
+            | Self::DeadlinePassed { .. } => None,
         }
     }
 }
@@ -303,6 +316,11 @@ impl From<ExecutionError> for michi_core::DomainError {
                 DomainError::new(ErrorCode::ExternalFailure, format!("step panicked: {message}"))
                     .retryable(false)
                     .hint(PANIC_HINT)
+            }
+            ExecutionError::DeadlinePassed { message } => {
+                DomainError::new(ErrorCode::Timeout, format!("deadline passed: {message}"))
+                    .retryable(false)
+                    .hint(DEADLINE_HINT)
             }
         }
     }
@@ -370,6 +388,7 @@ mod tests {
             (ExecutionError::refused("x"), false, NotApplied),
             (ExecutionError::rejected("x"), true, NotApplied),
             (ExecutionError::transient("x"), true, Unknown),
+            (ExecutionError::DeadlinePassed { message: "x".into() }, false, NotApplied),
             (step_failed(ExecutionError::refused("x")), false, NotApplied),
             (step_failed(http(500)), false, Unknown),
         ];
@@ -494,6 +513,7 @@ mod tests {
             (ExecutionError::Cancelled, Unavailable, false, None),
             (ExecutionError::Interrupted { elapsed_ms: 7 }, Unavailable, true, None),
             (ExecutionError::Panicked { message: "boom".into() }, ExternalFailure, false, None),
+            (ExecutionError::DeadlinePassed { message: "window closed".into() }, Timeout, false, None),
             (
                 ExecutionError::AmbiguousOutcome { source: Box::new(ExecutionError::Timeout { elapsed_ms: 1 }) },
                 Timeout,

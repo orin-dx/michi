@@ -100,6 +100,7 @@ pub struct ExecOptions {
     pub(crate) retry: RetryConfig,
     pub(crate) attempt_timeout: Duration,
     pub(crate) step_deadline: Option<Duration>,
+    pub(crate) group_deadlines: BTreeMap<String, Duration>,
     pub(crate) jitter_seed: Option<f64>,
     pub(crate) cancellation: CancellationToken,
     pub(crate) cancel_grace: Duration,
@@ -119,6 +120,7 @@ impl Default for ExecOptions {
             retry: RetryConfig::default(),
             attempt_timeout: Duration::from_secs(30),
             step_deadline: None,
+            group_deadlines: BTreeMap::new(),
             jitter_seed: None,
             cancellation: CancellationToken::new(),
             cancel_grace: Duration::from_secs(5),
@@ -139,6 +141,7 @@ impl std::fmt::Debug for ExecOptions {
             .field("retry", &self.retry)
             .field("attempt_timeout", &self.attempt_timeout)
             .field("step_deadline", &self.step_deadline)
+            .field("group_deadlines", &self.group_deadlines)
             .field("jitter_seed", &self.jitter_seed)
             .field("cancel_grace", &self.cancel_grace)
             .field("retry_budget", &self.retry_budget)
@@ -151,8 +154,8 @@ impl std::fmt::Debug for ExecOptions {
 }
 
 impl ExecOptions {
-    /// The defaults: sequential, skip dependents, `RetryConfig::default()`, 30 s per attempt, no step deadline,
-    /// jitter seeded per run, step and attempt, 5 s cancellation grace, `RetryBudget::default()`, no breakers, no
+    /// The defaults: sequential, skip dependents, `RetryConfig::default()`, 30 s per attempt, no step or group
+    /// deadlines, jitter seeded per run, step and attempt, 5 s cancellation grace, `RetryBudget::default()`, no breakers, no
     /// concurrency limits, no observer, no durable starts.
     #[must_use]
     pub fn new() -> Self {
@@ -192,6 +195,21 @@ impl ExecOptions {
     #[must_use]
     pub fn step_deadline(mut self, deadline: Duration) -> Self {
         self.step_deadline = Some(deadline);
+        self
+    }
+
+    /// The window shared by every step whose [`crate::ExecStep::deadline_group`] is `group`. It opens when the
+    /// group's first step is dispatched in this run, so steps that start at different times still end together. A
+    /// later call for the same group replaces the window, and a window for a group no step uses is ignored.
+    ///
+    /// Within the window, a step's deadline is the earlier of its own and the window's end: no attempt or backoff runs
+    /// past it. A step of the group that would be dispatched once the window has ended is not run: it ends `Failed`
+    /// with [`ExecutionError::DeadlinePassed`], which is not applied, so resume runs it again in a new window. A
+    /// window too long for the clock to represent (such as `Duration::MAX`) means no deadline. A zero window behaves
+    /// like a zero step deadline: the first step gets a 1 ms attempt and the others do not run.
+    #[must_use]
+    pub fn group_deadline(mut self, group: impl Into<String>, window: Duration) -> Self {
+        self.group_deadlines.insert(group.into(), window);
         self
     }
 
