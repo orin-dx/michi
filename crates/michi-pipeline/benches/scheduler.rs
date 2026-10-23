@@ -46,3 +46,17 @@ fn execute_parallel_cap_16(b: Bencher, n: usize) {
     let opts = ExecOptions::new().mode(Mode::Parallel { max_concurrency: NonZeroUsize::new(16).unwrap() });
     b.bench(|| rt.block_on(execute(&plan, RunId::try_new("bench").unwrap(), &opts)));
 }
+
+/// The same plan with every step in one of four concurrency keys, each limited to 2: the dispatch loop picks the
+/// earliest step whose key has room and parks the rest.
+#[divan::bench(args = [500])]
+fn execute_parallel_cap_16_keyed(b: Bencher, n: usize) {
+    let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+    let keyed = steps(n).into_iter().enumerate().map(|(i, s)| s.concurrency_key(format!("k{}", i % 4))).collect();
+    let plan = Plan::new(keyed).unwrap();
+    let two = NonZeroUsize::new(2).unwrap();
+    let opts = (0..4)
+        .fold(ExecOptions::new(), |o, k| o.concurrency_limit(format!("k{k}"), two))
+        .mode(Mode::Parallel { max_concurrency: NonZeroUsize::new(16).unwrap() });
+    b.bench(|| rt.block_on(execute(&plan, RunId::try_new("bench").unwrap(), &opts)));
+}

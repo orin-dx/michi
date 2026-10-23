@@ -58,6 +58,8 @@ struct Outcome {
 /// A dispatched step the scheduler is waiting on.
 struct Running {
     index: usize,
+    /// The concurrency slot it holds, released when it ends.
+    slot: Option<usize>,
     dispatched: Instant,
     attempts: Attempts,
     replay: Replay,
@@ -81,9 +83,44 @@ struct Scheduler<'a> {
     records: Vec<Option<StepRecord>>,
     remaining: Vec<usize>,
     ready: BTreeSet<usize>,
+    /// Per step: the concurrency slot of its key, if that key has a limit.
+    slot_of: Vec<Option<usize>>,
+    /// One per limited key that some step uses.
+    slots: Vec<Slot>,
     completion_order: Vec<StepId>,
     stopping: bool,
     observer_panics: u32,
+}
+
+/// A concurrency key with a limit: how many of its steps run, and which ready ones wait for room, by declaration
+/// index.
+struct Slot {
+    limit: usize,
+    in_flight: usize,
+    waiting: BTreeSet<usize>,
+}
+
+/// Resolves each step's concurrency key to a slot. Only keys with a configured limit get one, so a run without limits
+/// has no slots and dispatch takes the plain path.
+fn concurrency_slots(plan: &Plan, opts: &ExecOptions) -> (Vec<Option<usize>>, Vec<Slot>) {
+    let mut slots = Vec::new();
+    if opts.concurrency_limits.is_empty() {
+        return (vec![None; plan.len()], slots);
+    }
+    let mut index: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    let slot_of = plan
+        .steps()
+        .iter()
+        .map(|step| {
+            let key = step.concurrency_key_of()?;
+            let limit = opts.concurrency_limits.get(key)?;
+            Some(*index.entry(key).or_insert_with(|| {
+                slots.push(Slot { limit: limit.get(), in_flight: 0, waiting: BTreeSet::new() });
+                slots.len() - 1
+            }))
+        })
+        .collect();
+    (slot_of, slots)
 }
 
 /// What woke the scheduler loop.
@@ -95,6 +132,7 @@ enum Event {
 impl<'a> Scheduler<'a> {
     fn new(plan: &'a Plan, run_id: RunId, opts: &'a ExecOptions) -> Self {
         let n = plan.len();
+        let (slot_of, slots) = concurrency_slots(plan, opts);
         Self {
             plan,
             opts,
@@ -105,6 +143,8 @@ impl<'a> Scheduler<'a> {
             records: vec![None; n],
             remaining: vec![0; n],
             ready: BTreeSet::new(),
+            slot_of,
+            slots,
             completion_order: Vec::new(),
             stopping: false,
             observer_panics: 0,
@@ -158,7 +198,7 @@ impl<'a> Scheduler<'a> {
                 self.stopping = true;
             }
             while !self.stopping && join_set.len() < cap {
-                let Some(i) = self.ready.pop_first() else { break };
+                let Some(i) = self.next_dispatchable() else { break };
                 if let Some(durable) = self.opts.durable.as_deref() {
                     if let Err(reason) = self.record_start(durable, i) {
                         self.start_not_recorded(i, &reason);
@@ -170,6 +210,9 @@ impl<'a> Scheduler<'a> {
                     if observe(opts, |o| o.on_step_started(&self.run_id, step_id)) {
                         self.observer_panics = self.observer_panics.saturating_add(1);
                     }
+                }
+                if let Some(slot) = self.slot_of[i] {
+                    self.slots[slot].in_flight += 1;
                 }
                 let (job, entry) = self.job(i);
                 let handle = join_set.spawn(run_step(job));
@@ -188,16 +231,57 @@ impl<'a> Scheduler<'a> {
                 Event::Joined(None) => break,
                 Event::Joined(Some(Ok((id, outcome)))) => {
                     if let Some(entry) = running.remove(&id) {
+                        self.release(entry.slot);
                         self.step_finished(entry, outcome);
                     }
                 }
                 Event::Joined(Some(Err(join_err))) => {
                     if let Some(entry) = running.remove(&join_err.id()) {
+                        self.release(entry.slot);
                         let outcome = harness_outcome(join_err, entry.replay);
                         self.step_finished(entry, outcome);
                     }
                 }
             }
+        }
+    }
+
+    /// The next step to dispatch: the earliest-declared ready step whose concurrency key has room. A ready step whose
+    /// key is full moves to its key's waiting set, so it holds back neither the global cap nor other keys; it comes
+    /// back into contention, still by declaration index, once its key has room. With no limited keys this is the
+    /// first ready step.
+    fn next_dispatchable(&mut self) -> Option<usize> {
+        loop {
+            // The earliest ready step, or a waiting step of a key with room if one was declared earlier.
+            let mut best = self.ready.first().map(|&i| (i, None));
+            for (s, slot) in self.slots.iter().enumerate() {
+                if slot.in_flight < slot.limit {
+                    if let Some(&w) = slot.waiting.first() {
+                        if best.is_none_or(|(b, _)| w < b) {
+                            best = Some((w, Some(s)));
+                        }
+                    }
+                }
+            }
+            let (i, waiting_in) = best?;
+            if let Some(s) = waiting_in {
+                self.slots[s].waiting.remove(&i);
+                return Some(i);
+            }
+            self.ready.remove(&i);
+            match self.slot_of[i] {
+                Some(s) if self.slots[s].in_flight >= self.slots[s].limit => {
+                    self.slots[s].waiting.insert(i);
+                }
+                _ => return Some(i),
+            }
+        }
+    }
+
+    /// Gives back a finished step's concurrency slot.
+    fn release(&mut self, slot: Option<usize>) {
+        if let Some(s) = slot {
+            self.slots[s].in_flight = self.slots[s].in_flight.saturating_sub(1);
         }
     }
 
@@ -254,7 +338,7 @@ impl<'a> Scheduler<'a> {
             grace: self.opts.cancel_grace,
             attempts: Arc::clone(&attempts),
         };
-        (job, Running { index: i, dispatched: Instant::now(), attempts, replay })
+        (job, Running { index: i, slot: self.slot_of[i], dispatched: Instant::now(), attempts, replay })
     }
 
     fn step_finished(&mut self, entry: Running, outcome: Outcome) {
@@ -312,6 +396,9 @@ impl<'a> Scheduler<'a> {
             for d in self.plan.dependents_of(j) {
                 if self.records[d].is_none() {
                     self.ready.remove(&d);
+                    if let Some(s) = self.slot_of[d] {
+                        self.slots[s].waiting.remove(&d);
+                    }
                     let record = self.skipped_by_prerequisite(d, root.clone());
                     self.set_terminal(d, record);
                     stack.push(d);
