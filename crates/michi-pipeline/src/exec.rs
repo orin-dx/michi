@@ -105,6 +105,7 @@ pub struct ExecOptions {
     pub(crate) cancel_grace: Duration,
     pub(crate) retry_budget: Option<RetryBudget>,
     pub(crate) breakers: Option<Arc<BreakerRegistry>>,
+    pub(crate) concurrency_limits: BTreeMap<String, NonZeroUsize>,
     pub(crate) observer: Option<Arc<dyn StepObserver>>,
     /// Set with the observer by `durable_starts`: the same observer, which records starts.
     pub(crate) durable: Option<Arc<dyn DurableObserver>>,
@@ -123,6 +124,7 @@ impl Default for ExecOptions {
             cancel_grace: Duration::from_secs(5),
             retry_budget: Some(RetryBudget::default()),
             breakers: None,
+            concurrency_limits: BTreeMap::new(),
             observer: None,
             durable: None,
         }
@@ -141,6 +143,7 @@ impl std::fmt::Debug for ExecOptions {
             .field("cancel_grace", &self.cancel_grace)
             .field("retry_budget", &self.retry_budget)
             .field("breakers", &self.breakers.is_some())
+            .field("concurrency_limits", &self.concurrency_limits)
             .field("observer", &self.observer.is_some())
             .field("durable_starts", &self.durable.is_some())
             .finish_non_exhaustive()
@@ -150,7 +153,7 @@ impl std::fmt::Debug for ExecOptions {
 impl ExecOptions {
     /// The defaults: sequential, skip dependents, `RetryConfig::default()`, 30 s per attempt, no step deadline,
     /// jitter seeded per run, step and attempt, 5 s cancellation grace, `RetryBudget::default()`, no breakers, no
-    /// observer, no durable starts.
+    /// concurrency limits, no observer, no durable starts.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -235,6 +238,20 @@ impl ExecOptions {
     #[must_use]
     pub fn breakers(mut self, registry: Arc<BreakerRegistry>) -> Self {
         self.breakers = Some(registry);
+        self
+    }
+
+    /// At most `limit` steps whose [`crate::ExecStep::concurrency_key`] is `key` run at once, within the mode's
+    /// overall cap. A later call for the same key replaces the limit. A limit for a key no step uses is ignored, and a
+    /// key without a limit is unlimited.
+    ///
+    /// A step whose key is at its limit waits without holding back other ready steps. When a slot frees, the waiting
+    /// steps compete with every other ready step by declaration order, so the earliest-declared dispatchable step goes
+    /// first and dispatch stays deterministic. A step holds its slot from dispatch until it ends, including precheck,
+    /// retries and the backoff between them. Limits apply within one run, not across runs.
+    #[must_use]
+    pub fn concurrency_limit(mut self, key: impl Into<String>, limit: NonZeroUsize) -> Self {
+        self.concurrency_limits.insert(key.into(), limit);
         self
     }
 

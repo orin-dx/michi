@@ -17,6 +17,7 @@ pub struct ExecStep {
     depends_on: Vec<StepId>,
     runner: Arc<dyn Step>,
     breaker_key: Option<String>,
+    concurrency_key: Option<String>,
     retry: Option<RetryConfig>,
     attempt_timeout: Option<Duration>,
     deadline: Option<Duration>,
@@ -36,6 +37,7 @@ impl ExecStep {
             depends_on: Vec::new(),
             runner,
             breaker_key: None,
+            concurrency_key: None,
             retry: None,
             attempt_timeout: None,
             deadline: None,
@@ -53,6 +55,15 @@ impl ExecStep {
     #[must_use]
     pub fn breaker_key(mut self, key: impl Into<String>) -> Self {
         self.breaker_key = Some(key.into());
+        self
+    }
+
+    /// The concurrency key: at most [`crate::ExecOptions::concurrency_limit`] steps with this key run at once (for
+    /// example, one key per registry). A step has at most one key; a later call replaces the earlier one. A key with
+    /// no configured limit is unlimited. Any string is a key, the empty string included.
+    #[must_use]
+    pub fn concurrency_key(mut self, key: impl Into<String>) -> Self {
+        self.concurrency_key = Some(key.into());
         self
     }
 
@@ -102,6 +113,10 @@ impl ExecStep {
         self.breaker_key.as_deref().unwrap_or(self.id.as_str())
     }
 
+    pub(crate) fn concurrency_key_of(&self) -> Option<&str> {
+        self.concurrency_key.as_deref()
+    }
+
     pub(crate) fn runner(&self) -> &Arc<dyn Step> {
         &self.runner
     }
@@ -126,6 +141,7 @@ impl fmt::Debug for ExecStep {
             .field("name", &self.name)
             .field("depends_on", &self.depends_on)
             .field("breaker_key", &self.breaker_key)
+            .field("concurrency_key", &self.concurrency_key)
             .finish_non_exhaustive()
     }
 }

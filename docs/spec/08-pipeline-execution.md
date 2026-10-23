@@ -159,6 +159,29 @@ One scheduler loop drives both modes. It keeps a remaining-prerequisite count pe
 - `Mode::Sequential` (default): one step at a time, in `Plan::execution_order()`.
 - `Mode::Parallel { max_concurrency: NonZeroUsize }`: the loop dispatches ready steps in declaration order while fewer than `max_concurrency` are running. The cap lives in the dispatch loop, not in a semaphore inside spawned tasks, so admission order is declaration order rather than wake order.
 
+### Concurrency keys
+
+`ExecStep::concurrency_key(key)` puts a step in a key, and `ExecOptions::concurrency_limit(key, NonZeroUsize)` caps how many steps of that key run at once, within the mode's overall cap. The usual key is a downstream, so "at most two publishes to npm at a time" is:
+
+```rust
+use std::num::NonZeroUsize;
+
+use michi_pipeline::{ExecOptions, Mode};
+
+let options = ExecOptions::new()
+    .mode(Mode::Parallel { max_concurrency: NonZeroUsize::new(8).unwrap() })
+    .concurrency_limit("npm", NonZeroUsize::new(2).unwrap());
+```
+
+- **One key per step.** A later `concurrency_key` call replaces the earlier one. A step that must respect two limits (a registry and a shared runner, say) is better split, or keyed by the tighter one. Any string is a key, the empty string included.
+- **Unlimited by default.** A key with no configured limit is unlimited, and a limit for a key no step uses is ignored, so one `ExecOptions` can serve several plans. A later `concurrency_limit` for the same key replaces the limit.
+- **Waiting does not block.** A ready step whose key is at its limit waits in that key's queue. It takes no slot of the overall cap and holds back no other step: later-declared steps of other keys, or with no key, are dispatched past it.
+- **Dispatch order.** Every time a slot frees, the scheduler dispatches the earliest-declared step that can run now: a ready step whose key has room, or a waiting one whose key now does. Steps of one key therefore start in declaration order, and the same plan and options always dispatch in the same order. No step waits forever: a plan is finite, and a waiting step goes as soon as its key has room and no earlier-declared step can run.
+- **What holds a slot.** A step holds its key's slot from dispatch until it ends: precheck, every attempt and the backoff between retries. A step whose breaker is open or whose start could not be recorded frees it at once.
+- **Lifecycle events.** `on_step_started` and `DurableObserver::record_start` fire when a step is dispatched, not when it starts waiting. A step still waiting when the run is cancelled (or fail-fast stops it) ends `Skipped(Cancelled)` without being invoked, and resume runs it again under the limits of the resumed run's options.
+- **Per run.** Limits apply within one `execute` or `resume` call. Limits across concurrent runs remain a non-goal; share a semaphore inside the step for that.
+- `Mode::Sequential` runs one step at a time anyway, so a limit never delays a sequential run.
+
 `FailurePolicy` decides what a failure does to the rest of the run:
 
 - `SkipDependents` (default): the failed step's transitive dependents are `Skipped(PrerequisiteFailed)` and independent branches keep running. This applies in sequential mode too, which changes the old behaviour of stopping at the first failure.
