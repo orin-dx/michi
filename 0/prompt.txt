@@ -1,0 +1,1 @@
+We've created a new michi-graph crate and done a bunch of work. Can you do a deep evaluation and analysis of the new crate and the rest of the codebase?
