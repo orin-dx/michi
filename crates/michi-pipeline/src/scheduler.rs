@@ -41,6 +41,8 @@ struct Job {
     retry: RetryConfig,
     attempt_timeout: Duration,
     deadline: Option<Duration>,
+    /// When the step's deadline group's window ends, and the group's key.
+    group_deadline: Option<(Instant, String)>,
     jitter_seed: Option<f64>,
     breaker: Option<(String, Arc<CircuitBreaker>)>,
     budget: Option<Arc<Mutex<RetryBudget>>>,
@@ -87,6 +89,10 @@ struct Scheduler<'a> {
     slot_of: Vec<Option<usize>>,
     /// One per limited key that some step uses.
     slots: Vec<Slot>,
+    /// Per step: its deadline group's window, if that group has one configured.
+    window_of: Vec<Option<usize>>,
+    /// One per deadline group with a window that some step uses.
+    windows: Vec<Window>,
     completion_order: Vec<StepId>,
     stopping: bool,
     observer_panics: u32,
@@ -100,27 +106,49 @@ struct Slot {
     waiting: BTreeSet<usize>,
 }
 
-/// Resolves each step's concurrency key to a slot. Only keys with a configured limit get one, so a run without limits
-/// has no slots and dispatch takes the plain path.
-fn concurrency_slots(plan: &Plan, opts: &ExecOptions) -> (Vec<Option<usize>>, Vec<Slot>) {
-    let mut slots = Vec::new();
-    if opts.concurrency_limits.is_empty() {
-        return (vec![None; plan.len()], slots);
+/// A deadline group's window. It opens when the group's first step is dispatched; `ends` is `None` while it is shut
+/// or when its end is too far away for the clock to represent.
+struct Window {
+    key: String,
+    length: Duration,
+    opened: bool,
+    ends: Option<Instant>,
+}
+
+impl Window {
+    /// Whether the window opened and has already ended at `now`.
+    fn closed_at(&self, now: Instant) -> bool {
+        self.ends.is_some_and(|end| now >= end)
+    }
+}
+
+/// Resolves each step's key (picked by `key_of`) against the options' per-key settings in `config`, making one entry
+/// per key that both a step and the settings name. Steps whose key has no setting get `None`, and with no settings
+/// at all no step does, so the scheduler takes its plain path.
+fn resolve_keys<V, T>(
+    plan: &Plan,
+    config: &std::collections::BTreeMap<String, V>,
+    key_of: impl Fn(&crate::ExecStep) -> Option<&str>,
+    mut make: impl FnMut(&str, &V) -> T,
+) -> (Vec<Option<usize>>, Vec<T>) {
+    let mut entries = Vec::new();
+    if config.is_empty() {
+        return (vec![None; plan.len()], entries);
     }
     let mut index: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
-    let slot_of = plan
+    let of = plan
         .steps()
         .iter()
         .map(|step| {
-            let key = step.concurrency_key_of()?;
-            let limit = opts.concurrency_limits.get(key)?;
+            let key = key_of(step)?;
+            let value = config.get(key)?;
             Some(*index.entry(key).or_insert_with(|| {
-                slots.push(Slot { limit: limit.get(), in_flight: 0, waiting: BTreeSet::new() });
-                slots.len() - 1
+                entries.push(make(key, value));
+                entries.len() - 1
             }))
         })
         .collect();
-    (slot_of, slots)
+    (of, entries)
 }
 
 /// What woke the scheduler loop.
@@ -132,7 +160,19 @@ enum Event {
 impl<'a> Scheduler<'a> {
     fn new(plan: &'a Plan, run_id: RunId, opts: &'a ExecOptions) -> Self {
         let n = plan.len();
-        let (slot_of, slots) = concurrency_slots(plan, opts);
+        let (slot_of, slots) =
+            resolve_keys(plan, &opts.concurrency_limits, crate::ExecStep::concurrency_key_of, |_, limit| Slot {
+                limit: limit.get(),
+                in_flight: 0,
+                waiting: BTreeSet::new(),
+            });
+        let (window_of, windows) =
+            resolve_keys(plan, &opts.group_deadlines, crate::ExecStep::deadline_group_of, |key, length| Window {
+                key: key.to_string(),
+                length: *length,
+                opened: false,
+                ends: None,
+            });
         Self {
             plan,
             opts,
@@ -145,6 +185,8 @@ impl<'a> Scheduler<'a> {
             ready: BTreeSet::new(),
             slot_of,
             slots,
+            window_of,
+            windows,
             completion_order: Vec::new(),
             stopping: false,
             observer_panics: 0,
@@ -199,6 +241,10 @@ impl<'a> Scheduler<'a> {
             }
             while !self.stopping && join_set.len() < cap {
                 let Some(i) = self.next_dispatchable() else { break };
+                if self.window_closed(i) {
+                    self.deadline_passed(i);
+                    continue;
+                }
                 if let Some(durable) = self.opts.durable.as_deref() {
                     if let Err(reason) = self.record_start(durable, i) {
                         self.start_not_recorded(i, &reason);
@@ -213,6 +259,14 @@ impl<'a> Scheduler<'a> {
                 }
                 if let Some(slot) = self.slot_of[i] {
                     self.slots[slot].in_flight += 1;
+                }
+                if let Some(w) = self.window_of[i] {
+                    let window = &mut self.windows[w];
+                    if !window.opened {
+                        window.opened = true;
+                        // A window too long for the clock to represent is no deadline, rather than an overflow panic.
+                        window.ends = Instant::now().checked_add(window.length);
+                    }
                 }
                 let (job, entry) = self.job(i);
                 let handle = join_set.spawn(run_step(job));
@@ -270,12 +324,36 @@ impl<'a> Scheduler<'a> {
             }
             self.ready.remove(&i);
             match self.slot_of[i] {
-                Some(s) if self.slots[s].in_flight >= self.slots[s].limit => {
+                // A step whose window has closed is returned rather than parked, so it fails now.
+                Some(s) if self.slots[s].in_flight >= self.slots[s].limit && !self.window_closed(i) => {
                     self.slots[s].waiting.insert(i);
                 }
                 _ => return Some(i),
             }
         }
+    }
+
+    /// Whether step `i`'s deadline group window has opened and ended.
+    fn window_closed(&self, i: usize) -> bool {
+        self.window_of[i].is_some_and(|w| self.windows[w].closed_at(Instant::now()))
+    }
+
+    /// Step `i`'s deadline group window ended before it could be dispatched: it ends `Failed` with
+    /// [`ExecutionError::DeadlinePassed`] without being invoked, and counts as a failure (its dependents are skipped,
+    /// and fail-fast stops the run).
+    fn deadline_passed(&mut self, i: usize) {
+        let Some(w) = self.window_of[i] else { return };
+        let window = &self.windows[w];
+        let message = format!(
+            "the {}ms window of deadline group {} ended before the step started",
+            millis(window.length),
+            window.key
+        );
+        let step = &self.plan.steps()[i];
+        let mut record = StepRecord::new(step.id().clone(), step.name().to_string(), StepStatus::Failed);
+        record.reason = Some(format!("{message}, so it was not run"));
+        record.error = Some(ExecutionError::DeadlinePassed { message });
+        self.failed(i, record);
     }
 
     /// Gives back a finished step's concurrency slot.
@@ -332,6 +410,10 @@ impl<'a> Scheduler<'a> {
             retry: step.retry_override().unwrap_or(&self.opts.retry).clone(),
             attempt_timeout: if attempt_timeout.is_zero() { Duration::from_millis(1) } else { attempt_timeout },
             deadline: step.deadline_override().or(self.opts.step_deadline),
+            group_deadline: self.window_of[i].and_then(|w| {
+                let window = &self.windows[w];
+                window.ends.map(|end| (end, window.key.clone()))
+            }),
             jitter_seed: self.opts.jitter_seed,
             breaker,
             budget: self.budget.clone(),
@@ -541,8 +623,9 @@ async fn precheck_once(
 fn report_failure(guard: Option<AdmissionGuard>, err: &ExecutionError) {
     if let Some(guard) = guard {
         match err.innermost() {
-            // Cancellation says nothing about the downstream's health: release a probe, report nothing.
-            ExecutionError::Cancelled | ExecutionError::Interrupted { .. } => {}
+            // Cancellation and a passed deadline say nothing about the downstream's health: release a probe, report
+            // nothing.
+            ExecutionError::Cancelled | ExecutionError::Interrupted { .. } | ExecutionError::DeadlinePassed { .. } => {}
             // The downstream answered and rejected the request itself: it is up, so this is not a failure.
             ExecutionError::Http { status, .. } if is_client_error(*status) => guard.complete(true),
             // The step refused the work itself, before reaching the downstream.
@@ -597,8 +680,14 @@ async fn run_step(job: Job) -> Outcome {
     };
     let probe = guard.as_ref().is_some_and(AdmissionGuard::is_probe);
     let started = Instant::now();
-    // A deadline too far away for the clock to represent is no deadline, rather than an overflow panic.
-    let deadline = job.deadline.and_then(|d| started.checked_add(d));
+    // A deadline too far away for the clock to represent is no deadline, rather than an overflow panic. With a
+    // deadline group as well, the earlier end applies, and the reason names the one that did.
+    let own = job.deadline.and_then(|d| started.checked_add(d));
+    let (deadline, deadline_name) = match (own, &job.group_deadline) {
+        (Some(own), Some((group, _))) if own <= *group => (Some(own), "step deadline".to_string()),
+        (_, Some((group, key))) => (Some(*group), format!("deadline group {key}")),
+        (own, None) => (own, "step deadline".to_string()),
+    };
     let limit_from = |now: Instant| match deadline {
         Some(d) => job.attempt_timeout.min(d.saturating_duration_since(now)).max(Duration::from_millis(1)),
         None => job.attempt_timeout,
@@ -694,7 +783,7 @@ async fn run_step(job: Job) -> Outcome {
             break (err, "retries exhausted".to_string());
         };
         if deadline.is_some_and(|d| Instant::now().checked_add(delay).is_none_or(|wake| wake >= d)) {
-            break (err, "step deadline reached".to_string());
+            break (err, format!("{deadline_name} reached"));
         }
         if let Some(budget) = &job.budget {
             if !lock(budget).try_withdraw() {

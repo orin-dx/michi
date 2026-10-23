@@ -96,7 +96,8 @@ impl StepContext {
         &self.cancellation
     }
 
-    /// When the step's total deadline (across all attempts) expires, if one is set.
+    /// When the step's deadline expires, if one is set: its total deadline across all attempts, or its deadline
+    /// group's window end ([`crate::ExecOptions::group_deadline`]) if that is earlier.
     #[must_use]
     pub fn deadline(&self) -> Option<tokio::time::Instant> {
         self.deadline

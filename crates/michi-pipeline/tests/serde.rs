@@ -70,3 +70,21 @@ fn ids_are_validated_when_deserialized() {
     assert!(serde_json::from_str::<StepId>("\"ok-id\"").is_ok());
     assert!(serde_json::from_str::<StepId>("\"not:ok\"").is_err());
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_step_whose_deadline_group_closed_round_trips_and_resume_runs_it() {
+    let log = Log::new();
+    let p = plan(vec![
+        act(&log, "early", &[], Act::Ok).deadline_group("g"),
+        act(&log, "slow", &[], after(100, Act::Ok)),
+        act(&log, "late", &["slow"], Act::Ok).deadline_group("g"),
+    ]);
+    let opts = ExecOptions::new().group_deadline("g", std::time::Duration::from_millis(10));
+    let record = execute(&p, rid("r"), &opts).await;
+    let json = serde_json::to_string(&record).unwrap();
+    assert!(json.contains("\"deadline_passed\""), "{json}");
+    let back: RunRecord = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, record);
+    let resumed = resume(&back, &p, &ResumeOptions::new(opts)).await.unwrap();
+    assert_eq!(resumed.outcome(), RunOutcome::Succeeded);
+}
