@@ -15,6 +15,8 @@ use crate::{CancellationToken, ExecutionError, RunId, StepId};
 /// [`michi_core::pipeline::StepStatus::OutcomeUnknown`] and is never replayed automatically.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 pub enum Replay {
     /// Repeating the step could repeat its side effect. The default: a step must opt in to replay.
     #[default]

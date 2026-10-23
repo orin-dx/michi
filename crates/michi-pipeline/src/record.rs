@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use michi_core::pipeline::{Pipeline, PipelineStep, StepStatus};
 
-use crate::{Effect, ExecutionError, Plan, PlanFingerprint, ReplayClass, ResumeError, RunId, StepId};
+use crate::{Effect, ExecutionError, Plan, PlanFingerprint, Replay, ReplayClass, ResumeError, RunId, StepId};
 
 /// One attempt of one step.
 #[derive(Debug, Clone, PartialEq)]
@@ -55,6 +55,10 @@ pub struct StepRecord {
     pub(crate) started_at: Option<Duration>,
     pub(crate) elapsed: Option<Duration>,
     pub(crate) caused_by: Option<StepId>,
+    /// The step's [`Replay`] when the executor or [`RunRecord::from_parts`] wrote the record; `None` in a record saved
+    /// by hand (such as [`StepRecord::in_flight`]) or by an older michi-pipeline, which counts as not idempotent.
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+    pub(crate) replay: Option<Replay>,
 }
 
 impl StepRecord {
@@ -69,6 +73,7 @@ impl StepRecord {
             started_at: None,
             elapsed: None,
             caused_by: None,
+            replay: None,
         }
     }
 
@@ -137,6 +142,13 @@ impl StepRecord {
         self.caused_by.as_ref()
     }
 
+    /// The step's [`Replay`] as the run knew it, or `None` for a record saved by hand or by an older version
+    /// (treated as not idempotent).
+    #[must_use]
+    pub fn replay(&self) -> Option<Replay> {
+        self.replay
+    }
+
     /// Whether this step failed in its own right: `Failed`, `OutcomeUnknown`, `NotRun`, `Panicked`, or `Running` (a
     /// rebuilt record's step that was in flight when the process stopped).
     #[must_use]
@@ -160,6 +172,11 @@ impl StepRecord {
     /// before 0.5.
     #[must_use]
     pub fn awaits_verification(&self) -> bool {
+        // Resume re-runs an idempotent step whatever happened, so nothing needs verifying. A prechecked step stays
+        // listed: its precheck may not be able to tell, and a caller's verdict takes precedence over it.
+        if self.replay == Some(Replay::Idempotent) {
+            return false;
+        }
         match self.status {
             StepStatus::OutcomeUnknown(_) | StepStatus::Panicked | StepStatus::Running => true,
             StepStatus::Failed => self.error.as_ref().is_none_or(|e| e.effect() != Effect::NotApplied),
@@ -299,11 +316,14 @@ impl RunRecord {
             .into_iter()
             .zip(plan.steps())
             .map(|(saved, step)| {
-                saved.unwrap_or_else(|| {
+                let mut record = saved.unwrap_or_else(|| {
                     let mut pending = StepRecord::new(step.id().clone(), step.name().to_string(), StepStatus::Pending);
                     pending.reason = Some("no record was saved for this step".to_string());
                     pending
-                })
+                });
+                // The plan knows each step's replay, even for a hand-saved `in_flight` record.
+                record.replay = Some(step.runner().replay());
+                record
             })
             .collect();
         Ok(Self {
