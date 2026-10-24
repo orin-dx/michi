@@ -198,6 +198,10 @@ impl<K: Ord + Clone, E> Dag<K, E> {
     /// The nodes that can start now: those for which `eligible(key)` holds and `satisfied(key)` holds for every
     /// prerequisite, in the dag's [`Order`]. One pass over the graph.
     ///
+    /// Both closures are `Fn(&K) -> bool`, so a swapped call compiles and gives wrong results. `satisfied` is the
+    /// first argument: "this prerequisite is done". `eligible` is the second: "this node may start". [`Dag::ready_by_edge`]
+    /// takes them in the same order.
+    ///
     /// When `satisfied` holds only for nodes that succeeded, a node behind a failure never becomes ready, so direct
     /// prerequisites are enough.
     pub fn ready<'a, S, R>(&'a self, satisfied: S, eligible: R) -> impl Iterator<Item = NodeIx> + 'a
@@ -219,14 +223,31 @@ impl<K: Ord + Clone, E> Dag<K, E> {
         self.edges.of(ix.u())
     }
 
-    /// Like [`Dag::ready`], but each prerequisite edge is judged with its kind: a node is ready when `eligible(key)`
-    /// holds and `satisfied(prerequisite, kind)` holds for every kept edge. Use it when some kinds are met earlier
-    /// than others, such as a publish that only needs its prerequisite's publish issued while a tag needs it
-    /// confirmed. One pass over the graph.
-    pub fn ready_by_edge<'a, R, S>(&'a self, eligible: R, satisfied: S) -> impl Iterator<Item = NodeIx> + 'a
+    /// Like [`Dag::ready`], with the same argument order (`satisfied` first, then `eligible`), but each prerequisite
+    /// edge is judged with its kind: a node is ready when `eligible(key)` holds and `satisfied(prerequisite, kind)`
+    /// holds for every kept edge. Use it when some kinds are met earlier than others, such as a publish that only
+    /// needs its prerequisite's publish issued while a tag needs it confirmed. One pass over the graph.
+    ///
+    /// The closures differ in shape (`satisfied` takes the kind too), so the 0.7.0 order, `eligible` first, no longer
+    /// compiles:
+    ///
+    /// ```compile_fail
+    /// # use michi_graph::{Dag, Order};
+    /// let dag = Dag::from_nodes([("a", vec![])], Order::Key).unwrap();
+    /// let _ = dag.ready_by_edge(|_: &&str| true, |_: &&str, _: &()| true);
+    /// ```
+    ///
+    /// ```
+    /// # use michi_graph::{Dag, Order};
+    /// let dag = Dag::from_nodes([("a", vec![]), ("b", vec!["a"])], Order::Key).unwrap();
+    /// // `satisfied` first: only "a" is done. `eligible` second: only "b" may start.
+    /// let ready: Vec<_> = dag.ready_by_edge(|p, ()| *p == "a", |k| *k == "b").collect();
+    /// assert_eq!(ready, [dag.index_of("b").unwrap()]);
+    /// ```
+    pub fn ready_by_edge<'a, S, R>(&'a self, satisfied: S, eligible: R) -> impl Iterator<Item = NodeIx> + 'a
     where
-        R: Fn(&K) -> bool + 'a,
         S: Fn(&K, &E) -> bool + 'a,
+        R: Fn(&K) -> bool + 'a,
     {
         self.by_rank.iter().map(|&i| NodeIx(i)).filter(move |&ix| {
             self.key(ix).is_some_and(&eligible)
