@@ -15,7 +15,7 @@ JSON repeats field names on every item. Markdown key-value repeats them too — 
 michi emits this subset of TOON 4.4. Lines are separated by LF; the document has no trailing newline, no trailing spaces, no blank lines and no byte-order mark (§12).
 
 ```
-document     ::= list (LF totalcount)? (LF help)? (LF recovery)?   (a list document: a root object, §5)
+document     ::= list (LF truncated)? (LF totalcount)? (LF help)? (LF recovery)?   (a list document: a root object, §5)
                | entry (LF entry)*                     (any other block: a root object, unique keys, §14.3)
 entry        ::= key ": " cell | list | inline | recovery   (primitive field §8, arrays §9)
 inline       ::= key "[" count "]: " cell ("," cell)*   (inline primitive array, §9.1)
@@ -26,6 +26,7 @@ list         ::= key ": []"                            (no rows, §9.1)
 fields       ::= key ("," key)*                        (at least one, all distinct, §6)
 row          ::= "  " cell ("," cell)*                 (one cell per field)
 cell         ::= string | number | "true" | "false" | "null"
+truncated    ::= "truncated[" count "]{row,field,removed}:" (LF "  " digits "," string "," digits)+   (tabular, §9.3)
 totalcount   ::= "totalCount: " digits                 (§8)
 help         ::= "help[" count "]: " string ("," string)*   (inline primitive array, §9.1)
 count        ::= "0" | [1-9][0-9]*                     (equals the number of rows, items or hints)
@@ -38,7 +39,7 @@ escape       ::= '\\' | '\"' | '\n' | '\r' | '\t' | '\u00' hex hex   (lowercase 
 number       ::= canonical decimal, or exponent form outside 1e-6 <= |n| < 1e21   (§2)
 ```
 
-The type name is the list's key; `totalCount`, `help` and `recovery` are the keys michi composes next to it (`AgentResponse` appends `recovery`), so they are reserved and rejected as type names (`ToonError::InvalidTypeName`). A repeated field name is rejected too (`ToonError::InvalidFieldName`). Any other name is valid: names outside `^[A-Za-z_][A-Za-z0-9_.]*$` — including the empty name, non-ASCII names and names with spaces or punctuation — are quoted.
+The type name is the list's key; `totalCount`, `help`, `recovery` and `truncated` are the keys michi composes next to it (`AgentResponse` appends `recovery`), so they are reserved and rejected as type names (`ToonError::InvalidTypeName`). A repeated field name is rejected too (`ToonError::InvalidFieldName`). Any other name is valid: names outside `^[A-Za-z_][A-Za-z0-9_.]*$` — including the empty name, non-ASCII names and names with spaces or punctuation — are quoted.
 
 ## Examples
 
@@ -53,14 +54,17 @@ totalCount: 47
 help[2]: Call get_issue with number=<number> for full detail,Call list_issues with state=open to filter
 ```
 
-**Truncated field value** (`.max_cell_len(55).truncation_hint("full=true")`, descriptions of 170 and 225 chars):
+**Truncated field value** (`.max_cell_len(40).truncation_hint("full=true")`, descriptions of 75 and 73 chars):
 
 ```
 components[2]{name,description,tokens}:
-  Button,Primary action element (148 more chars — use full=true),12
-  Icon,Scalable vector glyphs (203 more chars — use full=true),8
+  Button,Primary action element used to submit f…,12
+  Icon,Scalable vector glyphs that inherit col…,8
+truncated[2]{row,field,removed}:
+  0,description,36
+  1,description,34
 totalCount: 84
-help[1]: Call get_component with name=<name> and full=true for complete description
+help[2]: Call get_component with name=<name> and full=true for complete description,Cut cells are listed in the truncated block; use full=true for the full value
 ```
 
 **Empty state:**
@@ -176,17 +180,33 @@ A string cell, hint or key is written bare unless TOON 4.4 §7.2 requires quotes
 - contains `:`, `"`, `\`, `[`, `]`, `{`, `}`, a comma, or any control character U+0000–U+001F,
 - starts with `-` or `#`.
 
-Everything else — Unicode, emoji, interior spaces, `|`, `<`, `=` — stays bare. Inside quotes, `\` and `"` are escaped as `\\` and `\"`, LF, CR and tab as `\n`, `\r` and `\t`, other control characters as `\u00xx` with lowercase hex; nothing else is escaped. A cell or hint therefore never spans lines and nothing is dropped. A truncated cell is quoted by the same rules after truncation (the suffix needs none unless the caller's hint contains a character that does).
+Everything else — Unicode, emoji, interior spaces, `|`, `<`, `=` — stays bare. Inside quotes, `\` and `"` are escaped as `\\` and `\"`, LF, CR and tab as `\n`, `\r` and `\t`, other control characters as `\u00xx` with lowercase hex; nothing else is escaped. A cell or hint therefore never spans lines and nothing is dropped. A cut cell is quoted by the same rules after the cut.
+
+## Trust model
+
+michi guarantees a syntactic property and nothing more.
+
+**What michi guarantees.** One value cannot create extra lines, fields or cells. A line break, tab or any other C0 control in a value is escaped (`\n`, `\t`, `\u00xx`), and a comma, colon, quote, bracket or leading `-` forces quotes, so a cell stays one cell of one row. Text inside a cell therefore cannot produce michi's own lines either: `truncated[…]`, `totalCount`, `help[…]`, `recovery[…]`, `causes[…]` and `error:` are written by michi, from structure the caller supplied, and a cell that spells one of them stays a quoted cell.
+
+**What michi does not do.**
+
+- It cannot stop prompt injection. A cell is still text the agent reads; "ignore previous instructions" inside a cell is rendered faithfully, as data.
+- It escapes only C0 controls, as TOON 4.4 §7.1 specifies. C1 controls (U+0080 to U+009F), U+2028 and U+2029, bidirectional controls and tag characters (U+E0000 block) pass through verbatim.
+- `audience` annotations on MCP content are advisory metadata for the client, not access control.
+- `human_content` is the caller's text for the user. It is not escaped or validated.
+
+**The rule for callers.** Hints, recovery hints, error messages and causes, type names, field names and the truncation hint come from the tool author, written in the tool's code, never from data. Cells are data. Do not build a hint or an error message out of a file, web page, issue body or any other value an outside party controls; if a hint must point at a value, use a placeholder such as `<id>`. The same goes for secrets: `DomainError::from_error` keeps only the top-level message and leaves the `source()` chain out unless you call `from_error_with_causes`, because a cause often holds a URL with a token or an internal path.
 
 ## Truncation
 
-A string cell longer than `max_cell_len` chars (default 200) is cut, and its text says so:
+A string cell longer than `max_cell_len` chars (default 200) is cut, and the cut is reported out of band, so the cell's own text can never pose as michi's signal:
 
-- The cell keeps as many leading chars as fit and ends with `" ({removed} more chars)"`, where `removed` is the number of chars cut, not the original length. Kept chars plus `removed` equal the original char count, and the whole cell, suffix included, is at most `max_cell_len` chars.
-- The `— use {hint}` clause, as in `" (148 more chars — use full=true)"`, appears only when the caller sets `ToonOptions::truncation_hint` (`AgentResponse::truncation_hint`, NAPI `truncationHint`). michi does not know the calling tool's parameters, so it never invents one; an empty hint is the same as none.
-- When `max_cell_len` cannot hold the suffix plus one kept char, the cell is its first `max_cell_len - 1` chars followed by `…` (just `…` at 1, the empty string `""` at 0), never a fragment of the suffix.
-- The cap counts chars **before** escaping and quoting: a truncated cell is then quoted and escaped by the rules above, so a cell holding `"`, `\`, a line break or a comma is written longer than `max_cell_len`.
+- The cell keeps its first `max_cell_len - 1` chars and ends with a plain `…`, so a cut cell is exactly `max_cell_len` chars. A cap of 1 gives `…` and a cap of 0 gives the empty string `""`. The cell never carries a message.
+- A `truncated[N]{row,field,removed}:` block follows the list and lists every cut cell, in row then field order: `row` is the 0-based row index, `field` the field name, and `removed` the number of chars cut. Kept chars (not counting the `…`) plus `removed` equal the original char count. The block is omitted when nothing was cut. A cell that ends in `…` with no entry in the block is just data.
+- When the caller sets `ToonOptions::truncation_hint` (`AgentResponse::truncation_hint`, NAPI `truncationHint`) and a cell was cut, michi adds one line to `help[]`, after the caller's own hints: `Cut cells are listed in the truncated block; use {hint} for the full value`. michi does not know the calling tool's parameters, so it never invents a hint; an empty hint is the same as none. The hint is tool-author text and travels in the trusted `help` channel, not in a cell.
+- The cap counts chars **before** escaping and quoting: a cut cell is then quoted and escaped by the rules above, so a cell holding `"`, `\`, a line break or a comma is written longer than `max_cell_len`.
 - Numbers, booleans and `null` are never truncated.
+- `truncate::truncate()` and `truncate_inline()` (and NAPI `truncate`) still append an in-band `" ({removed} more chars — use {hint})"` suffix. That marker is plain text, so use those for one free-text payload, not for TOON cells.
 
 ## Size limits
 
@@ -202,7 +222,7 @@ A string cell longer than `max_cell_len` chars (default 200) is cut, and its tex
 - Every check is linear: repeated field names are found with a set, so the largest accepted header costs 1,000 lookups instead of ~500,000 comparisons.
 - serde `list()` checks the field and cell limits against the union of the items' keys before it builds any row, so a sparse item set (each item with a few distinct keys) cannot expand into a huge table of `null` cells.
 - `AgentResponse` reports a violation like any other validation failure: an `error: toon_validation_failed` body with `isError` set on the text, JSON and MCP surfaces.
-- The truncation hint is copied into every truncated cell, which is why its length is capped. The renderer also measures it once per document, not once per cell.
+- The truncation hint is one short instruction, which is why its length is capped. The renderer builds its help line once per document.
 
 ## Numbers, booleans and null
 

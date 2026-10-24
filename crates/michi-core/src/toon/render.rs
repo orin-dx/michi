@@ -161,22 +161,43 @@ impl std::fmt::Display for Value {
     }
 }
 
-/// Root-object keys michi composes next to a TOON list (`totalCount`, `help`, `recovery`), which a type name therefore
-/// must not take: TOON 4.4 §14.3 forbids duplicate sibling keys.
-pub(crate) const RESERVED_TYPE_NAMES: [&str; 3] = crate::kv::RESERVED_ROOT_KEYS;
+/// Root-object keys michi composes next to a TOON list (`totalCount`, `help`, `recovery`, `truncated`), which a type
+/// name therefore must not take: TOON 4.4 §14.3 forbids duplicate sibling keys.
+pub(crate) const RESERVED_TYPE_NAMES: [&str; 4] = ["totalCount", "help", "recovery", "truncated"];
 
-/// Append one row cell: §7.2 quoting for strings, §2/§3 canonical numbers, the `null` literal. Only strings are
-/// truncated to `max_cell_len` chars, counted before escaping, with the caller's `hint` (empty: none) in the suffix.
-fn push_cell(out: &mut String, cell: &Value, max_cell_len: usize, hint: &crate::truncate::InlineHint<'_>) {
+/// Cut `s` to at most `max_cell_len` chars: `max_cell_len - 1` kept chars and a plain `…`, or the empty string for a
+/// cap of 0. Returns the cell and the number of chars cut off, or `None` when `s` fits. The cell never carries a
+/// message: the cut is reported in the `truncated` block (see `push_truncated`).
+fn cut_cell(s: &str, max_cell_len: usize) -> Option<(String, usize)> {
+    // Byte length is always >= char count, so a string that fits in bytes fits in chars: skip the UTF-8 scan.
+    if s.len() <= max_cell_len {
+        return None;
+    }
+    let total = s.chars().count();
+    if total <= max_cell_len {
+        return None;
+    }
+    let keep = max_cell_len.saturating_sub(1);
+    let end = s.char_indices().nth(keep).map_or(s.len(), |(i, _)| i);
+    let mut cell = String::with_capacity(end + 3);
+    cell.push_str(&s[..end]);
+    if max_cell_len > 0 {
+        cell.push('\u{2026}');
+    }
+    Some((cell, total - keep))
+}
+
+/// Append one row cell: §7.2 quoting for strings, §2/§3 canonical numbers, the `null` literal. Only strings are cut
+/// to `max_cell_len` chars, counted before escaping. Returns the chars cut off a string, `None` when the cell is whole.
+fn push_cell(out: &mut String, cell: &Value, max_cell_len: usize) -> Option<usize> {
     use std::fmt::Write as _;
     match cell {
         Value::Str(s) => {
-            if s.len() <= max_cell_len {
-                out.push_str(&escape_value(s));
-            } else {
-                let truncated = hint.truncate(s, max_cell_len);
-                out.push_str(&escape_value(&truncated));
+            if let Some((cut, removed)) = cut_cell(s, max_cell_len) {
+                out.push_str(&escape_value(&cut));
+                return Some(removed);
             }
+            out.push_str(&escape_value(s));
         }
         Value::Int(n) => {
             let _ = write!(out, "{n}");
@@ -188,6 +209,7 @@ fn push_cell(out: &mut String, cell: &Value, max_cell_len: usize, hint: &crate::
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
         Value::Null => out.push_str("null"),
     }
+    None
 }
 
 /// Append the list entry in the form TOON 4.4 prescribes for its shape, each line ending in a newline:
@@ -195,12 +217,15 @@ fn push_cell(out: &mut String, cell: &Value, max_cell_len: usize, hint: &crate::
 /// - rows with zero fields: `key[N]:` and N bare `-` items, since empty objects may not use tabular form
 ///   (§9.3, §9.4, §10),
 /// - otherwise the tabular form `key[N]{f1,f2}:` with one row per line at depth 1 (§9.3).
-fn push_list(out: &mut String, opts: &crate::toon::ToonOptions) {
+///
+/// Returns the cells that were cut, as `(row, field index, chars removed)`.
+fn push_list(out: &mut String, opts: &crate::toon::ToonOptions) -> Vec<(usize, usize, usize)> {
     use std::fmt::Write as _;
+    let mut cut = Vec::new();
     out.push_str(&escape_key(&opts.type_name));
     if opts.rows.is_empty() {
         out.push_str(": []\n");
-        return;
+        return cut;
     }
     let _ = write!(out, "[{}]", opts.rows.len());
     if opts.fields.is_empty() {
@@ -208,7 +233,7 @@ fn push_list(out: &mut String, opts: &crate::toon::ToonOptions) {
         for _ in &opts.rows {
             out.push_str("  -\n");
         }
-        return;
+        return cut;
     }
     out.push('{');
     for (i, field) in opts.fields.iter().enumerate() {
@@ -218,17 +243,32 @@ fn push_list(out: &mut String, opts: &crate::toon::ToonOptions) {
         out.push_str(&escape_key(field));
     }
     out.push_str("}:\n");
-    // Measured once per document, not once per truncated cell.
-    let hint = crate::truncate::InlineHint::new(opts.truncation_hint.as_deref().unwrap_or(""));
-    for row in &opts.rows {
+    for (r, row) in opts.rows.iter().enumerate() {
         out.push_str("  ");
         for (i, cell) in row.iter().enumerate() {
             if i > 0 {
                 out.push(',');
             }
-            push_cell(out, cell, opts.max_cell_len, &hint);
+            if let Some(removed) = push_cell(out, cell, opts.max_cell_len) {
+                cut.push((r, i, removed));
+            }
         }
         out.push('\n');
+    }
+    cut
+}
+
+/// Append the `truncated[N]{row,field,removed}:` block that reports every cut cell (nothing when none was cut). It is
+/// michi's own signal: cell text is quoted and escaped, so no cell can produce this block or one of its rows.
+fn push_truncated(out: &mut String, opts: &crate::toon::ToonOptions, cut: &[(usize, usize, usize)]) {
+    use std::fmt::Write as _;
+    if cut.is_empty() {
+        return;
+    }
+    let _ = writeln!(out, "truncated[{}]{{row,field,removed}}:", cut.len());
+    for &(row, field, removed) in cut {
+        let name = opts.fields.get(field).map_or("", String::as_str);
+        let _ = writeln!(out, "  {row},{},{removed}", escape_value(name));
     }
 }
 
@@ -308,7 +348,7 @@ mod proof {
         ///
         /// Checks run in this order and the first failure is returned:
         /// [`crate::toon::ToonError::InvalidTypeName`] if `type_name` is a
-        /// reserved root key (`totalCount`, `help` or `recovery`),
+        /// reserved root key (`totalCount`, `help`, `recovery` or `truncated`),
         /// [`crate::toon::ToonError::TooManyFields`] past
         /// [`crate::toon::MAX_FIELDS`] fields,
         /// [`crate::toon::ToonError::InvalidFieldName`] if a field name appears
@@ -366,22 +406,43 @@ mod proof {
         /// construction: row arity was already proven equal to
         /// `fields.len()` by `validate`, so rows and fields are iterated in
         /// lockstep instead of indexed by position, which could fail.
+        ///
+        /// Cells cut to `max_cell_len` end in `…` and are reported in a `truncated[N]{row,field,removed}:` block
+        /// after the list. When [`ToonOptions::truncation_hint`](crate::toon::ToonOptions::truncation_hint) is set
+        /// and a cell was cut, michi adds one line to `help[]` pointing at that block and the caller's instruction.
         #[must_use]
         pub fn render(&self) -> String {
+            let (mut out, extra) = self.render_parts();
+            let hints = self.opts.hints.iter().map(String::as_str).chain(extra.as_deref());
+            let hints: Vec<&str> = hints.collect();
+            crate::hints::append_help_block(&mut out, hints.into_iter());
+            out
+        }
+
+        /// The document without its `help` block, plus the `help[]` line michi adds when it cut a cell and the
+        /// caller set a truncation hint. [`AgentResponse`](crate::AgentResponse) merges that line into its own
+        /// hints so a response keeps a single `help` key.
+        pub(crate) fn render_parts(&self) -> (String, Option<String>) {
             let opts = self.opts;
-            let capacity = 60 + opts.rows.len() * (opts.fields.len() * 12 + 10) + opts.hints.len() * 60;
+            let capacity = 60 + opts.rows.len() * (opts.fields.len() * 12 + 10);
             let mut out = String::with_capacity(capacity);
-            super::push_list(&mut out, opts);
+            let cut = super::push_list(&mut out, opts);
+            super::push_truncated(&mut out, opts, &cut);
             if let Some(total) = opts.total_count {
                 out.push_str("totalCount: ");
                 out.push_str(&total.to_string());
                 out.push('\n');
             }
-            crate::hints::append_help_block(&mut out, opts.hints.iter().map(String::as_str));
+            let extra = match opts.truncation_hint.as_deref() {
+                Some(hint) if !cut.is_empty() && !hint.is_empty() => {
+                    Some(format!("Cut cells are listed in the truncated block; use {hint} for the full value"))
+                }
+                _ => None,
+            };
             if out.ends_with('\n') {
                 out.pop();
             }
-            out
+            (out, extra)
         }
     }
 }
@@ -468,51 +529,71 @@ mod tests {
 
     #[test]
     fn ac011_truncated_cell_content_is_exact() {
-        // No hint: " (317 more chars)" is 17 chars, so 183 are kept, and 183 + 317 = 500.
+        // 199 chars are kept and a plain `…` fills the 200-char cap; the other 301 are reported in the block.
         let out = render("t", &["a".to_string()], &[vec![Value::from("a".repeat(500))]], None, &[], 200);
-        let expected_prefix = "a".repeat(183);
-        assert_eq!(out, format!("t[1]{{a}}:\n  {expected_prefix} (317 more chars)"));
+        let expected_prefix = "a".repeat(199);
+        assert_eq!(
+            out,
+            format!("t[1]{{a}}:\n  {expected_prefix}\u{2026}\ntruncated[1]{{row,field,removed}}:\n  0,a,301")
+        );
     }
 
     #[test]
     fn truncated_cell_without_hint_names_no_parameter() {
         let out = render_cell(&"a".repeat(500), 200, None);
         assert!(!out.contains("full=true"), "michi must not invent a hint, got: {out:?}");
-        assert!(!out.contains("use"), "no hint means no `use` clause, got: {out:?}");
-        assert!(!out.contains('\u{2014}'), "no hint means no em dash, got: {out:?}");
+        assert!(!out.contains("help"), "no hint means no help line, got: {out:?}");
+        assert!(!out.contains("use"), "no hint means no instruction, got: {out:?}");
     }
 
     #[test]
-    fn truncated_cell_carries_the_callers_hint() {
-        // " (333 more chars — use full=true)" is 33 chars: 167 kept, and 167 + 333 = 500.
+    fn truncated_cell_carries_the_callers_hint_in_help() {
         let out = render_cell(&"a".repeat(500), 200, Some("full=true"));
-        assert_eq!(out, format!("t[1]{{a}}:\n  {} (333 more chars — use full=true)", "a".repeat(167)));
+        assert_eq!(
+            out,
+            format!(
+                "t[1]{{a}}:\n  {}\u{2026}\ntruncated[1]{{row,field,removed}}:\n  0,a,301\n\
+                 help[1]: Cut cells are listed in the truncated block; use full=true for the full value",
+                "a".repeat(199)
+            )
+        );
         let out = render_cell(&"a".repeat(500), 200, Some("--verbose"));
-        assert_eq!(out, format!("t[1]{{a}}:\n  {} (333 more chars — use --verbose)", "a".repeat(167)));
+        assert!(out.ends_with("use --verbose for the full value"), "got: {out:?}");
     }
 
     #[test]
     fn spec_02_truncated_field_value_example_is_real_output() {
-        let desc = |kept: &str, total: usize| format!("{kept}{}", "x".repeat(total - kept.chars().count()));
         let opts = crate::toon::ToonOptions::new(
             "components",
             vec!["name".to_string(), "description".to_string(), "tokens".to_string()],
             vec![
-                vec![Value::from("Button"), Value::from(desc("Primary action element", 170)), Value::Int(12)],
-                vec![Value::from("Icon"), Value::from(desc("Scalable vector glyphs", 225)), Value::Int(8)],
+                vec![
+                    Value::from("Button"),
+                    Value::from("Primary action element used to submit forms and open dialogs across the app"),
+                    Value::Int(12),
+                ],
+                vec![
+                    Value::from("Icon"),
+                    Value::from("Scalable vector glyphs that inherit colour and size from surrounding text"),
+                    Value::Int(8),
+                ],
             ],
         )
         .total_count(Some(84))
         .hints(vec!["Call get_component with name=<name> and full=true for complete description".to_string()])
-        .max_cell_len(55)
+        .max_cell_len(40)
         .truncation_hint("full=true");
         assert_eq!(
             crate::toon::render_toon(&opts).unwrap(),
             "components[2]{name,description,tokens}:\n  \
-             Button,Primary action element (148 more chars — use full=true),12\n  \
-             Icon,Scalable vector glyphs (203 more chars — use full=true),8\n\
+             Button,Primary action element used to submit f…,12\n  \
+             Icon,Scalable vector glyphs that inherit col…,8\n\
+             truncated[2]{row,field,removed}:\n  \
+             0,description,36\n  \
+             1,description,34\n\
              totalCount: 84\n\
-             help[1]: Call get_component with name=<name> and full=true for complete description"
+             help[2]: Call get_component with name=<name> and full=true for complete description,\
+             Cut cells are listed in the truncated block; use full=true for the full value"
         );
     }
 
@@ -523,17 +604,20 @@ mod tests {
 
     #[test]
     fn ac011_truncated_cell_escapes_newlines_in_kept_prefix() {
-        // Truncation runs on the cell value (keeping 183 chars = "a\n" x 91 + "a", 417 removed),
-        // then the whole truncated cell is quoted and each LF written as `\n`.
+        // Truncation runs on the cell value (keeping 199 chars = "a\n" x 99 + "a", 401 removed), then the whole
+        // cut cell is quoted and each LF written as `\n`.
         let content = "a\n".repeat(300);
         assert_eq!(content.chars().count(), 600);
         let out = render("t", &["a".to_string()], &[vec![Value::from(content)]], None, &[], 200);
-        let expected_prefix = format!("{}a", "a\\n".repeat(91));
-        assert_eq!(out, format!("t[1]{{a}}:\n  \"{expected_prefix} (417 more chars)\""));
-        assert_eq!(out.lines().count(), 2, "no line break survives in the cell, got: {out:?}");
-        let cell = out.strip_prefix("t[1]{a}:\n  ").unwrap();
+        let expected_prefix = format!("{}a", "a\\n".repeat(99));
+        assert_eq!(
+            out,
+            format!("t[1]{{a}}:\n  \"{expected_prefix}\u{2026}\"\ntruncated[1]{{row,field,removed}}:\n  0,a,401")
+        );
+        assert_eq!(out.lines().count(), 4, "no line break survives in the cell, got: {out:?}");
+        let cell = out.lines().nth(1).unwrap().trim_start();
         // The cap counts chars before escaping: the escaped, quoted cell is longer than max_cell_len.
-        assert_eq!(cell.chars().count(), 293, "91 * 3 + 1 escaped prefix + 17 suffix + 2 quotes");
+        assert_eq!(cell.chars().count(), 99 * 3 + 1 + 1 + 2, "escaped prefix + ellipsis + 2 quotes");
     }
 
     #[test]
@@ -551,11 +635,13 @@ mod tests {
 
     #[test]
     fn ac011c_max_cell_len_smaller_than_suffix_falls_back_to_ellipsis() {
-        // " (49 more chars)" plus one kept char needs 17 > 10: 9 kept chars and an ellipsis, no suffix fragment.
+        // The cell is always `max_cell_len - 1` kept chars and an ellipsis, however small the cap.
         let out = render("t", &["a".to_string()], &[vec![Value::from("a".repeat(50))]], None, &[], 10);
-        assert_eq!(out, "t[1]{a}:\n  aaaaaaaaa…");
-        let out = render_cell(&"a".repeat(50), 1, Some("full=true"));
-        assert_eq!(out, "t[1]{a}:\n  …");
+        assert_eq!(out, "t[1]{a}:\n  aaaaaaaaa…\ntruncated[1]{row,field,removed}:\n  0,a,41");
+        let out = render_cell(&"a".repeat(50), 1, None);
+        assert_eq!(out, "t[1]{a}:\n  …\ntruncated[1]{row,field,removed}:\n  0,a,50");
+        let out = render_cell(&"a".repeat(50), 0, None);
+        assert_eq!(out, "t[1]{a}:\n  \"\"\ntruncated[1]{row,field,removed}:\n  0,a,50");
     }
 
     #[test]
@@ -575,10 +661,11 @@ mod tests {
         let content = "a,".repeat(300);
         assert_eq!(content.chars().count(), 600);
         let out = render("t", &["a".to_string()], &[vec![Value::from(content)]], None, &[], 200);
-        let expected_kept: String = "a,".repeat(300).chars().take(183).collect();
-        let expected = format!("t[1]{{a}}:\n  \"{expected_kept} (417 more chars)\"");
+        let expected_kept: String = "a,".repeat(300).chars().take(199).collect();
+        let expected =
+            format!("t[1]{{a}}:\n  \"{expected_kept}\u{2026}\"\ntruncated[1]{{row,field,removed}}:\n  0,a,401");
         assert_eq!(out, expected);
-        let cell = out.strip_prefix("t[1]{a}:\n  ").unwrap();
+        let cell = out.lines().nth(1).unwrap().trim_start();
         assert_eq!(cell.chars().count(), 202);
         assert!(cell.starts_with('"') && cell.ends_with('"'));
     }
@@ -589,8 +676,11 @@ mod tests {
         // literal 200) so a regression to ToonOptions::new's actual default is caught.
         let opts = crate::toon::ToonOptions::new("t", vec!["a".to_string()], vec![vec![Value::from("a".repeat(500))]]);
         let out = crate::toon::render_toon(&opts).unwrap();
-        let expected_prefix = "a".repeat(183);
-        assert_eq!(out, format!("t[1]{{a}}:\n  {expected_prefix} (317 more chars)"));
+        let expected_prefix = "a".repeat(199);
+        assert_eq!(
+            out,
+            format!("t[1]{{a}}:\n  {expected_prefix}\u{2026}\ntruncated[1]{{row,field,removed}}:\n  0,a,301")
+        );
     }
 
     #[test]
@@ -662,7 +752,7 @@ mod tests {
 
     #[test]
     fn ac023_reserved_type_names_are_rejected_but_allowed_as_field_names() {
-        for name in ["help", "totalCount", "recovery"] {
+        for name in ["help", "totalCount", "recovery", "truncated"] {
             let opts = crate::toon::ToonOptions::new(name, vec![], vec![]);
             let err = crate::toon::render_toon(&opts).unwrap_err();
             assert_eq!(err, crate::toon::ToonError::InvalidTypeName { name: name.to_string() });
@@ -685,33 +775,22 @@ mod tests {
     }
 
     #[test]
-    fn ac043_truncation_suffix_format_is_exact() {
-        let out = render("t", &["a".to_string()], &[vec![Value::from("a".repeat(500))]], None, &[], 200);
-        assert!(out.ends_with(" (317 more chars)"), "got: {out:?}");
+    fn ac043_a_cut_cell_carries_no_message_only_an_ellipsis() {
         let out = render_cell(&"a".repeat(500), 200, Some("full=true"));
-        assert!(out.ends_with(" (333 more chars — use full=true)"), "got: {out:?}");
-        assert!(out.contains('\u{2014}'), "must use EM DASH U+2014, got: {out:?}");
-        assert!(!out.contains('-'), "must not contain a hyphen anywhere in the suffix, got: {out:?}");
+        let cell = out.lines().nth(1).unwrap().trim_start();
+        assert_eq!(cell, format!("{}\u{2026}", "a".repeat(199)), "got: {out:?}");
+        assert!(!cell.contains("more chars"), "no in-band marker, got: {cell:?}");
     }
 
     #[test]
-    fn ac044_kept_prefix_length_equals_max_cell_len_minus_suffix_chars() {
-        let suffix = " (317 more chars)";
-        let suffix_chars = suffix.chars().count();
-        let max_cell_len = 200usize;
-        let expected_kept = max_cell_len - suffix_chars;
-        let out = render("t", &["a".to_string()], &[vec![Value::from("a".repeat(500))]], None, &[], max_cell_len);
-        let cell = out.strip_prefix("t[1]{a}:\n  ").unwrap();
-        assert_eq!(cell.chars().count(), max_cell_len, "total cell content must be exactly max_cell_len chars");
-        let kept: String = cell.chars().take_while(|c| *c == 'a').collect();
-        assert_eq!(kept.chars().count(), expected_kept);
-
-        // Ellipsis fallback (per AC-011c): the suffix does not fit with one kept char, so max_cell_len - 1 chars are
-        // kept and the cell ends with `…`, still exactly max_cell_len chars.
-        let out10 = render("t", &["a".to_string()], &[vec![Value::from("a".repeat(50))]], None, &[], 10);
-        let cell10 = out10.strip_prefix("t[1]{a}:\n  ").unwrap();
-        assert_eq!(cell10, format!("{}…", "a".repeat(9)));
-        assert_eq!(cell10.chars().count(), 10);
+    fn ac044_a_cut_cell_is_exactly_max_cell_len_chars_and_kept_plus_removed_is_the_input() {
+        for (len, cap) in [(500usize, 200usize), (50, 10), (11, 10), (3, 2)] {
+            let out = render("t", &["a".to_string()], &[vec![Value::from("a".repeat(len))]], None, &[], cap);
+            let cell = out.lines().nth(1).unwrap().trim_start();
+            assert_eq!(cell.chars().count(), cap, "len={len} cap={cap}");
+            let removed: usize = out.lines().nth(3).unwrap().rsplit(',').next().unwrap().parse().unwrap();
+            assert_eq!((cap - 1) + removed, len, "len={len} cap={cap}");
+        }
     }
 
     #[test]
@@ -1006,16 +1085,17 @@ mod invariant_guard_tests {
             0,
             "proof must declare no descendant module -- a descendant would inherit access to the private field"
         );
-        // Exactly two fns may exist anywhere in `proof`: validate and
-        // render. This is a total count over every `fn`, with no
+        // Exactly three fns may exist anywhere in `proof`: validate, render and render_parts (a `&self` method that
+        // returns text, never a `Self`; `AgentResponse` needs it to merge the truncation hint into its own help
+        // block). This is a total count over every `fn`, with no
         // self-receiver exemption -- the exemption is exactly what let
         // `rebind` (a &self method) through in round 3.
         let fn_names: Vec<&str> =
             proof_body.split("fn ").skip(1).map(|rest| rest.split(['(', '<']).next().unwrap_or(rest).trim()).collect();
         assert_eq!(
             fn_names,
-            vec!["validate", "render"],
-            "proof's impl block must contain exactly these two fns, in this order; found: {fn_names:?}"
+            vec!["validate", "render", "render_parts"],
+            "proof's impl block must contain exactly these three fns, in this order; found: {fn_names:?}"
         );
         // fn_names only sees items introduced by the literal token `fn `.
         // A `const`/`static` item, or a function-pointer-typed const

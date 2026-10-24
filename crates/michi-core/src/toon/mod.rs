@@ -33,15 +33,15 @@ pub(crate) fn cell_count(rows: usize, fields: usize) -> usize {
     rows.saturating_mul(fields.max(1))
 }
 
-/// Longest [`ToonOptions::truncation_hint`], in chars. The hint is copied into every truncated cell, so its length
-/// multiplies by the cell count; [`ToonOptions::validate()`] returns [`ToonError::TruncationHintTooLong`] past it.
+/// Longest [`ToonOptions::truncation_hint`], in chars. The hint is a short instruction, not content;
+/// [`ToonOptions::validate()`] returns [`ToonError::TruncationHintTooLong`] past it.
 pub const MAX_TRUNCATION_HINT_CHARS: usize = 256;
 
 /// Error returned by [`ToonOptions::validate()`] when the options cannot form a valid TOON document.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum ToonError {
-    /// `type_name` is a root key michi composes next to a list (`totalCount`, `help` or `recovery`); using it would
+    /// `type_name` is a root key michi composes next to a list (`totalCount`, `help`, `recovery` or `truncated`); using it would
     /// emit a duplicate key, which TOON 4.4 §14.3 forbids. Any other name is valid and is quoted when §7.3 requires.
     InvalidTypeName {
         /// The offending name.
@@ -101,7 +101,7 @@ impl std::fmt::Display for ToonError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InvalidTypeName { name } => {
-                write!(f, "type_name {name:?} is a reserved document key (totalCount, help, recovery)")
+                write!(f, "type_name {name:?} is a reserved document key (totalCount, help, recovery, truncated)")
             }
             Self::InvalidFieldName { name } => {
                 write!(f, "field {name:?} appears more than once")
@@ -131,7 +131,7 @@ impl std::error::Error for ToonError {}
 #[non_exhaustive]
 pub struct ToonOptions {
     /// Snake_case type name, e.g. `"issue"`, `"component"`: the key of the list entry. Names outside TOON's
-    /// unquoted-key pattern are quoted (§7.3); `totalCount`, `help` and `recovery` are reserved.
+    /// unquoted-key pattern are quoted (§7.3); `totalCount`, `help`, `recovery` and `truncated` are reserved.
     pub type_name: String,
     /// Ordered, distinct field names for the header, e.g. `["number", "title", "state"]`, quoted when §7.3 requires.
     /// Not emitted when `rows` is empty (an empty list renders as `type: []`).
@@ -143,17 +143,18 @@ pub struct ToonOptions {
     pub total_count: Option<usize>,
     /// Agent-facing usage hints. Emitted as the inline array `help[N]: h1,h2` when non-empty.
     pub hints: Vec<String>,
-    /// Max string cell length, in chars, before inline truncation. Default: 200.
+    /// Max string cell length, in chars, before truncation. Default: 200.
     ///
     /// The cap counts the cell's characters *before* TOON escaping and quoting: a truncated (or untruncated) cell
-    /// that needs quotes or escapes (§7.1, §7.2) is written longer than `max_cell_len` on the wire. A truncated cell
-    /// ends with `" ({removed} more chars)"`, plus `" — use {hint}"` when [`Self::truncation_hint`] is set, or with
-    /// `…` when the cap is too small for that suffix; see [`crate::truncate::truncate()`].
+    /// that needs quotes or escapes (§7.1, §7.2) is written longer than `max_cell_len` on the wire. A longer cell keeps
+    /// its first `max_cell_len - 1` chars and ends in a plain `…` (the empty string for a cap of 0). The cell carries
+    /// no message: every cut cell is reported in a `truncated[N]{row,field,removed}:` block after the list, which
+    /// cell text cannot forge because cells are quoted and escaped.
     pub max_cell_len: usize,
-    /// The caller's instruction for getting a truncated cell in full, e.g. `"full=true"` or `"--no-truncate"`,
-    /// appended to the truncation suffix as `" — use {hint}"`. Default `None`: michi never invents a parameter the
-    /// calling tool may not have, so without a hint the suffix only reports how many chars were cut. An empty string
-    /// is the same as `None`.
+    /// The caller's instruction for getting a truncated cell in full, e.g. `"full=true"` or `"--no-truncate"`.
+    /// Default `None`: michi never invents a parameter the calling tool may not have. When set and a cell was cut,
+    /// michi adds one `help[]` line naming the `truncated` block and this instruction. It comes from the tool author,
+    /// never from data. An empty string is the same as `None`.
     pub truncation_hint: Option<String>,
 }
 
@@ -194,9 +195,9 @@ impl ToonOptions {
         self
     }
 
-    /// Set the caller's instruction appended to a truncated cell's suffix as `" — use {hint}"`, e.g.
-    /// `.truncation_hint("full=true")` gives `" (317 more chars — use full=true)"`. Unset by default, which leaves
-    /// the clause out; an empty hint does the same.
+    /// Set the caller's instruction for getting a cut cell in full, e.g. `.truncation_hint("full=true")`. michi
+    /// delivers it in `help[]` as `Cut cells are listed in the truncated block; use full=true for the full value`,
+    /// and only when a cell was cut. Unset by default; an empty hint does the same. Pass tool-author text, never data.
     #[must_use]
     pub fn truncation_hint(mut self, hint: impl Into<String>) -> Self {
         self.truncation_hint = Some(hint.into());
@@ -212,7 +213,7 @@ impl ToonOptions {
     /// # Errors
     ///
     /// Returns [`ToonError::InvalidTypeName`] if `type_name` is a reserved
-    /// root key (`totalCount`, `help` or `recovery`), [`ToonError::TooManyFields`] past [`MAX_FIELDS`] fields,
+    /// root key (`totalCount`, `help`, `recovery` or `truncated`), [`ToonError::TooManyFields`] past [`MAX_FIELDS`] fields,
     /// [`ToonError::InvalidFieldName`] if a field name appears more than once, [`ToonError::TooManyCells`] if
     /// `rows × fields` is past [`MAX_CELLS`], [`ToonError::TruncationHintTooLong`] if the truncation hint is past
     /// [`MAX_TRUNCATION_HINT_CHARS`] chars, or [`ToonError::RowLengthMismatch`]
@@ -292,7 +293,7 @@ fn json_value_to_toon_value(v: Option<&serde_json::Value>) -> Value {
 /// Returns [`ToonError::InvalidItem`] if an item fails to serialize or does
 /// not produce a JSON object (struct or map required). Returns
 /// [`ToonError::InvalidTypeName`] if `type_name` is a reserved root key
-/// (`totalCount`, `help` or `recovery`). Returns [`ToonError::TooManyFields`] if the items' keys add up to more than
+/// (`totalCount`, `help`, `recovery` or `truncated`). Returns [`ToonError::TooManyFields`] if the items' keys add up to more than
 /// [`MAX_FIELDS`] distinct names, or [`ToonError::TooManyCells`] if `items.len()` times that header width is past
 /// [`MAX_CELLS`]; both are checked before any row is built.
 #[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
@@ -476,7 +477,7 @@ mod validate_tests {
     fn error_display_names_the_rule() {
         assert_eq!(
             ToonError::InvalidTypeName { name: "help".into() }.to_string(),
-            "type_name \"help\" is a reserved document key (totalCount, help, recovery)"
+            "type_name \"help\" is a reserved document key (totalCount, help, recovery, truncated)"
         );
         assert_eq!(ToonError::InvalidFieldName { name: "a".into() }.to_string(), "field \"a\" appears more than once");
     }
@@ -642,14 +643,25 @@ mod list_tests {
             .total_count(Some(5))
             .hints(vec!["h".to_string()])
             .max_cell_len(10);
-        // A 10-char cap cannot hold the suffix: 9 kept chars and an ellipsis, never a suffix fragment.
-        assert_eq!(render_toon(&opts).unwrap(), "t[1]{a}:\n  aaaaaaaaa…\ntotalCount: 5\nhelp[1]: h");
+        // 9 kept chars and an ellipsis fill the cap; the cut is reported in the `truncated` block.
+        assert_eq!(
+            render_toon(&opts).unwrap(),
+            "t[1]{a}:\n  aaaaaaaaa…\ntruncated[1]{row,field,removed}:\n  0,a,41\ntotalCount: 5\nhelp[1]: h"
+        );
 
-        // With room for the suffix and a hint: " (44 more chars — use x)" is 24 chars, 6 kept, 6 + 44 = 50.
+        // A hint adds one michi line to `help[]`, after the caller's own hints.
         let opts = ToonOptions::new("t", vec!["a".to_string()], vec![vec![Value::from("a".repeat(50))]])
+            .hints(vec!["h".to_string()])
             .max_cell_len(30)
             .truncation_hint("x");
-        assert_eq!(render_toon(&opts).unwrap(), "t[1]{a}:\n  aaaaaa (44 more chars — use x)");
+        assert_eq!(
+            render_toon(&opts).unwrap(),
+            format!(
+                "t[1]{{a}}:\n  {}…\ntruncated[1]{{row,field,removed}}:\n  0,a,21\n\
+                 help[2]: h,Cut cells are listed in the truncated block; use x for the full value",
+                "a".repeat(29)
+            )
+        );
     }
 
     #[test]

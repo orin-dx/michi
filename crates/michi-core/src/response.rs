@@ -132,7 +132,7 @@ impl AgentResponse {
         self
     }
 
-    /// Set the max string cell length, in chars, before inline truncation on the TOON path. Default:
+    /// Set the max string cell length, in chars, before truncation on the TOON path. Default:
     /// [`DEFAULT_TRUNCATE_CELLS`].
     ///
     /// The limit counts characters before TOON escaping and quoting, so a cell that needs quotes or escapes is
@@ -143,9 +143,10 @@ impl AgentResponse {
         self
     }
 
-    /// Set the caller's instruction for getting a truncated TOON cell in full, appended to the truncation suffix as
-    /// `" — use {hint}"` (see [`crate::toon::ToonOptions::truncation_hint`]). Unset by default: the suffix then only
-    /// reports how many chars were cut, since michi never invents a parameter the tool may not have.
+    /// Set the caller's instruction for getting a cut TOON cell in full. When a cell was cut, michi adds one line to
+    /// `help[]` (after your own hints) that names the `truncated` block and this instruction (see
+    /// [`crate::toon::ToonOptions::truncation_hint`]). Unset by default: michi never invents a parameter the tool
+    /// may not have, and the `truncated` block still reports each cut. Pass tool-author text, never data.
     #[must_use]
     pub fn truncation_hint(mut self, hint: impl Into<String>) -> Self {
         self.toon.truncation_hint = Some(hint.into());
@@ -167,10 +168,28 @@ impl AgentResponse {
     }
 
     /// The TOON body, and whether it is a validation-failure error block instead of the requested rows.
-    fn toon_body(&self) -> (String, bool) {
+    ///
+    /// The third item is the `help[]` line michi adds when it cut a cell and a truncation hint is set.
+    fn toon_body(&self) -> (String, bool, Option<Hint>) {
         match self.toon.validate() {
-            Ok(doc) => (doc.render(), false),
-            Err(e) => (validation_error_body("toon_validation_failed", &e.to_string()), true),
+            Ok(doc) => {
+                let (body, extra) = doc.render_parts();
+                (body, false, extra.map(Hint::new))
+            }
+            Err(e) => (validation_error_body("toon_validation_failed", &e.to_string()), true, None),
+        }
+    }
+
+    /// The caller's hints, then michi's own truncation line when there is one: a single `help` block.
+    fn hints_with<'a>(&'a self, extra: Option<&Hint>) -> std::borrow::Cow<'a, [Hint]> {
+        match extra {
+            None => std::borrow::Cow::Borrowed(&self.hints),
+            Some(e) => {
+                let mut all = Vec::with_capacity(self.hints.len() + 1);
+                all.extend(self.hints.iter().cloned());
+                all.push(e.clone());
+                std::borrow::Cow::Owned(all)
+            }
         }
     }
 
@@ -191,22 +210,26 @@ impl AgentResponse {
 
     /// The selected body, and whether this response is an error: set by `as_error()` or by a body that failed
     /// validation. Every output surface reads its error flag from here so text, JSON and MCP never disagree.
-    fn body(&self) -> (String, bool) {
-        let (body, failed) = match self.target {
+    fn body(&self) -> (String, bool, Option<Hint>) {
+        let (body, failed, extra) = match self.target {
             RenderTarget::Toon | RenderTarget::Unset => self.toon_body(),
-            RenderTarget::Kv => self.kv_body(),
+            RenderTarget::Kv => {
+                let (body, failed) = self.kv_body();
+                (body, failed, None)
+            }
         };
-        (body, failed || self.is_error)
+        (body, failed || self.is_error, extra)
     }
 
     /// Compose the text document: body, help block, recovery block. Each part is a TOON 4.4 document without a
     /// trailing newline and the append helpers join them with one LF, so the result is one root object whose keys
-    /// are unique (the body cannot use `totalCount`, `help` or `recovery`). Appends to `body` in place.
-    fn finish_text(&self, mut body: String) -> String {
-        if !self.hints.is_empty() || !self.recovery.is_empty() {
-            body.reserve(1 + self.hints.len() * 60 + self.recovery.len() * 80);
+    /// are unique (the body cannot use `totalCount`, `help`, `recovery` or `truncated`). Appends to `body` in place.
+    fn finish_text(&self, mut body: String, extra: Option<&Hint>) -> String {
+        let hints = self.hints_with(extra);
+        if !hints.is_empty() || !self.recovery.is_empty() {
+            body.reserve(1 + hints.len() * 60 + self.recovery.len() * 80);
         }
-        crate::hints::append_hints(&mut body, &self.hints);
+        crate::hints::append_hints(&mut body, &hints);
         crate::recovery::append_recovery(&mut body, &self.recovery);
         body
     }
@@ -223,17 +246,19 @@ impl AgentResponse {
     /// Render via the TOON path.
     #[must_use]
     pub fn render_toon(&self) -> String {
-        self.finish_text(self.toon_body().0)
+        let (body, _, extra) = self.toon_body();
+        self.finish_text(body, extra.as_ref())
     }
 
     /// Render via the KV path.
     #[must_use]
     pub fn render_kv(&self) -> String {
-        self.finish_text(self.kv_body().0)
+        self.finish_text(self.kv_body().0, None)
     }
 
     fn render_text(&self) -> String {
-        self.finish_text(self.body().0)
+        let (body, _, extra) = self.body();
+        self.finish_text(body, extra.as_ref())
     }
 
     /// Whether this response is an error: `as_error()` was called, or the TOON rows or KV items failed validation and
@@ -271,10 +296,10 @@ impl AgentResponse {
     /// Build the MCP `CallToolResult` for this response.
     #[must_use]
     pub fn to_call_tool_result(&self) -> crate::mcp::CallToolResult {
-        let (body, is_error) = self.body();
-        let structured_content = self.json_from_body(&body, is_error);
+        let (body, is_error, extra) = self.body();
+        let structured_content = self.json_from_body(&body, is_error, extra.as_ref());
         let mut content = vec![crate::mcp::ContentBlock {
-            text: self.finish_text(body),
+            text: self.finish_text(body, extra.as_ref()),
             audience: vec![crate::audience::Audience::Assistant],
         }];
         if let Some(human) = &self.human_content {
@@ -287,20 +312,19 @@ impl AgentResponse {
     }
 
     fn render_json(&self) -> String {
-        let (body, is_error) = self.body();
-        self.json_from_body(&body, is_error)
+        let (body, is_error, extra) = self.body();
+        self.json_from_body(&body, is_error, extra.as_ref())
     }
 
-    fn json_from_body(&self, body: &str, is_error: bool) -> String {
-        let capacity = body.len()
-            + self.hints.iter().map(|h| h.as_str().len() + 16).sum::<usize>()
-            + self.recovery.len() * 64
-            + 64;
+    fn json_from_body(&self, body: &str, is_error: bool, extra: Option<&Hint>) -> String {
+        let hints = self.hints_with(extra);
+        let capacity =
+            body.len() + hints.iter().map(|h| h.as_str().len() + 16).sum::<usize>() + self.recovery.len() * 64 + 64;
         let mut out = String::with_capacity(capacity);
         out.push_str("{\"body\":");
         json_string(&mut out, body);
         out.push_str(",\"hints\":[");
-        for (i, h) in self.hints.iter().enumerate() {
+        for (i, h) in hints.iter().enumerate() {
             if i > 0 {
                 out.push(',');
             }
@@ -761,9 +785,13 @@ mod tests {
     fn truncation_hint_passes_through_to_toon_body() {
         let rows = vec![vec![Value::from("a".repeat(500))]];
         let without = AgentResponse::new("t").items(rows.clone(), &["c"]).render_toon();
-        assert_eq!(without, format!("t[1]{{c}}:\n  {} (317 more chars)", "a".repeat(183)));
+        let cut = format!("t[1]{{c}}:\n  {}\u{2026}\ntruncated[1]{{row,field,removed}}:\n  0,c,301", "a".repeat(199));
+        assert_eq!(without, cut);
         let with = AgentResponse::new("t").truncation_hint("detail=full").items(rows, &["c"]);
-        assert_eq!(with.render_toon(), format!("t[1]{{c}}:\n  {} (335 more chars — use detail=full)", "a".repeat(165)));
+        assert_eq!(
+            with.render_toon(),
+            format!("{cut}\nhelp[1]: Cut cells are listed in the truncated block; use detail=full for the full value")
+        );
         assert!(with.render(OutputFormat::Json).contains("use detail=full"));
     }
 

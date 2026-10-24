@@ -110,8 +110,9 @@ pub struct JsToonOptions {
     pub total_count: Option<JsCount>,
     /// Agent-facing usage hints. Capped at `MAX_HINTS` entries.
     pub hints: Vec<String>,
-    /// The caller's instruction for getting a truncated cell in full (e.g. `"full=true"`), appended to the
-    /// truncation suffix as `" — use {hint}"`. Omitted: the suffix only reports how many chars were cut.
+    /// The caller's instruction for getting a cut cell in full (e.g. `"full=true"`). Cut cells end in `…` and are
+    /// listed in a `truncated[N]{row,field,removed}:` block; when a cell was cut this adds a `help[]` line that
+    /// names the block and the instruction. Omitted: the block still reports each cut. Tool-author text, never data.
     #[napi(js_name = "truncationHint")]
     pub truncation_hint: Option<String>,
 }
@@ -156,7 +157,7 @@ fn js_value_to_rust(v: JsToonValue) -> napi::Result<crate::toon::Value> {
 /// `truncationHint`) are counted as they are read. Also
 /// returns an error if `ToonOptions::validate()` rejects the input — a row
 /// whose value count differs from `fields.len()`, a field name repeated in
-/// `fields`, a reserved `type_name` (`totalCount`, `help` or `recovery`), or a
+/// `fields`, a reserved `type_name` (`totalCount`, `help`, `recovery` or `truncated`), or a
 /// document over michi-core's shape caps. Any other type
 /// or field name is valid and is quoted when TOON 4.4 §7.3 requires.
 /// The error `reason` is `toon_validation_failed: ` followed by the `ToonError` Display text.
@@ -230,7 +231,7 @@ pub fn render_toon(opts: JsToonOptions) -> napi::Result<String> {
 ///
 /// # Errors
 ///
-/// Returns an error if `type_name` is a reserved root key (`totalCount`, `help` or `recovery`). The reason is
+/// Returns an error if `type_name` is a reserved root key (`totalCount`, `help`, `recovery` or `truncated`). The reason is
 /// `toon_validation_failed: ` followed by the `ToonError` text, as `renderToon` reports it. Also rejects a `typeName`
 /// over 4 KiB, as `emptyStateWithHints` does.
 #[napi(catch_unwind)]
@@ -335,9 +336,11 @@ pub fn render_recovery(hints: Vec<JsRecoveryHint>) -> napi::Result<String> {
     Ok(crate::recovery::render_recovery(&converted))
 }
 
-/// Truncate `content` to `maxChars` Unicode scalar values with an agent-readable suffix:
+/// Truncate one free-text string to `maxChars` Unicode scalar values with an in-band, agent-readable suffix:
 /// `" ({removed} more chars — use {hint})"`, or `" ({removed} more chars)"` when `hint` is the empty string. A cap
 /// too small for that suffix keeps `maxChars - 1` chars and ends with `…` (`maxChars` 0 returns an empty string).
+/// The marker is plain text, so data can imitate it: do not use this for TOON cells, which `renderToon` and
+/// `JsAgentResponse` cut and report out of band.
 #[napi(catch_unwind)]
 #[allow(clippy::needless_pass_by_value)] // napi-derive requires owned String for JS string params
 #[must_use]
@@ -983,8 +986,9 @@ impl JsAgentResponse {
         Ok(())
     }
 
-    /// Set the caller's instruction for getting a truncated TOON cell in full (e.g. `"full=true"`), appended to the
-    /// truncation suffix as `" — use {hint}"`. Not called: the suffix only reports how many chars were cut.
+    /// Set the caller's instruction for getting a cut TOON cell in full (e.g. `"full=true"`), delivered in `help[]`
+    /// after the response's own hints when a cell was cut. Not called: the `truncated` block still reports each cut.
+    /// Tool-author text, never data.
     ///
     /// # Errors
     ///
@@ -1177,7 +1181,7 @@ const MAX_STEPS: usize = 10_000;
 ///
 /// # Errors
 ///
-/// Returns an error if `type_name` is a reserved root key (`totalCount`, `help` or `recovery`), with the reason
+/// Returns an error if `type_name` is a reserved root key (`totalCount`, `help`, `recovery` or `truncated`), with the reason
 /// `toon_validation_failed: ` followed by the `ToonError` text, as `emptyState` reports it. Also rejects more than
 /// 10,000 hints, a `typeName` over 4 KiB, a hint over 1 MiB, and more than 64 MiB of strings per call.
 #[napi(catch_unwind, js_name = "emptyStateWithHints", ts_args_type = "typeName: string, hints: Array<string>")]
@@ -1586,7 +1590,7 @@ mod tests {
         let err = render_toon(opts).expect_err("reserved type_name must be rejected");
         assert_eq!(
             err.reason,
-            "toon_validation_failed: type_name \"help\" is a reserved document key (totalCount, help, recovery)"
+            "toon_validation_failed: type_name \"help\" is a reserved document key (totalCount, help, recovery, truncated)"
         );
     }
 
@@ -1688,9 +1692,13 @@ mod tests {
             truncation_hint: hint.map(str::to_string),
         };
         let out = render_toon(opts(None)).expect("valid input renders");
-        assert_eq!(out, format!("t[1]{{a}}:\n  {} (317 more chars)", "a".repeat(183)));
+        let cut = format!("t[1]{{a}}:\n  {}\u{2026}\ntruncated[1]{{row,field,removed}}:\n  0,a,301", "a".repeat(199));
+        assert_eq!(out, cut);
         let out = render_toon(opts(Some("full=true"))).expect("valid input renders");
-        assert_eq!(out, format!("t[1]{{a}}:\n  {} (333 more chars — use full=true)", "a".repeat(167)));
+        assert_eq!(
+            out,
+            format!("{cut}\nhelp[1]: Cut cells are listed in the truncated block; use full=true for the full value")
+        );
     }
 
     #[test]
@@ -1700,7 +1708,14 @@ mod tests {
         r.items(vec![vec![JsToonValue { str_val: Some("a".repeat(500)), ..value("str") }]], vec!["a".to_string()])
             .expect("valid rows");
         let out = r.render_toon().expect("renders");
-        assert_eq!(out, format!("t[1]{{a}}:\n  {} (333 more chars — use full=true)", "a".repeat(167)));
+        assert_eq!(
+            out,
+            format!(
+                "t[1]{{a}}:\n  {}\u{2026}\ntruncated[1]{{row,field,removed}}:\n  0,a,301\n\
+                 help[1]: Cut cells are listed in the truncated block; use full=true for the full value",
+                "a".repeat(199)
+            )
+        );
     }
 
     #[test]

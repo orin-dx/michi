@@ -22,6 +22,8 @@ Expect an acknowledgment within 5 business days. We'll keep you posted as a fix 
 - **Resilience/retry logic** — `michi_core::resilience`'s back-off math and `Retry-After` parsing feeding into `michi-pipeline`'s circuit breaker. A malformed `Retry-After` header or edge-case duration that defeats the back-off (e.g., produces a zero or negative delay, or an unbounded one) is in scope.
 - **Supply chain** — this is a mixed Rust/Node workspace; both `Cargo.lock` and the npm dependency tree (`packages/michi-node`, `oxfmt` at the repo root) are relevant attack surface.
 
+What michi does and does not promise about untrusted text is in the [trust model](docs/spec/02-toon-format.md#trust-model): one value cannot create extra lines, fields or cells, but michi cannot stop prompt injection in data.
+
 Out of scope: issues in consuming applications that misuse the API in ways the type system doesn't prevent, or in `tokio`/`napi`/other upstream dependencies themselves — report those upstream.
 
 ## Supported Versions

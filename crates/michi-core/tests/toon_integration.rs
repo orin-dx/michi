@@ -110,9 +110,10 @@ fn long_cell_value_is_truncated_per_max_cell_len() {
     let opts = ToonOptions::new("issue", vec!["title".to_string()], vec![vec![Value::Str(long_title.into())]])
         .max_cell_len(50);
     let out = render_toon(&opts).expect("valid input renders");
-    // " (267 more chars)" is 17 chars: 33 kept, and 33 + 267 = 300. No hint was given, so no `use` clause.
+    // 49 chars are kept and a plain ellipsis makes 50; the 251 cut chars are reported in the `truncated` block.
     let row_line = out.lines().nth(1).expect("row line exists");
-    assert_eq!(row_line, format!("  {} (267 more chars)", "x".repeat(33)));
+    assert_eq!(row_line, format!("  {}\u{2026}", "x".repeat(49)));
+    assert_eq!(out.lines().nth(3), Some("  0,title,251"), "got: {out:?}");
 }
 
 #[test]
@@ -120,7 +121,7 @@ fn short_cell_value_is_not_truncated() {
     let opts = ToonOptions::new("issue", vec!["title".to_string()], vec![vec![Value::Str("short".into())]]);
     let out = render_toon(&opts).expect("valid input renders");
     assert!(out.contains("short"));
-    assert!(!out.contains("more chars"));
+    assert!(!out.contains("truncated"));
 }
 
 #[test]

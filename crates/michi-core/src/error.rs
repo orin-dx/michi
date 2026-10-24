@@ -129,7 +129,7 @@ impl ErrorCode {
 /// A domain-level error.
 ///
 /// `causes` say why it happened (diagnosis); `hints` say what to do next (guidance). They are separate fields, and
-/// render as separate keys, so an agent can tell them apart. [`DomainError::from_error`] fills `message` and `causes`
+/// render as separate keys, so an agent can tell them apart. [`DomainError::from_error_with_causes`] fills `message` and `causes`
 /// from a `std::error::Error` and its `source()` chain.
 ///
 /// With the `serde` feature it serializes to exactly the JSON of [`DomainError::render_json`]
@@ -160,7 +160,9 @@ pub struct DomainError {
 }
 
 impl DomainError {
-    /// Create a domain error.
+    /// Create a domain error. The message is tool-author text, never data: michi renders it as the error's own
+    /// voice, and a value copied from a file, web page or user field can carry instructions. See the trust model in
+    /// `docs/spec/02-toon-format.md`.
     pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
         let mut err = Self {
             retryable: code.is_retryable_by_default(),
@@ -187,13 +189,38 @@ impl DomainError {
         }
     }
 
-    /// Build a domain error from an existing error and its `source()` chain.
+    /// Build a domain error from an existing error, keeping only its own `Display` as `message`.
     ///
-    /// `message` is `err`'s own `Display`. Each `source()` link, outermost first, adds its `Display` as one entry of
-    /// `causes` (never a hint: causes are diagnosis, hints are guidance). A link whose text is already contained in
-    /// the last text kept (the message, or the previous cause kept) is skipped, because `thiserror` messages often
-    /// embed their source (`#[error("walk failed: {0}")]`) and would otherwise repeat it. Line breaks stay inside
-    /// their entry; the renderers escape them. The walk stops after 128 links, so a cyclic `source()` cannot loop.
+    /// The `source()` chain is **not** copied: underlying errors often carry URLs with tokens, file paths and other
+    /// internals that should not reach an agent. Use [`DomainError::from_error_with_causes`] to opt in to the chain.
+    /// The top-level `Display` is still agent-visible, so make sure it is safe to show; if it is not, build the
+    /// error with [`DomainError::new`] and a message you wrote. The message is tool-author text, never data.
+    ///
+    /// ```
+    /// use michi_core::{DomainError, ErrorCode};
+    ///
+    /// #[derive(Debug, thiserror::Error)]
+    /// #[error("sync failed")]
+    /// struct Sync(#[source] std::io::Error);
+    ///
+    /// let io = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "/home/ci/.netrc: permission denied");
+    /// let e = DomainError::from_error(ErrorCode::ExternalFailure, &Sync(io));
+    /// assert_eq!(e.message, "sync failed");
+    /// assert!(e.causes.is_empty());
+    /// ```
+    pub fn from_error(code: ErrorCode, err: &(dyn std::error::Error + 'static)) -> Self {
+        Self::new(code, err.to_string())
+    }
+
+    /// Like [`DomainError::from_error`], and also copies the `source()` chain into `causes`. Opt-in: every link's
+    /// `Display` becomes agent-visible text, so use it only when the whole chain is safe to show (no URLs with
+    /// tokens, no paths or internals you would not print to an end user).
+    ///
+    /// Each `source()` link, outermost first, adds its `Display` as one entry of `causes` (never a hint: causes are
+    /// diagnosis, hints are guidance). A link whose text is already contained in the last text kept (the message, or
+    /// the previous cause kept) is skipped, because `thiserror` messages often embed their source
+    /// (`#[error("walk failed: {0}")]`) and would otherwise repeat it. Line breaks stay inside their entry; the
+    /// renderers escape them. The walk stops after 128 links, so a cyclic `source()` cannot loop.
     ///
     /// The chain is kept as text only: no source error is stored, so [`std::error::Error::source`] on the result is
     /// still `None`, and the result stays `Clone`, `Send` and `Sync`. Prefix the message yourself if you want one
@@ -207,12 +234,12 @@ impl DomainError {
     /// struct Walk(#[source] std::io::Error);
     ///
     /// let io = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "permission denied");
-    /// let e = DomainError::from_error(ErrorCode::ExternalFailure, &Walk(io));
+    /// let e = DomainError::from_error_with_causes(ErrorCode::ExternalFailure, &Walk(io));
     /// assert_eq!(e.message, "walk failed: permission denied");
     /// assert!(e.causes.is_empty(), "the message already holds the only cause");
     /// ```
-    pub fn from_error(code: ErrorCode, err: &(dyn std::error::Error + 'static)) -> Self {
-        let mut out = Self::new(code, err.to_string());
+    pub fn from_error_with_causes(code: ErrorCode, err: &(dyn std::error::Error + 'static)) -> Self {
+        let mut out = Self::from_error(code, err);
         let mut link = err.source();
         for _ in 0..MAX_CAUSE_LINKS {
             let Some(e) = link else { break };
@@ -226,14 +253,15 @@ impl DomainError {
         out
     }
 
-    /// Append one cause (why the error happened), rendered after the message as `causes[N]: …`.
+    /// Append one cause (why the error happened), rendered after the message as `causes[N]: …`. Tool-author text,
+    /// never data, and nothing you would not show an end user (no tokens, internal paths).
     #[must_use]
     pub fn cause(mut self, cause: impl Into<String>) -> Self {
         self.causes.push(cause.into());
         self
     }
 
-    /// Append a contextual hint.
+    /// Append a contextual hint. Tool-author text, never data.
     #[must_use]
     pub fn hint(mut self, hint: impl Into<String>) -> Self {
         self.hints.push(Hint::new(hint));
@@ -441,10 +469,10 @@ impl std::fmt::Display for DomainError {
     }
 }
 
-/// `source()` is always `None`: [`DomainError::from_error`] keeps a chain as text in `causes`, not as a stored error.
+/// `source()` is always `None`: [`DomainError::from_error_with_causes`] keeps a chain as text in `causes`, not as a stored error.
 impl std::error::Error for DomainError {}
 
-/// The most `source()` links [`DomainError::from_error`] walks, so a cyclic chain cannot loop forever.
+/// The most `source()` links [`DomainError::from_error_with_causes`] walks, so a cyclic chain cannot loop forever.
 const MAX_CAUSE_LINKS: usize = 128;
 
 /// Encode GitHub workflow command data (the message): `%` first, so an encoded sequence in the input stays literal,

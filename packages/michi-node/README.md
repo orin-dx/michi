@@ -66,7 +66,7 @@ Every string these functions return for an agent is a TOON 4.4 document with no 
 | `alreadyDone` | `(stored?: string \| null) => { done: boolean, result?: string }` — classify an idempotency lookup: any stored string (even empty) is done |
 | `renderPartialSuccess` | `(completed: string[], failed: JsFailedOp[], skipped: string[]) => string` — the summary, `completed[N]`, the `failed[N]{operation,reason}:` table, `skipped[N]` and the failed ops' `recovery[N]{tool,params,reason}:` table |
 | `renderPipeline` | `(steps: JsPipelineStep[]) => string` — the table `step[N]{id,name,status,reason}:`; `status` is a `StepStatus` label (`completed`, `outcome_unknown`, …) and `reason` is required exactly for `outcome_unknown`, `skipped` and `not_run` |
-| `truncate` | `(content: string, maxChars: number, hint: string) => string` — `truncate("a".repeat(200), 50, "full=true")` gives 17 × `a` + `" (183 more chars — use full=true)"`; an empty `hint` drops the `— use …` clause |
+| `truncate` | `(content: string, maxChars: number, hint: string) => string` — `truncate("a".repeat(200), 50, "full=true")` gives 17 × `a` + `" (183 more chars — use full=true)"`; an empty `hint` drops the `— use …` clause. The marker is plain text that data can imitate: use it for one free-text string, not for TOON cells (`renderToon` reports cuts in a `truncated` block) |
 | `parseRetryAfter` | `(headerValue: string) => number \| null` — an RFC 9110 `Retry-After` value (delay-seconds or HTTP-date) in seconds; a past date is `0`, a malformed value `null` |
 | `nextRetryDelay` | `(maxRetries, baseDelayMs, maxDelayMs, jitterFactor, jitterSeed, attempt, retryAfterMs?) => number \| null` — the next back-off delay in ms, or `null` once retries are used up; pass a random `jitterSeed` in `[0, 1]` per call |
 | `isRetryableStatus` | `(status: number) => boolean` — `true` for 429, 502, 503 and 504; retry 502 and 504 only for idempotent requests |
@@ -85,7 +85,7 @@ Setters return `void`, not `this`, so call them as sequential statements rather 
 | `.kvItems` | `(items: JsKvItem[]) => void` |
 | `.hint` | `(hint: string) => void` |
 | `.recoveryHint` | `(tool: string, reason?: string) => void` |
-| `.truncationHint` | `(hint: string) => void` — the caller's instruction appended to truncated TOON cells as `— use {hint}` (same as `JsToonOptions.truncationHint`); without it the suffix only says how many chars were cut |
+| `.truncationHint` | `(hint: string) => void` — the caller's instruction for getting a cut cell in full (same as `JsToonOptions.truncationHint`). Cut cells end in `…` and are listed in a `truncated[N]{row,field,removed}:` block; when a cell was cut, the hint adds one `help[]` line after your own hints. Without it the block still reports each cut |
 | `.asError` | `() => void` |
 | `.renderToon` | `() => string` — slot-specific, reads only `items`/`fields` |
 | `.renderKv` | `() => string` — slot-specific, reads only `kvItems` |
