@@ -30,7 +30,7 @@ These documents describe possible future work, not available APIs.
 
 ## Known gaps
 
-**TOON vs. Markdown-KV retrieval accuracy hasn't been measured.** See [the research note](../research/toon-retrieval-accuracy.md).
+**TOON retrieval accuracy is measured on Claude and one OpenAI model.** On Claude Haiku, Sonnet and Opus 5.5 and GPT-6 Sol TOON matches JSON and Markdown; Gemini and open-weight models, much longer lists and open-ended tasks are untested. See [the research note](../research/toon-retrieval-accuracy.md).
 
 **No external consumer has integrated against a published Michi version yet.** The initial release provides that version; downstream integration is the next validation step (see [ADR 4](../adr/0004-publish-before-consumer-integration.md)).
 

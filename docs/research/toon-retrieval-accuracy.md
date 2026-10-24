@@ -1,45 +1,51 @@
 # TOON retrieval accuracy
 
-Status: First results (2026-10-23); not conclusive
+Status: Answered for Claude and OpenAI models (2026-10-23): TOON keeps retrieval accuracy
 
 ## Question
 
 For list data returned to an assistant, does TOON preserve retrieval accuracy compared with Markdown-KV, and does the result vary by model size?
 
-## Evidence so far
+## Answer
 
-Token counts are measured in [`evals/toon`](../../evals/toon/results.md) (2026-10-21): nine seeded datasets at 5, 25 and 100 rows, rendered by michi-core and compared with pretty and minified JSON, Markdown-KV and a Markdown table under the `cl100k_base` and `o200k_base` tokenizers. For flat lists at 100 rows TOON is a median 47% smaller than pretty JSON, 23% smaller than minified JSON, 33% smaller than Markdown-KV and 7.5% smaller than a Markdown table. On size the Markdown table is the real competitor, so the open question is retrieval accuracy, not tokens.
+Yes, on the three Claude 5.5 sizes and OpenAI's GPT-6 Sol. With a clean prompt and three repeats, TOON is within noise of pretty JSON, minified JSON, Markdown-KV and a Markdown table on every model, and it costs the fewest tokens. michi keeps TOON as its default list format.
 
-## First pilot run (2026-10-23)
+## Evidence
 
-94 questions with answers computed from the 100-row source data, each asked once in all five formats (470 prompts per model), rendered by michi-core 0.5.0. Raw answers and summaries: `evals/toon/results/pilot_<model>.jsonl` and `pilot_<model>_summary.md`. The harness's oracle self-test scores 100%.
+Token counts are measured in [`evals/toon`](../../evals/toon/results.md) (2026-10-21): nine seeded datasets at 5, 25 and 100 rows, rendered by michi-core and compared with pretty and minified JSON, Markdown-KV and a Markdown table under the `cl100k_base` and `o200k_base` tokenizers. For flat lists at 100 rows TOON is a median 47% smaller than pretty JSON, 23% smaller than minified JSON, 33% smaller than Markdown-KV and 7.5% smaller than a Markdown table.
 
-Command: `python3 pilot/run_pilot.py --model-cmd 'claude -p --model <model>' --label <model> --jobs 6`.
+### Round 2 (2026-10-23): the measurement to rely on
 
-| Format | Haiku 5.5 | Sonnet 5.5 (strict) | Sonnet 5.5, right answer found but not given bare |
-| --- | --: | --: | --: |
-| TOON | 98.9% | 83.0% | 88.3% |
-| JSON, pretty | 98.9% | 92.6% | 94.7% |
-| JSON, minified | 98.9% | 88.3% | 93.6% |
-| Markdown-KV | 98.9% | 90.4% | 94.7% |
-| Markdown table | 98.9% | 91.5% | 95.7% |
+94 questions with answers computed from the 100-row source data (lookups, counts, filters, min/max/argmax, positions, missing values), each asked in all five formats, three times, on three models: 1,410 prompts per model, no command errors. Rendered by michi-core 0.6.0. Each call used a minimal system prompt ("Reply with only the answer") and no tools. Raw answers and summaries: `evals/toon/results/pilot_r2-<model>.jsonl` and `pilot_r2-<model>_summary.md`.
 
-- **Haiku 5.5: no difference.** The one miss is the same question in every format ("lowest size among all files": every format answered 2703, skipping the files of size 0).
-- **Sonnet 5.5: TOON trails.** Strictly scored, TOON gets 78 of 94; the other formats get 83 to 87. Some misses are format non-compliance: the model reasoned aloud and reached the right answer, but the scorer reads only the first line. Counting those as right, TOON still has 11 wrong answers against 4 to 6 for each other format.
-- **Where TOON loses on Sonnet:** lookups by key (79% against 83 to 97%) and "which item has the largest X" (43%, the same as the Markdown table and below JSON's 57 to 100%). Both tabular formats lose on argmax, which suggests scanning a column of a wide table is the hard part, not TOON's syntax as such.
-- **Where TOON wins on Sonnet:** sparse records with many missing fields (100%, with the Markdown table, against 83% for JSON and Markdown-KV) and looking up a missing value.
+| Format         | Haiku 5.5 | Sonnet 5.5 | Opus 5.5 |
+| -------------- | --------: | ---------: | -------: |
+| TOON           |     97.5% |      96.5% |    97.2% |
+| JSON, pretty   |     97.9% |      97.2% |    98.2% |
+| JSON, minified |     98.2% |      97.2% |    97.9% |
+| Markdown-KV    |    100.0% |      95.7% |    98.9% |
+| Markdown table |     97.9% |      95.7% |    96.8% |
 
-## Caveats
+- Each cell is 282 answers; its 95% interval is about ±1.5 to ±2.4 points. Every format overlaps every other on every model.
+- No format wins consistently: Markdown-KV is best on Haiku and Opus and joint worst on Sonnet; TOON is ahead of both Markdown formats on Sonnet.
+- By question kind the differences are a few answers each and change direction between models. TOON answered all 87 lookups correctly on Sonnet, the kind it seemed weakest at in round 1.
 
-- **One repeat, 94 questions per format.** At around 90% accuracy the standard error is about 3 points, so a difference of five or six questions is suggestive, not established.
-- **`claude -p` is Claude Code in headless mode, not a bare API call.** It brings Claude Code's system prompt, which likely explains why Sonnet often reasoned aloud despite the prompt asking for the bare answer. Haiku followed the instruction every time.
-- **No third model size yet** (Opus 5.5), and no non-Anthropic model.
+Command: `python3 pilot/run_pilot.py --model-cmd 'claude -p --model <model> --system-prompt "You answer questions about the data given in the prompt. Reply with only the answer: no explanation, no reasoning, no formatting." --tools ""' --label r2-<model> --repeats 3 --jobs 6`.
 
-## Next
+### Round 1 (2026-10-23): superseded
 
-- Re-run with `--repeats 3` on Haiku, Sonnet and Opus through a bare API call (or a minimal system prompt), so format compliance doesn't mix into accuracy.
-- Look at TOON's lookup misses on Sonnet: if they cluster on rows far from the header, a row number per item (or repeating the header on long lists) may help, at a small token cost.
+One repeat on Haiku and Sonnet through plain `claude -p`, which runs Claude Code headless with its own system prompt. Haiku scored 98.9% in every format. Sonnet scored 83.0% on TOON against 88.3 to 92.6% for the others, but it often reasoned aloud instead of giving the bare answer, and the scorer reads only the first line. Round 2 removed that confound (minimal system prompt, no tools) and added repeats and Opus; the TOON gap disappeared. Round 1's files are `pilot_haiku-5-5*` and `pilot_sonnet-5-5*`.
 
-## Decision this blocks
+### GPT-6 Sol (2026-10-23)
 
-Recommend a default format for assistant-facing list responses, or leave the choice to consumers if results are mixed. Do not claim that lower token count implies better retrieval. **So far:** no change to michi's default. On the small model the formats are equal; on the mid-size model TOON is a few points behind JSON and the Markdown table for lookups and ahead for sparse data, within noise of a single run.
+The same 94 questions × 5 formats × 3 repeats through `codex exec` (`evals/toon/pilot/cmd/codex.sh`): 1,410 prompts, no errors. TOON 96.1%, pretty JSON 97.2%, minified JSON 96.8%, Markdown-KV 96.1%, Markdown table 96.5%, each about ±2.2 points. A Gemini 3.8 Flash run through agy hit the account's quota after about 60 calls and returned empty answers from then on; it was discarded. Results: `evals/toon/results/pilot_r2-codex-gpt-6-sol.jsonl` and `_summary.md`.
+
+## Limits
+
+- Two providers: Anthropic and OpenAI (one model). Gemini and open-weight models are not measured yet.
+- Retrieval from lists of 100 rows. Much longer lists, or deeply nested data, are untested.
+- The questions ask for exact answers. Open-ended tasks that use the data are untested.
+
+## Decision
+
+Keep TOON as michi's default for assistant-facing lists: same accuracy, fewer tokens. Revisit if a consumer reports a model where it reads worse, using the same harness (`--model-cmd` accepts any command that reads a prompt on stdin).
