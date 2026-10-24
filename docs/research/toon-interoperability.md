@@ -22,7 +22,7 @@ Michi targets TOON 4.4 and runs the official encode fixtures (`crates/michi-core
 | Real `null`, booleans, integers and floats (including `5e-324` and `1.7976931348623157e308`) | Compatible: types and values survive |
 | Field names that need quoting | Compatible |
 | `totalCount` and the `help[N]` block next to a table, and a `help` block alone | Compatible |
-| A truncated cell | Compatible: decodes to the shortened text plus Michi's marker, which is ordinary text to a decoder |
+| A truncated cell | Compatible: the cell decodes to the kept text plus an ellipsis, and the cut decodes as a separate `truncated` list of `{row, field, removed}`; text that imitates the old in-cell marker stays plain data |
 | 2,000 seeded random cells and hints, 1,000 random field names | Compatible, or rejected by Michi before rendering with `toon_validation_failed` |
 
 ## Limits of the claim
