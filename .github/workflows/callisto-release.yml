@@ -377,6 +377,9 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_CONFIG_PROVENANCE: 'true'
+          # pnpm 11 publishes the main package natively and ignores NPM_CONFIG_PROVENANCE (npm, which publishes the six
+          # platform packages, honours it). Without this, @orin-dx/michi shipped with no attestation through 0.7.1.
+          PNPM_CONFIG_PROVENANCE: 'true'
           GH_TOKEN: ${{ github.token }}
           ORCHESTRATION_SHA: ${{ needs.release-candidate.outputs.orchestration_sha }}
         run: |
@@ -452,6 +455,8 @@ jobs:
       contents: read
     env:
       RELEASED_VERSION: ${{ needs.execute.outputs.smoke_version }}
+      # Every npm package of this release must carry provenance; a missing one fails the job.
+      SMOKE_REQUIRE_ATTESTATIONS: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
