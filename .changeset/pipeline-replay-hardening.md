@@ -1,0 +1,13 @@
+---
+michi-pipeline: minor
+---
+
+Replay and resume hardening: retries and resume no longer repeat work that may already have taken effect in seven more cases.
+
+- `resume` uses the stricter of the replay class stored in the record and the class the plan's step reports now. A step edited from idempotent to not idempotent since the run is held for verification instead of being invoked again. The plan fingerprint still covers structure only; swapping a runner for one with other side effects is your responsibility. A step that was not idempotent when it ran stays held even if the plan now calls it idempotent.
+- A completed step proves its prerequisites completed. `RunRecord::from_parts` and `resume` mark a prerequisite whose record was lost (missing, `Pending` or `Running`) as `CompletedEarlier` ("inferred from a completed dependent") instead of running it again. A prerequisite recorded as failed, skipped, not run, panicked or unknown under a completed step is refused with the new `ResumeError::ContradictoryRecord`. If you match `ResumeError` exhaustively, add an arm (it is `#[non_exhaustive]`).
+- New `ExecOptions::retry_after_cap(Duration)`, default 5 minutes. A server retry hint (`Retry-After` on a 429, say) longer than the cap is no longer waited for: the step ends with its last error and its reason says the hint exceeded the cap. Before, a `Retry-After: 86400` parked the run for a day. Raise the cap if you want long waits.
+- `Step::replay` and `Step::attempt_bound` are read once when the `ExecStep` is built. A panic in either now surfaces in your plan-building code, before anything runs, instead of unwinding `execute` mid-run and losing the record. Both should be constant for a runner.
+- `RunId::unique` adds 64 random bits (`{prefix}-{millis}-{pid}-{counter}-{random}`), so containers started in the same millisecond with the same pid no longer share an id (and so an idempotency-key prefix). The id is 14 bytes longer, so prefixes over about 30 bytes can now be rejected as too long. Callers who need a global guarantee should pass their own UUID to `RunId::try_new`.
+- The `step_blocking` duplicate-start guard is now process-wide, keyed by run id and step id, and cleared only when the closure returns. A plan rebuilt from a factory on resume no longer starts a second copy of a closure that outlived its timeout.
+- Documented that HTTP 503 stays "not applied, retryable", but a CDN or proxy can return it after the origin committed; steps with non-idempotent requests behind such infrastructure should map it to `ExecutionError::failed`, with an example on `ExecutionError::Http`.
