@@ -164,14 +164,16 @@ async fn a_huge_step_deadline_does_not_overflow() {
     let run = execute(&p, rid("r"), &ExecOptions::new()).await;
     assert_eq!(status(&run, "b"), StepStatus::Completed, "{:?}", run.steps()[0].reason());
 
-    // Huge retry hints with a huge deadline: the retry waits the hint instead of panicking.
+    // Huge retry hints with a huge deadline: the retry waits the hint instead of panicking. (The hint cap is lifted
+    // so the huge hint reaches the deadline arithmetic; by default it ends the step without waiting.)
     let p = plan(vec![exec(
         "c",
         &[],
         Scripted::new(&log, "c", vec![Act::Err(ExecutionError::CircuitOpen { retry_after_ms: u64::MAX }), Act::Ok]),
     )
     .deadline(Duration::MAX)]);
-    let run = tokio::time::timeout(Duration::from_secs(3600), execute(&p, rid("r"), &ExecOptions::new())).await;
+    let opts = ExecOptions::new().retry_after_cap(Duration::MAX);
+    let run = tokio::time::timeout(Duration::from_secs(3600), execute(&p, rid("r"), &opts)).await;
     assert!(run.is_err(), "the step is still waiting out the server's hint, not panicked");
 }
 

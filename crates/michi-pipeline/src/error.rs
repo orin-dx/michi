@@ -11,6 +11,24 @@ pub enum ExecutionError {
     /// HTTP-transport failure. A step reports the server's status as-is; see the replay rule on [`crate::Step`] for
     /// what each retryable status means. A bare 502 or 504 in a record means the step was idempotent; for a
     /// non-idempotent step the executor wraps it in [`ExecutionError::AmbiguousOutcome`].
+    ///
+    /// **503 caveat.** A 503 is treated as not applied and retryable, as the HTTP spec intends ("unavailable, try
+    /// later"). But a CDN, load balancer or proxy can answer 503 *after* the origin committed the request (the origin
+    /// was slow, the proxy gave up). A step whose request is not idempotent and sits behind such infrastructure should
+    /// map that response itself, so the executor treats its effect as unknown:
+    ///
+    /// ```
+    /// use michi_pipeline::ExecutionError;
+    ///
+    /// fn from_response(status: u16, body: &str) -> ExecutionError {
+    ///     match status {
+    ///         // Behind a proxy a 503 does not prove the origin did nothing.
+    ///         503 => ExecutionError::failed(format!("503 from the proxy: {body}")),
+    ///         _ => ExecutionError::Http { status, message: body.to_string(), retry_after: None },
+    ///     }
+    /// }
+    /// assert!(from_response(503, "busy").effect() == michi_pipeline::Effect::Unknown);
+    /// ```
     #[error("http {status}: {message}")]
     Http {
         /// HTTP status code returned by the failed request.

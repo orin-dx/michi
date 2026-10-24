@@ -8,7 +8,7 @@ This document describes the API that replaced `execute_pipeline`, `execute_pipel
 
 - `StepId` names a step. It is chosen by the caller, unique within a plan, and meant to be read and copied by agents, so it is a short slug: 1 to 64 (`MAX_ID_LEN`) ASCII characters, letters, digits, `_`, `-` and `.`, starting with a letter, digit or `_`. `StepId::try_new` rejects anything else with an `IdError` (`Empty`, `TooLong`, `InvalidChar`). Ids never contain `:`, so the idempotency key below is unambiguous.
 - A step's `name` is free-form display text and may repeat.
-- `RunId` names one run. It has the same charset. The caller supplies it, because only the caller knows what a run is (one agent request, one job). `RunId::unique(prefix)` builds `{prefix}-{millis}-{pid}-{counter}` (numbers in base 36, each after its own `-`, so two processes cannot print the same digits) without a UUID dependency.
+- `RunId` names one run. It has the same charset. The caller supplies it, because only the caller knows what a run is (one agent request, one job). `RunId::unique(prefix)` builds `{prefix}-{millis}-{pid}-{counter}-{random}` (numbers in base 36, each after its own `-`, so two processes cannot print the same digits) without a UUID dependency. `random` is 64 bits from `std::collections::hash_map::RandomState`, whose keys are random per process, hashed with the time, pid and counter. Without it, containers started in the same millisecond all had pid 1 and counter 0 and so the same id, and the run id is the prefix of the idempotency key: a collision makes a deduplicating downstream treat new work as a repeat of old work. The result is unique with overwhelming probability, not by construction; a caller who needs a global guarantee should supply its own UUID through `RunId::try_new`. The random part takes 14 of the 64 bytes, so keep the prefix to about 30 bytes.
 - Reusing a `RunId` for a different plan or different inputs is the caller's mistake and michi cannot detect it: downstream services that deduplicate on the idempotency key would treat the new work as a repeat.
 
 ## Plan
@@ -42,6 +42,8 @@ pub trait Step: Send + Sync {
     fn attempt_bound(&self) -> AttemptBound { AttemptBound::Timeout }
 }
 ```
+
+`ExecStep::new` and `ExecStep::from_arc` call `replay()` and `attempt_bound()` once, when the step is built, and the run uses those values everywhere (the scheduler, the record's stored replay, resume). They are the caller's code and run outside the scheduler's panic guard, so reading them mid-run would let a panic there unwind `execute` after effects had happened and lose the whole record. Read at construction, a panic surfaces in the caller's plan-building code before anything runs. Both should therefore be constant for a runner; `precheck` and `run` stay per-attempt and are guarded.
 
 Steps return `()`: they act through side effects and share state through `Arc` captures. Outputs do not flow between steps.
 
@@ -119,7 +121,7 @@ Rust cannot stop a blocking closure from outside. When the executor stops waitin
 - **An abandoned attempt's effect is unknown.** It ends with `Timeout` or `Interrupted` like any other attempt the executor cut, so a non-idempotent step ends `OutcomeUnknown` and is never retried in the run.
 - **No second closure while the first may still run.** For a step that is not idempotent, a new attempt does not start while an earlier closure with the same idempotency key (`run_id:step_id`) is still running in this process. The replay rules already rule this out within a run. It can happen when `resume` runs in the same process right after a timeout and the caller marks the step `Verification::NotApplied` too early. That attempt does not call the closure. It fails with an unknown effect (`ExecutionError::failed`, saying an earlier attempt is still running), so the step stays `OutcomeUnknown` until the caller verifies again once the first closure has finished.
 - **Idempotent steps may overlap.** A retry after a timeout starts a new closure while the old one may still run.
-- **Scope of the guard.** It lives in the `BlockingStep` value, so it covers one process. Steps that share one runner through `ExecStep::from_arc` have different step ids and do not block each other.
+- **Scope of the guard.** It is a process-wide set of idempotency keys, cleared only when the closure actually returns, not a field of the `BlockingStep` value. A plan rebuilt from a factory on resume (new `BlockingStep`s) therefore still sees a closure that outlived its timeout and refuses to start a second copy, with `Verification::NotApplied` or not. It covers one process; another process does not see it. Steps that share one runner through `ExecStep::from_arc` have different step ids and do not block each other.
 - **`JoinSet` drop.** Each attempt runs inside the scheduler's `JoinSet`. Dropping the `execute` or `resume` future aborts the async side, but Tokio never aborts a `spawn_blocking` task, so the closure runs to completion and its result is discarded. The closure's token fires, so a closure that watches it can stop early. The runtime waits for blocking threads when it shuts down.
 
 ## Replay rule
@@ -157,6 +159,19 @@ What each error means:
 
 A step whose 4xx can follow a committed effect (a 409 after a partial write, say) reports `ExecutionError::failed` instead of the raw status. Treating 429 and 503 as "not processed" is a convention, not an RFC guarantee, so a step that may have committed its effect must not report them either.
 
+**503 behind a CDN or proxy.** michi keeps 503 classified as not applied and retryable, because for a plain origin that is what it means. A CDN, load balancer or proxy, though, can return 503 after the origin committed (it gave up waiting). A step whose request is not idempotent and goes through such infrastructure should map that response itself, so the executor sees an unknown effect (a non-idempotent step then ends `OutcomeUnknown` instead of being retried into a duplicate):
+
+```rust
+fn from_response(status: u16, body: &str) -> ExecutionError {
+    match status {
+        503 => ExecutionError::failed(format!("503 from the proxy: {body}")), // effect unknown, not retried blindly
+        _ => ExecutionError::Http { status, message: body.to_string(), retry_after: None },
+    }
+}
+```
+
+Use `ExecutionError::transient` instead of `failed` if the step is idempotent or prechecked and should still be retried.
+
 Four constructors build `Failed`:
 
 | Constructor | `retryable` | `effect` | Use it when |
@@ -172,7 +187,9 @@ A non-idempotent step whose last error's effect is unknown ends `OutcomeUnknown`
 
 A step that returns `Cancelled` while the run's token has not fired cancelled itself (its own timer or token, say). Nothing upstream asked it to stop, so it is not a consequence of anything: it ends `Failed`, a root cause whose dependents are skipped with `caused_by` naming it. It never took effect, so resume runs it again like any failed step.
 
-A server's `retry_after` (on `Http` or `CircuitOpen`, also inside `StepFailed`) is waited in full, even past `RetryConfig::max_delay`: the server said when to come back, and coming back sooner only earns another rejection. `max_delay` caps michi's own exponential backoff (michi-core's `next_retry_delay` keeps that cap; the pipeline applies the server rule on top). The step deadline still bounds the wait: if the wait would end at or past the deadline, the step stops retrying at once and its reason ends `step deadline reached`. Without a deadline, a long hint is waited out, and cancellation interrupts the wait.
+A server's `retry_after` (on `Http` or `CircuitOpen`, also inside `StepFailed`) is waited in full, even past `RetryConfig::max_delay`: the server said when to come back, and coming back sooner only earns another rejection. `max_delay` caps michi's own exponential backoff (michi-core's `next_retry_delay` keeps that cap; the pipeline applies the server rule on top). The step deadline still bounds the wait: if the wait would end at or past the deadline, the step stops retrying at once and its reason ends `step deadline reached`. Cancellation interrupts the wait.
+
+`ExecOptions::retry_after_cap(Duration)` bounds how long a hint may ask for (default 5 minutes). A hint up to the cap is waited in full as above. A longer one (a 429 with `Retry-After: 86400`, say) is neither waited for nor retried: the step ends with its last error, unchanged in class and effect, and its reason says "the server's retry hint of Nms exceeded the retry-after cap of Mms, so it was not waited for". Without this, a step with no deadline (the default) parked the whole run for as long as a server asked. Because the error is the last attempt's own, resume treats the step exactly as it would after any other final error of that class (a 429 is not applied, so resume runs it again, and the server's hint may have lapsed by then). A step that really should wait that long raises the cap, or is a poll step with a deadline.
 
 ## Precheck
 
@@ -344,7 +361,7 @@ A step can then only run once its marker is saved, so a rebuilt record never sho
 
 ## Resume
 
-`resume(&prior, &plan, &ResumeOptions).await` continues an interrupted run. It returns `Err(ResumeError)` before running anything if the plan's fingerprint differs from the record's (`FingerprintMismatch`), the record names a step the plan lacks (`UnknownStep`), or a step marked verified is not awaiting verification (`NotAwaitingVerification`). It always runs under the prior record's `RunId`, so idempotency keys stay stable. There is no way to resume under a new id.
+`resume(&prior, &plan, &ResumeOptions).await` continues an interrupted run. It returns `Err(ResumeError)` before running anything if the plan's fingerprint differs from the record's (`FingerprintMismatch`), the record names a step the plan lacks (`UnknownStep`), a step marked verified is not awaiting verification (`NotAwaitingVerification`), or the record is contradictory (`ContradictoryRecord`, below). It always runs under the prior record's `RunId`, so idempotency keys stay stable. There is no way to resume under a new id.
 
 Resume decides per step from the prior record:
 
@@ -357,7 +374,11 @@ Resume decides per step from the prior record:
 | `OutcomeUnknown`, `Panicked`, `Running` | a verdict decides; without one, idempotent: runs again; `Prechecked`: runs, precheck decides; otherwise held |
 | a status this version does not know | held as it is |
 
-A verdict for a step that is not awaiting verification, including one the record knows is idempotent, is refused with `NotAwaitingVerification`. A held step keeps its prior record and its dependents are skipped until the caller marks it with `ResumeOptions::verified(id, Verification::Applied)` (treated as `CompletedEarlier`) or `Verification::NotApplied` (run again). A verdict takes precedence over idempotence and precheck, except that a prechecked step marked `NotApplied` still runs its precheck before the attempt. A held `Running` step becomes `OutcomeUnknown(Interrupted)`.
+**A completed step proves its prerequisites completed.** Before deciding anything, resume (and `RunRecord::from_parts`) applies that rule down the graph: a prerequisite of a `Completed` or `CompletedEarlier` step that is missing from the saved records, or saved only as `Pending` or `Running`, becomes `CompletedEarlier` with the reason "inferred from a completed dependent", and its own prerequisites likewise. This covers a store that lost some writes (say B's finished record was saved but A's was not): A is not run again. A prerequisite recorded in a state that contradicts the dependent (`Failed`, `Skipped`, `NotRun`, `Panicked` or `OutcomeUnknown`) cannot come from a real run, so the record is refused with `ResumeError::ContradictoryRecord { step_id, step_status, prerequisite, prerequisite_status }` (a `Conflict` as a `DomainError`) and nothing runs.
+
+**Which replay class resume uses.** Resume takes the stricter of the class the record stored when the step ran and the class the plan's runner reports now (strictest first: `NotIdempotent`, `Prechecked`, `Idempotent`). So a plan edited from idempotent to not idempotent since the run is held like any other unknown outcome, instead of being invoked again on the record's old word; and a step that was not idempotent when it ran stays held after the plan calls it idempotent, because the earlier attempt was made without that promise. A record with no stored class (saved by hand, or by an older version) defers to the plan. The plan fingerprint covers structure only (step ids and prerequisites), not replay class, runner or options, so it does not catch such edits. If you swap a runner for a different implementation between a run and its resume, that is your responsibility: michi cannot tell the new runner has other side effects.
+
+A verdict for a step that is not awaiting verification, including one the plan or record knows is idempotent, is refused with `NotAwaitingVerification`. A held step keeps its prior record and its dependents are skipped until the caller marks it with `ResumeOptions::verified(id, Verification::Applied)` (treated as `CompletedEarlier`) or `Verification::NotApplied` (run again). A verdict takes precedence over idempotence and precheck, except that a prechecked step marked `NotApplied` still runs its precheck before the attempt. A held `Running` step becomes `OutcomeUnknown(Interrupted)`.
 
 Resume indexes the prior record's steps once (every record lists each step once: `from_parts` keeps the last saved record per step and deserializing rejects a repeated step), so preparing a resume is O(N log N) in the step count: 50,000 carried-over steps took 1.6 s with a linear lookup per step and take about 20 ms now. `RunRecord::step(id)` is still a linear scan; index `steps()` yourself to look up many. `Plan::new` drops repeated dependencies by sorting the edges once (in michi-graph), so a wide fan-in costs O(E log E) rather than O(deg²).
 

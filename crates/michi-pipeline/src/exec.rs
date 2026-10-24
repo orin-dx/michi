@@ -8,6 +8,7 @@ use std::time::Duration;
 use michi_core::pipeline::{StepStatus, UnknownCause};
 use michi_core::resilience::{RetryBudget, RetryConfig};
 
+use crate::record::{infer_prerequisites, INFERRED_REASON};
 use crate::scheduler::{self, Initial};
 use crate::{
     BreakerRegistry, CancellationToken, ExecutionError, Plan, PlanFingerprint, Replay, RunId, RunRecord, StepId,
@@ -92,12 +93,16 @@ pub trait DurableObserver: StepObserver {
     fn record_start(&self, run_id: &RunId, step_id: &StepId) -> Result<(), String>;
 }
 
+/// The default for [`ExecOptions::retry_after_cap`].
+const DEFAULT_RETRY_AFTER_CAP: Duration = Duration::from_secs(300);
+
 /// Options for [`execute`]. Every field has a default; builder methods override them.
 #[derive(Clone)]
 pub struct ExecOptions {
     pub(crate) mode: Mode,
     pub(crate) failure_policy: FailurePolicy,
     pub(crate) retry: RetryConfig,
+    pub(crate) retry_after_cap: Duration,
     pub(crate) attempt_timeout: Duration,
     pub(crate) step_deadline: Option<Duration>,
     pub(crate) group_deadlines: BTreeMap<String, Duration>,
@@ -118,6 +123,7 @@ impl Default for ExecOptions {
             mode: Mode::Sequential,
             failure_policy: FailurePolicy::SkipDependents,
             retry: RetryConfig::default(),
+            retry_after_cap: DEFAULT_RETRY_AFTER_CAP,
             attempt_timeout: Duration::from_secs(30),
             step_deadline: None,
             group_deadlines: BTreeMap::new(),
@@ -139,6 +145,7 @@ impl std::fmt::Debug for ExecOptions {
             .field("mode", &self.mode)
             .field("failure_policy", &self.failure_policy)
             .field("retry", &self.retry)
+            .field("retry_after_cap", &self.retry_after_cap)
             .field("attempt_timeout", &self.attempt_timeout)
             .field("step_deadline", &self.step_deadline)
             .field("group_deadlines", &self.group_deadlines)
@@ -180,6 +187,17 @@ impl ExecOptions {
     #[must_use]
     pub fn retry(mut self, retry: RetryConfig) -> Self {
         self.retry = retry;
+        self
+    }
+
+    /// The longest server retry hint (the `retry_after` of an [`ExecutionError::Http`], such as `Retry-After` on a
+    /// 429) the executor will wait for. Defaults to 5 minutes. A hint up to the cap is honoured in full, even past
+    /// `RetryConfig::max_delay`. A longer one is not waited for and the step is not retried: it ends with its last
+    /// error, unchanged in class and effect, and its reason says the hint exceeded the cap. A step that wants to wait
+    /// that long should say so itself (a poll step, or a deadline) rather than leave the run parked on a server's word.
+    #[must_use]
+    pub fn retry_after_cap(mut self, cap: Duration) -> Self {
+        self.retry_after_cap = cap;
         self
     }
 
@@ -357,12 +375,31 @@ pub enum ResumeError {
         /// Its status label in the prior record, or `missing`.
         status: &'static str,
     },
+    /// A step is recorded as completed, but one of its prerequisites is recorded in a state that rules that out
+    /// (failed, skipped, not run, panicked or unknown). A completed step proves its prerequisites completed, so the
+    /// record is damaged or was assembled from different runs. Nothing is run.
+    #[error(
+        "step {step_id} is recorded as {step_status} but its prerequisite {prerequisite} is recorded as \
+         {prerequisite_status}; a completed step proves its prerequisites completed, so the record is contradictory"
+    )]
+    ContradictoryRecord {
+        /// The completed step.
+        step_id: StepId,
+        /// Its status label in the record.
+        step_status: &'static str,
+        /// The prerequisite recorded in a contradictory state.
+        prerequisite: StepId,
+        /// That prerequisite's status label in the record.
+        prerequisite_status: &'static str,
+    },
 }
 
 impl From<ResumeError> for michi_core::DomainError {
     fn from(err: ResumeError) -> Self {
         let code = match err {
-            ResumeError::FingerprintMismatch { .. } => michi_core::ErrorCode::Conflict,
+            ResumeError::FingerprintMismatch { .. } | ResumeError::ContradictoryRecord { .. } => {
+                michi_core::ErrorCode::Conflict
+            }
             ResumeError::UnknownStep { .. } | ResumeError::NotAwaitingVerification { .. } => {
                 michi_core::ErrorCode::InvalidInput
             }
@@ -412,13 +449,38 @@ pub async fn resume(prior: &RunRecord, plan: &Plan, opts: &ResumeOptions) -> Res
     }
     // One index instead of a linear `prior.step()` per plan step and per verdict, which made resume O(N²). Every way
     // to build a record (execute, from_parts, deserializing) lists each step once.
-    let mut by_id: BTreeMap<&StepId, &StepRecord> = BTreeMap::new();
+    // In plan order, with prerequisites of completed steps inferred completed (a record deserialized from a store that
+    // lost their writes) and contradictions refused, as `RunRecord::from_parts` does.
+    let mut ordered: Vec<StepRecord> = Vec::with_capacity(plan.len());
+    let mut seen = vec![false; plan.len()];
     for record in prior.steps() {
+        if let Some(i) = plan.index_of(record.step_id()) {
+            if !std::mem::replace(&mut seen[i], true) {
+                ordered.push(record.clone());
+            }
+        }
+    }
+    ordered.sort_by_key(|r| plan.index_of(r.step_id()));
+    if ordered.len() == plan.len() {
+        infer_prerequisites(plan, &mut ordered)?;
+    }
+    let mut by_id: BTreeMap<&StepId, &StepRecord> = BTreeMap::new();
+    for record in &ordered {
         by_id.entry(record.step_id()).or_insert(record);
     }
+    // The replay class resume acts on: the stricter of what the run knew and what the plan says now, because the
+    // fingerprint covers structure only, so a plan edited since the run can have tightened it. A record without a
+    // replay (saved by hand or by an older version) has nothing to add, so the plan's applies.
+    let replay_of = |step: &crate::ExecStep, prev: &StepRecord| {
+        let now = step.replay();
+        prev.replay().map_or(now, |then| stricter(then, now))
+    };
     for step_id in opts.verified.keys() {
         let prev = by_id.get(step_id);
-        if !prev.is_some_and(|r| r.awaits_verification()) {
+        let awaiting = prev
+            .zip(plan.step(step_id))
+            .is_some_and(|(record, step)| record.awaits_verification_under(replay_of(step, record)));
+        if !awaiting {
             return Err(ResumeError::NotAwaitingVerification {
                 step_id: step_id.clone(),
                 status: prev.map_or("missing", |r| r.status().label()),
@@ -430,12 +492,14 @@ pub async fn resume(prior: &RunRecord, plan: &Plan, opts: &ResumeOptions) -> Res
         .iter()
         .map(|step| {
             let Some(&prev) = by_id.get(step.id()) else { return Initial::Run };
-            let replay = step.runner().replay();
+            let replay = replay_of(step, prev);
             match prev.status() {
                 StepStatus::Completed | StepStatus::CompletedEarlier => {
-                    Initial::Done(Box::new(carried_over(prev, "completed earlier in this run")))
+                    let why =
+                        prev.reason().filter(|r| *r == INFERRED_REASON).unwrap_or("completed earlier in this run");
+                    Initial::Done(Box::new(carried_over(prev, why)))
                 }
-                StepStatus::Failed if !prev.awaits_verification() => Initial::Run,
+                StepStatus::Failed if !prev.awaits_verification_under(replay) => Initial::Run,
                 StepStatus::Failed | StepStatus::OutcomeUnknown(_) | StepStatus::Panicked | StepStatus::Running => {
                     match opts.verified.get(step.id()) {
                         Some(Verification::Applied) => {
@@ -454,6 +518,23 @@ pub async fn resume(prior: &RunRecord, plan: &Plan, opts: &ResumeOptions) -> Res
         })
         .collect();
     Ok(scheduler::run(plan, prior.run_id().clone(), &opts.exec, initial).await)
+}
+
+/// The stricter of two replay classes: not idempotent, then prechecked, then idempotent. A class this version does not
+/// know counts as the strictest.
+fn stricter(a: Replay, b: Replay) -> Replay {
+    fn rank(r: Replay) -> u8 {
+        match r {
+            Replay::Idempotent => 0,
+            Replay::Prechecked => 1,
+            _ => 2,
+        }
+    }
+    if rank(b) > rank(a) {
+        b
+    } else {
+        a
+    }
 }
 
 /// A prior success, carried into the new record as `CompletedEarlier` with its attempts.

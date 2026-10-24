@@ -8,7 +8,7 @@ use std::time::Duration;
 use michi_core::resilience::RetryConfig;
 use michi_graph::{Dag, GraphBuilder, NodeIx, Order, UnknownTargets, Violation};
 
-use crate::{Step, StepId};
+use crate::{AttemptBound, Replay, Step, StepId};
 
 /// One step's definition: identity, display name, prerequisites, runner and optional per-step overrides.
 pub struct ExecStep {
@@ -16,6 +16,10 @@ pub struct ExecStep {
     name: String,
     depends_on: Vec<StepId>,
     runner: Arc<dyn Step>,
+    /// [`Step::replay`], read once at construction.
+    replay: Replay,
+    /// [`Step::attempt_bound`], read once at construction.
+    attempt_bound: AttemptBound,
     breaker_key: Option<String>,
     concurrency_key: Option<String>,
     deadline_group: Option<String>,
@@ -26,6 +30,10 @@ pub struct ExecStep {
 
 impl ExecStep {
     /// A step with no prerequisites. `name` is free-form display text and may repeat across steps.
+    ///
+    /// Reads the runner's [`Step::replay`] and [`Step::attempt_bound`] once, here, and the run uses those values. Both
+    /// are the caller's code: reading them while the scheduler runs would let a panic in them lose the record of a run
+    /// whose effects already happened, so a panic in either surfaces at plan construction instead.
     pub fn new(id: StepId, name: impl Into<String>, runner: impl Step + 'static) -> Self {
         Self::from_arc(id, name, Arc::new(runner))
     }
@@ -36,6 +44,8 @@ impl ExecStep {
             id,
             name: name.into(),
             depends_on: Vec::new(),
+            replay: runner.replay(),
+            attempt_bound: runner.attempt_bound(),
             runner,
             breaker_key: None,
             concurrency_key: None,
@@ -136,6 +146,16 @@ impl ExecStep {
 
     pub(crate) fn runner(&self) -> &Arc<dyn Step> {
         &self.runner
+    }
+
+    /// The runner's [`Step::replay`] as read when the step was built.
+    pub(crate) fn replay(&self) -> Replay {
+        self.replay
+    }
+
+    /// The runner's [`Step::attempt_bound`] as read when the step was built.
+    pub(crate) fn attempt_bound(&self) -> AttemptBound {
+        self.attempt_bound
     }
 
     pub(crate) fn retry_override(&self) -> Option<&RetryConfig> {
@@ -261,7 +281,10 @@ impl From<PlanError> for michi_core::DomainError {
 }
 
 /// A stable hash of a plan's structure: each step's id and prerequisite ids, independent of declaration order.
-/// Names, runners and options are not part of it. Resume refuses a record whose fingerprint differs from the plan's.
+/// Names, runners, replay classes and options are not part of it. Resume refuses a record whose fingerprint differs
+/// from the plan's. Because the fingerprint covers structure only, swapping a step's runner for one with other side
+/// effects between a run and its resume is the caller's responsibility; resume does at least take the stricter of the
+/// record's and the plan's [`crate::Replay`] class.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(try_from = "String", into = "String"))]

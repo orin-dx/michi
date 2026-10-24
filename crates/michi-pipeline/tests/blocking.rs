@@ -233,3 +233,39 @@ async fn independent_steps_sharing_one_blocking_runner_do_not_block_each_other()
     let record = execute(&p, rid("r"), &opts).await;
     assert_eq!(record.outcome(), RunOutcome::Succeeded, "the in-flight guard is per step, not per runner");
 }
+
+/// The plan a caller rebuilds from a factory on every start: a fresh `BlockingStep` each time.
+fn publish_plan(gate: &Arc<Gate>, counter: &Concurrency) -> michi_pipeline::Plan {
+    plan(vec![ExecStep::new(sid("publish"), "Publish", gated(gate, counter))])
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_duplicate_guard_survives_a_plan_rebuilt_from_a_factory() {
+    let counter = Concurrency::default();
+    let (gate, open, done) = gate();
+    let opts = ExecOptions::new().attempt_timeout(ms(50));
+
+    let first_plan = publish_plan(&gate, &counter);
+    let record = execute(&first_plan, rid("rebuilt"), &opts).await;
+    assert_eq!(status(&record, "publish"), StepStatus::OutcomeUnknown(UnknownCause::Timeout));
+    assert_eq!(counter.calls(), 1);
+
+    // A new plan value, as a resume builds from a factory: its steps are new `BlockingStep`s, yet the first closure is
+    // still running on its thread.
+    let second_plan = publish_plan(&gate, &counter);
+    let resume_opts = ResumeOptions::new(opts.clone()).verified(sid("publish"), Verification::NotApplied);
+    let again = resume(&record, &second_plan, &resume_opts).await.unwrap();
+    assert_eq!(counter.calls(), 1, "no second closure started while the first one runs");
+    assert_eq!(counter.max.load(Ordering::SeqCst), 1);
+    assert_eq!(status(&again, "publish"), StepStatus::OutcomeUnknown(UnknownCause::StepFailed));
+    let reason = again.step(&sid("publish")).unwrap().reason().unwrap();
+    assert!(reason.contains("still running"), "{reason}");
+
+    // Once the first closure has returned, the key is free again.
+    open.send(()).unwrap();
+    done.recv_timeout(Duration::from_secs(5)).unwrap();
+    tokio::time::sleep(ms(100)).await;
+    let last = resume(&again, &second_plan, &resume_opts).await.unwrap();
+    assert_eq!(status(&last, "publish"), StepStatus::Completed);
+    assert_eq!(counter.max.load(Ordering::SeqCst), 1, "never two closures of the same run and step at once");
+}
