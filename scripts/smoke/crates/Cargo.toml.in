@@ -1,0 +1,14 @@
+[package]
+name = "michi-smoke"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Keep this out of any enclosing workspace.
+[workspace]
+
+[dependencies]
+michi-core = "=@VERSION@"
+michi-pipeline = "=@VERSION@"
+michi-graph = "=@VERSION@"
+tokio = { version = "1", features = ["macros", "rt"] }
