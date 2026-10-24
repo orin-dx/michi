@@ -10,7 +10,7 @@ See the [documentation map](../README.md) for the role of this reference and rel
 | --- | --- |
 | [01-overview-and-setup.md](01-overview-and-setup.md) | What michi is, why it exists, what's deliberately out of scope, who consumes it, `Cargo.toml`, crate layout |
 | [02-toon-format.md](02-toon-format.md) | The TOON grammar — the agent-facing list format |
-| [03-rust-api.md](03-rust-api.md) | Every `michi-core` module: `toon`, `kv`, `hints`, `truncate`, `truncation`, `empty`, `error`, `idempotency`, `resilience`, `status`, `recovery`, `response` |
+| [03-rust-api.md](03-rust-api.md) | Every `michi-core` module: `toon`, `kv`, `hints`, `truncate`, `truncation`, `empty`, `error`, `idempotency`, `resilience`, `status`, `recovery`, `response`, `pipeline`, `audience`, `telemetry` |
 | [04-mcp-and-napi.md](04-mcp-and-napi.md) | The `mcp` module, the NAPI/npm boundary, and the builder-across-FFI problem |
 | [05-scope-and-quality.md](05-scope-and-quality.md) | What's formalized vs. what stays in your app, feature flags, versioning, performance, testing |
 | [06-decisions.md](06-decisions.md) | Open questions and API design rationale |
@@ -30,9 +30,9 @@ These documents describe possible future work, not available APIs.
 
 ## Known gaps
 
-**TOON retrieval accuracy is measured on Claude and one OpenAI model.** On Claude Haiku, Sonnet and Opus 5.5 and GPT-6 Sol TOON matches JSON and Markdown; Gemini and open-weight models, much longer lists and open-ended tasks are untested. See [the research note](../research/toon-retrieval-accuracy.md).
+**TOON retrieval accuracy is measured on Claude and one OpenAI model.** On Claude Haiku, Sonnet and Opus 5.5 and GPT-6 Sol TOON matches JSON and Markdown; Gemini and open-weight models, much longer lists and open-ended tasks are untested. See [TOON benchmarks](../toon-benchmarks.md) and [the research note](../research/toon-retrieval-accuracy.md).
 
-**No external consumer has integrated against a published Michi version yet.** The initial release provides that version; downstream integration is the next validation step (see [ADR 4](../adr/0004-publish-before-consumer-integration.md)).
+**No external consumer has integrated against a published Michi version yet.** Published releases (from 0.3.1) provide that version; downstream integration is the next validation step (see [ADR 4](../adr/0004-publish-before-consumer-integration.md)).
 
 - [07-wisp-and-monokl-envelope.md](07-wisp-and-monokl-envelope.md) is a proposal for one possible integration; none of its APIs are built yet.
 - A consumer may use a tagged Git dependency during development, then validate against the published crate. Any issues can inform a follow-up release.
@@ -42,10 +42,10 @@ These documents describe possible future work, not available APIs.
 **Plan 2 (the async execution layer) doesn't exist as code in this crate — but `pipeline`'s half has landed as its own crate.**
 
 - `pipeline` has a real, tested data type and `render()` in `michi-core` — always compiled.
-- The actual executor exists too, just not in this crate: `crates/michi-pipeline` ships `Plan`, `execute`/`resume` returning a `RunRecord`, a keyed `BreakerRegistry` and `CancellationToken`. It depends on `michi-core` (for `StepStatus`, the `Pipeline` view and `resilience` retry config and budget) and isn't re-exported through it.
+- The actual executor exists too, just not in this crate: `crates/michi-pipeline` ships `Plan`, `execute`/`resume` returning a `RunRecord`, a keyed `BreakerRegistry` and `CancellationToken`. It depends on `michi-core` (for `StepStatus`, the `Pipeline` view and `resilience` retry config and budget) and `michi-graph` (dependency validation and order), and isn't re-exported through `michi-core`.
 - `fuzzy`, `cache`, and `cli` don't exist anywhere in the workspace at all — not even as stubs. Earlier placeholder stub files were deliberately deleted; see [`ARCHITECTURE.md`](../../ARCHITECTURE.md).
 - Each remaining piece lands as its own crate when it's actually built, per the same pattern `michi-pipeline` followed.
-- 01–06 cover Plan 1, the pure-primitives crate, and 07 proposes an extension to it; `michi-pipeline`'s API is [08-pipeline-execution.md](08-pipeline-execution.md).
+- 01–06 cover Plan 1, the pure-primitives crate, and 07 proposes an extension to it; `michi-pipeline`'s API is [08-pipeline-execution.md](08-pipeline-execution.md) and `michi-graph`'s is [09-graph.md](09-graph.md).
 
 ## Companion docs
 

@@ -12,16 +12,15 @@ This is the michi half of a contract written down in three places. monokl's `doc
 
 | Field / type | Line | What it constrains |
 | --- | --- | --- |
-| `type_name: String` | 33 | One name for the whole response |
-| `items: Vec<Vec<Value>>` + `fields: Vec<String>` | 34–35 | One TOON slot |
+| `toon: ToonOptions` | 34 | One TOON slot: one `type_name` for the whole response, one `fields`/`rows` table |
 | `single_item: Vec<KvItem>` | 36 | One KV slot |
-| `total_count: Option<usize>` | 37 | One count, for whichever slot renders |
-| `enum RenderTarget { Unset, Toon, Kv }` | 19–23 | The two slots are mutually exclusive |
-| `truncate_cells_at: usize` | 40 | Per-cell clamp, TOON path only (`DEFAULT_TRUNCATE_CELLS = 200`, line 26) |
+| `toon.total_count: Option<usize>` | 34 | One count, for whichever slot renders |
+| `enum RenderTarget { Unset, Toon, Kv }` | 18–22 | The two slots are mutually exclusive |
+| `toon.max_cell_len: usize` | 34 | Per-cell clamp, TOON path only, set by `truncate_cells_at()` (`DEFAULT_TRUNCATE_CELLS = 200`, line 25) |
 
-`items()` (line 65) sets `target = RenderTarget::Toon`; `kv_items()` (line 81) sets `Kv`; `body()` (line 143) dispatches on `target`, so `render()` reads whichever setter ran last. Calling both silently drops one. A ten-operation batch is not expressible: nine sections disappear with no error and no signal that they existed.
+`items()` (line 59) sets `target = RenderTarget::Toon`; `kv_items()` (line 108) sets `Kv`; `body()` (line 194) dispatches on `target`, so `render()` reads whichever setter ran last. Calling both silently drops one. A ten-operation batch is not expressible: nine sections disappear with no error and no signal that they existed.
 
-The truncation model has the same shape problem one level down. `truncate_cells_at` clamps a cell. `michi_core::truncate::Truncated { content, original_len, was_truncated, signal }` describes a string. Neither describes a response. The only envelope-level "there is more" signal is `total_count: Option<usize>` — a bare integer with no per-section breakdown, no relation to a budget, and no way to say why anything was dropped. monokl's `BudgetReport` would have to be flattened into free-text `hint()` calls to reach the agent at all.
+The truncation model has the same shape problem one level down. `truncate_cells_at` clamps a cell. `michi_core::truncate::Truncated { content, original_len, was_truncated, signal }` describes a string. `michi_core::truncation::TruncationOutcome` describes one list, and `AgentResponse::truncation()` turns it into the response's `totalCount` and one `help[]` line. None describes a response of several parts. The only envelope-level "there is more" signal is `total_count: Option<usize>` plus free-text hints — a bare integer with no per-section breakdown, no relation to a budget, and no way to say why anything was dropped. monokl's `BudgetReport` would have to be flattened into free-text `hint()` calls to reach the agent at all.
 
 ## What gets added
 
@@ -74,7 +73,7 @@ impl AgentResponse {
 }
 ```
 
-`items()` and `kv_items()` stay, as one-section sugar over the same storage: `items(rows, fields)` becomes `section(Section::toon(self.type_name.clone(), fields, rows))`, `kv_items(items)` becomes `section(Section::kv(self.type_name.clone(), items))`. `RenderTarget` survives as the record of which sugar was used, because `render_toon()` and `render_kv()` are documented to read their named slot unconditionally regardless of the last setter (AC-009) and that behavior has to hold.
+`items()` and `kv_items()` stay, as one-section sugar over the same storage: `items(rows, fields)` becomes `section(Section::toon(self.toon.type_name.clone(), fields, rows))`, `kv_items(items)` becomes `section(Section::kv(self.toon.type_name.clone(), items))`. `RenderTarget` survives as the record of which sugar was used, because `render_toon()` and `render_kv()` are documented to read their named slot unconditionally regardless of the last setter (AC-009) and that behavior has to hold.
 
 Two invariants keep this compatible with what already ships:
 
@@ -140,10 +139,10 @@ Rendered once, after the last section, as a `budget:` KV block, with a roll-up n
 ```text
 budget:
   tokensUsed: 7412
-  bytesUsed:  31208
-  maxTokens:  8000
-  maxBytes:   2097152
-  truncated:  true
+  bytesUsed: 31208
+  maxTokens: 8000
+  maxBytes: 2097152
+  truncated: true
 sections[2]{name,returned,total,truncated}:
   brief.symbols,12,40,true
   brief.refs,5,5,false
@@ -188,9 +187,9 @@ Rendered as a KV block after `budget:`:
 
 ```text
 provenance:
-  analyzer:    rust-analyzer@0.3.2
-  observedAt:  1756950000000
-  precision:   exact
+  analyzer: rust-analyzer@0.3.2
+  observedAt: 1756950000000
+  precision: exact
   fingerprint: b3f1c0d2e4a58691
 ```
 
@@ -236,7 +235,7 @@ pub struct FailedOp {
 The index becomes a rendered column, so the correspondence survives into what the agent reads:
 
 ```text
-partial_success: 2 completed, 1 failed, 1 skipped
+partial_success: "2 completed, 1 failed, 1 skipped"
 completed[2]{index,operation}:
   0,symbols
   1,dependents
@@ -246,7 +245,7 @@ skipped[1]{index,operation,reason}:
   3,search,budget_exhausted
 ```
 
-**This one is a major bump.** Today's `completed[2]:` bare-list block becomes `completed[2]{index,operation}:`, so existing rendered output differs — the SemVer table calls that major, and the snapshot tests in `idempotency.rs` (AC-032, AC-033) change with it. There is no external consumer to break yet, which is the cheapest moment this change will ever have.
+**This one is a major bump.** Today's `completed[2]: a,b` inline array becomes `completed[2]{index,operation}:`, so existing rendered output differs — the SemVer table calls that major, and the exact-output tests in `idempotency.rs` (AC-032, AC-033) and the `snapshot_partial_success_full` insta snapshot change with it. There is no external consumer to break yet, which is the cheapest moment this change will ever have.
 
 `exit_code()` is unchanged: `0` when nothing failed, `1` when anything did.
 
@@ -359,7 +358,7 @@ Each conversion is a few dozen lines of field copying in a crate that imports co
 
 Wisp's `wisp-output` crate depends on michi through a **local path dependency during coordinated development**, and the publish order runs one way: michi publishes first, and Wisp is not published until michi has a versioned release compatible with Wisp's license and MSRV (Wisp D-006). michi's declared MSRV is `1.93`.
 
-Nothing in Wisp gates a michi release, and no consumer integration gates it either (see [ADR 4](../adr/0004-publish-before-consumer-integration.md)). michi publishes first so Wisp can integrate against a versioned dependency, then Wisp can publish its own package. A tagged Git dependency (`michi-core = { git = "…", tag = "v0.x.y" }`) remains useful during coordinated development.
+Nothing in Wisp gates a michi release, and no consumer integration gates it either (see [ADR 4](../adr/0004-publish-before-consumer-integration.md)). michi publishes first so Wisp can integrate against a versioned dependency, then Wisp can publish its own package. A tagged Git dependency (`michi-core = { git = "…", tag = "michi@0.x.y" }`) remains useful during coordinated development.
 
 Licensing is settled, not open. michi is `FSL-1.1-MIT`, matching Wisp's upper layers and Lumen, and monokl carries the same license. With all three on `FSL-1.1-MIT`, the FSL-linking-AGPL redistribution conflict this section used to flag no longer exists.
 
@@ -371,6 +370,6 @@ Licensing is settled, not open. michi is `FSL-1.1-MIT`, matching Wisp's upper la
 
 **Not a budget allocator.** `BudgetSummary` is a record of a decision already made. Which items survive is the caller's algorithm, and michi has no opinion about it.
 
-**Not the whole of what monokl asks michi for.** `MICHI-ADJUSTMENTS.md` under monokl's `.claude/plans/` carries a separate set of asks that nothing in this document covers and nothing in michi's own spec pipeline schedules: five bug fixes (`escape_value` dropping newlines, `toon::list()` deriving columns from the first row only, a `debug_assert!` arity panic, `AgentResponse::toon_body()` swallowing `validate()` failures, and unsanitized newlines in `DomainError::render()` and its hints), an implementation of the `TruncationOutcome<T>` / `truncate_by_bytes` pair already sketched in [`PRINCIPLES.md`](../../PRINCIPLES.md), and a `DomainError::from_error_chain()` helper. It explicitly does not propose new `ErrorCode` variants. None of it contradicts this envelope — it is orthogonal work on escaping, truncation, and error rendering — but it is filed in another repository's planning directory, so it needs michi-side requirements before it can be gated. Recorded here so the gap is visible rather than discovered when one of the five bugs surfaces under a multi-section response.
+**Not the whole of what monokl asks michi for.** `MICHI-ADJUSTMENTS.md` under monokl's `.claude/plans/` carried a separate set of asks that this document does not cover, and they have since shipped on their own: the five bug fixes (`escape_value` now escapes line breaks instead of dropping them, `toon::list()` headers are the union of every item's fields, the `debug_assert!` arity panic is gone, `AgentResponse` renders a `validate()` failure as a `toon_validation_failed` error body, and `DomainError::render()` escapes newlines in its message and hints), `TruncationOutcome<T>` with `truncate_by_count` and `truncate_by_size` (in place of the sketched `truncate_by_bytes`; see [03 — `truncation`](03-rust-api.md#truncation--what-a-list-cap-cut)), and `DomainError::from_error()` (the `from_error_chain()` ask), which keeps the `source()` chain as `causes`. It explicitly did not propose new `ErrorCode` variants. None of it contradicts this envelope — it was orthogonal work on escaping, truncation, and error rendering.
 
 **Not fully clear of michi's third gate yet, and the honest reading matters.** The gate asks for independent real tools that would otherwise hand-roll the identical pattern, and warns that one tool using a pattern heavily is one data point rather than proof. monokl's batch response and Wisp's briefing are two consumers, but Wisp consumes monokl, so they are not independent in the sense the gate means. What carries the case is the survey behind it: across Sourcegraph, Serena, MCP itself, and LSP, nobody attaches a single top-level budget report across multiple result sections — the pattern is absent from the prior art rather than reinvented in it. That is an argument from a gap, which is weaker than the four-for-four evidence `help[]` hints cleared the gate with. Whether that argument carries the gate on its own, whether a third michi consumer has to show up first, or whether the gate is waived for this envelope, is michi's call and nobody else's — Wisp does not clear michi's gates, and michi does not wait on Wisp to attempt it.

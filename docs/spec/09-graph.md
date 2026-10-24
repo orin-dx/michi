@@ -2,7 +2,7 @@
 
 `michi-graph` validates and orders dependency graphs: steps in a pipeline, operations in a release, packages in a workspace, tasks in an agent's plan. It is MIT-licensed, has no dependencies (it is `no_std` with `alloc`, and needs pointer-sized atomics, which every mainstream target has; CI builds it for `thumbv7em-none-eabihf`), and depends on nothing else in michi, so permissive crates such as `callisto-model` can use it. `michi-pipeline` builds its `Plan` on it.
 
-It is a small, deterministic graph model, not a general graph library. There are no node or edge payloads, no mutation after a graph is built, no path finding and no execution policy. The reasons for each choice are in [06-decisions.md](06-decisions.md), "michi-graph: an MIT leaf crate, versioned on its own".
+It is a small, deterministic graph model, not a general graph library. There are no node payloads, no edge data beyond a kind, no mutation after a graph is built, no path finding and no execution policy. The reasons for each choice are in [06-decisions.md](06-decisions.md), "michi-graph: an MIT leaf crate".
 
 ## Vocabulary
 
@@ -27,7 +27,7 @@ let graph = b.build(UnknownTargets::Error);
 - `node(key)` declares a node and returns a `Decl` token. Edges hang off the token, not the key. A token only works on its own builder; a clone of the builder accepts tokens made before the clone, not after, so a token can never name another builder's node at the same position. A later node reusing a key is recorded as a duplicate, and its edges are dropped with it, so they can never land on the first node and cause false errors.
 - `depends_on(decl, prerequisite, kind)` takes the prerequisite key, which may be declared before or after. An edge repeated with the same kind collapses into one.
 - `build(policy)` never fails. It sets aside what it cannot use and records why, so every problem can be reported later in one list:
-  - a duplicate node;
+  - a duplicate node, kept in `Graph::duplicates()`;
   - an edge to a key no node has (a **dangling** edge). It is always kept in `Graph::dangling()`. The edge filter sees it too (with no `prerequisite_ix`), so an unknown dev dependency is not a problem when dev edges are filtered out. For a kept dangling edge, the `UnknownTargets` policy decides: `Error` reports it as `UnknownDependency`, and `Ignore` doesn't (Callisto ignores dependencies on packages outside the workspace). One missing key under several kept kinds is reported once;
   - more than `u32::MAX - 1` nodes.
 - A node that depends on itself is kept as an ordinary edge, and the edge filter decides whether it counts (a dev-only self-dependency is legal in Cargo).
@@ -60,7 +60,7 @@ Everything the crate outputs follows that one order: the topological order, each
 | `keys_in_order()` | the keys in that order |
 | `prerequisites(ix)`, `dependents(ix)` | `&[NodeIx]` neighbours, in the chosen order, each once |
 | `prerequisite_edges(ix)` | `&[(NodeIx, E)]`: every kept edge to a prerequisite with its kind, in the chosen order then by kind; a pair joined by several kinds appears once per kind |
-| `layers()` | layer 0 has no prerequisites; a node's layer is one more than its deepest prerequisite's. Nodes in one layer don't depend on each other, so they can run together |
+| `layers()` | a `Layers` value (`len()`, `get(i)`, `iter()`): layer 0 has no prerequisites; a node's layer is one more than its deepest prerequisite's. Nodes in one layer don't depend on each other, so they can run together |
 | `ready(satisfied, eligible)` | nodes for which `eligible(key)` holds and `satisfied(p)` holds for every prerequisite, in order |
 | `ready_by_edge(eligible, satisfied)` | the same, but `satisfied(prerequisite, kind)` is asked for every kept edge, so kinds can be met at different times (a sibling publish needs a publish issued; a tag needs it confirmed) |
 | `ancestors(roots)`, `descendants(roots)` | every node upstream or downstream of `roots`, not including them |
@@ -94,8 +94,8 @@ Everything the crate outputs follows that one order: the topological order, each
 
 ## How michi-pipeline uses it
 
-- `Plan::new` declares one node per step, builds with `UnknownTargets::Error` and validates with `Order::Declaration`. Violations map one to one onto `PlanViolation`. Cycles stay a single `PlanViolation::Cycle` listing every step on any cycle in declaration order, and `TooManyNodes` becomes `PlanViolation::TooManySteps`. One change: a step stuck between two cycles (depending on one, depended on by another) lies on no cycle and is no longer listed.
-- The scheduler reads `order()`, `prerequisites` and `dependents`. Node indices are declaration positions, so they match `Plan::steps()` and `RunRecord` without translation. Its ready counters, failure skipping and resume seeding stay in michi-pipeline: they are execution policy.
+- `Plan::new` declares one node per step with `()` edges (michi-pipeline uses no kinds, so its plan is a `Dag<StepId>`), builds with `UnknownTargets::Error` and validates with `Order::Declaration`. Violations map one to one onto `PlanViolation`; a violation michi-pipeline does not know by name (`Violation` is `#[non_exhaustive]`) becomes `PlanViolation::Other` with michi-graph's message. Cycles stay a single `PlanViolation::Cycle` listing every step on any cycle in declaration order, and `TooManyNodes` becomes `PlanViolation::TooManySteps`. One change: a step stuck between two cycles (depending on one, depended on by another) lies on no cycle and is no longer listed.
+- The scheduler reads `order()`, `prerequisites` and `dependents`, and `Plan` looks steps up with `index_of` and `node_at`. Node indices are declaration positions, so they match `Plan::steps()` and `RunRecord` without translation. Its ready counters, failure skipping and resume seeding stay in michi-pipeline: they are execution policy.
 - `PlanFingerprint` stays michi's own 64-bit FNV-1a with its current framing, computed over `canonical()`. A record saved before the change still resumes.
 - No michi-graph type appears in michi-pipeline's public API. michi-pipeline depends on it through the same exact `=` pin as michi-core, since they release together.
 

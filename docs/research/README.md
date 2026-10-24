@@ -6,6 +6,7 @@ These notes track questions that need evidence. They do not change Michi's API o
 | --- | --- |
 | [TOON interoperability](toon-interoperability.md) | How does Michi's documented dialect compare with independent TOON implementations? |
 | [TOON retrieval accuracy](toon-retrieval-accuracy.md) | Does TOON preserve retrieval accuracy compared with Markdown-KV? Answered for Claude and OpenAI models: yes |
-| [Callisto publishing migration](callisto-publishing.md) | What must change before adopting Callisto 0.10 for versioning and publication? |
+| [Callisto publishing migration](callisto-publishing.md) | What must change before adopting Callisto 0.10 for versioning and publication? Adopted; now on 0.12 |
+| [Pipeline design](pipeline-design.md) | What should an embeddable, replay-safe Tokio step pipeline look like? Decided in [ADR 7](../adr/0007-pipeline-plans-records-replay.md) |
 
 When research resolves a product or architecture decision, record that decision in the relevant spec or [ADR index](../adr/README.md).

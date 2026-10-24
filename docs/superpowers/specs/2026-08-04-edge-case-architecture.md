@@ -1,5 +1,7 @@
 # Edge-Case Architecture: Systemic Fixes
 
+> **Historical record.** This dated document shows what was planned or decided at the time; much of it has since changed. Don't implement from it. For current behavior, see [`docs/spec/`](../../spec/README.md), [`ARCHITECTURE.md`](../../../ARCHITECTURE.md) and the [ADRs](../../adr/README.md).
+
 > Produced 2026-08-04 following a comprehensive four-agent audit of all michi modules.
 > This document records architectural decisions for 7 systemic issues found in that audit.
 > Implementation is driven by the decisions below — agents must not deviate without

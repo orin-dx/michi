@@ -756,7 +756,7 @@ mod tests {
 
 /// Text-based scanning helpers shared by this crate's structural guard
 /// tests. `pub(crate)` (not private) so both `render`'s own guard tests
-/// and `lib.rs`'s (e.g. the AC-013 docs guard) can reuse the same,
+/// and `toon/mod.rs`'s (the AC-013 docs guard) can reuse the same,
 /// independently-hardened implementation instead of each maintaining its
 /// own copy that can drift out of sync or regress individually.
 #[cfg(test)]

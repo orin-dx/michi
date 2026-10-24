@@ -144,10 +144,10 @@ impl<K: Ord + Clone, E: Ord> Graph<K, E> {
     }
 
     /// Validates the graph with the edges `keep` accepts and returns a [`Dag`], or every problem at once, in this
-    /// order: duplicate nodes, then unknown dependencies (unless ignored) and self-dependencies by the dependent's
-    /// declaration position and the edge's, then cycles. `keep` sees every declared edge, dangling ones included
-    /// (with no `prerequisite_ix`), and only the edges it keeps can be problems: an unknown dev dependency is not one
-    /// when dev edges are filtered out, and cycles made only of rejected edges are not problems.
+    /// order: duplicate nodes, then too many nodes, then unknown dependencies (unless ignored) and self-dependencies,
+    /// then cycles (see [`Violations`] for the order within each group). `keep` sees every declared edge, dangling ones
+    /// included (with no `prerequisite_ix`), and only the edges it keeps can be problems: an unknown dev dependency is
+    /// not one when dev edges are filtered out, and cycles made only of rejected edges are not problems.
     ///
     /// # Errors
     ///

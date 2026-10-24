@@ -33,8 +33,8 @@ proptest! {
         if let Some(delay) = next_retry_delay(&config, attempt, jitter_seed, None) {
             prop_assert!(delay <= config.max_delay, "delay {delay:?} exceeded max_delay {:?}", config.max_delay);
 
-            // Lower bound per docs/spec/03-rust-api.md: delay is always within
-            // [initial_delay, max_delay]. Jitter is additive-only (never
+            // Lower bound: delay is always within
+            // [min(base_delay * 2^attempt, max_delay), max_delay]. Jitter is additive-only (never
             // negative — jitter_factor and jitter_seed are both in [0.0, 1.0]
             // in `next_retry_delay`, so it only ever raises the delay above
             // the raw exponential backoff), and `retry_after` is None here, so

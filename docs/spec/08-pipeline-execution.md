@@ -6,14 +6,14 @@ This document describes the API that replaced `execute_pipeline`, `execute_pipel
 
 ## Identity
 
-- `StepId` names a step. It is chosen by the caller, unique within a plan, and meant to be read and copied by agents, so it is a short slug: 1 to 64 ASCII characters, letters, digits, `_`, `-` and `.`, starting with a letter, digit or `_`. `StepId::try_new` rejects anything else with an `IdError` (`Empty`, `TooLong`, `InvalidChar`). Ids never contain `:`, so the idempotency key below is unambiguous.
+- `StepId` names a step. It is chosen by the caller, unique within a plan, and meant to be read and copied by agents, so it is a short slug: 1 to 64 (`MAX_ID_LEN`) ASCII characters, letters, digits, `_`, `-` and `.`, starting with a letter, digit or `_`. `StepId::try_new` rejects anything else with an `IdError` (`Empty`, `TooLong`, `InvalidChar`). Ids never contain `:`, so the idempotency key below is unambiguous.
 - A step's `name` is free-form display text and may repeat.
 - `RunId` names one run. It has the same charset. The caller supplies it, because only the caller knows what a run is (one agent request, one job). `RunId::unique(prefix)` builds `{prefix}-{millis}-{pid}-{counter}` (numbers in base 36, each after its own `-`, so two processes cannot print the same digits) without a UUID dependency.
 - Reusing a `RunId` for a different plan or different inputs is the caller's mistake and michi cannot detect it: downstream services that deduplicate on the idempotency key would treat the new work as a repeat.
 
 ## Plan
 
-A step definition is an `ExecStep`: an id, a name, the ids it depends on, the runner (`impl Step`) and optional per-step overrides (retry policy, per-attempt timeout, total step deadline, breaker key).
+A step definition is an `ExecStep`: an id, a name, the ids it depends on, the runner (`impl Step`) and optional per-step settings (retry policy, per-attempt timeout, total step deadline, breaker key, concurrency key, deadline group).
 
 `Plan::new(steps)` validates the whole definition before anything runs and returns either an immutable `Plan` or a `PlanError` listing every violation at once:
 
@@ -22,6 +22,7 @@ A step definition is an `ExecStep`: an id, a name, the ids it depends on, the ru
 - `SelfDependency`: a step depends on itself.
 - `Cycle`: the steps that lie on a dependency cycle, found without recursion, so graph depth is bounded by memory rather than the call stack.
 - `TooManySteps`: more than `u32::MAX - 1` steps.
+- `Other { message }`: a michi-graph violation this version does not know by name, with michi-graph's message. `PlanViolation` is `#[non_exhaustive]`.
 
 Validation and ordering come from [`michi-graph`](09-graph.md); no michi-graph type appears in this crate's API.
 
@@ -150,7 +151,7 @@ What each error means:
 | HTTP 500 and other 5xx, and any non-4xx/5xx status reported as an error | no | `Unknown` |
 | `Timeout`, `Interrupted` | yes | `Unknown` |
 | `Panicked`, `AmbiguousOutcome` | no | `Unknown` |
-| `DeadlinePassed` (a deadline group's window closed before the step started) | no | `NotApplied` |
+| `DeadlinePassed` (a deadline group's window closed before the step started, or a poll step ran out of time) | no | `NotApplied` |
 | `Failed { message, retryable, effect }` | as given | as given |
 | `StepFailed { source, .. }` | as `source` | as `source` |
 
@@ -181,7 +182,7 @@ Precheck is verification the step performs for itself, before it acts. It only r
 - **`Applied`:** the effect is already in place. The step ends `CompletedEarlier` with reason `already applied (precheck)`, and its dependents run. If an earlier attempt in this run failed (a timeout, say), that attempt stays recorded and is reported to the breaker as it would be on failure.
 - **`NotApplied`:** there is proof the effect is absent, so the attempt runs (unless the run was cancelled meanwhile).
 - **`Unknown`**, a timeout, or an `Err` from precheck: no attempt runs. If no attempt has run in this run, the step ends `NotRun(Unverified)` (or `Skipped(Cancelled)` if the run was cancelled): nothing was invoked, dependents are skipped, and resume tries again, precheck first. If an attempt already ran, the step ends with that attempt's error: `OutcomeUnknown(cause)` if its effect was unknown, `Failed` if it was not applied.
-- **`Err(refused(..))`** (not retryable, not applied): a blocking precondition. The step ends `Failed` with that error, unless an earlier attempt in this run had an unknown effect, in which case it ends `OutcomeUnknown` with that attempt's cause, since the refusal cannot clear the doubt. An HTTP 4xx returned from precheck counts as a refusal too.
+- **`Err(refused(..))`** (not retryable, not applied): a blocking precondition. The step ends `Failed` with that error, unless an earlier attempt in this run had an unknown effect, in which case it ends `OutcomeUnknown` with that attempt's cause, since the refusal cannot clear the doubt. An HTTP 4xx other than 429 returned from precheck counts as a refusal too.
 - **Proof of absence:** precheck returns `NotApplied` only with proof. Reading a registry that serves stale documents (npm caches a package document for up to 300 s) is not proof that a version is absent, so such a step returns `Unknown` until the read is authoritative. This rule is the step author's to keep; michi cannot check it.
 
 `CompletedEarlier` therefore means "its effect was already in place, so it was not run": carried over by resume, verified as applied by the caller, or found applied by precheck.
@@ -212,19 +213,19 @@ Precheck is verification the step performs for itself, before it acts. It only r
 `execute(&plan, run_id, &opts).await` returns a `#[must_use]` `RunRecord` with private fields and accessors. It never returns an error: a run that happened is a record, however it went.
 
 - `run_id()`, `plan_fingerprint()`, `elapsed()`, `was_cancelled()` (the caller's token fired), `observer_panics()` (observer calls that panicked; see Observer).
-- `steps()`: one `StepRecord` per plan step, in declaration order. Each has the step id, name, terminal status, a human-readable `reason`, the final `error`, every attempt (number, replay class of its failure, error text, elapsed time), when it started relative to the run, how long it took, and for a consequential skip the root-cause step (`caused_by`).
+- `steps()`: one `StepRecord` per plan step, in declaration order. Each has the step id, name, terminal status, a human-readable `reason`, the final `error`, every attempt (number, replay class of its failure, error text, elapsed time), when it started relative to the run, how long it took, for a consequential skip the root-cause step (`caused_by`), and the step's `Replay` (`replay()`, set by the executor and by `from_parts`; `None` in a hand-saved record such as `StepRecord::in_flight`, which counts as not idempotent).
 - `outcome()`: `Succeeded` only if the record lists every plan step and each is `Completed` or `CompletedEarlier`. Otherwise `OutcomeUnknown` if any step's outcome is unknown (`OutcomeUnknown`, or `Running` in a rebuilt record), else `Cancelled` if the caller cancelled, else `Failed`. A skipped, not-run, pending, running or panicked step therefore never reads as success.
 - `root_causes()`: steps that failed in their own right (`Failed`, `OutcomeUnknown`, `NotRun`, `Panicked`, and `Running` in a rebuilt record). `consequential()`: skipped steps. An agent sees one cause instead of N errors.
-- `needs_verification()`: every step resume holds until the caller verifies it (unless it is idempotent or prechecked): `OutcomeUnknown`, `Panicked`, `Running`, and `Failed` with a final error whose effect is not `NotApplied`. The executor never produces that last case for a non-idempotent step, so it shows up for idempotent steps (resume runs them anyway) and in records saved by 0.4. These are exactly the steps `ResumeOptions::verified` accepts (`StepRecord::awaits_verification()`).
+- `needs_verification()`: every step resume holds until the caller verifies it (unless it is prechecked): `OutcomeUnknown`, `Panicked`, `Running`, and `Failed` with a final error whose effect is not `NotApplied`. A step the record knows is idempotent is never listed, since resume runs it anyway. The executor never ends a non-idempotent step `Failed` with an unknown effect, so that last case comes from records saved by 0.4 or by hand. Prechecked steps stay listed: their precheck may not be able to tell, and a verdict takes precedence over it. These are exactly the steps `ResumeOptions::verified` accepts (`StepRecord::awaits_verification()`).
 - `completion_order()`: ids of steps dispatched in this run that ended in success (including ones whose precheck found the effect in place), in the order they finished, so callers can compensate if they choose to. Steps carried over by resume are not included.
 - `error()`: the first root cause as `ExecutionError::StepFailed`, which converts to `DomainError`. When no step failed in its own right (a cancelled run, or a rebuilt record with pending steps) it names the first step that did not succeed, so `error()` is `None` only for a `Succeeded` run.
 - `to_pipeline()` and `render()`: the michi-core `Pipeline` view and its TOON.
 
 A record always holds exactly one `StepRecord` per plan step, in declaration order, and stores the plan's step count, so a record that lost steps cannot read as a success.
 
-With the `serde` feature, `RunRecord`, `StepRecord`, `ExecutionError` and the ids serialize, so callers can persist records. The serialized record carries `plan_steps`; deserializing fails if `steps` does not list that many distinct steps (a missing or repeated step), so a truncated or tampered record is an error rather than a success. Records saved by 0.3 lack `plan_steps` and must be re-saved (or have `"plan_steps": <step count>` added). Records saved by 0.4 lack `effect` on `Failed` errors; it defaults to `Unknown`, so a 0.4 record never makes resume more willing to re-run a step than it should be. `PlanFingerprint` parses only what it prints: exactly 16 lowercase hex digits.
+With the `serde` feature, `RunRecord`, `StepRecord`, `ExecutionError` and the ids serialize, so callers can persist records. The serialized record carries `plan_steps`; deserializing fails if `steps` does not list that many distinct steps (a missing or repeated step), so a truncated or tampered record is an error rather than a success. Records saved by 0.3 lack `plan_steps` and must be re-saved (or have `"plan_steps": <step count>` added). Records saved by 0.4 lack `effect` on `Failed` errors; it defaults to `Unknown`, so a 0.4 record never makes resume more willing to re-run a step than it should be. A step record serializes `replay` when it is known; records saved by 0.5 lack it and read as not idempotent. `PlanFingerprint` parses only what it prints: exactly 16 lowercase hex digits.
 
-`RunRecord::from_parts(run_id, saved_fingerprint, &plan, steps)` rebuilds a record from step records saved one at a time. It returns `ResumeError::FingerprintMismatch` if the saved fingerprint is not the plan's and `ResumeError::UnknownStep` for a saved step the plan lacks. When `steps` holds several records for one step, the last one wins, so an append-only log of `StepRecord::in_flight` on start and the finished record on finish rebuilds each step's latest status. A plan step with no saved record is `Pending`.
+`RunRecord::from_parts(run_id, saved_fingerprint, &plan, steps)` rebuilds a record from step records saved one at a time. It returns `ResumeError::FingerprintMismatch` if the saved fingerprint is not the plan's and `ResumeError::UnknownStep` for a saved step the plan lacks. When `steps` holds several records for one step, the last one wins, so an append-only log of `StepRecord::in_flight` on start and the finished record on finish rebuilds each step's latest status. A plan step with no saved record is `Pending`. Each rebuilt record takes its step's `Replay` from the plan.
 
 ## Scheduling
 
@@ -269,7 +270,7 @@ A step that panics is caught through its `JoinError` and ends `Panicked`. Other 
 
 When the token fires, nothing new is dispatched and every step not yet started ends `Skipped(Cancelled)`. A running attempt can watch `ctx.cancellation()` and stop cooperatively by returning `ExecutionError::Cancelled`, which also ends `Skipped(Cancelled)`. If it is still running after the grace period (`ExecOptions::cancel_grace`, default 5 s), its future is dropped and it ends ambiguous. Backoff sleeps race the token, so a cancelled run never waits out a retry delay.
 
-Each attempt runs under `tokio::time::timeout` (`attempt_timeout`, default 30 s), except that an `AttemptBound::Deadline` step (a poll step) runs until its deadline (see Poll steps). `StepContext::attempt_deadline()` tells an attempt when it will be cut. An optional total deadline (`step_deadline`) bounds a step across all its attempts and backoff: no attempt starts or sleeps past it, and the last attempt is cut to the time left. A deadline too far away for the clock to represent (such as `Duration::MAX`) means no deadline; it never panics. All time is `tokio::time`, so tests run on a paused clock.
+Each attempt runs under `tokio::time::timeout` (`attempt_timeout`, default 30 s; zero is floored to 1 ms), except that an `AttemptBound::Deadline` step (a poll step) runs until its deadline (see Poll steps). `StepContext::attempt_deadline()` tells an attempt when it will be cut. An optional total deadline (`step_deadline`) bounds a step across all its attempts and backoff: no attempt starts or sleeps past it, and the last attempt is cut to the time left. A deadline too far away for the clock to represent (such as `Duration::MAX`) means no deadline; it never panics. All time is `tokio::time`, so tests run on a paused clock.
 
 ### Deadline groups
 
@@ -294,9 +295,9 @@ There is no absolute `deadline_at`. A tokio `Instant` means nothing after a rest
 
 ## Breakers and budgets
 
-Circuit breakers are keyed. A `BreakerRegistry` holds one breaker per key, created on first use with the registry's `BreakerConfig`. A step's key is `ExecStep::breaker_key` (for example, one key per downstream service) and defaults to its step id. Pass the same `Arc<BreakerRegistry>` to every run so samples accumulate across runs; without one, no breaker applies.
+Circuit breakers are keyed. A `BreakerRegistry` holds one breaker per key, created on first use with the registry's `BreakerConfig` (default: opens after 5 consecutive failures, for 30 s; a zero threshold is floored to 1 and a zero open duration to 1 ms). A step's key is `ExecStep::breaker_key` (for example, one key per downstream service) and defaults to its step id. Pass the same `Arc<BreakerRegistry>` to every run so samples accumulate across runs; without one, no breaker applies.
 
-Each breaker keeps the existing state machine: phase, probe ownership and failure count behind one mutex, with a generation counter so an outcome from a call admitted under an earlier generation is ignored. A step admitted while the breaker is closed retries per its policy and reports one outcome. A half-open probe gets exactly one attempt. An open breaker never invokes the step, and the step ends `NotRun(CircuitOpen)`. Cancellation and interruption are not reported as breaker failures.
+Each breaker keeps the existing state machine: phase, probe ownership and failure count behind one mutex, with a generation counter so an outcome from a call admitted under an earlier generation is ignored. A step admitted while the breaker is closed retries per its policy and reports one outcome. A half-open probe gets exactly one attempt. An open breaker never invokes the step, and the step ends `NotRun(CircuitOpen)`. Cancellation, interruption and `DeadlinePassed` are not reported to the breaker; a probe they end is released.
 
 A client error (HTTP 4xx other than 408 and 429) is reported to the breaker as a success: the downstream answered and rejected this one request, which says it is up. Counting a caller's 404s or 400s as failures would let one bad input open the breaker for every caller of that key. `ExecutionError::refused` counts as a success for the same reason: the step rejected the work itself before reaching the downstream (validation, a precondition), which says nothing about the downstream. 408 and 429 (the downstream is slow or shedding load), 5xx, timeouts, `rejected` (a dependency turned the request away), `failed` and `transient` (the step can't say what happened, so the downstream may be at fault) and other errors count as failures. Precheck outcomes are never reported. This follows Envoy's outlier detection, which ejects a host on consecutive 5xx and resets on any other response.
 
@@ -350,15 +351,15 @@ Resume decides per step from the prior record:
 | Prior status | Resume |
 | --- | --- |
 | `Completed`, `CompletedEarlier` | not run; `CompletedEarlier` |
-| `Failed` whose final error is `NotApplied` | runs again |
+| `Failed` whose final error is `NotApplied`, or whose step the record knows is idempotent | runs again |
 | `Failed` whose final error's effect is unknown (or that has no error) | treated like `OutcomeUnknown` below; held, it becomes `OutcomeUnknown(StepFailed)` |
 | `Skipped`, `NotRun`, `Pending`, missing | runs again |
 | `OutcomeUnknown`, `Panicked`, `Running` | a verdict decides; without one, idempotent: runs again; `Prechecked`: runs, precheck decides; otherwise held |
 | a status this version does not know | held as it is |
 
-A held step keeps its prior record and its dependents are skipped until the caller marks it with `ResumeOptions::verified(id, Verification::Applied)` (treated as `CompletedEarlier`) or `Verification::NotApplied` (run again). A verdict takes precedence over idempotence and precheck, except that a prechecked step marked `NotApplied` still runs its precheck before the attempt. A held `Running` step becomes `OutcomeUnknown(Interrupted)`.
+A verdict for a step that is not awaiting verification, including one the record knows is idempotent, is refused with `NotAwaitingVerification`. A held step keeps its prior record and its dependents are skipped until the caller marks it with `ResumeOptions::verified(id, Verification::Applied)` (treated as `CompletedEarlier`) or `Verification::NotApplied` (run again). A verdict takes precedence over idempotence and precheck, except that a prechecked step marked `NotApplied` still runs its precheck before the attempt. A held `Running` step becomes `OutcomeUnknown(Interrupted)`.
 
-Resume indexes the prior record's steps once (every record lists each step once: `from_parts` keeps the last saved record per step and deserializing rejects a repeated step), so preparing a resume is O(N log N) in the step count: 50,000 carried-over steps took 1.6 s with a linear lookup per step and take about 20 ms now. `RunRecord::step(id)` is still a linear scan; index `steps()` yourself to look up many. `Plan::new` likewise drops repeated dependencies with an O(1) check per edge, so a wide fan-in is linear.
+Resume indexes the prior record's steps once (every record lists each step once: `from_parts` keeps the last saved record per step and deserializing rejects a repeated step), so preparing a resume is O(N log N) in the step count: 50,000 carried-over steps took 1.6 s with a linear lookup per step and take about 20 ms now. `RunRecord::step(id)` is still a linear scan; index `steps()` yourself to look up many. `Plan::new` drops repeated dependencies by sorting the edges once (in michi-graph), so a wide fan-in costs O(E log E) rather than O(deg²).
 
 Resume is forward recovery and at least once per step: michi has no atomic commit between a step's effect and the record, so without durable starts a step can run again if the process stopped after its effect but before its in-flight marker was saved. With durable starts, such a step rebuilds as `Running` and is held. Effects are exactly once only when the step hands `idempotency_key()` to a downstream that deduplicates. Resume is not incremental recomputation: it does not notice that a completed step's inputs changed.
 

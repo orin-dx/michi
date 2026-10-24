@@ -28,7 +28,7 @@ Ensure all lints and tests pass cleanly.
 ## Development Rules
 
 - **Zero panics in library code**: Avoid `unwrap()`, `expect()`, or `panic!` in non-test library code.
-- **No `unsafe` outside NAPI glue**: `unsafe` is restricted to `crates/michi-core/src/napi.rs` for FFI bindings (`unsafe_code = "deny"` workspace-wide everywhere else).
+- **No `unsafe` outside NAPI glue**: `unsafe` is restricted to michi-core's `napi` module (`crates/michi-core/src/napi.rs` and `napi/`) for FFI bindings (`unsafe_code = "deny"` workspace-wide everywhere else).
 - **Document public items**: Every `pub` item requires a clear Rustdoc comment.
 - **Pre-allocate string buffers**: Use `String::with_capacity` when building strings.
 - **UTF-8 char safety**: Truncate strings on Unicode scalar boundaries using `floor_char_boundary`.
@@ -43,9 +43,10 @@ Ensure all lints and tests pass cleanly.
 | Crate architecture       | `ARCHITECTURE.md`                             |
 | Truncation primitives    | `crates/michi-core/src/truncate.rs`           |
 | Resilience & retry math  | `crates/michi-core/src/resilience.rs`         |
-| TOON formatting & parser | `crates/michi-core/src/toon/`                 |
+| TOON formatting          | `crates/michi-core/src/toon/`                 |
 | Core AXI types           | `crates/michi-core/src/`                      |
 | Async pipeline execution | `crates/michi-pipeline/`                      |
+| Dependency graphs (MIT)  | `crates/michi-graph/`                         |
 | NAPI exports             | `crates/michi-core/src/napi.rs`               |
 | Node.js package shim     | `packages/michi-node/`                        |
 | Tests, benches, examples | `crates/michi-core/{tests,benches,examples}/` |
@@ -53,7 +54,7 @@ Ensure all lints and tests pass cleanly.
 
 ## Releasing
 
-[Callisto](https://github.com/orin-dx/callisto) versions and publishes `michi-core`, `michi-pipeline` and `@orin-dx/michi`. They're a fixed group, so a change to any of them releases all three on one version.
+[Callisto](https://github.com/orin-dx/callisto) versions and publishes `michi-core`, `michi-pipeline`, `michi-graph` and `@orin-dx/michi`. They're a fixed group (`michi`), so a change to any of them releases all four on one version.
 
 1. With your change, add a changeset: a Markdown file in `.changeset/` (any name, e.g. `.changeset/toon-quote-tabs.md`). The front matter maps each changed package to a bump (`major`, `minor`, `patch` or `none`); the body is the changelog entry, written for users of the package.
 
@@ -65,14 +66,14 @@ Ensure all lints and tests pass cleanly.
    `render_toon` quotes cells that contain a tab.
    ```
 
-   Package names are `michi-core`, `michi-pipeline` and `michi-node` (the npm package). Changes with no user-facing effect don't need one.
+   Package names are `michi-core`, `michi-pipeline`, `michi-graph` and `michi-node` (the npm package). Changes with no user-facing effect don't need one.
 
 2. Merging to `main` opens or updates Callisto's version PR (`callisto/version-packages`), which bumps versions and writes the changelogs.
-3. Merging the version PR runs the Release workflow (`.github/workflows/callisto-release.yml`): it builds the native binaries and publishes to crates.io and npm.
+3. Merging the version PR runs the Release workflow (`.github/workflows/callisto-release.yml`): it builds the native binaries, publishes to crates.io and npm, and creates one GitHub release tagged `michi@{version}`.
 
 The first publish of a brand-new npm package can fail with Callisto error E157: npm accepted the upload but doesn't show the version yet. That's registry propagation lag. Wait a few minutes, then use "Re-run failed jobs" on the Release run. It adopts what already landed and publishes the rest. Don't regenerate the release intent.
 
-Each published package carries a copy of the root `LICENSE` (`crates/*/LICENSE`, `packages/michi-node/LICENSE`, `packages/michi-node/npm/*/LICENSE`). If the license changes, copy it to each; `crates/michi-core/tests/license_copies.rs` fails until they match.
+Each FSL-licensed published package carries a copy of the root `LICENSE` (`crates/michi-core/LICENSE`, `crates/michi-pipeline/LICENSE`, `packages/michi-node/LICENSE`, `packages/michi-node/npm/*/LICENSE`); `michi-graph` has its own MIT `LICENSE`. If the root license changes, copy it to each; `crates/michi-core/tests/license_copies.rs` fails until they match.
 
 ## Commit Style
 

@@ -87,7 +87,7 @@ pub mod napi;
 pub mod pipeline;
 /// Structured recovery hints (`recovery[]`).
 pub mod recovery;
-/// Retry delay calculation, `Retry-After` parsing and idempotency keys.
+/// Retry delay calculation, `Retry-After` parsing, retry budgets, idempotency keys and already-done detection.
 pub mod resilience;
 /// `AgentResponse` builder.
 pub mod response;

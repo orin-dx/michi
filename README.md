@@ -24,6 +24,7 @@ Rust:
 ```bash
 cargo add michi-core
 cargo add michi-pipeline   # optional: async pipeline execution on Tokio
+cargo add michi-graph      # optional: dependency graphs (MIT, no dependencies)
 ```
 
 Node.js:
@@ -146,14 +147,14 @@ graph LR
 | Crate / Package | Description |
 | --- | --- |
 | `michi-core` | All sync AXI primitives: TOON list rendering (`toon`; render only, no public parser), key-value blocks, hints, structured errors (`DomainError`), status, recovery hints, MCP `CallToolResult`, the `AgentResponse` builder, UTF-8 char-boundary truncation (`truncate`), the report of what a list cap cut (`truncation`), and retry/back-off math with `Retry-After` parsing and idempotency keys (`resilience`). |
-| `michi-pipeline` | Async pipeline execution: a validated step plan run sequentially or with a concurrency cap, a per-step run record with replay-honest statuses, resume, keyed circuit breakers, a retry budget and cancellation. Depends on `michi-core`, `tokio` and `tokio-util`. |
-| `michi-graph` | Deterministic dependency graphs, MIT-licensed with no dependencies: validation that reports every problem at once (with a concrete loop for each cycle), topological order, layers, ready sets, ancestors and descendants. |
+| `michi-pipeline` | Async pipeline execution: a validated step plan run sequentially or with a concurrency cap (overall and per key), a per-step run record with replay-honest statuses, resume, keyed circuit breakers, a retry budget, shared deadline groups, poll and blocking steps, and cancellation. Depends on `michi-core`, `michi-graph`, `tokio` and `tokio-util`. |
+| `michi-graph` | Deterministic dependency graphs, MIT-licensed with no dependencies: validation that reports every problem at once (with a concrete loop for each cycle), topological order, layers, ready sets (also judged per edge kind), ancestors and descendants. |
 | `@orin-dx/michi` | Node.js NAPI bindings built with `@napi-rs/cli` from `packages/michi-node`, which re-exports `michi-core`'s `napi` feature surface. |
 
 `michi-core`, `michi-graph`, `michi-pipeline` and `@orin-dx/michi` version in lockstep. The crate name `michi` on crates.io belongs to an unrelated project; to write `use michi::...`, rename the dependency in `Cargo.toml`:
 
 ```toml
-michi = { package = "michi-core", version = "0.3" }
+michi = { package = "michi-core", version = "0.7" }
 ```
 
 ## Feature Flags

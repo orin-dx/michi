@@ -8,9 +8,10 @@
 //! failure becomes a thrown `napi::Error` before the wrapped function body
 //! runs, so there is no coercion step left at any call site to reimplement
 //! inconsistently. This is the shared kernel for the whole NAPI numeric
-//! boundary: `JsRanged` (added in a later commit) is generic over its
-//! bounds so a future resilience-domain module can define its own aliases
-//! over the same type without redefining it.
+//! boundary: `JsRanged` is generic over its bounds, so each domain names
+//! its own aliases over the one type ([`JsDecimals`] for rendering,
+//! [`JsRetryCount`] and [`JsHttpStatus`] for resilience) instead of
+//! redefining it.
 #![allow(clippy::as_conversions, clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
 
 use napi::bindgen_prelude::{sys, FromNapiValue, ToNapiValue, TypeName, ValidateNapiValue};
@@ -138,8 +139,7 @@ impl<const MIN: i64, const MAX: i64> JsRanged<MIN, MAX> {
     /// bounds that don't fit `u8` is a compile error (`E0080`) via
     /// `U8_FITS`.
     // NOT `const fn`: `u8::try_from` cannot be called inside a const fn on
-    // this workspace's pinned rustc 1.96 (E0658 — `TryFrom` is not yet a
-    // const trait).
+    // stable Rust (E0658 — `TryFrom` is not a const trait there).
     #[must_use]
     pub fn get_u8(self) -> u8 {
         let () = Self::U8_FITS;

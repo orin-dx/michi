@@ -1,4 +1,4 @@
-//! NAPI export surface for the `michi` npm package (`packages/michi-node`).
+//! NAPI export surface for the `@orin-dx/michi` npm package (`packages/michi-node`).
 //!
 //! `packages/michi-node/src/lib.rs` re-exports everything from this module
 //! (`pub use michi_core::napi::*;`) rather than defining `#[napi]` items directly,
@@ -14,10 +14,12 @@
 //! force unbounded synchronous allocation on Node's single-threaded event
 //! loop.
 //!
-//! This is the one module in the crate exempted from `#![deny(unsafe_code)]`
-//! (src/lib.rs): `#[napi(catch_unwind)]` expands to macro-generated FFI glue
+//! This is the one module in the crate exempted from the workspace's
+//! `unsafe_code = "deny"` lint (`[workspace.lints.rust]` in the root
+//! `Cargo.toml`): `#[napi(catch_unwind)]` expands to macro-generated FFI glue
 //! that needs `unsafe` to call into the N-API C ABI. No unsafe is hand-written
-//! here — only the module-level allow below permits the macro expansion.
+//! in this file; the only hand-written `unsafe` is in the `num` submodule's
+//! `FromNapiValue`/`ToNapiValue` impls, which those napi traits require.
 #![allow(unsafe_code)]
 #![deny(
     clippy::as_conversions,
@@ -154,10 +156,10 @@ fn js_value_to_rust(v: JsToonValue) -> napi::Result<crate::toon::Value> {
 /// `truncationHint`) are counted as they are read. Also
 /// returns an error if `ToonOptions::validate()` rejects the input — a row
 /// whose value count differs from `fields.len()`, a field name repeated in
-/// `fields`, a reserved `type_name` (`totalCount`, `help`), or a document over
-/// michi-core's shape caps. Any other type
+/// `fields`, a reserved `type_name` (`totalCount`, `help` or `recovery`), or a
+/// document over michi-core's shape caps. Any other type
 /// or field name is valid and is quoted when TOON 4.4 §7.3 requires.
-/// The error `reason` is the `ToonError` Display text verbatim.
+/// The error `reason` is `toon_validation_failed: ` followed by the `ToonError` Display text.
 #[napi(catch_unwind, js_name = "renderToon", ts_args_type = "opts: JsToonOptions")]
 pub fn render_toon_js(opts: Unknown<'_>) -> napi::Result<String> {
     let mut budget = Budget::new();
@@ -514,7 +516,7 @@ pub fn is_retryable_status(#[napi(ts_arg_type = "number")] status: JsHttpStatus)
 }
 
 /// Render a classified `DomainError` as a TOON 4.4 document (`error`, `message`, `causes`, `exit_code`, `help`), or
-/// as a GitHub annotation (message only).
+/// as a GitHub Actions annotation (`::error title={code}::{message}`, without hints or causes).
 ///
 /// `causes` (optional) are why the error happened, outermost first, rendered as their own `causes[N]: …` key after the
 /// message; `hints` are what to do next.
@@ -726,8 +728,9 @@ pub struct JsCallToolResult {
     /// Whether this is a tool execution error.
     #[napi(js_name = "isError")]
     pub is_error: bool,
-    /// The same data as `content[0]`, as a real parsed JSON value — not a
-    /// string the caller has to `JSON.parse()` themselves.
+    /// The JSON companion to `content[0]` (the `renderJson()` object), as a
+    /// real parsed JSON value — not a string the caller has to `JSON.parse()`
+    /// themselves.
     #[napi(js_name = "structuredContent")]
     pub structured_content: serde_json::Value,
 }
@@ -2684,8 +2687,9 @@ mod tests {
         assert!(unsafe_hit_count > 0, "expected num.rs to contain the sanctioned FFI-boundary unsafe occurrences");
     }
 
-    // --- AC-033b: src/lib.rs has #![deny(unsafe_code)]; src/napi.rs has
-    // #![allow(unsafe_code)] immediately preceded by an explanatory comment. ---
+    // --- AC-033b: the workspace lints deny unsafe_code and this crate opts in;
+    // src/napi.rs has #![allow(unsafe_code)] immediately preceded by an
+    // explanatory comment. ---
 
     #[test]
     fn ac033b_deny_and_allow_unsafe_code_attributes_present() {

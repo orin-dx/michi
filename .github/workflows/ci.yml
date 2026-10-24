@@ -80,24 +80,9 @@ jobs:
       - name: Check API compatibility against the pending release type
         run: |
           set -euo pipefail
-          # Front matter of the fixed group's changesets only (michi-graph's own bump must not loosen this check), or
-          # the version bump when none are pending, as on Callisto's version PR.
+          # Front matter of the fixed group's changesets, or the version bump when none are pending, as on Callisto's
+          # version PR.
           bash scripts/check-semver.sh
-      # michi-graph releases with the group but has no crates.io baseline until its first publish; until then there is
-      # nothing to compare. Its release type comes from its version, which the group bumps with the others.
-      - name: Check michi-graph's API against crates.io
-        run: |
-          set -euo pipefail
-          status=$(curl -s -o /dev/null -w '%{http_code}' --user-agent "orin-dx/michi CI" \
-            https://crates.io/api/v1/crates/michi-graph)
-          case "$status" in
-            200) cargo semver-checks check-release -p michi-graph ;;
-            404) echo "michi-graph is not on crates.io yet; nothing to compare against" ;;
-            *)
-              echo "::error::crates.io answered $status; cannot tell whether michi-graph has a baseline"
-              exit 1
-              ;;
-          esac
 
   msrv:
     name: MSRV
@@ -174,7 +159,7 @@ jobs:
       # Each published crate on its own, with only its default features. A workspace-wide run unifies features (the
       # napi shim turns on michi-core's serde), which hid a default-feature failure.
       - run: just test-crates-default
-      # nextest does not run doctests (the crate docs and the michi-pipeline README example).
+      # nextest does not run doctests (the crate docs and the michi-pipeline and michi-graph README examples).
       # Not `napi`: doctest binaries can't link the Node symbols it references.
       - run: cargo test --doc -p michi-core --features serde,schemars,miette
       - run: cargo test --doc -p michi-pipeline --all-features

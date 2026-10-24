@@ -1,6 +1,6 @@
 # 5. Publish two crates on one version
 
-Status: Accepted
+Status: Accepted. Amended 2026-10-22: a third crate, `michi-graph` (MIT, for license containment), joined the fixed group and is not re-exported from `michi-core`; `michi-pipeline` pins it exactly like `michi-core`. Versions are now written per crate by Callisto, not in `[workspace.package]`. See `docs/spec/06-decisions.md`, "Resolved 2026-10-22 — michi-graph: an MIT leaf crate".
 
 ## Context
 

@@ -191,7 +191,7 @@ jobs:
             map(if .triple == "x86_64-apple-darwin" then .hostRunner = "macos-latest" | .useCross = false else . end)' \
             "$RUNNER_TEMP/matrix.json")
           # Execute places one package's JS binding; a second addon needs per-package placement. A release with no
-          # addon (michi-graph on its own, say) skips the build and placement entirely.
+          # addon skips the build and placement entirely (the fixed group always includes the npm package today).
           napi_dirs=$(jq -c '[.[].packageDir] | unique' <<< "$matrix")
           case $(jq length <<< "$napi_dirs") in
             0) has_napi=false napi_dir="" ;;
@@ -339,11 +339,11 @@ jobs:
           pattern: binding-*
           path: ${{ runner.temp }}/napi-bindings
 
-      # Everything placed here is gitignored, so the checkout stays clean:
-      # the .node files go into the committed npm/<platform> package dirs.
       - name: Verify the handoff
         run: (cd "$RUNNER_TEMP/release-intent" && shasum -a 256 -c release-intent.json.sha256)
 
+      # Everything placed here is gitignored, so the checkout stays clean:
+      # the .node files go into the committed npm/<platform> package dirs.
       - name: Place the napi artifacts
         if: needs.plan.outputs.has_napi == 'true'
         working-directory: ${{ needs.plan.outputs.napi_dir }}

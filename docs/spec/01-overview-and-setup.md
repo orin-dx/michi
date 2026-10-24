@@ -85,20 +85,29 @@ Any TypeScript MCP server
 
 ## Cargo.toml
 
-`michi` is a Cargo **workspace** with a virtual root manifest — there is no root package and no `michi` facade crate (the `michi` name on crates.io belongs to an unrelated project). It publishes two crates, `michi-core` and `michi-pipeline`, plus the npm package built from `packages/michi-node` (see [ARCHITECTURE.md](../../ARCHITECTURE.md) for the full component table, and [06-decisions.md](06-decisions.md) for why there are two crates and one version). The root `Cargo.toml`:
+`michi` is a Cargo **workspace** with a virtual root manifest — there is no root package and no `michi` facade crate (the `michi` name on crates.io belongs to an unrelated project). It publishes three crates, `michi-core`, `michi-pipeline` and `michi-graph`, plus the npm package built from `packages/michi-node` (see [ARCHITECTURE.md](../../ARCHITECTURE.md) for the full component table, and [06-decisions.md](06-decisions.md) for why they share one version). The root `Cargo.toml`:
 
 ```toml
 [workspace]
-members = ["crates/michi-core", "crates/michi-pipeline", "packages/michi-node"]
+members = [
+  "crates/michi-core",
+  "crates/michi-graph",
+  "crates/michi-pipeline",
+  "packages/michi-node",
+]
 resolver = "2"
 
 [workspace.package]
-# One version for every crate: Callisto releases michi-core, michi-pipeline and the npm package as a fixed group.
-version = "0.3.0"
+# No shared `version`: Callisto writes each crate's version itself and keeps michi-core, michi-pipeline and the npm
+# package equal through its fixed group (callisto.toml). CI's version-sync job checks they agree.
+edition = "2021"
+rust-version = "1.93"
+license = "FSL-1.1-MIT"
 
 [workspace.dependencies]
 # Exact pin: workspace crates release in lockstep, so a mixed set must never resolve.
-michi-core = { path = "crates/michi-core", version = "=0.3.0" }
+michi-core = { path = "crates/michi-core", version = "=0.7.0" }
+michi-graph = { path = "crates/michi-graph", version = "=0.7.0" }
 thiserror = "2"
 compact_str = "0.10"
 serde = { version = "1.0.228", features = ["derive"] }
@@ -113,10 +122,10 @@ tokio = { version = "1", features = ["time"] }
 ```toml
 [package]
 name = "michi-core"
-version.workspace = true
+version = "0.7.0" # written by Callisto
 
 [dependencies]
-compact_str = { workspace = true, features = ["serde"] }
+compact_str = { workspace = true }
 thiserror.workspace = true
 
 serde = { workspace = true, optional = true }
@@ -130,22 +139,22 @@ napi-derive = { version = "3", optional = true }
 
 [features]
 default = []
-serde = ["dep:serde", "dep:serde_json"]
-schemars = ["dep:schemars"]
+serde = ["dep:serde", "dep:serde_json", "serde_json/float_roundtrip", "compact_str/serde"]
+schemars = ["dep:schemars", "serde"]
 miette = ["dep:miette"]
 napi = ["dep:napi", "dep:napi-derive", "serde"]
 ```
 
-(Elided: the remaining `[workspace.package]` metadata, `[profile.release]`/`[profile.bench]`, `[workspace.lints]`, `[dev-dependencies]`, `[[bench]]` entries — see the real files for those.)
+(Elided: the remaining `[workspace.package]` and `[package]` metadata, `[profile.release]`/`[profile.bench]`, `[workspace.lints]`, `[dev-dependencies]`, `[[bench]]` entries — see the real files for those.)
 
 Default features add no runtime dependencies beyond `thiserror` and `compact_str`.
 
-- `serde_json` only enters `michi-core`'s tree through `napi` (typed `structuredContent`, wire-conformant MCP types) or the `serde` feature — never unconditionally. (`michi-core` unconditionally enables `compact_str`'s own `serde` Cargo feature regardless of its own `serde` feature, so `serde` the _crate_ is transitively present in the default dependency graph even though no default-feature type derives `Serialize`/`Deserialize` — see `crates/michi-core/Cargo.toml`.)
+- `serde` and `serde_json` only enter `michi-core`'s tree through the `serde` feature, which `schemars` and `napi` (typed `structuredContent`, wire-conformant MCP types) turn on — never unconditionally. `compact_str`'s own `serde` feature is enabled by michi-core's `serde` feature only, and `serde_json/float_roundtrip` keeps parsed floats correctly rounded.
 - `kv::KvValue` fills the role `serde_json::Value` would have for every consumer who doesn't opt in, at zero dependency cost.
 - `preserve_order` keeps `toon::list()`'s field order matching each struct's declared order instead of alphabetizing it.
-- `schemars` (1.x) derives `JsonSchema` on DTO types, generating JSON Schema 2020-12; `miette` implements `miette::Diagnostic` for `DomainError`.
+- `schemars` (1.x, implies `serde`) derives `JsonSchema` on the types serde serializes, generating JSON Schema 2020-12; `miette` implements `miette::Diagnostic` for `DomainError`.
 
-Consumers who want to write `use michi::...` rename the dependency: `michi = { package = "michi-core", version = "0.3" }`.
+Consumers who want to write `use michi::...` rename the dependency: `michi = { package = "michi-core", version = "0.7" }`.
 
 `pipeline`/`fuzzy`/`cache`/`cli` **execution** is not a Cargo feature of `michi-core` at all, and never will be.
 
@@ -167,62 +176,82 @@ michi/                           (workspace root — virtual manifest, no packag
       src/
         lib.rs                   # module declarations, explicit root re-exports (incl. resilience and truncate items), Result<T>
         audience.rs              # Audience — always compiled
-        empty.rs                 # empty_state(), empty_state_with_hints()
-        error.rs                 # Error, ErrorCode, DomainError, ErrorClass, Sensitive<T>
+        empty.rs                 # empty_state(), empty_state_with_hints() and their try_ forms
+        error.rs                 # Error, ErrorCode, DomainError, ErrorClass, Sensitive<T>,
+                                  # MAY_HAVE_TAKEN_EFFECT_HINT
+        float_wire.rs            # serde wire form for non-finite floats (serde feature, private)
         hints.rs                 # Hint, render_hints(), append_hints()
         idempotency.rs           # FailedOp, PartialSuccess — NOT idempotency keys/already-done
                                   # (that's resilience::AlreadyDone/already_done(); the
                                   # module name is a known, tracked naming staleness)
-        kv/mod.rs                # render_kv(), KvItem, KvValue
-        mcp.rs                   # ContentBlock, CallToolResult — always compiled
+        int_schema.rs            # integer JSON Schemas (schemars feature, private)
+        kv/mod.rs                # render_kv(), KvItem, KvValue, KvError
+        mcp.rs                   # ContentBlock, CallToolResult, StructuredContentError — always compiled
         napi.rs                  # #[napi] exports (napi feature only)
         napi/
           num.rs                 # JsRanged/JsFloat/JsCount/... numeric-boundary newtype kernel
-        pipeline/mod.rs          # Pipeline, PipelineStep, StepStatus — data model + render only
+          input.rs               # bounded, incremental conversion of collection and string arguments
+        pipeline/mod.rs          # Pipeline, PipelineStep, StepStatus and its reasons — data model + render only
         recovery.rs              # RecoveryHint, render_recovery()
         resilience.rs            # RetryConfig, next_retry_delay(), parse_retry_after(),
                                   # is_retryable_status(), AlreadyDone, IdempotencyKey
         resilience/budget.rs     # RetryBudget
-        response.rs              # AgentResponse builder, OutputFormat
+        response.rs              # AgentResponse builder, OutputFormat, DEFAULT_TRUNCATE_CELLS
         status.rs                # StatusItem, StatusResponse, Health
         telemetry/mod.rs         # NoopProvider — zero-cost, always compiled
         toon/
-          mod.rs                 # ToonOptions, ToonError, render_toon(), list() (serde feature)
-          escape.rs              # comma/quote/newline escaping, header-token sanitizing
+          mod.rs                 # ToonOptions, ToonError, render_toon(), list() (serde feature), size limits
+          escape.rs              # escape_value(), escape_value_quoted(), escape_key(); canonical numbers
           render.rs              # Value, ToonDocument; string assembly with pre-allocated capacity
         truncate.rs              # Truncated, truncate(), truncate_inline()
         truncation.rs            # TruncationOutcome, truncate_by_count(), truncate_by_size()
       benches/
         toon_render.rs, kv_render.rs
       examples/
-        basic_toon.rs, agent_response.rs, domain_errors.rs   # cargo run -p michi-core --example <name>
+        basic_toon.rs, agent_response.rs, domain_errors.rs, readme_quickstart.rs
+                                  # cargo run -p michi-core --example <name>
       tests/
-        toon_integration.rs, kv_integration.rs, napi_num_reuse.rs
+        toon_integration.rs, kv_integration.rs, truncation.rs, napi_num_reuse.rs, …
+        toon_spec.rs, toon_spec_fixtures.rs, fixtures/   # TOON 4.4 conformance, official fixtures
+        toon_blocks.rs, wire_schema.rs                   # every agent-facing block; serde/schema wire forms
         snapshot_tests.rs        # insta snapshots
         proptest_toon.rs, proptest_truncate.rs, proptest_resilience.rs, proptest_mcp.rs
         toon_parser.rs, support/ # test-only TOON parser for round-trip property tests
         ui_fail.rs, ui-fail/     # trybuild compile-fail tests
 
+    michi-graph/                 # MIT, no dependencies, no_std + alloc
+      src/
+        lib.rs                   # crate docs, re-exports, NodeIx, Order, UnknownTargets
+        builder.rs               # GraphBuilder, Decl
+        graph.rs, dag.rs         # Graph, EdgeRef, Dangling; Dag (order, layers, ready sets, closures), Layers
+        violation.rs             # Violation, Violations, Cycle
+        algo.rs                  # index-level algorithms: adjacency, Kahn, Kosaraju, shortest cycles
+      benches/graph.rs           # divan: build and validate at large sizes
+      tests/
+
     michi-pipeline/
       src/
         lib.rs                   # crate docs and re-exports
-        id.rs                    # StepId, RunId
-        plan.rs                  # ExecStep, Plan, PlanError, PlanFingerprint
-        step.rs                  # Step, Replay, StepContext, step_fn
-        exec.rs                  # ExecOptions, execute(), resume(), StepObserver
+        id.rs                    # StepId, RunId, IdError, MAX_ID_LEN
+        plan.rs                  # ExecStep, Plan, PlanError, PlanViolation, PlanFingerprint
+        step.rs                  # Step, Replay, StepContext, step_fn, Precheck, AttemptBound
+        blocking.rs              # BlockingStep, step_blocking()
+        poll.rs                  # PollStep, poll_step(), PollSchedule, Readiness
+        exec.rs                  # ExecOptions, ResumeOptions, execute(), resume(), StepObserver, DurableObserver
         scheduler.rs             # the JoinSet scheduler loop and per-step retry loop
-        record.rs                # RunRecord, StepRecord, RunOutcome
-        breaker.rs               # CircuitBreaker, BreakerRegistry
-        cancel.rs, error.rs      # CancellationToken, ExecutionError
-      benches/scheduler.rs       # divan: 500-step plan validation and execution
-      tests/                     # plan, execute, replay, resume, serde
+        record.rs                # RunRecord, StepRecord, AttemptRecord, RunOutcome
+        breaker.rs               # CircuitBreaker, BreakerRegistry, BreakerConfig
+        cancel.rs, error.rs      # CancellationToken; ExecutionError, Effect, ReplayClass
+      benches/scheduler.rs       # divan: plan build and dispatch overhead
+      tests/                     # plan, execute, replay, resume, effects, poll, blocking, serde, …
 
   packages/michi-node/           # NAPI wrapper (npm: @orin-dx/michi), publish = false
     Cargo.toml                   # cdylib; depends on michi-core with the napi feature
     build.rs                     # napi-build setup
     package.json                 # name: "@orin-dx/michi"
-    index.js                     # platform binary loader + TS fallback
-    index.d.ts                   # TypeScript types (auto-generated)
+    index.js                     # platform binary loader (generated at build time, not committed)
+    index.d.ts                   # TypeScript types (generated at build time, not committed)
+    npm/<platform>/              # one package per native target
     src/lib.rs                   # pub use michi_core::napi::*;
     __test__/                    # node:test NAPI integration tests
 ```

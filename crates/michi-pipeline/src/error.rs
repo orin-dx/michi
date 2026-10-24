@@ -8,8 +8,8 @@ use std::time::Duration;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 pub enum ExecutionError {
-    /// HTTP-transport failure. A step reports the server's status as-is; see the crate-level replay rule for what
-    /// each retryable status means. A bare 502 or 504 in a record means the step was idempotent; for a
+    /// HTTP-transport failure. A step reports the server's status as-is; see the replay rule on [`crate::Step`] for
+    /// what each retryable status means. A bare 502 or 504 in a record means the step was idempotent; for a
     /// non-idempotent step the executor wraps it in [`ExecutionError::AmbiguousOutcome`].
     #[error("http {status}: {message}")]
     Http {
@@ -136,8 +136,8 @@ pub enum ReplayClass {
     /// and only if retryable. Records saved before 0.5 call some of these `definitive`, which reads as this.
     #[cfg_attr(feature = "serde", serde(alias = "definitive"))]
     Ambiguous,
-    /// Not applied and not worth retrying: HTTP 4xx other than 429, [`ExecutionError::refused`]. Not retried; resume
-    /// runs the step again.
+    /// Not applied and not worth retrying: HTTP 4xx other than 429, [`ExecutionError::refused`],
+    /// [`ExecutionError::DeadlinePassed`]. Not retried; resume runs the step again.
     Refused,
 }
 
@@ -191,10 +191,10 @@ impl ExecutionError {
 
     /// Whether the failed attempt's effect may have landed, looking through [`ExecutionError::StepFailed`].
     ///
-    /// [`Effect::NotApplied`] only when the error says so: `CircuitOpen`, `Cancelled`, HTTP 4xx (the server refused
-    /// the request; 429 says come back later) and HTTP 503, and `Failed` with `effect: NotApplied`. Everything else
-    /// is [`Effect::Unknown`], including HTTP 500 and other 5xx, which say nothing about whether the request was
-    /// applied (RFC 9110 §15.6).
+    /// [`Effect::NotApplied`] only when the error says so: `CircuitOpen`, `Cancelled`, `DeadlinePassed`, HTTP 4xx (the
+    /// server refused the request; 429 says come back later) and HTTP 503, and `Failed` with `effect: NotApplied`.
+    /// Everything else is [`Effect::Unknown`], including HTTP 500 and other 5xx, which say nothing about whether the
+    /// request was applied (RFC 9110 §15.6).
     #[must_use]
     pub fn effect(&self) -> Effect {
         match self {

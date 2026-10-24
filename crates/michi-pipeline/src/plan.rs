@@ -231,7 +231,8 @@ pub struct PlanError {
 }
 
 impl PlanError {
-    /// The violations, duplicates first, then per-step dependency problems in declaration order, then cycles.
+    /// The violations: duplicates first, then too many steps, then per-step dependency problems in declaration order,
+    /// then cycles.
     #[must_use]
     pub fn violations(&self) -> &[PlanViolation] {
         &self.violations
@@ -331,8 +332,8 @@ pub struct Plan {
 }
 
 impl Plan {
-    /// Validates `steps` and returns the plan, or every violation at once: duplicate ids, unknown dependencies,
-    /// self-dependencies and cycles (found without recursion, so depth is bounded by memory).
+    /// Validates `steps` and returns the plan, or every violation at once: duplicate ids, too many steps, unknown
+    /// dependencies, self-dependencies and cycles (found without recursion, so depth is bounded by memory).
     ///
     /// # Errors
     ///
