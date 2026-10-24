@@ -39,12 +39,13 @@
   },
   "scripts": {
     "build": "napi build --platform --js index.js --dts index.d.ts",
-    "test": "node --test __test__/index.test.mjs __test__/interop.test.mjs",
+    "test": "node --test __test__/index.test.mjs __test__/interop.test.mjs __test__/mcp-conformance.test.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint --type-aware .",
     "check": "pnpm typecheck && pnpm lint"
   },
   "devDependencies": {
+    "@modelcontextprotocol/sdk": "1.32.1",
     "@napi-rs/cli": "^3.10.8",
     "@toon-format/toon": "4.4.0",
     "@types/node": "^26.6.5",
