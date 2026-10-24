@@ -1,0 +1,66 @@
+name: Fuzz
+
+# Weekly smoke run of the cargo-fuzz targets in fuzz/, plus a manual run with a chosen time. Kept out of ci.yml: it
+# needs nightly, and a bounded run finds crashes by chance rather than proving their absence.
+on:
+  schedule:
+    - cron: "17 3 * * 0"
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: "Seconds to run each target"
+        required: false
+        default: "60"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  fuzz:
+    name: Fuzz ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [toon_render, truncate, resilience, mcp_wire, graph, plan]
+    env:
+      # 5 minutes per target on the weekly schedule; the dispatch input (default 60s) otherwise.
+      SECONDS_PER_TARGET: ${{ github.event.inputs.seconds || '300' }}
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # cargo-fuzz needs nightly for the sanitizer flags. The repo's rust-toolchain.toml pins stable for everything
+      # else, so nightly is requested per command (`cargo +nightly`) instead of replacing the default.
+      - name: Install nightly
+        run: rustup toolchain install nightly --profile minimal --no-self-update
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2
+        with:
+          tool: cargo-fuzz,just
+      # The corpus grows run over run: each run restores the latest one for its target and saves its own.
+      - name: Restore corpus
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-corpus-${{ matrix.target }}-
+      - name: Fuzz
+        run: just fuzz "$TARGET" "$SECONDS_PER_TARGET"
+      # A crash makes the step above fail; its input is the reproducer. Turn it into a regression test (see
+      # CONTRIBUTING.md) instead of keeping the artifact as the only record.
+      - name: Upload crashing inputs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-crash-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}
+          if-no-files-found: ignore

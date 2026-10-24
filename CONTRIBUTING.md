@@ -52,6 +52,34 @@ Ensure all lints and tests pass cleanly.
 | Tests, benches, examples | `crates/michi-core/{tests,benches,examples}/` |
 | TOON spec & grammar      | `docs/spec/02-toon-format.md`                 |
 
+## Fuzzing
+
+`fuzz/` holds [cargo-fuzz](https://rust-fuzz.github.io/book/cargo-fuzz.html) targets that attack michi's claims: no panics, truncation on char boundaries, escaping that keeps one value on one line, and tolerant MCP wire input. It is a standalone project outside the workspace (nightly only, its own lockfile), so `just check` and CI never build it.
+
+```bash
+rustup toolchain install nightly --profile minimal
+cargo install cargo-fuzz --locked
+just fuzz toon_render        # 60 seconds; `just fuzz toon_render 600` for ten minutes
+```
+
+| Target | Property it asserts |
+| --- | --- |
+| `toon_render` | `Ok` output is canonical TOON 4.4 (strict test decoder), its line count matches the header, no raw CR/LF in a cell, cells decode back |
+| `truncate` | Results stay within the bound, keep a whole-char prefix and report the cut exactly; the count and size caps keep a prefix |
+| `resilience` | `parse_retry_after` and the retry config never panic; delays stay in `[base, max_delay]` and never shorten a `Retry-After` |
+| `mcp_wire` | Arbitrary JSON into every `Deserialize` type is rejected cleanly or round-trips; the tolerant MCP input rules hold |
+| `graph` | Validation matches an independent oracle; order, layers, closures and ready sets of a valid graph are consistent |
+| `plan` | `Plan::new` matches the same oracle; a valid plan's `execution_order` is topological and instant steps run to success |
+
+The weekly `Fuzz` workflow runs every target for five minutes and can be started by hand with a chosen duration. A crash fails the job and uploads the input as an artifact.
+
+A crash is a bug, so it needs a regression test, not just a stored artifact:
+
+1. Reproduce it with `cargo +nightly fuzz run <target> fuzz/artifacts/<target>/crash-<hash>` and minimize it with `cargo +nightly fuzz tmin <target> <file>`.
+2. Write the smallest input that still fails as a unit or integration test in the affected crate (`crates/<crate>/tests/`), and watch it fail for the right reason.
+3. Fix the bug, then add a patch changeset for the crate if the fix changes behavior.
+4. If the fuzz target's own property was wrong (an overreaching assertion, not a library bug), fix the target and say why in the commit.
+
 ## Releasing
 
 [Callisto](https://github.com/orin-dx/callisto) versions and publishes `michi-core`, `michi-pipeline`, `michi-graph` and `@orin-dx/michi`. They're a fixed group (`michi`), so a change to any of them releases all four on one version.
