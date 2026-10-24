@@ -5,6 +5,9 @@ members  = [
   "crates/michi-pipeline",
   "packages/michi-node"
 ]
+# fuzz/ is a standalone cargo-fuzz project (nightly only, own lockfile). Keeping it out of the workspace leaves
+# `just check`, cargo-deny and CI untouched; `just fuzz` and .github/workflows/fuzz.yml run it.
+exclude = ["fuzz"]
 resolver = "2"
 
 [workspace.package]
