@@ -11,6 +11,8 @@ cargo add michi-pipeline
 cargo add tokio --features macros,rt
 ```
 
+The michi crates release together on one version, and `michi-pipeline` pins `michi-core` and `michi-graph` to that exact version. Update all of them in the same step (`cargo update -p michi-core -p michi-pipeline -p michi-graph`); updating one alone fails to resolve.
+
 The `serde` feature adds `Serialize`/`Deserialize` to the run record, step records, errors and ids, so you can persist them.
 
 ## Example

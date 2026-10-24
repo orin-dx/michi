@@ -67,7 +67,7 @@ On a 100-row uniform list, TOON used a median 47% fewer tokens than pretty-print
 
 Accuracy was within noise of JSON and Markdown on single-hop retrieval questions over lists of up to 100 rows, on Claude Haiku, Sonnet and Opus 5.5 and on GPT-6 Sol. It is untested on small or open-weight models, on nested data, on longer lists and on multi-step tasks. Numbers and method: [TOON benchmarks](https://github.com/orin-dx/michi/blob/main/docs/toon-benchmarks.md).
 
-The savings are for flat, uniform lists. On nested data they are roughly neutral: TOON's own benchmark shows about 1.6% more tokens than compact JSON on mixed-structure data. michi's TOON is for models reading tool output, not for models writing it; published evidence shows small models write TOON poorly ([arXiv 2601.12014](https://arxiv.org/abs/2601.12014)).
+The savings are for flat, uniform lists. On nested data they are roughly neutral: [TOON's own benchmark](https://toonformat.dev/guide/benchmarks) shows about 1.6% more tokens than compact JSON on its mixed-structure datasets. michi's TOON is for models reading tool output, not for models writing it; published evidence shows small models write TOON poorly ([arXiv 2601.12014](https://arxiv.org/abs/2601.12014)).
 
 Output conforms to the [TOON 4.4 specification](https://github.com/toon-format/spec/blob/main/SPEC.md) — every agent-facing block, not just lists: key-value blocks, errors, status, recovery hints and partial-success reports are TOON documents too, so an agent parses one format. Values are quoted only when the spec requires it — a delimiter, colon, bracket, quote, line break, or a value that would otherwise read as a number, boolean or `null` — so the common case carries no quoting overhead.
 

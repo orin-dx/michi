@@ -193,6 +193,7 @@ michi guarantees a syntactic property and nothing more.
 - It cannot stop prompt injection. A cell is still text the agent reads; "ignore previous instructions" inside a cell is rendered faithfully, as data.
 - It escapes only C0 controls, as TOON 4.4 §7.1 specifies. C1 controls (U+0080 to U+009F), U+2028 and U+2029, bidirectional controls and tag characters (U+E0000 block) pass through verbatim.
 - `audience` annotations on MCP content are advisory metadata for the client, not access control.
+- Truncation cuts on `char` boundaries, not grapheme clusters, so it can split a multi-part emoji or a flag pair. The output is valid UTF-8 and cannot panic, but the cut character may render oddly.
 - `human_content` is the caller's text for the user. It is not escaped or validated.
 
 **The rule for callers.** Hints, recovery hints, error messages and causes, type names, field names and the truncation hint come from the tool author, written in the tool's code, never from data. Cells are data. Do not build a hint or an error message out of a file, web page, issue body or any other value an outside party controls; if a hint must point at a value, use a placeholder such as `<id>`. The same goes for secrets: `DomainError::from_error` keeps only the top-level message and leaves the `source()` chain out unless you call `from_error_with_causes`, because a cause often holds a URL with a token or an internal path.
