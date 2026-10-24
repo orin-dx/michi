@@ -93,12 +93,16 @@ pub trait DurableObserver: StepObserver {
     fn record_start(&self, run_id: &RunId, step_id: &StepId) -> Result<(), String>;
 }
 
+/// The default for [`ExecOptions::retry_after_cap`].
+const DEFAULT_RETRY_AFTER_CAP: Duration = Duration::from_secs(300);
+
 /// Options for [`execute`]. Every field has a default; builder methods override them.
 #[derive(Clone)]
 pub struct ExecOptions {
     pub(crate) mode: Mode,
     pub(crate) failure_policy: FailurePolicy,
     pub(crate) retry: RetryConfig,
+    pub(crate) retry_after_cap: Duration,
     pub(crate) attempt_timeout: Duration,
     pub(crate) step_deadline: Option<Duration>,
     pub(crate) group_deadlines: BTreeMap<String, Duration>,
@@ -119,6 +123,7 @@ impl Default for ExecOptions {
             mode: Mode::Sequential,
             failure_policy: FailurePolicy::SkipDependents,
             retry: RetryConfig::default(),
+            retry_after_cap: DEFAULT_RETRY_AFTER_CAP,
             attempt_timeout: Duration::from_secs(30),
             step_deadline: None,
             group_deadlines: BTreeMap::new(),
@@ -140,6 +145,7 @@ impl std::fmt::Debug for ExecOptions {
             .field("mode", &self.mode)
             .field("failure_policy", &self.failure_policy)
             .field("retry", &self.retry)
+            .field("retry_after_cap", &self.retry_after_cap)
             .field("attempt_timeout", &self.attempt_timeout)
             .field("step_deadline", &self.step_deadline)
             .field("group_deadlines", &self.group_deadlines)
@@ -181,6 +187,17 @@ impl ExecOptions {
     #[must_use]
     pub fn retry(mut self, retry: RetryConfig) -> Self {
         self.retry = retry;
+        self
+    }
+
+    /// The longest server retry hint ([`ExecutionError::retry_after`], such as `Retry-After` on a 429) the executor
+    /// will wait for. Defaults to 5 minutes. A hint up to the cap is honoured in full, even past
+    /// `RetryConfig::max_delay`. A longer one is not waited for and the step is not retried: it ends with its last
+    /// error, unchanged in class and effect, and its reason says the hint exceeded the cap. A step that wants to wait
+    /// that long should say so itself (a poll step, or a deadline) rather than leave the run parked on a server's word.
+    #[must_use]
+    pub fn retry_after_cap(mut self, cap: Duration) -> Self {
+        self.retry_after_cap = cap;
         self
     }
 

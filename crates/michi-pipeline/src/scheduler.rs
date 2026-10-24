@@ -40,6 +40,7 @@ struct Job {
     step_id: StepId,
     token: CancellationToken,
     retry: RetryConfig,
+    retry_after_cap: Duration,
     attempt_timeout: Duration,
     deadline: Option<Duration>,
     /// When the step's deadline group's window ends, and the group's key.
@@ -410,6 +411,7 @@ impl<'a> Scheduler<'a> {
             step_id: step.id().clone(),
             token: self.run_token.child_token(),
             retry: step.retry_override().unwrap_or(&self.opts.retry).clone(),
+            retry_after_cap: self.opts.retry_after_cap,
             attempt_timeout: if attempt_timeout.is_zero() { Duration::from_millis(1) } else { attempt_timeout },
             deadline: step.deadline_override().or(self.opts.step_deadline),
             group_deadline: self.window_of[i].and_then(|w| {
@@ -789,6 +791,16 @@ async fn run_step(job: Job) -> Outcome {
         }
         if probe {
             break (err, "a half-open breaker allows one probe attempt".to_string());
+        }
+        // A server's hint is honoured past `max_delay` but not without limit: a day-long `Retry-After` would park the
+        // run. The step ends with this error as it is; resume runs it again if it is safe to.
+        if let Some(hint) = err.retry_after().filter(|hint| *hint > job.retry_after_cap) {
+            let stop = format!(
+                "the server's retry hint of {}ms exceeded the retry-after cap of {}ms, so it was not waited for",
+                millis(hint),
+                millis(job.retry_after_cap)
+            );
+            break (err, stop);
         }
         let seed = job.jitter_seed.unwrap_or_else(|| derived_jitter_seed(&job.run_id, &job.step_id, attempt));
         let Some(delay) = retry_delay(&job.retry, attempt, seed, err.retry_after()) else {
