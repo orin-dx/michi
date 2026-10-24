@@ -39,13 +39,14 @@
   },
   "scripts": {
     "build": "napi build --platform --js index.js --dts index.d.ts",
-    "test": "node --test __test__/index.test.mjs",
+    "test": "node --test __test__/index.test.mjs __test__/interop.test.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint --type-aware .",
     "check": "pnpm typecheck && pnpm lint"
   },
   "devDependencies": {
     "@napi-rs/cli": "^3.10.8",
+    "@toon-format/toon": "4.4.0",
     "@types/node": "^26.6.5",
     "oxlint": "^1.88.0",
     "oxlint-tsgolint": "^7.0.2004",
