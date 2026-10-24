@@ -79,6 +79,8 @@ It only checks that some doc moved, so read the spec you touched and make sure i
 2. Merging to `main` opens or updates Callisto's version PR (`callisto/version-packages`), which bumps versions and writes the changelogs.
 3. Merging the version PR runs the Release workflow (`.github/workflows/callisto-release.yml`): it builds the native binaries, publishes to crates.io and npm, and creates one GitHub release tagged `michi@{version}`.
 
+**Post-release check.** When the run published a package to a registry, or a re-run adopted one from a failed earlier attempt, the `smoke-published` job installs that version from the public registries into clean projects on Linux x64, Linux arm64 and macOS arm64 and uses it: `npm install @orin-dx/michi`, render TOON, then build a program against `michi-core`, `michi-pipeline` and `michi-graph` from crates.io. It retries for up to 10 minutes while the registries catch up. A red job means the published packages are broken, so fix forward with a new release. Run the same check by hand with `just smoke-published <version>`.
+
 The first publish of a brand-new npm package can fail with Callisto error E157: npm accepted the upload but doesn't show the version yet. That's registry propagation lag. Wait a few minutes, then use "Re-run failed jobs" on the Release run. It adopts what already landed and publishes the rest. Don't regenerate the release intent.
 
 Each FSL-licensed published package carries a copy of the root `LICENSE` (`crates/michi-core/LICENSE`, `crates/michi-pipeline/LICENSE`, `packages/michi-node/LICENSE`, `packages/michi-node/npm/*/LICENSE`); `michi-graph` has its own MIT `LICENSE`. If the root license changes, copy it to each; `crates/michi-core/tests/license_copies.rs` fails until they match.
