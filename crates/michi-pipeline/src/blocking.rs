@@ -5,12 +5,16 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::{CancellationToken, ExecutionError, Replay, Step, StepContext, StepFuture};
 
+/// Idempotency keys (`run_id:step_id`) whose closure is still running on a blocking thread, for steps that are not
+/// idempotent. Process-wide, not per step value: a closure outlives its timeout and its `BlockingStep`, and a resume on
+/// a plan rebuilt from a factory has brand-new `BlockingStep`s that must still see it. An entry is removed only when
+/// the closure actually returns.
+static IN_FLIGHT: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+
 /// [`Step`] over a blocking closure, built by [`step_blocking`].
 pub struct BlockingStep<F> {
     f: Arc<F>,
     replay: Replay,
-    /// Idempotency keys (`run_id:step_id`) whose closure is still running, for steps that are not idempotent.
-    in_flight: Arc<Mutex<BTreeSet<String>>>,
 }
 
 // Manual so `F` (usually a closure) need not be `Debug`.
@@ -53,8 +57,9 @@ impl<F> BlockingStep<F> {
 ///   finished and the caller verifies again.
 /// - An idempotent step's attempts may overlap.
 ///
-/// The guard lives in this `BlockingStep` value and in this process: another process, or another `BlockingStep`
-/// built from the same closure, does not see it. Steps that share one runner through
+/// The guard is process-wide, keyed by the idempotency key (run id and step id), and cleared only when the closure
+/// actually returns. So a plan rebuilt from a factory, with brand-new `BlockingStep` values, still sees a closure that
+/// outlived its timeout. Another process does not see it. Steps that share one runner through
 /// [`crate::ExecStep::from_arc`] have different step ids, so they do not block each other.
 ///
 /// Like every step, the attempt runs inside the scheduler's `JoinSet`. Dropping that set (dropping the `execute` or
@@ -64,18 +69,17 @@ pub fn step_blocking<F>(f: F) -> BlockingStep<F>
 where
     F: Fn(StepContext) -> Result<(), ExecutionError> + Send + Sync + 'static,
 {
-    BlockingStep { f: Arc::new(f), replay: Replay::NotIdempotent, in_flight: Arc::default() }
+    BlockingStep { f: Arc::new(f), replay: Replay::NotIdempotent }
 }
 
 /// Removes a key from the in-flight set when the closure holding it ends, normally or by panicking.
 struct InFlight {
-    set: Arc<Mutex<BTreeSet<String>>>,
     key: String,
 }
 
 impl Drop for InFlight {
     fn drop(&mut self) {
-        self.set.lock().unwrap_or_else(PoisonError::into_inner).remove(&self.key);
+        IN_FLIGHT.lock().unwrap_or_else(PoisonError::into_inner).remove(&self.key);
     }
 }
 
@@ -99,7 +103,7 @@ where
                 None
             } else {
                 let key = ctx.idempotency_key().as_str().to_string();
-                let mut set = self.in_flight.lock().unwrap_or_else(PoisonError::into_inner);
+                let mut set = IN_FLIGHT.lock().unwrap_or_else(PoisonError::into_inner);
                 if set.contains(&key) {
                     return Err(ExecutionError::failed(
                         "an earlier attempt of this step is still running on its blocking thread and its effect is \
@@ -107,7 +111,7 @@ where
                     ));
                 }
                 set.insert(key.clone());
-                Some(InFlight { set: Arc::clone(&self.in_flight), key })
+                Some(InFlight { key })
             };
             let token = ctx.cancellation().child_token();
             let _cancel_on_drop = CancelOnDrop(token.clone());
