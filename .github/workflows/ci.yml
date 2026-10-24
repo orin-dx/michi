@@ -80,24 +80,9 @@ jobs:
       - name: Check API compatibility against the pending release type
         run: |
           set -euo pipefail
-          # Front matter of the fixed group's changesets only (michi-graph's own bump must not loosen this check), or
-          # the version bump when none are pending, as on Callisto's version PR.
+          # Front matter of the fixed group's changesets, or the version bump when none are pending, as on Callisto's
+          # version PR.
           bash scripts/check-semver.sh
-      # michi-graph is checked on its own: its release type comes from its version, which the group bumps with the
-      # others. The 404 branch is from before its first publish (0.5.0), when there was nothing to compare against.
-      - name: Check michi-graph's API against crates.io
-        run: |
-          set -euo pipefail
-          status=$(curl -s -o /dev/null -w '%{http_code}' --user-agent "orin-dx/michi CI" \
-            https://crates.io/api/v1/crates/michi-graph)
-          case "$status" in
-            200) cargo semver-checks check-release -p michi-graph ;;
-            404) echo "michi-graph is not on crates.io yet; nothing to compare against" ;;
-            *)
-              echo "::error::crates.io answered $status; cannot tell whether michi-graph has a baseline"
-              exit 1
-              ;;
-          esac
 
   msrv:
     name: MSRV

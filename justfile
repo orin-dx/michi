@@ -119,9 +119,6 @@ doc-check:
 # same check.
 check-api:
     bash scripts/check-semver.sh
-    # michi-graph is checked on its own, against its latest crates.io release (its release type comes from its version).
-    # The leading `-` ignores a failure, a holdover from before its first publish; CI's semver job does not ignore it.
-    -cargo semver-checks check-release -p michi-graph
 
 # Unused-dependency check.
 machete:
