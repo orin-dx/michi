@@ -82,9 +82,16 @@ Small groups (under 30 answers) swing on one or two answers. The "min" misses ar
 
 ## Limits
 
-- Two providers so far: Anthropic (three sizes) and OpenAI (one model). Gemini and open-weight models are not measured yet (`evals/toon/pilot/cmd/agy.sh` runs them through agy).
-- Lists of up to 100 rows. Much longer lists and deeply nested data are untested.
-- Exact-answer questions. Open-ended tasks that use the data are untested.
+What the numbers above cover: flat, uniform lists of up to 100 rows, single-hop questions with exact answers, five formats, four models from two providers. What they do not cover:
+
+- **Nested or hierarchical data.** The datasets are flat lists. Nested arrays are only noted as narrowing the token gap; accuracy on them was not measured.
+- **Small and open-weight models.** Anthropic (three sizes) and OpenAI (one model) only. Gemini and open-weight models are not measured yet (`evals/toon/pilot/cmd/agy.sh` runs them through agy).
+- **Lists beyond 100 rows.** Much longer lists are untested, for tokens-per-answer and for accuracy.
+- **Multi-step and multi-turn tasks.** Every question was asked once, alone, about one dataset. Tasks that chain several lookups, or that go on over several turns, are untested.
+- **Copying IDs into a follow-up call.** Scoring compared the model's answer to the expected value. Whether a model copies an ID from TOON exactly when it passes it to a tool in a later call was not tested.
+- **Open-ended tasks** that use the data, rather than exact-answer questions.
+- **Independent replication.** All measurements were run by the michi maintainers with the code in `evals/toon`. Nobody outside the project has reproduced them.
+- **Claude token counts.** The counts use OpenAI tokenizers as a proxy for Claude's.
 
 ## Reproduce
 

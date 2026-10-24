@@ -1,6 +1,6 @@
 [package]
 name = "michi-pipeline"
-description = "Async pipeline execution for michi: validated step plans, replay-safe retries, keyed circuit breakers, cancellation and resume on Tokio"
+description = "Async pipeline execution for michi: validated step plans, retries (at-least-once per step unless its idempotency key reaches a deduplicating downstream), keyed circuit breakers, cancellation and resume on Tokio"
 version = "0.7.1"
 edition.workspace = true
 rust-version.workspace = true

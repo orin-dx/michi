@@ -31,6 +31,9 @@ pub const MAY_HAVE_TAKEN_EFFECT_HINT: &str =
     "the operation may have taken effect; verify whether it completed before retrying, unless it is idempotent";
 
 /// Wraps a value so its inner content is omitted from `Debug` and `Display`.
+///
+/// That is all it does: the field is public, and none of michi's renderers takes a `Sensitive`. Text passed to a hint,
+/// an error message or a cause is rendered as given, so keep secrets out of those strings in the first place.
 #[derive(Clone)]
 pub struct Sensitive<T>(pub T);
 
