@@ -1,5 +1,9 @@
 # michi-pipeline
 
+## 0.7.1
+
+- Docs and doc comments match the 0.7 code: the READMEs, crate and module docs, and the Node package's API tables list every export (`parseRetryAfter`, `nextRetryDelay`, `isRetryableStatus`, `AgentResponse.renderFor`, `.hasHumanContent`), and several comments that described removed behavior are corrected. No behavior changes.
+
 ## 0.7.0
 
 - Released together with the `michi` fixed group.

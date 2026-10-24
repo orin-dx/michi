@@ -26,25 +26,6 @@ importers:
       typescript:
         specifier: ^7.0.2
         version: 7.0.2
-    optionalDependencies:
-      '@orin-dx/michi-darwin-arm64':
-        specifier: 0.7.0
-        version: 0.7.0
-      '@orin-dx/michi-darwin-x64':
-        specifier: 0.7.0
-        version: 0.7.0
-      '@orin-dx/michi-linux-arm64-gnu':
-        specifier: 0.7.0
-        version: 0.7.0
-      '@orin-dx/michi-linux-arm64-musl':
-        specifier: 0.7.0
-        version: 0.7.0
-      '@orin-dx/michi-linux-x64-gnu':
-        specifier: 0.7.0
-        version: 0.7.0
-      '@orin-dx/michi-linux-x64-musl':
-        specifier: 0.7.0
-        version: 0.7.0
 
 packages:
 
@@ -601,46 +582,6 @@ packages:
 
   '@octokit/types@16.0.0':
     resolution: {integrity: sha512-sKq+9r1Mm4efXW1FCk7hFSeJo4QKreL/tTbR0rz/qx/r1Oa2VV83LTA/H/MuCOX7uCIJmQVRKBcbmWoySjAnSg==}
-
-  '@orin-dx/michi-darwin-arm64@0.7.0':
-    resolution: {integrity: sha512-tMeR8xpsF4mBWSkJRLeIQgtlYravWE3s8Qzcv3/ETq9NkOLN7bYwdriHb8a+Sc/Pu0v8rSDJZ2Oue1j61tTSSg==}
-    engines: {node: '>= 18'}
-    cpu: [arm64]
-    os: [darwin]
-
-  '@orin-dx/michi-darwin-x64@0.7.0':
-    resolution: {integrity: sha512-JSd9ixoGxNiK2x0kX7K6B0TyNdzbVEW/mUOT5gtM6hHILLG2eAsyNa7oVbBhAqhSbNnhNEaxF6kXUhU10Ailug==}
-    engines: {node: '>= 18'}
-    cpu: [x64]
-    os: [darwin]
-
-  '@orin-dx/michi-linux-arm64-gnu@0.7.0':
-    resolution: {integrity: sha512-4FOoX4YUg4vIAlZryMFRWV4tNAbCbHZNCQE5ruqtXXMj1mHA1NiQPT87HoXSNbbCgHqZLOV/Gcf/fDJRH+zGyQ==}
-    engines: {node: '>= 18'}
-    cpu: [arm64]
-    os: [linux]
-    libc: [glibc]
-
-  '@orin-dx/michi-linux-arm64-musl@0.7.0':
-    resolution: {integrity: sha512-AAK6RhhtaJ4iq9HxrGNu15CgLa8Y+UwRqT/Rb/eEdoQPkMMgZyJfqydV6QseIo8CTA3UBeQ3MBjQjx4CODYoxQ==}
-    engines: {node: '>= 18'}
-    cpu: [arm64]
-    os: [linux]
-    libc: [musl]
-
-  '@orin-dx/michi-linux-x64-gnu@0.7.0':
-    resolution: {integrity: sha512-I/OVd0aUNvykKFXVYlVpT1gNFZilkW13Oy5G5NKPNBBigovamcOVbJJuXcgEba7gPS31KU1HB3Hf/McXQAlshA==}
-    engines: {node: '>= 18'}
-    cpu: [x64]
-    os: [linux]
-    libc: [glibc]
-
-  '@orin-dx/michi-linux-x64-musl@0.7.0':
-    resolution: {integrity: sha512-Y/OOXirVPRXPkfi2f/YnyvmKIS2qSsBiBRwZtquG5wjvz8KfHHR+R/adeYjqDXHQPnNC9+iJnNsz/jiNdIs7/w==}
-    engines: {node: '>= 18'}
-    cpu: [x64]
-    os: [linux]
-    libc: [musl]
 
   '@oxlint-tsgolint/darwin-arm64@7.0.2004':
     resolution: {integrity: sha512-uJk3ttju7Lz+Nv8WG4CsLyewoL1qf/Ny8S8OksJ7Bm/F14Tc9gMfW6arM1PCc57IzH/X/I79YsCWTgxX1FKibQ==}
@@ -1511,24 +1452,6 @@ snapshots:
   '@octokit/types@16.0.0':
     dependencies:
       '@octokit/openapi-types': 27.0.0
-
-  '@orin-dx/michi-darwin-arm64@0.7.0':
-    optional: true
-
-  '@orin-dx/michi-darwin-x64@0.7.0':
-    optional: true
-
-  '@orin-dx/michi-linux-arm64-gnu@0.7.0':
-    optional: true
-
-  '@orin-dx/michi-linux-arm64-musl@0.7.0':
-    optional: true
-
-  '@orin-dx/michi-linux-x64-gnu@0.7.0':
-    optional: true
-
-  '@orin-dx/michi-linux-x64-musl@0.7.0':
-    optional: true
 
   '@oxlint-tsgolint/darwin-arm64@7.0.2004':
     optional: true
