@@ -31,13 +31,13 @@ fn release() -> Dag<&'static str, Needs> {
 
 fn ready(dag: &Dag<&'static str, Needs>, state: &BTreeMap<&str, State>) -> Vec<&'static str> {
     dag.ready_by_edge(
-        |k| state.get(k) == Some(&State::Pending),
         |p, needs| {
             matches!(
                 (needs, state.get(p)),
                 (Needs::Issued, Some(State::Issued | State::Confirmed)) | (Needs::Confirmed, Some(State::Confirmed))
             )
         },
+        |k| state.get(k) == Some(&State::Pending),
     )
     .map(|ix| *dag.key(ix).expect("index from this dag"))
     .collect()
@@ -76,8 +76,8 @@ fn every_kind_on_a_pair_is_kept_and_must_be_satisfied() {
     let state: BTreeMap<&str, State> = [("a", State::Issued), ("c", State::Pending)].into();
     let only_issued: Vec<_> = dag
         .ready_by_edge(
-            |k| state.get(k) == Some(&State::Pending),
             |p, needs| *needs == Needs::Issued && state.get(p) == Some(&State::Issued),
+            |k| state.get(k) == Some(&State::Pending),
         )
         .collect();
     assert!(only_issued.is_empty(), "the Confirmed edge on the same pair is not met");
@@ -100,10 +100,28 @@ fn untyped_dags_have_unit_kinds_and_foreign_indices_are_empty() {
     let dag = Dag::from_nodes([("a", vec![]), ("b", vec!["a"])], Order::Declaration).expect("valid");
     let (a, b) = (dag.index_of("a").expect("a"), dag.index_of("b").expect("b"));
     assert_eq!(dag.prerequisite_edges(b), [(a, ())]);
-    let ready: Vec<_> = dag.ready_by_edge(|_| true, |_, ()| false).collect();
+    let ready: Vec<_> = dag.ready_by_edge(|_, ()| false, |_| true).collect();
     assert_eq!(ready, [a], "a has no prerequisites; b's edge is unmet");
 
     let bigger = Dag::from_nodes([("x", vec![]), ("y", vec![]), ("z", vec!["x"])], Order::Key).expect("valid");
     let foreign = bigger.index_of("z").expect("z");
     assert!(dag.prerequisite_edges(foreign).is_empty());
+}
+
+/// `satisfied` is the first argument and `eligible` the second, the same as `Dag::ready`. The closures are deliberately
+/// asymmetric (`a` is done, only `b` may start), so a swap changes the result.
+#[test]
+fn ready_and_ready_by_edge_take_satisfied_then_eligible() {
+    let dag = Dag::from_nodes([("a", vec![]), ("b", vec!["a"])], Order::Key).expect("valid");
+    let b = dag.index_of("b").expect("b");
+
+    let by_ready: Vec<_> = dag.ready(|k| *k == "a", |k| *k == "b").collect();
+    let by_edge: Vec<_> = dag.ready_by_edge(|k, ()| *k == "a", |k| *k == "b").collect();
+    assert_eq!(by_ready, [b]);
+    assert_eq!(by_edge, [b]);
+
+    // The same closures in swapped roles select a different node, so a mix-up cannot go unnoticed here.
+    let a = dag.index_of("a").expect("a");
+    let swapped: Vec<_> = dag.ready(|k| *k == "b", |k| *k == "a").collect();
+    assert_eq!(swapped, [a]);
 }

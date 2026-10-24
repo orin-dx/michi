@@ -94,6 +94,8 @@ Format changes are major versions. Treat the rendered string as a contract — t
 
 **MSRV policy:** `rust-version = "1.93"` is the declared minimum. A bump happens only when a needed language or `std` feature requires it, gets recorded in the CHANGELOG, and counts as a **minor** bump — never a patch.
 
+**Third-party types in the public API:** a few public types expose dependency or representation details. `toon::Value::Str` holds a `compact_str::CompactString`, so a `compact_str` major bump is a michi breaking release. `StepContext::deadline()` and `attempt_deadline()` in `michi-pipeline` return `tokio::time::Instant`. `Hint`, `IdempotencyKey` and `Sensitive<T>` have public tuple fields (`Hint(pub String)`, `IdempotencyKey(pub String)`, `Sensitive<T>(pub T)`), so their representation is part of the API. This is a known pre-1.0 limitation to revisit before 1.0, not a promise.
+
 **Version sync:** `michi-core`, `michi-pipeline`, `michi-graph` and the npm package share one version (each crate's own `version`, written by Callisto), released in lockstep as a Callisto fixed group named `michi`. `michi-pipeline` depends on `michi-core` and `michi-graph` through exact `=` pins, so a mixed set never resolves.
 
 - A `version-sync` CI job asserts on every push/PR that the three crates' versions and the npm package version are equal, so `michi-core` at `0.7.0` and the `@orin-dx/michi` npm package at `0.7.0` always describe the same source.

@@ -61,11 +61,13 @@ Everything the crate outputs follows that one order: the topological order, each
 | `prerequisites(ix)`, `dependents(ix)` | `&[NodeIx]` neighbours, in the chosen order, each once |
 | `prerequisite_edges(ix)` | `&[(NodeIx, E)]`: every kept edge to a prerequisite with its kind, in the chosen order then by kind; a pair joined by several kinds appears once per kind |
 | `layers()` | a `Layers` value (`len()`, `get(i)`, `iter()`): layer 0 has no prerequisites; a node's layer is one more than its deepest prerequisite's. Nodes in one layer don't depend on each other, so they can run together |
-| `ready(satisfied, eligible)` | nodes for which `eligible(key)` holds and `satisfied(p)` holds for every prerequisite, in order |
-| `ready_by_edge(eligible, satisfied)` | the same, but `satisfied(prerequisite, kind)` is asked for every kept edge, so kinds can be met at different times (a sibling publish needs a publish issued; a tag needs it confirmed) |
+| `ready(satisfied, eligible)` | nodes for which `eligible(key)` holds and `satisfied(p)` holds for every prerequisite, in order. `satisfied` comes first: "this prerequisite is done"; `eligible` second: "this node may start" |
+| `ready_by_edge(satisfied, eligible)` | the same two roles in the same order, but `satisfied(prerequisite, kind)` is asked for every kept edge, so kinds can be met at different times (a sibling publish needs a publish issued; a tag needs it confirmed) |
 | `ancestors(roots)`, `descendants(roots)` | every node upstream or downstream of `roots`, not including them |
 | `key(ix)`, `index_of(&key)`, `node_at(position)`, `len()` | lookups; `node_at` maps a declaration position to its node, for callers that keep per-node data in declaration order |
 | `canonical()` | each node's key with its prerequisites' keys, nodes and prerequisites sorted by key, for callers that hash the structure with their own hasher. Isolated nodes are included |
+
+Both closures of `ready` are `Fn(&K) -> bool`, so swapping them compiles and returns wrong results; `ready_by_edge` takes them in the same order (`satisfied` first), and its `satisfied` has a different shape, so a swap there does not compile. (0.7.0 had `ready_by_edge(eligible, satisfied)`; the order changed before 1.0.)
 
 `ready` takes two predicates because callers track more than "done". A node behind a failure must not become ready, and a running or failed node is not eligible to start. When `satisfied` holds only for nodes that succeeded, checking direct prerequisites is enough: a node whose prerequisite failed can never become ready.
 
