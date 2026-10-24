@@ -1,0 +1,84 @@
+{"id": "uniform-01", "shape": "uniform", "kind": "lookup", "question": "What is the replicas value of the deployment of service billing in region eu-west-1?", "answer": 4, "answer_type": "int"}
+{"id": "uniform-02", "shape": "uniform", "kind": "lookup", "question": "Who is the owner of the deployment of service reports in region ap-south-1?", "answer": "tomas", "answer_type": "string"}
+{"id": "uniform-03", "shape": "uniform", "kind": "lookup", "question": "What is the version of the deployment of service auth in region eu-west-1?", "answer": "v2.19.2", "answer_type": "string"}
+{"id": "uniform-04", "shape": "uniform", "kind": "filter_count", "question": "How many deployments have status failed?", "answer": 11, "answer_type": "int"}
+{"id": "uniform-05", "shape": "uniform", "kind": "filter_count", "question": "How many deployments in region eu-west-1 have status running?", "answer": 2, "answer_type": "int"}
+{"id": "uniform-06", "shape": "uniform", "kind": "aggregate", "question": "What is the total replicas across all deployments with status running?", "answer": 114, "answer_type": "int"}
+{"id": "uniform-07", "shape": "uniform", "kind": "aggregate", "question": "What is the lowest replicas value among deployments with status degraded?", "answer": 1, "answer_type": "int"}
+{"id": "uniform-08", "shape": "uniform", "kind": "aggregate", "question": "Which service has the highest cpu_pct?", "answer": "orders", "answer_type": "string"}
+{"id": "uniform-09", "shape": "uniform", "kind": "multihop", "question": "Find the owner with the most deployments. What is the highest cpu_pct among that owner's deployments?", "answer": 46, "answer_type": "int"}
+{"id": "uniform-10", "shape": "uniform", "kind": "multihop", "question": "What is the region of the deployment with the latest deployed_at?", "answer": "eu-central-1", "answer_type": "string"}
+{"id": "uniform-11", "shape": "uniform", "kind": "exact_copy", "question": "Return the uid of the deployment of service payments in region us-west-2, exactly as written.", "answer": "a92ed057be7f1f7e04a355b5", "answer_type": "exact"}
+{"id": "uniform-12", "shape": "uniform", "kind": "exact_copy", "question": "Return the uid of the deployment with the lowest cpu_pct, exactly as written.", "answer": "814179278214594a2f4c65be", "answer_type": "exact"}
+{"id": "single-01", "shape": "single", "kind": "lookup", "question": "What is the region of the instance?", "answer": "eu-west-2", "answer_type": "string"}
+{"id": "single-02", "shape": "single", "kind": "lookup", "question": "What is the instance_type?", "answer": "m6i.2xlarge", "answer_type": "string"}
+{"id": "single-03", "shape": "single", "kind": "lookup", "question": "What is the public_ip?", "answer": "203.0.113.140", "answer_type": "string"}
+{"id": "single-04", "shape": "single", "kind": "lookup", "question": "Is monitoring enabled? Answer true or false.", "answer": "true", "answer_type": "string"}
+{"id": "single-05", "shape": "single", "kind": "aggregate", "question": "What is cpu_cores plus memory_gb plus disk_gb?", "answer": 540, "answer_type": "int"}
+{"id": "single-06", "shape": "single", "kind": "aggregate", "question": "What is memory_gb divided by cpu_cores?", "answer": 4, "answer_type": "int"}
+{"id": "single-07", "shape": "single", "kind": "aggregate", "question": "What does the instance cost per day (cost_per_hour times 24)? Give the number only.", "answer": 10.2, "answer_type": "number"}
+{"id": "single-08", "shape": "single", "kind": "aggregate", "question": "How many whole days is uptime_hours (uptime_hours divided by 24, rounded down)?", "answer": 134, "answer_type": "int"}
+{"id": "single-09", "shape": "single", "kind": "null_count", "question": "How many fields of the instance are null?", "answer": 2, "answer_type": "int"}
+{"id": "single-10", "shape": "single", "kind": "filter_count", "question": "How many fields have a numeric value (integer or decimal, not text, not boolean)?", "answer": 5, "answer_type": "int"}
+{"id": "single-11", "shape": "single", "kind": "exact_copy", "question": "Return the instance id, exactly as written.", "answer": "dc76e2db441aec2b2f11318d", "answer_type": "exact"}
+{"id": "single-12", "shape": "single", "kind": "exact_copy", "question": "Return the snapshot_id, exactly as written.", "answer": "PhCBuWQakfToWQJffsDZ", "answer_type": "exact"}
+{"id": "nested-01", "shape": "nested", "kind": "lookup", "question": "Who reported the issue (reporter)?", "answer": "sana.o", "answer_type": "string"}
+{"id": "nested-02", "shape": "nested", "kind": "filter_count", "question": "How many comments were written by mira.k?", "answer": 3, "answer_type": "int"}
+{"id": "nested-03", "shape": "nested", "kind": "filter_count", "question": "How many comments have a timestamp after 2026-10-02T12:38:45Z?", "answer": 3, "answer_type": "int"}
+{"id": "nested-04", "shape": "nested", "kind": "aggregate", "question": "What is the timestamp of the earliest comment?", "answer": "2026-10-02T08:30:29Z", "answer_type": "string"}
+{"id": "nested-05", "shape": "nested", "kind": "multihop", "question": "Who wrote the last (latest) comment?", "answer": "ana.p", "answer_type": "string"}
+{"id": "nested-06", "shape": "nested", "kind": "multihop", "question": "Which assignee wrote the most comments?", "answer": "mira.k", "answer_type": "string"}
+{"id": "nested-07", "shape": "nested", "kind": "multihop", "question": "How many comments were written by people who are not assignees?", "answer": 3, "answer_type": "int"}
+{"id": "nested-08", "shape": "nested", "kind": "lookup", "question": "Which commit does the comment by dev.s refer to?", "answer": "4da9fbe", "answer_type": "string"}
+{"id": "nested-09", "shape": "nested", "kind": "lookup", "question": "What ticket is mentioned in the comment by lena.r?", "answer": "OPS-5822", "answer_type": "string"}
+{"id": "nested-10", "shape": "nested", "kind": "null_count", "question": "How many top-level fields of the issue are null?", "answer": 2, "answer_type": "int"}
+{"id": "nested-11", "shape": "nested", "kind": "exact_copy", "question": "Return the id of the first comment written by tomas.v, exactly as written.", "answer": "hqPhJ2ac2VPzjbdWUEX38z", "answer_type": "exact"}
+{"id": "nested-12", "shape": "nested", "kind": "exact_copy", "question": "Return the id of the issue (the top-level id, not a comment id), exactly as written.", "answer": "bda49e26cbd4e8eb6d7658b4", "answer_type": "exact"}
+{"id": "tree-01", "shape": "tree", "kind": "lookup", "question": "What is the size of the file named table.rs?", "answer": 621, "answer_type": "int"}
+{"id": "tree-02", "shape": "tree", "kind": "lookup", "question": "What is the size of the file named 0003-caching.md?", "answer": 163929, "answer_type": "int"}
+{"id": "tree-03", "shape": "tree", "kind": "filter_count", "question": "How many files have a name ending in .rs?", "answer": 21, "answer_type": "int"}
+{"id": "tree-04", "shape": "tree", "kind": "filter_count", "question": "How many files are anywhere under the tests directory (at any depth)?", "answer": 6, "answer_type": "int"}
+{"id": "tree-05", "shape": "tree", "kind": "filter_count", "question": "How many files are at the deepest level of the tree (the most directories deep)?", "answer": 3, "answer_type": "int"}
+{"id": "tree-06", "shape": "tree", "kind": "aggregate", "question": "What is the total size of all files under src/render (at any depth)?", "answer": 520293, "answer_type": "int"}
+{"id": "tree-07", "shape": "tree", "kind": "aggregate", "question": "What is the name of the largest file in the whole tree (by size)?", "answer": "api.md", "answer_type": "string"}
+{"id": "tree-08", "shape": "tree", "kind": "multihop", "question": "In which directory (give its name only) is the largest file with a .rs extension located?", "answer": "src", "answer_type": "string"}
+{"id": "tree-09", "shape": "tree", "kind": "multihop", "question": "How many direct children (files and directories) does src/render have?", "answer": 5, "answer_type": "int"}
+{"id": "tree-10", "shape": "tree", "kind": "exact_copy", "question": "Return the sha of the file at src/render/escape.rs, exactly as written.", "answer": "3be0e021902ca1809c5b", "answer_type": "exact"}
+{"id": "tree-11", "shape": "tree", "kind": "exact_copy", "question": "Return the full path (from the repo root, without the leading repo/) of the file whose sha is f155d5dba716b5081c4f, exactly as written.", "answer": "src/render/table.rs", "answer_type": "exact"}
+{"id": "tree-12", "shape": "tree", "kind": "exact_copy", "question": "Return the full path (from the repo root, without the leading repo/) of the largest file under src/parse, exactly as written.", "answer": "src/parse/errors.rs", "answer_type": "exact"}
+{"id": "events-01", "shape": "events", "kind": "filter_count", "question": "How many events have type error?", "answer": 11, "answer_type": "int"}
+{"id": "events-02", "shape": "events", "kind": "filter_count", "question": "How many login events have success false?", "answer": 7, "answer_type": "int"}
+{"id": "events-03", "shape": "events", "kind": "filter_count", "question": "How many alert events have severity critical?", "answer": 4, "answer_type": "int"}
+{"id": "events-04", "shape": "events", "kind": "aggregate", "question": "What is the total duration_s of all deploy events?", "answer": 3877, "answer_type": "int"}
+{"id": "events-05", "shape": "events", "kind": "aggregate", "question": "What is the longest duration_s among deploy events?", "answer": 891, "answer_type": "int"}
+{"id": "events-06", "shape": "events", "kind": "aggregate", "question": "Which host raised the alert with the highest value?", "answer": "ip-10-1-15-9", "answer_type": "string"}
+{"id": "events-07", "shape": "events", "kind": "multihop", "question": "Which user has the most failed logins?", "answer": "lena", "answer_type": "string"}
+{"id": "events-08", "shape": "events", "kind": "multihop", "question": "Find the service with the most error events. What version did its most recent deploy event deploy?", "answer": "v2.16.4", "answer_type": "string"}
+{"id": "events-09", "shape": "events", "kind": "null_count", "question": "How many error events have no trace_id (null)?", "answer": 3, "answer_type": "int"}
+{"id": "events-10", "shape": "events", "kind": "lookup", "question": "What version did the staging deploy event of service checkout deploy?", "answer": "v3.9.3", "answer_type": "string"}
+{"id": "events-11", "shape": "events", "kind": "exact_copy", "question": "Return the build_id of the staging deploy event of service checkout, exactly as written.", "answer": "0ebba31d337e9b43", "answer_type": "exact"}
+{"id": "events-12", "shape": "events", "kind": "exact_copy", "question": "Return the trace_id of the error event from service gateway with code 500, exactly as written.", "answer": "td9ipCnfKuatQoxS6r7P", "answer_type": "exact"}
+{"id": "sparse-01", "shape": "sparse", "kind": "lookup", "question": "What is the email of Quin Ito?", "answer": "quin.ito@mail.example", "answer_type": "string"}
+{"id": "sparse-02", "shape": "sparse", "kind": "null_lookup", "question": "What is the phone of Gus Jain? (reply null if there is none)", "answer": null, "answer_type": "null"}
+{"id": "sparse-03", "shape": "sparse", "kind": "lookup", "question": "What is the company of Jonas Cruz?", "answer": "Globex", "answer_type": "string"}
+{"id": "sparse-04", "shape": "sparse", "kind": "null_count", "question": "How many rows have no email (null)?", "answer": 20, "answer_type": "int"}
+{"id": "sparse-05", "shape": "sparse", "kind": "null_count", "question": "How many rows have a null phone but a non-null email?", "answer": 12, "answer_type": "int"}
+{"id": "sparse-06", "shape": "sparse", "kind": "filter_count", "question": "How many rows have plan enterprise and seats greater than 20?", "answer": 3, "answer_type": "int"}
+{"id": "sparse-07", "shape": "sparse", "kind": "aggregate", "question": "What is the sum of seats across all rows (ignore nulls)?", "answer": 875, "answer_type": "int"}
+{"id": "sparse-08", "shape": "sparse", "kind": "aggregate", "question": "What is the highest mrr in the table? Give the number only.", "answer": 998.92, "answer_type": "number"}
+{"id": "sparse-09", "shape": "sparse", "kind": "aggregate", "question": "What is the lowest non-null seats value?", "answer": 3, "answer_type": "int"}
+{"id": "sparse-10", "shape": "sparse", "kind": "multihop", "question": "What is the city of the person with the highest mrr?", "answer": "Pune", "answer_type": "string"}
+{"id": "sparse-11", "shape": "sparse", "kind": "multihop", "question": "How many rows have a non-null plan equal to pro and a non-null city?", "answer": 2, "answer_type": "int"}
+{"id": "sparse-12", "shape": "sparse", "kind": "exact_copy", "question": "Return the id of the row for Ines Jain, exactly as written.", "answer": "oHqP778A5cDPcGSwyqyB", "answer_type": "exact"}
+{"id": "longtext-01", "shape": "longtext", "kind": "lookup", "question": "Who is the author of the ticket titled \"Workspace merge #116\"?", "answer": "Samir", "answer_type": "string"}
+{"id": "longtext-02", "shape": "longtext", "kind": "lookup", "question": "What is the rating of the ticket titled \"Charge #111\"?", "answer": 3, "answer_type": "int"}
+{"id": "longtext-03", "shape": "longtext", "kind": "filter_count", "question": "How many tickets have category billing?", "answer": 9, "answer_type": "int"}
+{"id": "longtext-04", "shape": "longtext", "kind": "filter_count", "question": "How many tickets have a rating of 4 or higher?", "answer": 8, "answer_type": "int"}
+{"id": "longtext-05", "shape": "longtext", "kind": "filter_count", "question": "In how many tickets does the summary contain the word \"refund\" (any capitalization)?", "answer": 12, "answer_type": "int"}
+{"id": "longtext-06", "shape": "longtext", "kind": "aggregate", "question": "What is the sum of the ratings of all tickets with category shipping?", "answer": 8, "answer_type": "int"}
+{"id": "longtext-07", "shape": "longtext", "kind": "aggregate", "question": "What is the lowest rating among tickets with category account?", "answer": 1, "answer_type": "int"}
+{"id": "longtext-08", "shape": "longtext", "kind": "null_count", "question": "How many tickets have no assignee (null)?", "answer": 7, "answer_type": "int"}
+{"id": "longtext-09", "shape": "longtext", "kind": "multihop", "question": "What is the category of the ticket whose summary mentions reference ZK-8494?", "answer": "billing", "answer_type": "string"}
+{"id": "longtext-10", "shape": "longtext", "kind": "multihop", "question": "Who is the assignee of the ticket whose summary mentions reference ZK-8494?", "answer": "Mei", "answer_type": "string"}
+{"id": "longtext-11", "shape": "longtext", "kind": "exact_copy", "question": "Return the id of the ticket whose summary mentions reference ZK-2393, exactly as written.", "answer": "Ts97DQBPEbdxBo3kpr8anZ", "answer_type": "exact"}
+{"id": "longtext-12", "shape": "longtext", "kind": "exact_copy", "question": "Return the id of the ticket titled \"Plan change #108\", exactly as written.", "answer": "jLmedveZ4quFEkc8RLxBSZ", "answer_type": "exact"}

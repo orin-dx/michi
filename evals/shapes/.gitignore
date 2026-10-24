@@ -1,0 +1,10 @@
+corpus/
+renders/
+prompts/
+node_modules/
+package-lock.json
+tiktoken_cache/
+michi-render/target/
+michi-render/Cargo.lock
+results/selftest_*.jsonl
+__pycache__/

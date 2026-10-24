@@ -1,0 +1,9 @@
+{
+  "name": "michi-shapes-eval",
+  "private": true,
+  "description": "Reference TOON encoder used by the shape x format eval (not michi).",
+  "type": "module",
+  "dependencies": {
+    "@toon-format/toon": "4.4.0"
+  }
+}

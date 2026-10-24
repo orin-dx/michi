@@ -1,0 +1,12 @@
+[package]
+name = "michi-render-shapes"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Standalone: not part of the michi workspace.
+[workspace]
+
+[dependencies]
+michi-core = { path = "../../../crates/michi-core", features = ["serde"] }
+serde_json = { version = "1", features = ["preserve_order"] }
