@@ -35,6 +35,8 @@ graph LR
 
 ## Component Overview
 
+michi is a response contract (totals, truncation reports, hints, recovery steps, structured errors, MCP assembly) with TOON as the body encoding; see [ADR 9](docs/adr/0009-v1-positioning-and-criteria.md).
+
 | Crate / Package | Responsibility | Runtime Dependencies |
 | --- | --- | --- |
 | `michi-core` | All sync AXI primitives. `toon`: TOON list rendering (no public parser) with stack-inlined `CompactString` cells. `truncate`: UTF-8 char-boundary content truncation (`floor_char_boundary`). `truncation`: `TruncationOutcome`, the report of what a list cap cut. `resilience`: retry back-off math, `Retry-After` HTTP date parsing, FNV-1a idempotency keys. Response DTOs: `AgentResponse`, `DomainError`, `StatusResponse`, `CallToolResult`, and the `Pipeline` data type. The public `resilience`, `truncate` and `truncation` items are re-exported at the crate root by explicit list. | `thiserror`, `compact_str` (Optional: `serde`, `serde_json`, `schemars`, `miette`, `napi`, `napi-derive`) |
