@@ -190,8 +190,8 @@ impl ExecOptions {
         self
     }
 
-    /// The longest server retry hint ([`ExecutionError::retry_after`], such as `Retry-After` on a 429) the executor
-    /// will wait for. Defaults to 5 minutes. A hint up to the cap is honoured in full, even past
+    /// The longest server retry hint (the `retry_after` of an [`ExecutionError::Http`], such as `Retry-After` on a
+    /// 429) the executor will wait for. Defaults to 5 minutes. A hint up to the cap is honoured in full, even past
     /// `RetryConfig::max_delay`. A longer one is not waited for and the step is not retried: it ends with its last
     /// error, unchanged in class and effect, and its reason says the hint exceeded the cap. A step that wants to wait
     /// that long should say so itself (a poll step, or a deadline) rather than leave the run parked on a server's word.
