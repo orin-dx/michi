@@ -123,29 +123,45 @@ slug_id! {
 }
 
 impl RunId {
-    /// Builds a run id that is unique in practice without a UUID dependency: `{prefix}-{millis}-{pid}-{counter}`, the
-    /// numbers in base 36.
+    /// Builds a run id that is unique in practice without a UUID dependency:
+    /// `{prefix}-{millis}-{pid}-{counter}-{random}`, the numbers in base 36. `random` is 64 bits from the standard
+    /// library's per-process randomly keyed hasher, mixed with the other parts, so two hosts that start in the same
+    /// millisecond with the same pid and counter (containers all run as pid 1) still get different ids. The run id is
+    /// the prefix of every step's idempotency key, so a collision would let a downstream that deduplicates treat new
+    /// work as a repeat of old.
+    ///
+    /// This is unique with overwhelming probability, not by construction: if you need a global guarantee (a
+    /// deduplicating downstream that outlives you), supply your own UUID or other id from a source you trust with
+    /// [`RunId::try_new`]. The random part takes 14 of the [`MAX_ID_LEN`] bytes, so keep the prefix short (about 30
+    /// bytes at most).
     ///
     /// # Errors
     ///
     /// An [`IdError`] if `prefix` is not a valid slug or the result would exceed [`MAX_ID_LEN`].
     pub fn unique(prefix: &str) -> Result<Self, IdError> {
+        use std::hash::{BuildHasher, Hash, Hasher};
+
         static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         validate(prefix)?;
         let millis = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
+        let pid = u64::from(std::process::id());
         let seq = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        Self::try_new(unique_id(prefix, millis, u64::from(std::process::id()), seq))
+        // `RandomState` is keyed from the OS's randomness once per process (and stepped per instance), so the hash is
+        // unpredictable across processes even when millis, pid and seq match.
+        let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+        (millis, pid, seq).hash(&mut hasher);
+        Self::try_new(unique_id(prefix, millis, pid, seq, hasher.finish()))
     }
 }
 
-/// `{prefix}-{millis}-{pid}-{seq}` in base 36. Every number has its own separator: base-36 numbers vary in length, so
-/// without one two different (pid, seq) pairs could print the same digits.
-fn unique_id(prefix: &str, millis: u64, pid: u64, seq: u64) -> String {
-    let mut id = String::with_capacity(prefix.len() + 3 + 3 * 13);
+/// `{prefix}-{millis}-{pid}-{seq}-{entropy}` in base 36. Every number has its own separator: base-36 numbers vary in
+/// length, so without one two different (pid, seq) pairs could print the same digits.
+fn unique_id(prefix: &str, millis: u64, pid: u64, seq: u64, entropy: u64) -> String {
+    let mut id = String::with_capacity(prefix.len() + 4 + 4 * 13);
     id.push_str(prefix);
-    for n in [millis, pid, seq] {
+    for n in [millis, pid, seq, entropy] {
         id.push('-');
         push_base36(&mut id, n);
     }
@@ -207,14 +223,15 @@ mod tests {
     fn unique_ids_separate_the_pid_from_the_counter() {
         // Without a separator, pid 1388 ("12k") + counter 1152 ("w0") and pid 50000 ("12kw") + counter 0 ("0") both
         // printed "12kw0".
-        let a = unique_id("run", 1, 1388, 1152);
-        let b = unique_id("run", 1, 50_000, 0);
+        let a = unique_id("run", 1, 1388, 1152, 7);
+        let b = unique_id("run", 1, 50_000, 0, 7);
         assert_ne!(a, b);
-        assert_eq!(a, "run-1-12k-w0");
-        assert_eq!(b, "run-1-12kw-0");
+        assert_eq!(a, "run-1-12k-w0-7");
+        assert_eq!(b, "run-1-12kw-0-7");
         let id = RunId::unique("deploy").unwrap();
-        assert_eq!(id.as_str().split('-').count(), 4, "{id}");
-        assert!(RunId::try_new(unique_id("p", u64::MAX, u64::from(u32::MAX), u64::MAX)).is_ok(), "fits the limit");
+        assert_eq!(id.as_str().split('-').count(), 5, "{id}");
+        let widest = unique_id("p", u64::MAX, u64::from(u32::MAX), u64::MAX, u64::MAX);
+        assert!(RunId::try_new(widest).is_ok(), "fits the limit");
     }
 
     #[test]
