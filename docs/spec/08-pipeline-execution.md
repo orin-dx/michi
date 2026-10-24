@@ -159,6 +159,19 @@ What each error means:
 
 A step whose 4xx can follow a committed effect (a 409 after a partial write, say) reports `ExecutionError::failed` instead of the raw status. Treating 429 and 503 as "not processed" is a convention, not an RFC guarantee, so a step that may have committed its effect must not report them either.
 
+**503 behind a CDN or proxy.** michi keeps 503 classified as not applied and retryable, because for a plain origin that is what it means. A CDN, load balancer or proxy, though, can return 503 after the origin committed (it gave up waiting). A step whose request is not idempotent and goes through such infrastructure should map that response itself, so the executor sees an unknown effect (a non-idempotent step then ends `OutcomeUnknown` instead of being retried into a duplicate):
+
+```rust
+fn from_response(status: u16, body: &str) -> ExecutionError {
+    match status {
+        503 => ExecutionError::failed(format!("503 from the proxy: {body}")), // effect unknown, not retried blindly
+        _ => ExecutionError::Http { status, message: body.to_string(), retry_after: None },
+    }
+}
+```
+
+Use `ExecutionError::transient` instead of `failed` if the step is idempotent or prechecked and should still be retried.
+
 Four constructors build `Failed`:
 
 | Constructor | `retryable` | `effect` | Use it when |
