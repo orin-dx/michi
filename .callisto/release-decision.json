@@ -3,16 +3,7 @@
   "entries": [
     {
       "package": "cargo/michi-core",
-      "targetVersion": "0.6.0",
-      "reasons": [
-        {
-          "kind": "changeset"
-        }
-      ]
-    },
-    {
-      "package": "cargo/michi-graph",
-      "targetVersion": "0.6.0",
+      "targetVersion": "0.7.0",
       "reasons": [
         {
           "kind": "fixedGroup",
@@ -21,8 +12,17 @@
       ]
     },
     {
+      "package": "cargo/michi-graph",
+      "targetVersion": "0.7.0",
+      "reasons": [
+        {
+          "kind": "changeset"
+        }
+      ]
+    },
+    {
       "package": "cargo/michi-node",
-      "targetVersion": "0.6.0",
+      "targetVersion": "0.7.0",
       "reasons": [
         {
           "kind": "fixedGroup",
@@ -32,16 +32,17 @@
     },
     {
       "package": "cargo/michi-pipeline",
-      "targetVersion": "0.6.0",
+      "targetVersion": "0.7.0",
       "reasons": [
         {
-          "kind": "changeset"
+          "kind": "fixedGroup",
+          "groupId": "michi"
         }
       ]
     },
     {
       "package": "npm/@orin-dx/michi",
-      "targetVersion": "0.6.0",
+      "targetVersion": "0.7.0",
       "reasons": [
         {
           "kind": "fixedGroup",
@@ -50,5 +51,5 @@
       ]
     }
   ],
-  "digest": "94b9b3f5505f3c8f570da3789ff1bbe3fc2b9bb2e4509cefe5d5a50ff6974dae"
+  "digest": "c4b1dd44c3fbb1de2cb7246949903da9109e078beeb7492974468850ad5cb17d"
 }
