@@ -155,6 +155,21 @@ bench-baseline:
 mutants:
     cargo mutants --workspace
 
+# ── Fuzzing ─────────────────────────────────────────────────────────────────
+# Run one cargo-fuzz target from fuzz/ for `seconds` (default 60). Needs `rustup toolchain install nightly` and
+# `cargo install cargo-fuzz --locked`. Targets: toon_render truncate resilience mcp_wire graph plan. Not part of
+# `check` or `ci`: fuzz/ is outside the workspace and a bounded run proves nothing by passing.
+fuzz target seconds="60":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    test -f "fuzz/fuzz_targets/{{target}}.rs" || { echo "no such target: {{target}}"; ls fuzz/fuzz_targets; exit 1; }
+    args=("fuzz/corpus/{{target}}")
+    mkdir -p "fuzz/corpus/{{target}}"
+    if [ -d "fuzz/seeds/{{target}}" ]; then args+=("fuzz/seeds/{{target}}"); fi
+    opts=(-max_total_time={{seconds}})
+    if [ -f "fuzz/dictionaries/{{target}}.dict" ]; then opts+=("-dict=fuzz/dictionaries/{{target}}.dict"); fi
+    cargo +nightly fuzz run "{{target}}" "${args[@]}" -- "${opts[@]}"
+
 # ── Continuous Development ──────────────────────────────────────────────────
 watch:
     cargo watch -x "check --workspace --all-features"
