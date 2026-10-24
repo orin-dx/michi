@@ -172,9 +172,15 @@ impl StepRecord {
     /// before 0.5.
     #[must_use]
     pub fn awaits_verification(&self) -> bool {
+        self.awaits_verification_under(self.replay.unwrap_or_default())
+    }
+
+    /// [`StepRecord::awaits_verification`] for a given replay class, which [`crate::resume`] takes as the stricter of
+    /// the record's and the current plan's.
+    pub(crate) fn awaits_verification_under(&self, replay: Replay) -> bool {
         // Resume re-runs an idempotent step whatever happened, so nothing needs verifying. A prechecked step stays
         // listed: its precheck may not be able to tell, and a caller's verdict takes precedence over it.
-        if self.replay == Some(Replay::Idempotent) {
+        if replay == Replay::Idempotent {
             return false;
         }
         match self.status {

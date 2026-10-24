@@ -261,7 +261,10 @@ impl From<PlanError> for michi_core::DomainError {
 }
 
 /// A stable hash of a plan's structure: each step's id and prerequisite ids, independent of declaration order.
-/// Names, runners and options are not part of it. Resume refuses a record whose fingerprint differs from the plan's.
+/// Names, runners, replay classes and options are not part of it. Resume refuses a record whose fingerprint differs
+/// from the plan's. Because the fingerprint covers structure only, swapping a step's runner for one with other side
+/// effects between a run and its resume is the caller's responsibility; resume does at least take the stricter of the
+/// record's and the plan's [`crate::Replay`] class.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(try_from = "String", into = "String"))]

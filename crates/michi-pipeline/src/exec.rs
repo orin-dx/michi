@@ -416,9 +416,19 @@ pub async fn resume(prior: &RunRecord, plan: &Plan, opts: &ResumeOptions) -> Res
     for record in prior.steps() {
         by_id.entry(record.step_id()).or_insert(record);
     }
+    // The replay class resume acts on: the stricter of what the run knew and what the plan says now, because the
+    // fingerprint covers structure only, so a plan edited since the run can have tightened it. A record without a
+    // replay (saved by hand or by an older version) has nothing to add, so the plan's applies.
+    let replay_of = |step: &crate::ExecStep, prev: &StepRecord| {
+        let now = step.runner().replay();
+        prev.replay().map_or(now, |then| stricter(then, now))
+    };
     for step_id in opts.verified.keys() {
         let prev = by_id.get(step_id);
-        if !prev.is_some_and(|r| r.awaits_verification()) {
+        let awaiting = prev
+            .zip(plan.step(step_id))
+            .is_some_and(|(record, step)| record.awaits_verification_under(replay_of(step, record)));
+        if !awaiting {
             return Err(ResumeError::NotAwaitingVerification {
                 step_id: step_id.clone(),
                 status: prev.map_or("missing", |r| r.status().label()),
@@ -430,12 +440,12 @@ pub async fn resume(prior: &RunRecord, plan: &Plan, opts: &ResumeOptions) -> Res
         .iter()
         .map(|step| {
             let Some(&prev) = by_id.get(step.id()) else { return Initial::Run };
-            let replay = step.runner().replay();
+            let replay = replay_of(step, prev);
             match prev.status() {
                 StepStatus::Completed | StepStatus::CompletedEarlier => {
                     Initial::Done(Box::new(carried_over(prev, "completed earlier in this run")))
                 }
-                StepStatus::Failed if !prev.awaits_verification() => Initial::Run,
+                StepStatus::Failed if !prev.awaits_verification_under(replay) => Initial::Run,
                 StepStatus::Failed | StepStatus::OutcomeUnknown(_) | StepStatus::Panicked | StepStatus::Running => {
                     match opts.verified.get(step.id()) {
                         Some(Verification::Applied) => {
@@ -454,6 +464,23 @@ pub async fn resume(prior: &RunRecord, plan: &Plan, opts: &ResumeOptions) -> Res
         })
         .collect();
     Ok(scheduler::run(plan, prior.run_id().clone(), &opts.exec, initial).await)
+}
+
+/// The stricter of two replay classes: not idempotent, then prechecked, then idempotent. A class this version does not
+/// know counts as the strictest.
+fn stricter(a: Replay, b: Replay) -> Replay {
+    fn rank(r: Replay) -> u8 {
+        match r {
+            Replay::Idempotent => 0,
+            Replay::Prechecked => 1,
+            _ => 2,
+        }
+    }
+    if rank(b) > rank(a) {
+        b
+    } else {
+        a
+    }
 }
 
 /// A prior success, carried into the new record as `CompletedEarlier` with its attempts.
