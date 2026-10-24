@@ -34,6 +34,14 @@ Ensure all lints and tests pass cleanly.
 - **UTF-8 char safety**: Truncate strings on Unicode scalar boundaries using `floor_char_boundary`.
 - **Markdown formatting**: Markdown prose is not hard-wrapped — one line per paragraph (`just fmt-md`).
 
+## Changing public API
+
+Spec first: the spec describes the API, so a change to the API changes the spec in the same pull request. Write (or update) the acceptance criteria and the `docs/spec/` entry before the code, then make the code match.
+
+CI runs `scripts/check-api-docs.py` on every pull request. If the diff adds or removes a `pub` item (`fn`, `struct`, `enum`, `trait`, `type`, `const`, `static`, `mod`, `use`, `union`, or a `pub` field) under `crates/*/src/`, it must also touch `docs/spec/`, `docs/adr/`, a crate `README.md`, `README.md` or `ARCHITECTURE.md`. Test modules, doc-comment edits and `pub(crate)` items don't count. Run it locally with `python3 scripts/check-api-docs.py` (it compares against `origin/main`).
+
+It only checks that some doc moved, so read the spec you touched and make sure it covers the change. For a change that truly needs no doc (a rename inside a private module that re-exports the same names, say), put a line in the pull request body that starts `No spec change needed:` and gives the reason, then re-run the job.
+
 ## Codebase Map
 
 | Target Task              | Path / Location                               |
@@ -98,6 +106,8 @@ A crash is a bug, so it needs a regression test, not just a stored artifact:
 
 2. Merging to `main` opens or updates Callisto's version PR (`callisto/version-packages`), which bumps versions and writes the changelogs.
 3. Merging the version PR runs the Release workflow (`.github/workflows/callisto-release.yml`): it builds the native binaries, publishes to crates.io and npm, and creates one GitHub release tagged `michi@{version}`.
+
+**Post-release check.** When the run published a package to a registry, or a re-run adopted one from a failed earlier attempt, the `smoke-published` job installs that version from the public registries into clean projects on Linux x64, Linux arm64 and macOS arm64 and uses it: `npm install @orin-dx/michi`, render TOON, then build a program against `michi-core`, `michi-pipeline` and `michi-graph` from crates.io. It retries for up to 10 minutes while the registries catch up. A red job means the published packages are broken, so fix forward with a new release. Run the same check by hand with `just smoke-published <version>`.
 
 The first publish of a brand-new npm package can fail with Callisto error E157: npm accepted the upload but doesn't show the version yet. That's registry propagation lag. Wait a few minutes, then use "Re-run failed jobs" on the Release run. It adopts what already landed and publishes the rest. Don't regenerate the release intent.
 

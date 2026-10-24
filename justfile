@@ -39,6 +39,11 @@ check-graph-license:
     python3 scripts/test_check_permissive_deps.py
     cargo metadata --format-version 1 --all-features | python3 scripts/check-permissive-deps.py michi-graph
 
+# Post-release check: install a *published* version from npm and crates.io into clean projects and use it.
+# Needs network. `SMOKE_RETRY_SECONDS` (default 600) bounds the wait for the registries.
+smoke-published version:
+    scripts/smoke-published.sh {{version}}
+
 test-rust-release:
     cargo nextest run --workspace --release
 

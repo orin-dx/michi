@@ -47,6 +47,16 @@ The wire rules, for output and input:
 - an optional second `user`-audience block from `human_content()`, if the caller set one
 - `structured_content` from `render(OutputFormat::Json)`
 
+### Conformance check
+
+`packages/michi-node/__test__/mcp-conformance.test.mjs` checks every `toCallToolResult()` shape against the official MCP TypeScript SDK's own schema (`CallToolResultSchema` from `@modelcontextprotocol/sdk` 1.32.1, which implements MCP spec revision 2025-11-25). It runs in `pnpm test` and CI. The SDK is a dev dependency of the npm package only; no Rust crate depends on it.
+
+What that does and does not establish:
+
+- The SDK's `CallToolResultSchema` is a loose object and its content-block schemas silently drop unknown keys, and it treats `annotations` as optional. So the test also parses each result with `.strict()` variants of the SDK's own schemas, requires the parse to equal the input, and asserts the exact key set by hand. A wrong key (`audience` at the top level, `is_error`), a missing `type`, or a missing `annotations` all fail.
+- Covered: the NAPI path (the shipped binary's `JsCallToolResult`), over assistant and user blocks, error results, `structuredContent`, hints, recovery, empty states, truncation, multi-section responses, Unicode and newline-heavy text, and a seeded fuzz of adversarial strings. Each result must also survive `JSON.parse(JSON.stringify(x))` unchanged.
+- Not covered: the Rust `serde` path in `mcp.rs` (it has its own Rust tests, but is not run through the SDK); semantic rules the schema cannot express (that `structuredContent` matches a tool's declared `outputSchema`, or that `text` is a sensible rendering); other spec revisions; and the JSON-RPC envelope around the result, since michi builds only the `result` object.
+
 ---
 
 ## NAPI npm package — `@orin-dx/michi`
@@ -225,6 +235,8 @@ None of these thirteen inputs is ever silently clamped, truncated, or defaulted 
 CI builds all six NAPI targets. The macOS targets build on the arm64 `macos-latest` runner, `x86_64-apple-darwin` through rustup's target and Apple's universal SDK (no extra linker); `x86_64-unknown-linux-gnu` builds natively on `ubuntu-latest`; the musl targets and `aarch64-unknown-linux-gnu` link with `cargo-zigbuild`, `aarch64-unknown-linux-gnu` on GitHub's `ubuntu-24.04-arm` runner. The Node tests run where the runner loads the binary natively: `darwin-arm64`, `linux-x64-gnu` and `linux-arm64-gnu`.
 
 `.github/workflows/callisto-release.yml` uses Callisto 0.12. Ordinary pushes to `main` create or update a version PR when changesets are present. A verified merge of that managed PR, carrying its `.callisto/release-decision.json`, runs Callisto's CI release: `callisto release plan`, a release build of all six targets (the runner and cross-compile choice per target come from `callisto matrix`, except that `x86_64-apple-darwin` builds on `macos-latest` rather than the retired `macos-13`; `aarch64` Linux cross-compiles with `cargo-zigbuild` on `ubuntu-latest`), then `callisto release execute`, which publishes the crates to crates.io and the committed `packages/michi-node/npm/<platform>` packages before `@orin-dx/michi`, then pushes the release tags. `michi-core` is the one package that lists `github-release`: each version gets one GitHub release, tagged `michi@{version}`; the other packages keep `{name}@{version}` tags. The build's generated `index.js` and `index.d.ts` ship in the npm package; neither they nor the `.node` files are committed.
+
+After `execute`, the `smoke-published` job runs only if the release receipt has a registry publish (`outcomes[]` with `operation.role.kind == "registryPublish"` and `outcome.kind` of `published` or `alreadySatisfied`); it takes the version from there, and the step fails if the receipt names more than one. It runs `scripts/smoke-published.sh` on `ubuntu-latest`, `ubuntu-24.04-arm` and `macos-latest` with read-only permissions and no secrets: install `@orin-dx/michi@{version}` from npm in an empty project (checking the platform package matches the host) and build a program against the three crates from crates.io, retrying for up to 10 minutes for registry lag. The programs live in `scripts/smoke/`. A re-run that adopts the registry publishes from a failed first attempt still gets smoke-tested, because that is the first successful run of the release.
 
 The first published release was 0.3.1 (0.3.0 was never published). The four packages — `michi-core`, `michi-pipeline`, `michi-graph` and `@orin-dx/michi` — ship one version through the Callisto fixed group; consumer integration follows publication (see [ADR 4](../adr/0004-publish-before-consumer-integration.md)). The `version-sync` CI job checks that the three crates' `version` fields and the npm package version are equal.
 
