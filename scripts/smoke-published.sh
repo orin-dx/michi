@@ -6,6 +6,9 @@
 # Env:
 #   SMOKE_RETRY_SECONDS  how long to keep retrying while a registry lags behind the publish (default 600)
 #   SMOKE_KEEP=1         keep the temp directory for debugging
+#   SMOKE_REQUIRE_ATTESTATIONS=1
+#                        also fail unless all seven npm packages carry a provenance attestation (releases from the
+#                        provenance fix onward; 0.7.1 and earlier published @orin-dx/michi without one)
 set -euo pipefail
 
 version="${1:-}"
@@ -41,7 +44,7 @@ retry() {
   shift
   until "$@"; do
     if ((waited >= retry_seconds)); then
-      fail "$what still failing after ${retry_seconds}s: version $version is not installable from the registry"
+      fail "$what still failing after ${retry_seconds}s (version $version)"
     fi
     echo "  $what not ready, retrying in ${delay}s (${waited}s/${retry_seconds}s)" >&2
     sleep "$delay"
@@ -88,6 +91,18 @@ smoke_npm() {
   )
 }
 
+# All seven npm packages must carry a provenance attestation. The main package is published by pnpm and the platform
+# packages by npm, and only npm used to honour NPM_CONFIG_PROVENANCE, so the one users install went out unattested.
+check_attestations() {
+  local pkg
+  echo "== npm: provenance attestations for @orin-dx/michi@$version and its six platform packages"
+  for pkg in michi michi-darwin-arm64 michi-darwin-x64 michi-linux-arm64-gnu michi-linux-arm64-musl \
+    michi-linux-x64-gnu michi-linux-x64-musl; do
+    # An attestation lags the version document a little; a missing one still fails once the retries run out.
+    retry "attestation for @orin-dx/$pkg" node "$smoke/attestation.cjs" "@orin-dx/$pkg" "$version"
+  done
+}
+
 smoke_crates() {
   local dir="$work/crates"
   echo "== crates.io: michi-core, michi-pipeline, michi-graph =$version"
@@ -104,5 +119,6 @@ smoke_crates() {
 }
 
 [[ "$only" == crates ]] || smoke_npm
+if [[ "${SMOKE_REQUIRE_ATTESTATIONS:-}" == 1 && "$only" != crates ]]; then check_attestations; fi
 [[ "$only" == npm ]] || smoke_crates
 echo "SMOKE PASSED: michi $version ($only)"
