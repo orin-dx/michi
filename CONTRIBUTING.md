@@ -34,6 +34,14 @@ Ensure all lints and tests pass cleanly.
 - **UTF-8 char safety**: Truncate strings on Unicode scalar boundaries using `floor_char_boundary`.
 - **Markdown formatting**: Markdown prose is not hard-wrapped — one line per paragraph (`just fmt-md`).
 
+## Changing public API
+
+Spec first: the spec describes the API, so a change to the API changes the spec in the same pull request. Write (or update) the acceptance criteria and the `docs/spec/` entry before the code, then make the code match.
+
+CI runs `scripts/check-api-docs.py` on every pull request. If the diff adds or removes a `pub` item (`fn`, `struct`, `enum`, `trait`, `type`, `const`, `static`, `mod`, `use`, `union`, or a `pub` field) under `crates/*/src/`, it must also touch `docs/spec/`, `docs/adr/`, a crate `README.md`, `README.md` or `ARCHITECTURE.md`. Test modules, doc-comment edits and `pub(crate)` items don't count. Run it locally with `python3 scripts/check-api-docs.py` (it compares against `origin/main`).
+
+It only checks that some doc moved, so read the spec you touched and make sure it covers the change. For a change that truly needs no doc (a rename inside a private module that re-exports the same names, say), put a line in the pull request body that starts `No spec change needed:` and gives the reason, then re-run the job.
+
 ## Codebase Map
 
 | Target Task              | Path / Location                               |

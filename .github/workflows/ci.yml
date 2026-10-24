@@ -84,6 +84,31 @@ jobs:
           # version PR.
           bash scripts/check-semver.sh
 
+  # Spec first: a PR that changes public Rust API must also touch the docs (docs/spec, docs/adr, a README or
+  # ARCHITECTURE.md), or say why not with a `No spec change needed: <reason>` line in the PR body. The body is read
+  # live, so after editing it, re-run this job.
+  api-docs:
+    name: Spec updated with API changes
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - run: python3 scripts/test_check_api_docs.py
+      - name: Check the spec moves with the API
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          set -euo pipefail
+          PR_BODY="$(gh pr view "$PR_URL" --json body --jq .body)"
+          export PR_BODY
+          python3 scripts/check-api-docs.py "origin/${{ github.base_ref }}" HEAD
+
   msrv:
     name: MSRV
     runs-on: ubuntu-latest
@@ -268,6 +293,6 @@ jobs:
         run: cargo install cargo-zigbuild --locked
       - run: pnpm build --target ${{ matrix.target }} ${{ matrix.cross && '--cross-compile' || '' }}
         working-directory: packages/michi-node
-      - run: node --test __test__/index.test.mjs __test__/interop.test.mjs
+      - run: node --test __test__/index.test.mjs __test__/interop.test.mjs __test__/mcp-conformance.test.mjs
         working-directory: packages/michi-node
         if: matrix.test
