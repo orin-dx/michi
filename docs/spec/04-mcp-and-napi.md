@@ -47,6 +47,16 @@ The wire rules, for output and input:
 - an optional second `user`-audience block from `human_content()`, if the caller set one
 - `structured_content` from `render(OutputFormat::Json)`
 
+### Conformance check
+
+`packages/michi-node/__test__/mcp-conformance.test.mjs` checks every `toCallToolResult()` shape against the official MCP TypeScript SDK's own schema (`CallToolResultSchema` from `@modelcontextprotocol/sdk` 1.32.1, which implements MCP spec revision 2025-11-25). It runs in `pnpm test` and CI. The SDK is a dev dependency of the npm package only; no Rust crate depends on it.
+
+What that does and does not establish:
+
+- The SDK's `CallToolResultSchema` is a loose object and its content-block schemas silently drop unknown keys, and it treats `annotations` as optional. So the test also parses each result with `.strict()` variants of the SDK's own schemas, requires the parse to equal the input, and asserts the exact key set by hand. A wrong key (`audience` at the top level, `is_error`), a missing `type`, or a missing `annotations` all fail.
+- Covered: the NAPI path (the shipped binary's `JsCallToolResult`), over assistant and user blocks, error results, `structuredContent`, hints, recovery, empty states, truncation, multi-section responses, Unicode and newline-heavy text, and a seeded fuzz of adversarial strings. Each result must also survive `JSON.parse(JSON.stringify(x))` unchanged.
+- Not covered: the Rust `serde` path in `mcp.rs` (it has its own Rust tests, but is not run through the SDK); semantic rules the schema cannot express (that `structuredContent` matches a tool's declared `outputSchema`, or that `text` is a sensible rendering); other spec revisions; and the JSON-RPC envelope around the result, since michi builds only the `result` object.
+
 ---
 
 ## NAPI npm package — `@orin-dx/michi`
