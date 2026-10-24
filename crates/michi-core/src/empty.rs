@@ -136,7 +136,7 @@ mod tests {
     fn empty_state_renders_an_error_block_for_reserved_type_names() {
         for name in ["totalCount", "help", "recovery"] {
             let expected = format!(
-                "error: toon_validation_failed\nmessage: \"type_name \\\"{name}\\\" is a reserved document key (totalCount, help, recovery)\""
+                "error: toon_validation_failed\nmessage: \"type_name \\\"{name}\\\" is a reserved document key (totalCount, help, recovery, truncated)\""
             );
             assert_eq!(empty_state(name), expected, "{name}");
             assert_eq!(empty_state_with_hints(name, &[Hint::new("x")]), expected, "{name}");

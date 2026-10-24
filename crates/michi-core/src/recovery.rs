@@ -28,13 +28,17 @@ pub struct RecoveryHint {
 
 impl RecoveryHint {
     /// Create a recovery hint naming just the tool to call.
+    ///
+    /// Recovery hints are instructions to the agent: the tool, parameters and reason come from the tool author, never
+    /// from data. See the trust model in `docs/spec/02-toon-format.md`.
     #[must_use]
     pub fn new(tool: impl Into<String>) -> Self {
         Self { tool: tool.into(), params: Vec::new(), reason: None }
     }
 
     /// Add a suggested parameter, or replace the value of an existing parameter with the same key in place (it keeps
-    /// the position of its first insertion). Parameters render as a JSON object, which cannot repeat a key.
+    /// the position of its first insertion). Parameters render as a JSON object, which cannot repeat a key. Keys and
+    /// values are tool-author text, never data.
     #[must_use]
     pub fn param(mut self, key: impl Into<String>, value: KvValue) -> Self {
         let key = key.into();
@@ -45,7 +49,7 @@ impl RecoveryHint {
         self
     }
 
-    /// Attach a human-readable reason.
+    /// Attach a human-readable reason. Tool-author text, never data.
     #[must_use]
     pub fn reason(mut self, reason: impl Into<String>) -> Self {
         self.reason = Some(reason.into());

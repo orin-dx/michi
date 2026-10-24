@@ -40,7 +40,7 @@ fn main() {
             }
             _ => michi_core::toon::list(type_name, rows).expect("toon::list"),
         };
-        assert!(!text.contains("more chars)"), "unexpected truncation in {}", p.display());
+        assert!(!text.contains("\ntruncated["), "unexpected truncation in {}", p.display());
         let stem = p.file_stem().and_then(|s| s.to_str()).expect("stem");
         fs::write(out.join(format!("{stem}.toon")), &text).expect("write");
     }

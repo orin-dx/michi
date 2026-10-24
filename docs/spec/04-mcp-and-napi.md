@@ -274,7 +274,7 @@ export interface JsToonOptions {
 export declare function renderToon(opts: JsToonOptions): string;
 
 /** Render a definitive empty-state TOON response: `typeName: []\ntotalCount: 0` (no trailing newline).
- * Throws `toon_validation_failed: …` for a reserved `typeName` (`totalCount`, `help`, `recovery`), like `renderToon`. */
+ * Throws `toon_validation_failed: …` for a reserved `typeName` (`totalCount`, `help`, `recovery`, `truncated`), like `renderToon`. */
 export declare function emptyState(typeName: string): string;
 
 /** `emptyState` plus a `help[N]: …` block; the same `toon_validation_failed` error for a reserved `typeName`. */
@@ -289,7 +289,9 @@ export declare function appendHints(body: string, hints: Array<string>): string;
 /** Only the inline form crosses the NAPI boundary — unlike Rust's `truncate()`,
  * which returns a richer `Truncated` struct, this returns the final string directly.
  * Suffix: `" ({removed} more chars — use {hint})"`, or `" ({removed} more chars)"` for an
- * empty `hint`; a cap too small for it gives `maxChars - 1` chars and `…`. */
+ * empty `hint`; a cap too small for it gives `maxChars - 1` chars and `…`.
+ * The marker is plain text, so data can imitate it: for one free-text payload, not for TOON
+ * cells (`renderToon` and `AgentResponse` cut cells and report them in a `truncated` block). */
 export declare function truncate(content: string, maxChars: number, hint: string): string;
 
 export interface JsRecoveryHint {
@@ -339,7 +341,8 @@ export declare class AgentResponse {
   kvItems(items: Array<JsKvItem>): void;
   hint(hint: string): void;
   recoveryHint(tool: string, reason?: string): void;
-  /** Appends `" — use {hint}"` to truncated TOON cells; not called, the suffix only reports the chars cut. */
+  /** The caller's instruction for getting a cut TOON cell in full; added to `help[]` when a cell was cut. Not called:
+   * the `truncated[N]{row,field,removed}:` block still reports each cut. Tool-author text, never data. */
   truncationHint(hint: string): void;
   /** Marks this response as an error state, reflected in `renderJson()`'s `isError` field. */
   asError(): void;

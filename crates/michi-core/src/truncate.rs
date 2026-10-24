@@ -41,6 +41,9 @@ fn digits(mut n: usize) -> usize {
 /// Truncate `content` to at most `max_chars` Unicode scalar values, appending an agent-readable suffix when
 /// truncation occurs.
 ///
+/// The marker is plain text inside the returned string, so data can imitate it. Use this for a single free-text
+/// payload, not for a TOON cell: the TOON renderer reports its cuts out of band instead.
+///
 /// The suffix is `" ({removed} more chars — use {hint})"`, where `removed` is the number of chars cut (the input's
 /// char count minus the chars kept, not the original length). The `— use {hint}` clause is the caller's instruction:
 /// michi never invents one, and an empty `hint` drops the clause, giving `" ({removed} more chars)"`. The whole
@@ -63,26 +66,6 @@ fn clause_chars(hint: &str) -> usize {
         0
     } else {
         " \u{2014} use ".chars().count() + hint.chars().count()
-    }
-}
-
-/// A truncation hint whose suffix clause has been measured once, for callers that truncate many values with the same
-/// hint (the TOON renderer, once per document): counting the hint's chars per cell made a 1 MB hint over 100k cells
-/// take seconds.
-pub(crate) struct InlineHint<'h> {
-    hint: &'h str,
-    clause_chars: usize,
-}
-
-impl<'h> InlineHint<'h> {
-    /// Measure `hint` once.
-    pub(crate) fn new(hint: &'h str) -> Self {
-        Self { hint, clause_chars: clause_chars(hint) }
-    }
-
-    /// Same result as [`truncate_inline`]`(content, max_chars, hint)`.
-    pub(crate) fn truncate(&self, content: &str, max_chars: usize) -> String {
-        truncate_with(content, max_chars, self.hint, self.clause_chars).content
     }
 }
 
@@ -150,10 +133,13 @@ fn truncate_with(content: &str, max_chars: usize, hint: &str, clause_chars: usiz
     Truncated { content: result, original_len: content.len(), was_truncated: true, signal }
 }
 
-/// Truncate content for inline use (e.g. inside a TOON field).
+/// Truncate content for inline use, returning just the final string.
 ///
-/// Same rules as [`truncate()`], including an empty `hint` meaning no `— use …` clause. Returns the final string
-/// directly.
+/// Same rules as [`truncate()`], including an empty `hint` meaning no `— use …` clause.
+///
+/// The marker is part of the returned text, so it is only as trustworthy as the text around it: do not put the result
+/// in a TOON cell, where the cell's own data could end in the same words. The TOON renderer cuts cells itself and
+/// reports the cut out of band (see [`crate::toon::ToonOptions::max_cell_len`]).
 #[must_use]
 pub fn truncate_inline(content: &str, max_chars: usize, hint: &str) -> String {
     truncate(content, max_chars, hint).content
@@ -454,25 +440,6 @@ mod tests {
             for max_chars in 0..70 {
                 for hint in ["", "x", "full=true", "見よ"] {
                     check_rules(&content, max_chars, hint);
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn prepared_hint_matches_truncate_inline_everywhere() {
-        // The TOON renderer counts the hint once per document through `InlineHint`; its output must be exactly
-        // `truncate_inline`'s for every content, cap and hint.
-        for n in [0usize, 1, 9, 10, 11, 99, 100, 101, 1000, 1001] {
-            let content = "é".repeat(n);
-            for max_chars in 0..70 {
-                for hint in ["", "x", "full=true", "見よ"] {
-                    let prepared = InlineHint::new(hint);
-                    assert_eq!(
-                        prepared.truncate(&content, max_chars),
-                        truncate_inline(&content, max_chars, hint),
-                        "n={n} max={max_chars} hint={hint:?}"
-                    );
                 }
             }
         }

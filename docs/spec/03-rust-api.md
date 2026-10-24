@@ -39,9 +39,12 @@ pub struct ToonOptions {
     pub rows: Vec<Vec<Value>>,
     pub total_count: Option<usize>,
     pub hints: Vec<String>,
-    /// Max string cell length in chars, counted before escaping/quoting (default 200).
+    /// Max string cell length in chars, counted before escaping/quoting (default 200). A longer cell keeps its
+    /// first `max_cell_len - 1` chars and ends in a plain `…`; each cut is listed in a
+    /// `truncated[N]{row,field,removed}:` block after the list.
     pub max_cell_len: usize,
-    /// The caller's "get it in full" instruction for the truncation suffix (default None: no `— use …` clause).
+    /// The caller's "get it in full" instruction (default None). When set and a cell was cut, michi adds one
+    /// `help[]` line naming the `truncated` block and this instruction. Tool-author text, never data.
     pub truncation_hint: Option<String>,
 }
 
@@ -52,7 +55,7 @@ impl ToonOptions {
     pub fn max_cell_len(self, len: usize) -> Self;
     pub fn truncation_hint(self, hint: impl Into<String>) -> Self;
     /// Validate structural invariants before rendering; rendering consumes the returned proof.
-    /// Returns Err if type_name is a reserved document key (`totalCount`, `help`, `recovery`),
+    /// Returns Err if type_name is a reserved document key (`totalCount`, `help`, `recovery`, `truncated`),
     /// there are more than MAX_FIELDS fields, a field name is repeated, rows × fields is more than
     /// MAX_CELLS, truncation_hint is longer than MAX_TRUNCATION_HINT_CHARS chars, or any row's length
     /// differs from fields.len() (checked in that order). Any other name is valid and is quoted per TOON 4.4 §7.3.
@@ -149,8 +152,11 @@ pub struct DomainError {
 
 impl DomainError {
     pub fn new(code: ErrorCode, message: impl Into<String>) -> Self;
-    /// message = err's Display; each source() link's Display becomes one cause, outermost first.
+    /// message = err's Display only. The source() chain is left out: causes often hold URLs with tokens or
+    /// internal paths. The top-level message is still agent-visible, so it must be safe to show.
     pub fn from_error(code: ErrorCode, err: &(dyn std::error::Error + 'static)) -> Self;
+    /// Opt-in: like `from_error`, and each source() link's Display becomes one cause, outermost first.
+    pub fn from_error_with_causes(code: ErrorCode, err: &(dyn std::error::Error + 'static)) -> Self;
     pub fn cause(self, cause: impl Into<String>) -> Self;
     pub fn hint(self, hint: impl Into<String>) -> Self;
     pub fn recovery(self, r: RecoveryHint) -> Self;
@@ -206,7 +212,8 @@ pub struct Sensitive<T>(pub T);
 - `retryable` means calling again is expected to help without repeating an effect. `DomainError::new` sets it from `ErrorCode::is_retryable_by_default()`: `true` for `RateLimited` and `Unavailable` (the request was not processed), `false` for every other code. A `Timeout` or `ExternalFailure` may have taken effect, so mark it `.retryable(true)` only when the operation is idempotent. `Error::is_retryable()` and `ErrorClass::Transient` follow the field.
 - A `Timeout` that is not marked retryable is `ErrorClass::Ambiguous` (no answer came back, so the operation may or may not have taken effect: not the caller's fault and not an internal error), and `DomainError::new` gives it the hint `MAY_HAVE_TAKEN_EFFECT_HINT` ("the operation may have taken effect; verify whether it completed before retrying, unless it is idempotent"). `.retryable(true)` makes it `Transient` and removes that hint; `.retryable(false)` puts it back. `ExternalFailure` covers too much (a failed local walk, a server error) to say, so it stays `Internal` with no automatic hint; add your own when you know the operation may have applied.
 - `render_json()` outputs a JSON object: `{"isError":true,"error":"...","message":"...","causes":[...],"retryable":bool,"hints":[...],"recovery":null|{...}}`. `causes` and `hints` are always present, `[]` when empty; serde and the `schemars` schema match it.
-- `from_error(code, err)` sets `message` to `err.to_string()` and walks `err.source()`, adding each link's `Display` to `causes`. A link whose text the last kept text (the message or the previous kept cause) already contains is skipped, since `thiserror` messages often embed their source (`#[error("walk failed: {0}")]`). The walk stops after 128 links. Nothing is stored but text: `source()` on a `DomainError` stays `None`, and it stays `Clone + Send + Sync`. Line breaks stay inside their cause; `render()` escapes them.
+- `from_error(code, err)` sets `message` to `err.to_string()` and nothing else: the `source()` chain stays out of the agent's view because causes often carry URLs with tokens, file paths and other internals. The top-level `Display` is still agent-visible, so check it too, or use `DomainError::new` with a message you wrote.
+- `from_error_with_causes(code, err)` is the opt-in: it does what `from_error` does, then walks `err.source()`, adding each link's `Display` to `causes` (the separate diagnosis field, never `help[]`). A link whose text the last kept text (the message or the previous kept cause) already contains is skipped, since `thiserror` messages often embed their source (`#[error("walk failed: {0}")]`). The walk stops after 128 links. Nothing is stored but text: `source()` on a `DomainError` stays `None`, and it stays `Clone + Send + Sync`. Line breaks stay inside their cause; `render()` escapes them.
 - With the `miette` feature, `Diagnostic::help()` lists the hints, then one `caused by: …` line per cause (`None` when there are neither). The GitHub annotation stays message-only.
 - `to_call_tool_result()` builds an MCP `CallToolResult` with `is_error:true` and the rendered JSON as `structured_content`.
 - When the `schemars` feature is enabled, `DomainError` implements schemars 1.x's `JsonSchema` (the schema of `render_json()`'s object, as JSON Schema 2020-12). Only types serde actually serializes have a schema: `StatusResponse`, `ToonOptions`, `ErrorClass` and the other render-only types do not.
@@ -430,7 +437,7 @@ pub struct Truncated {
     /// Byte length (not char count) of the input, truncated or not.
     pub original_len: usize,
     pub was_truncated: bool,
-    /// The signal embedded at the end of content, leading space stripped: "(N more chars — use hint)",
+    /// The in-band marker at the end of content, leading space stripped: "(N more chars — use hint)",
     /// "(N more chars)" or "…". None when not truncated or when max_chars is 0.
     pub signal: Option<String>,
 }
@@ -439,7 +446,7 @@ pub fn truncate(content: &str, max_chars: usize, hint: &str) -> Truncated;
 pub fn truncate_inline(content: &str, max_chars: usize, hint: &str) -> String;
 ```
 
-Truncates strings safely at Unicode scalar boundaries without splitting UTF-8 code points. `max_chars` counts chars, and the result never exceeds it:
+Truncates strings safely at Unicode scalar boundaries without splitting UTF-8 code points. `max_chars` counts chars, and the result never exceeds it. The marker is plain text inside the string, so data can imitate it: use these for a single free-text payload, not for TOON cells. The TOON renderer cuts cells itself and reports each cut in a separate `truncated` block ([TOON format](02-toon-format.md#truncation)):
 
 | Input     | `max_chars` | `hint`        | `content`                                        |
 | --------- | ----------- | ------------- | ------------------------------------------------ |

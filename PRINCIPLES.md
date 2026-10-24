@@ -13,6 +13,7 @@ A primitive earns a place here only if it clears all five gates below. These are
 It turns already-decided data into agent-readable strings/types. It doesn't decide _what_ data survives.
 
 - One established exception: char/byte-level truncation (`truncate`, `ToonOptions::max_cell_len`) — treated as rendering safety, not business logic.
+- Rendering makes output syntactically safe, not trustworthy: it keeps one value from creating extra lines, fields or cells, and it does not judge what a value says. See the [trust model](docs/spec/02-toon-format.md#trust-model).
 - **The ceiling:** if a tool's real need is more sophisticated than a generic primitive can serve — a custom ranking algorithm, a heuristic tuned to one tool's data shape — that's a sign the primitive doesn't belong in michi, not a sign to make michi's primitive more complex. See [Split the decision from the signal](#split-the-decision-from-the-signal) for how to resolve this without compromising on either.
 
 ### 2. Small default dependency set
