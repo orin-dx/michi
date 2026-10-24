@@ -1,0 +1,7 @@
+minimumReleaseAgeExclude:
+  - '@orin-dx/michi-darwin-arm64@0.7.0'
+  - '@orin-dx/michi-darwin-x64@0.7.0'
+  - '@orin-dx/michi-linux-arm64-gnu@0.7.0'
+  - '@orin-dx/michi-linux-arm64-musl@0.7.0'
+  - '@orin-dx/michi-linux-x64-gnu@0.7.0'
+  - '@orin-dx/michi-linux-x64-musl@0.7.0'

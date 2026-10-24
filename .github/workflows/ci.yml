@@ -268,6 +268,6 @@ jobs:
         run: cargo install cargo-zigbuild --locked
       - run: pnpm build --target ${{ matrix.target }} ${{ matrix.cross && '--cross-compile' || '' }}
         working-directory: packages/michi-node
-      - run: node --test __test__/index.test.mjs
+      - run: node --test __test__/index.test.mjs __test__/interop.test.mjs
         working-directory: packages/michi-node
         if: matrix.test
