@@ -2,7 +2,7 @@
 
 Async pipeline execution for [michi](https://github.com/orin-dx/michi) on Tokio. Define steps, validate them into a plan, run it sequentially or in parallel, and get back a run record saying what happened to each step.
 
-It handles replay-safe retries with a retry budget, per-attempt timeouts, shared deadlines for groups of steps, keyed circuit breakers, per-key concurrency limits, cancellation, a progress observer, and resume from a saved record. Step statuses and the record's TOON rendering come from [`michi-core`](https://crates.io/crates/michi-core).
+It handles retries with a retry budget, per-attempt timeouts, shared deadlines for groups of steps, keyed circuit breakers, per-key concurrency limits, cancellation, a progress observer, and resume from a saved record. Resume is at-least-once per step unless the step hands its idempotency key to a downstream that deduplicates (see the [execution spec](https://github.com/orin-dx/michi/blob/main/docs/spec/08-pipeline-execution.md)). Step statuses and the record's TOON rendering come from [`michi-core`](https://crates.io/crates/michi-core).
 
 ## Install
 

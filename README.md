@@ -63,7 +63,11 @@ issues[2]{number,title,state}:
   51812,dark mode request,open
 ```
 
-For a 100-row list TOON is a median 47% smaller than pretty JSON and 23% smaller than minified JSON, and models (Claude Haiku, Sonnet and Opus, and OpenAI's GPT-6 Sol) answer questions about it as accurately as about JSON or Markdown: no loss in accuracy, much more data per context window. Numbers and method: [TOON benchmarks](https://github.com/orin-dx/michi/blob/main/docs/toon-benchmarks.md).
+On a 100-row uniform list, TOON used a median 47% fewer tokens than pretty-printed JSON (range 20.9 to 50.4% across nine datasets), 23% fewer than minified JSON (-4.3 to 26.8%) and 8% fewer than a Markdown table (0.1 to 20.2%). Counts use OpenAI tokenizers as a proxy for Claude's, which isn't public.
+
+Accuracy was within noise of JSON and Markdown on single-hop retrieval questions over lists of up to 100 rows, on Claude Haiku, Sonnet and Opus 5.5 and on GPT-6 Sol. It is untested on small or open-weight models, on nested data, on longer lists and on multi-step tasks. Numbers and method: [TOON benchmarks](https://github.com/orin-dx/michi/blob/main/docs/toon-benchmarks.md).
+
+The savings are for flat, uniform lists. On nested data they are roughly neutral: TOON's own benchmark shows about 1.6% more tokens than compact JSON on mixed-structure data. michi's TOON is for models reading tool output, not for models writing it; published evidence shows small models write TOON poorly ([arXiv 2601.12014](https://arxiv.org/abs/2601.12014)).
 
 Output conforms to the [TOON 4.4 specification](https://github.com/toon-format/spec/blob/main/SPEC.md) — every agent-facing block, not just lists: key-value blocks, errors, status, recovery hints and partial-success reports are TOON documents too, so an agent parses one format. Values are quoted only when the spec requires it — a delimiter, colon, bracket, quote, line break, or a value that would otherwise read as a number, boolean or `null` — so the common case carries no quoting overhead.
 
@@ -147,7 +151,7 @@ graph LR
 | Crate / Package | Description |
 | --- | --- |
 | `michi-core` | All sync AXI primitives: TOON list rendering (`toon`; render only, no public parser), key-value blocks, hints, structured errors (`DomainError`), status, recovery hints, MCP `CallToolResult`, the `AgentResponse` builder, UTF-8 char-boundary truncation (`truncate`), the report of what a list cap cut (`truncation`), and retry/back-off math with `Retry-After` parsing and idempotency keys (`resilience`). |
-| `michi-pipeline` | Async pipeline execution: a validated step plan run sequentially or with a concurrency cap (overall and per key), a per-step run record with replay-honest statuses, resume, keyed circuit breakers, a retry budget, shared deadline groups, poll and blocking steps, and cancellation. Depends on `michi-core`, `michi-graph`, `tokio` and `tokio-util`. |
+| `michi-pipeline` | Async pipeline execution: a validated step plan run sequentially or with a concurrency cap (overall and per key), a per-step run record with replay-honest statuses, resume (at-least-once per step unless the step hands its idempotency key to a downstream that deduplicates), keyed circuit breakers, a retry budget, shared deadline groups, poll and blocking steps, and cancellation. Depends on `michi-core`, `michi-graph`, `tokio` and `tokio-util`. |
 | `michi-graph` | Deterministic dependency graphs, MIT-licensed with no dependencies: validation that reports every problem at once (with a concrete loop for each cycle), topological order, layers, ready sets (also judged per edge kind), ancestors and descendants. |
 | `@orin-dx/michi` | Node.js NAPI bindings built with `@napi-rs/cli` from `packages/michi-node`, which re-exports `michi-core`'s `napi` feature surface. |
 
@@ -178,4 +182,4 @@ just bench       # Run Divan performance benchmarks
 
 ## License
 
-FSL-1.1-MIT — Functional Source License, converting to MIT two years after each release. `michi-graph` is MIT ([`crates/michi-graph/LICENSE`](https://github.com/orin-dx/michi/blob/main/crates/michi-graph/LICENSE)). See [`LICENSE`](https://github.com/orin-dx/michi/blob/main/LICENSE).
+`michi-core` and `michi-pipeline` are FSL-1.1-MIT (Functional Source License, converting to MIT two years after each release). You may use, copy, modify and distribute them, except for the Excluded Purpose in the [`LICENSE`](https://github.com/orin-dx/michi/blob/main/LICENSE): "providing the functionality of the Software to third parties as a competing commercial product or service". If you build a commercial product or service on michi and aren't sure whether that counts as competing, check with your counsel or ask us. `michi-graph` is MIT ([`crates/michi-graph/LICENSE`](https://github.com/orin-dx/michi/blob/main/crates/michi-graph/LICENSE)).
