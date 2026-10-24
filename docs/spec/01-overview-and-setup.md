@@ -177,12 +177,12 @@ michi/                           (workspace root — virtual manifest, no packag
         lib.rs                   # module declarations, explicit root re-exports (incl. resilience and truncate items), Result<T>
         audience.rs              # Audience — always compiled
         empty.rs                 # empty_state(), empty_state_with_hints() and their try_ forms
-        error.rs                 # Error, ErrorCode, DomainError, ErrorClass, Sensitive<T>,
+        error.rs                 # Error, ErrorCode, DomainError, ErrorClass,
                                   # MAY_HAVE_TAKEN_EFFECT_HINT
         float_wire.rs            # serde wire form for non-finite floats (serde feature, private)
         hints.rs                 # Hint, render_hints(), append_hints()
-        idempotency.rs           # FailedOp, PartialSuccess — NOT idempotency keys/already-done
-                                  # (that's resilience::AlreadyDone/already_done(); the
+        idempotency.rs           # FailedOp, PartialSuccess — NOT idempotency keys
+                                  # (those and render_already_done are in resilience; the
                                   # module name is a known, tracked naming staleness)
         int_schema.rs            # integer JSON Schemas (schemars feature, private)
         kv/mod.rs                # render_kv(), KvItem, KvValue, KvError
@@ -198,7 +198,6 @@ michi/                           (workspace root — virtual manifest, no packag
         resilience/budget.rs     # RetryBudget
         response.rs              # AgentResponse builder, OutputFormat, DEFAULT_TRUNCATE_CELLS
         status.rs                # StatusItem, StatusResponse, Health
-        telemetry/mod.rs         # NoopProvider — zero-cost, always compiled
         toon/
           mod.rs                 # ToonOptions, ToonError, render_toon(), list() (serde feature), size limits
           escape.rs              # escape_value(), escape_value_quoted(), escape_key(); canonical numbers

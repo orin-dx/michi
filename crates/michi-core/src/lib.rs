@@ -93,8 +93,6 @@ pub mod resilience;
 pub mod response;
 /// Health and status response rendering.
 pub mod status;
-/// No-op telemetry provider.
-pub mod telemetry;
 /// TOON list rendering, the token-optimized list format.
 pub mod toon;
 /// UTF-8 char-boundary-safe truncation within one string.
@@ -107,7 +105,7 @@ pub(crate) mod test_support;
 
 pub use audience::Audience;
 pub use empty::{empty_state, empty_state_with_hints, try_empty_state, try_empty_state_with_hints};
-pub use error::{DomainError, Error, ErrorClass, ErrorCode, Sensitive, MAY_HAVE_TAKEN_EFFECT_HINT};
+pub use error::{DomainError, Error, ErrorClass, ErrorCode, MAY_HAVE_TAKEN_EFFECT_HINT};
 pub use hints::{append_hints, render_hints, Hint};
 pub use idempotency::{FailedOp, PartialSuccess};
 pub use kv::{render_kv, KvError, KvItem, KvValue};
@@ -119,8 +117,8 @@ pub use status::{Health, StatusItem, StatusResponse};
 // Explicit lists, not globs: a glob would silently re-export every item later added to these modules at the crate
 // root, and could shadow or clash with another root name in a minor release.
 pub use resilience::{
-    already_done, is_retryable_status, next_retry_delay, parse_retry_after, parse_retry_after_at, render_already_done,
-    AlreadyDone, IdempotencyKey, RetryBudget, RetryConfig, RetryConfigError,
+    is_retryable_status, next_retry_delay, parse_retry_after, parse_retry_after_at, render_already_done,
+    IdempotencyKey, RetryBudget, RetryConfig, RetryConfigError,
 };
 pub use truncate::{truncate, truncate_inline, Truncated};
 pub use truncation::{truncate_by_count, truncate_by_size, TruncationOutcome};

@@ -761,3 +761,12 @@ What shipped:
 ### Resolved 2026-10-24 — Automatic format selection is deferred past 1.0
 
 Choosing a body encoding by data shape is not built. It needs measurements of format by shape and at least two consumers hand-rolling the same logic ([`PRINCIPLES.md`](../../PRINCIPLES.md) gate 3); callers choose the body today. See [ADR 9](../adr/0009-v1-positioning-and-criteria.md).
+
+### Resolved 2026-10-24 — Dead surface removed before 1.0
+
+Everything below had no consumer and nothing inside michi called it. Each public item is a promise at 1.0, so they go now (breaking, `michi-core` and `@orin-dx/michi` minor).
+
+- **`AlreadyDone` and `already_done()`, and the Node `alreadyDone`:** an `Option<String>` re-spelled as an enum. Callers already hold the `Option`. `render_already_done()` stays; it renders the document.
+- **`Sensitive<T>`:** it only changed `Debug` and `Display`, its field was public and no renderer accepted it, so it implied protection michi does not give. Keep secrets out of hints, messages and causes (see the trust model in [`02-toon-format.md`](02-toon-format.md#trust-model)).
+- **`telemetry::NoopProvider`:** a no-op stub with no trait behind it. Observability can come back when something needs it.
+- **`exit_code()` on `DomainError`, `Error` and `PartialSuccess`:** the methods. The rendered `exit_code: 1` line in error blocks is unchanged for now.

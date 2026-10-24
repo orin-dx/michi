@@ -32,9 +32,6 @@ impl FailedOp {
 /// Use this when some steps of a multi-step operation succeeded — the agent
 /// can resume from the checkpoint rather than retrying from scratch.
 ///
-/// For a fully-completed prior call, see [`crate::resilience::AlreadyDone`]
-/// and [`crate::resilience::already_done`].
-///
 /// `#[non_exhaustive]`: build it with [`PartialSuccess::new`] or [`PartialSuccess::default`]; the fields stay
 /// public.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -108,12 +105,6 @@ impl PartialSuccess {
         crate::recovery::append_recovery(&mut out, &recovery_hints);
 
         out
-    }
-
-    /// `0` when all operations completed or were skipped; `1` when any failed.
-    #[must_use]
-    pub fn exit_code(&self) -> i32 {
-        i32::from(!self.failed.is_empty())
     }
 }
 
@@ -189,44 +180,6 @@ mod tests {
         let ps = PartialSuccess { completed: vec!["a".into(), "b".into()], failed: vec![], skipped: vec![] };
         let out = ps.render();
         assert_eq!(out, "partial_success: \"2 completed, 0 failed, 0 skipped\"\ncompleted[2]: a,b");
-    }
-
-    #[test]
-    fn partial_success_exit_code_zero_when_no_failures() {
-        let ps = PartialSuccess { completed: vec!["a".into()], failed: vec![], skipped: vec!["b".into()] };
-        assert_eq!(ps.exit_code(), 0);
-    }
-
-    // AC-036: exit_code()==0 holds for the fully-empty combination too, not
-    // just the completed+skipped-both-nonempty combination above.
-    #[test]
-    fn ac036_exit_code_zero_holds_when_completed_and_skipped_are_also_empty() {
-        let ps = PartialSuccess { completed: vec![], failed: vec![], skipped: vec![] };
-        assert_eq!(ps.exit_code(), 0);
-    }
-
-    #[test]
-    fn partial_success_exit_code_one_when_any_failed() {
-        let ps = PartialSuccess {
-            completed: vec![],
-            failed: vec![FailedOp { operation: "x".into(), reason: "y".into(), recovery: None }],
-            skipped: vec![],
-        };
-        assert_eq!(ps.exit_code(), 1);
-    }
-
-    // AC-037: exit_code()==1 regardless of how many entries failed contains
-    // — the existing test above only proves the 1-entry case.
-    #[test]
-    fn ac037_exit_code_one_holds_for_five_failed_entries() {
-        let ps = PartialSuccess {
-            completed: vec![],
-            failed: (0..5)
-                .map(|i| FailedOp { operation: format!("op{i}"), reason: "y".into(), recovery: None })
-                .collect(),
-            skipped: vec![],
-        };
-        assert_eq!(ps.exit_code(), 1);
     }
 
     #[test]

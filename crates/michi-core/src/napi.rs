@@ -1402,47 +1402,6 @@ pub fn render_pipeline(steps: Vec<JsPipelineStep>) -> napi::Result<String> {
     Ok(crate::pipeline::Pipeline::new(String::new(), steps).render())
 }
 
-/// The result of [`already_done`] (JavaScript-friendly).
-#[napi(object)]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct JsAlreadyDone {
-    /// Whether the operation completed in a previous call.
-    pub done: bool,
-    /// The previously stored result when `done`; absent otherwise.
-    pub result: Option<String>,
-}
-
-/// Classify an idempotency lookup: a stored result (any string, even empty) means the operation already completed;
-/// `null` or `undefined` means it has not been seen.
-///
-/// # Errors
-///
-/// Rejects a `stored` value that is not a string, `null` or `undefined`, and one over 64 MiB.
-#[napi(
-    catch_unwind,
-    js_name = "alreadyDone",
-    ts_args_type = "stored?: string | undefined | null",
-    ts_return_type = "JsAlreadyDone"
-)]
-pub fn already_done_js(stored: Option<Unknown<'_>>) -> napi::Result<JsAlreadyDone> {
-    let mut budget = Budget::new();
-    let stored = match stored {
-        Some(v) if !input::is_nullish(v)? => Some(budget.string(v, "stored", input::MAX_INPUT_BYTES)?),
-        _ => None,
-    };
-    Ok(already_done(stored))
-}
-
-/// The Rust-typed core of the `alreadyDone` export.
-#[must_use]
-pub fn already_done(stored: Option<String>) -> JsAlreadyDone {
-    // Every variant is named: a new one must fail to compile here rather than read as "not done" and re-run work.
-    match crate::resilience::already_done(stored) {
-        crate::resilience::AlreadyDone::Yes { result } => JsAlreadyDone { done: true, result: Some(result) },
-        crate::resilience::AlreadyDone::No => JsAlreadyDone { done: false, result: None },
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2754,20 +2713,6 @@ mod tests {
     // --- AC-034a: every #[napi(...)]-attributed free function and every
     // #[napi(...)]-attributed method in `impl JsAgentResponse` carries
     // catch_unwind. ---
-
-    // A wildcard arm would report any future `AlreadyDone` variant as not done, telling JS to run the operation again.
-    // The match must name every variant, so a new one fails to compile here until it is mapped.
-    #[test]
-    fn already_done_maps_every_variant_explicitly() {
-        let napi_src = include_str!("napi.rs");
-        let start = napi_src.find("pub fn already_done(stored: Option<String>)").expect("already_done is defined");
-        let body = &napi_src[start..];
-        let body = &body[..body.find("\n}\n").expect("function ends")];
-        assert!(body.contains("AlreadyDone::No =>"), "{body}");
-        assert!(!body.contains("_ =>"), "no wildcard arm:\n{body}");
-        assert_eq!(already_done(Some(String::new())), JsAlreadyDone { done: true, result: Some(String::new()) });
-        assert_eq!(already_done(None), JsAlreadyDone { done: false, result: None });
-    }
 
     #[test]
     fn ac034a_every_napi_attributed_fn_has_catch_unwind() {

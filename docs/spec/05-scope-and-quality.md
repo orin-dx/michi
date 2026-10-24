@@ -23,7 +23,7 @@
 | TOON renderer | New format — token-efficient list encoding for agent context windows |
 | `kv::render_kv()` | Single item as TOON `key: value` lines; no standard Rust equivalent |
 | `status::StatusResponse` | Typed P8 content-first orientation response |
-| `resilience::already_done()` + `render_already_done()` | Typed already-done signal with canonical output format |
+| `resilience::render_already_done()` | Canonical already-done output format |
 | `idempotency::PartialSuccess` | General partial-success reporting with per-op recovery hints |
 | `resilience::IdempotencyKey` | Canonical key construction with stable hashing |
 | `AgentResponse` builder | One construction API across every consumer |

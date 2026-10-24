@@ -30,25 +30,6 @@ pub enum ErrorClass {
 pub const MAY_HAVE_TAKEN_EFFECT_HINT: &str =
     "the operation may have taken effect; verify whether it completed before retrying, unless it is idempotent";
 
-/// Wraps a value so its inner content is omitted from `Debug` and `Display`.
-///
-/// That is all it does: the field is public, and none of michi's renderers takes a `Sensitive`. Text passed to a hint,
-/// an error message or a cause is rendered as given, so keep secrets out of those strings in the first place.
-#[derive(Clone)]
-pub struct Sensitive<T>(pub T);
-
-impl<T> std::fmt::Debug for Sensitive<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("<redacted>")
-    }
-}
-
-impl<T> std::fmt::Display for Sensitive<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("<redacted>")
-    }
-}
-
 /// The specific kind of domain error.
 ///
 /// Rendered output uses the snake_case [`ErrorCode::label`]; with the `schemars` feature its schema is the enum of
@@ -292,12 +273,6 @@ impl DomainError {
     pub fn retry_after(mut self, d: Duration) -> Self {
         self.retry_after = Some(d);
         self
-    }
-
-    /// The process exit code to use when this error is fatal. Always `1`.
-    #[must_use]
-    pub fn exit_code(&self) -> i32 {
-        1
     }
 
     /// Render as a TOON 4.4 root object, with no trailing newline: `error: <code label>`, `message: …` (quoted per
@@ -578,12 +553,6 @@ impl Error {
         out
     }
 
-    /// The process exit code to use when this error is fatal.
-    #[must_use]
-    pub fn exit_code(&self) -> i32 {
-        1
-    }
-
     /// Classify this error for routing decisions.
     #[must_use]
     pub fn class(&self) -> ErrorClass {
@@ -807,21 +776,6 @@ mod tests {
         assert!(!err.is_retryable(), "Internal-classified error must not be retryable");
     }
 
-    // AC-003/AC-004: Sensitive<T> redacts even a type with no Debug/Display impl.
-    struct NoDebugOrDisplay;
-
-    #[test]
-    fn ac003_sensitive_debug_is_always_redacted() {
-        assert_eq!(format!("{:?}", Sensitive(NoDebugOrDisplay)), "<redacted>");
-        assert_eq!(format!("{:?}", Sensitive("plain str")), "<redacted>");
-    }
-
-    #[test]
-    fn ac004_sensitive_display_is_always_redacted() {
-        assert_eq!(format!("{}", Sensitive(NoDebugOrDisplay)), "<redacted>");
-        assert_eq!(format!("{}", Sensitive("plain str")), "<redacted>");
-    }
-
     // AC-001/AC-002: a compile-time bound proof that ErrorClass/ErrorCode are
     // Copy, distinct from the trybuild exhaustive-match fixtures (which prove
     // #[non_exhaustive], not Copy). Removing `Copy` from either derive still
@@ -927,20 +881,6 @@ mod tests {
         assert_eq!(base.render(), with_retry_after.render());
         assert_eq!(base.render_github_annotation(), with_retry_after.render_github_annotation());
         assert_eq!(base.render_json(), with_retry_after.render_json());
-    }
-
-    #[test]
-    fn ac013_exit_code_is_always_one() {
-        assert_eq!(DomainError::new(ErrorCode::InvalidInput, "m").exit_code(), 1);
-        assert_eq!(
-            DomainError::new(ErrorCode::Unavailable, "m")
-                .hint("h")
-                .recovery(RecoveryHint::new("t"))
-                .retryable(false)
-                .retry_after(Duration::from_secs(5))
-                .exit_code(),
-            1
-        );
     }
 
     #[test]
@@ -1101,13 +1041,6 @@ mod tests {
     fn ac026_error_not_found_variant_renders_exact_prefix() {
         let e = Error::NotFound("issue 42".into());
         assert_eq!(e.render(), "error: not_found\nmessage: issue 42\nexit_code: 1");
-    }
-
-    #[test]
-    fn ac027_exit_code_is_one_for_every_variant() {
-        assert_eq!(Error::InvalidInput("x".into()).exit_code(), 1);
-        assert_eq!(Error::NotFound("x".into()).exit_code(), 1);
-        assert_eq!(Error::Domain(DomainError::new(ErrorCode::Unavailable, "x")).exit_code(), 1);
     }
 
     // AC-030 TRAP: a test named for the InvalidInput/NotFound *variants* must actually

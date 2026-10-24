@@ -10,7 +10,7 @@ This document describes how the `michi` workspace crates fit together.
 michi (workspace root, virtual manifest)
 ├── crates/
 │   ├── michi-core        # Every sync primitive: toon, kv, hints, recovery, empty, error, status, mcp, audience,
-│   │                     #   response (AgentResponse), pipeline (data type), truncate, truncation, resilience, telemetry;
+│   │                     #   response (AgentResponse), pipeline (data type), truncate, truncation, resilience;
 │   │                     #   napi (feature)
 │   ├── michi-graph       # MIT, no dependencies: dependency graphs (GraphBuilder, Graph, Dag), validation, order, layers
 │   └── michi-pipeline    # Async pipeline execution: Plan, execute/resume, RunRecord, BreakerRegistry, CancellationToken
@@ -49,7 +49,7 @@ michi is a response contract (totals, truncation reports, hints, recovery steps,
 `michi` provides two main entry points for formatting output:
 
 1. **`response::AgentResponse` (Fluent Builder)**: Composes TOON lists, KV items, `help[]` hints, and recovery guidance into a unified output buffer. Supports assistant/user audience routing and direct conversion to MCP `CallToolResult`.
-2. **Standalone DTOs**: `DomainError`, `StatusResponse`, `AlreadyDone`, and `empty_state()` render themselves directly into agent-readable KV blocks or GitHub Actions annotations without passing through `AgentResponse`.
+2. **Standalone DTOs**: `DomainError`, `StatusResponse`, and `empty_state()` render themselves directly into agent-readable KV blocks or GitHub Actions annotations without passing through `AgentResponse`.
 
 ```mermaid
 flowchart TB

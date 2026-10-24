@@ -58,7 +58,7 @@ All modules live in `crates/michi-core/src/`.
 | `truncation` | `TruncationOutcome`: what a cap on a list cut, however the caller chose the survivors |
 | `empty` | Definitive empty state responses |
 | `error` | Unified `michi_core::Error` type with agent rendering |
-| `idempotency` | Partial-success reporting (`PartialSuccess`/`FailedOp`) — despite the name, idempotency keys and already-done detection live in `resilience` (`AlreadyDone`/`already_done()`), not here |
+| `idempotency` | Partial-success reporting (`PartialSuccess`/`FailedOp`) — despite the name, idempotency keys and `render_already_done` live in `resilience`, not here |
 | `resilience` | Retry config, delay calculation, retry-after parsing |
 | `status` | Health/status response rendering |
 | `recovery` | Recovery hint blocks |
@@ -66,5 +66,4 @@ All modules live in `crates/michi-core/src/`.
 | `mcp` | MCP `CallToolResult` assembly — always compiled, no feature gate |
 | `audience` | `Audience` (assistant/user) — shared by `mcp` and `response::render_for()` |
 | `pipeline` | Pipeline pure data type + render (execution lives in `crates/michi-pipeline`, not `crates/michi-core`) |
-| `telemetry` | No-op telemetry provider (`NoopProvider`) — zero-cost default, always compiled |
 | `napi` | NAPI export surface for `@orin-dx/michi` (`napi` feature only) — the one module allowed `unsafe` |

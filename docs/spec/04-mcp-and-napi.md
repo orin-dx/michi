@@ -246,7 +246,7 @@ The first published release was 0.3.1 (0.3.0 was never published). The four pack
 
 This is auto-generated, never hand-written — `napi build` regenerates it from the `#[napi]` attributes in `crates/michi-core/src/napi.rs` every time.
 
-- Every object type is `Js`-prefixed, matching its Rust struct name: `JsToonValue`, `JsToonOptions`, `JsKvItem`, `JsRecoveryHint`, `JsStatusItem`, `JsFailedOp`, `JsPipelineStep`, `JsAlreadyDone`, `JsContentBlock`, `JsAnnotations`, `JsCallToolResult`.
+- Every object type is `Js`-prefixed, matching its Rust struct name: `JsToonValue`, `JsToonOptions`, `JsKvItem`, `JsRecoveryHint`, `JsStatusItem`, `JsFailedOp`, `JsPipelineStep`, `JsContentBlock`, `JsAnnotations`, `JsCallToolResult`.
 - There's no unprefixed `ToonValue`/`CallToolResult`/etc. in the real output, whatever an older sketch of this section might have suggested.
 
 What's actually in `packages/michi-node/index.d.ts` today (rendering-domain surface; the resilience-, status-, and error-domain functions follow further down):
@@ -498,15 +498,6 @@ export interface JsPipelineStep {
 
 /** Render pipeline state as `step[N]{id,name,status,reason}:`, or `step: []` with no steps. */
 export declare function renderPipeline(steps: Array<JsPipelineStep>): string;
-
-export interface JsAlreadyDone {
-  done: boolean;
-  /** The stored result when `done`. */
-  result?: string;
-}
-
-/** Classify an idempotency lookup: any stored string (even empty) is done; `null`/`undefined` is not. */
-export declare function alreadyDone(stored?: string | undefined | null): JsAlreadyDone;
 ```
 
 `truncate` is already the inline form (`truncate_inline`), so there is no separate `truncateInline` export. Rust's richer `truncate()` result (`Truncated`) does not cross the boundary.

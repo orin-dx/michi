@@ -6,7 +6,7 @@
 //!
 //! Retry configuration, delay calculation, RFC 9110 `Retry-After` parsing,
 //! retryable HTTP statuses, a [`RetryBudget`], and idempotency primitives:
-//! FNV-1a [`IdempotencyKey`]s and already-done detection ([`already_done`]).
+//! FNV-1a [`IdempotencyKey`]s and the already-done document ([`render_already_done`]).
 
 use std::time::Duration;
 
@@ -391,35 +391,6 @@ impl From<String> for IdempotencyKey {
 impl From<&str> for IdempotencyKey {
     fn from(s: &str) -> Self {
         Self(s.into())
-    }
-}
-
-/// Result of an idempotency check.
-///
-/// # Caller responsibility
-///
-/// Use [`AlreadyDone`] when an operation fully completed in a prior call.
-/// For operations that only partially completed (some steps succeeded, some
-/// failed), use [`crate::idempotency::PartialSuccess`] instead. michi
-/// does not enforce this distinction — the choice is the caller's responsibility.
-#[derive(Debug, Clone, PartialEq)]
-#[non_exhaustive]
-pub enum AlreadyDone {
-    /// The operation completed in a previous call.
-    Yes {
-        /// The previously stored result.
-        result: String,
-    },
-    /// The operation has not been seen before — proceed with execution.
-    No,
-}
-
-/// Check whether an operation has already completed.
-#[must_use]
-pub fn already_done(stored: Option<String>) -> AlreadyDone {
-    match stored {
-        Some(result) => AlreadyDone::Yes { result },
-        None => AlreadyDone::No,
     }
 }
 
@@ -990,7 +961,6 @@ mod tests {
     fn test_auto_traits() {
         assert_send_sync_static::<RetryConfig>();
         assert_send_sync_static::<IdempotencyKey>();
-        assert_send_sync_static::<AlreadyDone>();
     }
 
     #[test]
@@ -1090,16 +1060,6 @@ mod tests {
         assert_eq!(c.base_delay, Duration::from_millis(500));
         assert_eq!(c.max_delay, Duration::from_secs(30));
         assert_eq!(c.jitter_factor, 0.2);
-    }
-
-    #[test]
-    fn already_done_yes_when_stored() {
-        assert_eq!(already_done(Some("prior result".into())), AlreadyDone::Yes { result: "prior result".into() });
-    }
-
-    #[test]
-    fn already_done_no_when_none() {
-        assert_eq!(already_done(None), AlreadyDone::No);
     }
 
     #[test]

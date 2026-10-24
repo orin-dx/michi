@@ -247,8 +247,6 @@ skipped[1]{index,operation,reason}:
 
 **This one is a major bump.** Today's `completed[2]: a,b` inline array becomes `completed[2]{index,operation}:`, so existing rendered output differs — the SemVer table calls that major, and the exact-output tests in `idempotency.rs` (AC-032, AC-033) and the `snapshot_partial_success_full` insta snapshot change with it. There is no external consumer to break yet, which is the cheapest moment this change will ever have.
 
-`exit_code()` is unchanged: `0` when nothing failed, `1` when anything did.
-
 ### 5. `structured_content` and a published `outputSchema`
 
 `to_call_tool_result()` already builds `structured_content` from `render(OutputFormat::Json)`. Extend that JSON to carry the envelope:

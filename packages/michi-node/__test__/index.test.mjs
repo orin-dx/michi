@@ -23,7 +23,6 @@ import {
   renderPartialSuccess,
   renderPipeline,
   emptyStateWithHints,
-  alreadyDone,
 } from '../index.js'
 
 void describe('renderToon', () => {
@@ -1152,25 +1151,6 @@ void describe('emptyStateWithHints', () => {
     assert.throws(
       () => emptyStateWithHints('t', ['x'.repeat(1_048_577)]),
       /^Error: hint byte length \(at least 1048577\) exceeds maximum of 1048576$/,
-    )
-  })
-})
-
-void describe('alreadyDone', () => {
-  void it('classifies a stored result as done and a missing one as not done', () => {
-    assert.deepStrictEqual({ ...alreadyDone('issue #42') }, { done: true, result: 'issue #42' })
-    assert.strictEqual(alreadyDone(null).done, false)
-    assert.strictEqual(alreadyDone(null).result, undefined)
-    assert.strictEqual(alreadyDone(undefined).done, false)
-    assert.strictEqual(alreadyDone().done, false)
-    assert.deepStrictEqual({ ...alreadyDone('') }, { done: true, result: '' })
-  })
-
-  void it('rejects a non-string and a stored result over 64 MiB', () => {
-    assert.throws(() => alreadyDone(42), /^Error: stored must be a string$/)
-    assert.throws(
-      () => alreadyDone('x'.repeat(64 * 1024 * 1024 + 1)),
-      /^Error: stored byte length \(at least 67108865\) exceeds maximum of 67108864$/,
     )
   })
 })

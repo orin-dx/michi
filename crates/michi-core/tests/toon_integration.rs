@@ -136,7 +136,6 @@ fn crate_root_reexports_are_reachable() {
     type KvResult = Result<String, michi_core::KvError>;
     let _: fn(&[michi_core::kv::KvItem], Option<usize>, &[michi_core::Hint]) -> KvResult = michi_core::render_kv;
     let _ = michi_core::empty_state("t");
-    let _: fn(Option<String>) -> michi_core::AlreadyDone = michi_core::already_done;
     let _: fn(&str, &str, &[String]) -> String = michi_core::render_already_done;
     let _ = michi_core::RetryConfig::default();
     let _: fn(&str) -> Option<std::time::Duration> = michi_core::parse_retry_after;

@@ -5,7 +5,7 @@
 `michi-core` is the one crate holding every sync primitive. Each primitive is a module (`michi_core::toon`, `michi_core::kv`, `michi_core::truncate`, `michi_core::resilience`, …), and the most-used types are re-exported at the crate root:
 
 ```rust
-pub use error::{DomainError, Error, ErrorClass, ErrorCode, Sensitive, MAY_HAVE_TAKEN_EFFECT_HINT};
+pub use error::{DomainError, Error, ErrorClass, ErrorCode, MAY_HAVE_TAKEN_EFFECT_HINT};
 pub use response::{AgentResponse, OutputFormat};
 pub use kv::{render_kv, KvError, KvItem, KvValue};
 pub use audience::Audience;
@@ -203,8 +203,6 @@ impl Error {
     pub fn is_retryable(&self) -> bool; // class() == Transient
 }
 
-/// Omits its content from Debug and Display (both print "<redacted>").
-pub struct Sensitive<T>(pub T);
 ```
 
 - `render()` outputs a TOON 4.4 document: `error: <code>`, `message: …` (quoted per §7.2), `causes[N]: …` when there are causes, `exit_code: 1`, then `help[N]: …` and `recovery[1]{tool,params,reason}:` when set. `Error::render()` uses the same shape for every variant (`error: invalid_input` / `error: not_found` for the non-domain variants). See [02-toon-format.md](02-toon-format.md#agent-facing-blocks).
@@ -306,10 +304,7 @@ impl FailedOp {
     pub fn recovery(self, hint: RecoveryHint) -> Self;
 }
 
-// In michi_core::resilience (also at michi_core::already_done, michi_core::AlreadyDone)
-#[non_exhaustive]
-pub enum AlreadyDone { Yes { result: String }, No }
-pub fn already_done(stored: Option<String>) -> AlreadyDone;
+// In michi_core::resilience
 pub fn render_already_done(operation: &str, summary: &str, hints: &[String]) -> String;
 pub struct IdempotencyKey(pub String); // also From<String>, From<&str>
 impl IdempotencyKey {
@@ -414,17 +409,9 @@ impl Pipeline {
 // michi_core::audience
 #[non_exhaustive]
 pub enum Audience { Assistant, User } // serde: "assistant" / "user"
-
-// michi_core::telemetry
-#[derive(Debug, Clone, Copy, Default)]
-pub struct NoopProvider;
-impl NoopProvider {
-    pub fn span(&self, name: &str);             // no-op
-    pub fn count(&self, name: &str, value: u64); // no-op
-}
 ```
 
-The structs above are `#[non_exhaustive]` from 0.4.0: build them with their constructors, then read or assign their public fields as before. Struct literals and exhaustive destructuring work only inside michi-core, so adding a field later is not a breaking change. `Value`, `KvValue`, `AlreadyDone`, `RetryConfigError` and the other enums marked `#[non_exhaustive]` above need a `_` arm in a `match` outside michi-core.
+The structs above are `#[non_exhaustive]` from 0.4.0: build them with their constructors, then read or assign their public fields as before. Struct literals and exhaustive destructuring work only inside michi-core, so adding a field later is not a breaking change. `Value`, `KvValue`, `RetryConfigError` and the other enums marked `#[non_exhaustive]` above need a `_` arm in a `match` outside michi-core.
 
 `KvValue::Float(f, decimals)` rounds `f` to `decimals` places and writes the rounded value in canonical TOON number form, so `Float(1.5, 3)` is `1.5`, not `1.500`; `KvValue::FULL_PRECISION` (255) never rounds, so `Float(5e-324, KvValue::FULL_PRECISION)` is `5e-324` in TOON and in the JSON companions, while a smaller count rounds as asked (`Float(1e-300, 2)` is `0`); `Missing` is `null`; `Duration` is the string `1.5s`. `AgentResponse`'s KV path turns a `KvError` into a `kv_validation_failed` error body and sets `is_error`, like `toon_validation_failed` on the TOON path.
 
