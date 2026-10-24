@@ -139,7 +139,7 @@ impl RunId {
     ///
     /// An [`IdError`] if `prefix` is not a valid slug or the result would exceed [`MAX_ID_LEN`].
     pub fn unique(prefix: &str) -> Result<Self, IdError> {
-        use std::hash::{BuildHasher, Hash, Hasher};
+        use std::hash::BuildHasher;
 
         static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         validate(prefix)?;
@@ -150,9 +150,8 @@ impl RunId {
         let seq = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // `RandomState` is keyed from the OS's randomness once per process (and stepped per instance), so the hash is
         // unpredictable across processes even when millis, pid and seq match.
-        let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
-        (millis, pid, seq).hash(&mut hasher);
-        Self::try_new(unique_id(prefix, millis, pid, seq, hasher.finish()))
+        let entropy = std::collections::hash_map::RandomState::new().hash_one((millis, pid, seq));
+        Self::try_new(unique_id(prefix, millis, pid, seq, entropy))
     }
 }
 

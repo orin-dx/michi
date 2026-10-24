@@ -391,7 +391,8 @@ proptest! {
             let rebuilt = RunRecord::from_parts(rid("r"), built.plan.fingerprint(), &built.plan, saved)
                 .expect("a consistent record rebuilds");
             built.shared.phase.store(1, Ordering::SeqCst);
-            resume(&rebuilt, &built.plan, &ResumeOptions::new(options(&case))).await.expect("same plan resumes");
+            let _resumed =
+                resume(&rebuilt, &built.plan, &ResumeOptions::new(options(&case))).await.expect("same plan resumes");
             for i in &proven {
                 prop_assert_eq!(
                     built.calls[*i].load(Ordering::SeqCst),
