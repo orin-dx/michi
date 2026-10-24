@@ -13,7 +13,7 @@ What need or bug this addresses — the diff already shows what changed.
 
 - [ ] `just check-all` passes (formatting, clippy, rustdoc, tests)
 - [ ] New behavior has test coverage (`insta` snapshot, `proptest`, or unit test as appropriate)
-- [ ] If touching `michi-node` or `src/napi.rs`: Node.js NAPI tests pass too
+- [ ] If touching `packages/michi-node` or `crates/michi-core/src/napi.rs`: Node.js NAPI tests pass too
 
 ## Related
 

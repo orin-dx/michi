@@ -78,8 +78,8 @@ impl StepRecord {
     }
 
     /// A `Running` record for a step that has started. Persist one from [`crate::DurableObserver::record_start`] (with
-    /// [`crate::ExecOptions::durable_starts`]) or [`crate::StepObserver::on_step_started`] so that, after a crash, [`RunRecord::from_parts`] and resume treat
-    /// the step as possibly applied instead of re-running it blindly.
+    /// [`crate::ExecOptions::durable_starts`]) or [`crate::StepObserver::on_step_started`] so that, after a crash,
+    /// [`RunRecord::from_parts`] and resume treat the step as possibly applied instead of re-running it blindly.
     #[must_use]
     pub fn in_flight(step_id: StepId, name: impl Into<String>) -> Self {
         let mut record = Self::new(step_id, name.into(), StepStatus::Running);

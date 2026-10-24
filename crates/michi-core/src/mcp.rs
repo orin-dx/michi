@@ -88,7 +88,7 @@ pub struct CallToolResult {
     /// Whether this is a tool execution error.
     pub is_error: bool,
     /// Machine-readable JSON companion to the text in `content`: the text of a JSON object, or empty for none. This is
-    /// typically a richer, typed representation (e.g. `AgentResponse::render_json()`
+    /// typically a richer, typed representation (e.g. `AgentResponse::render(OutputFormat::Json)`
     /// or `DomainError::render_json()`) — it is NOT a copy of `content[0].text`.
     pub structured_content: String,
 }

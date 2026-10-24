@@ -18,4 +18,4 @@ The concrete case that's blocked without this.
 
 ## Proposed shape (optional)
 
-Rough API sketch, if you have one — Rust, TypeScript, or both if it belongs in the facade.
+Rough API sketch, if you have one — Rust, TypeScript, or both if it belongs in the Node.js package too.

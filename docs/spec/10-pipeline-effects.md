@@ -148,7 +148,7 @@ michi-core gains three reason variants and their render labels, all on `#[non_ex
 
 ## Out of scope here
 
-Callisto's other requests stay separate and land only as its spike needs them: a poll step bounded by a deadline rather than a retry count, a shared deadline for a group of steps, a per-key concurrency cap, a blocking-step adapter, and typed step outputs.
+Callisto's other requests stay separate and land only as its spike needs them: a poll step bounded by a deadline rather than a retry count, a shared deadline for a group of steps, a per-key concurrency cap, a blocking-step adapter, and typed step outputs. All but typed step outputs shipped in 0.6; see 08.
 
 ## Tests the implementation needs
 
@@ -165,8 +165,8 @@ Each is the safer reading where this proposal was silent or the code disagreed:
 
 - **HTTP 408** stays non-retryable, as michi-core's `is_retryable_status` says. It is `NotApplied`. Changing retry policy was not needed for the defects.
 - **A held `Failed` step** becomes `OutcomeUnknown(StepFailed)` when resume keeps it, so the record names the recovery resume will follow.
-- **`awaits_verification()`** lists every `Failed` whose effect is not `NotApplied`, including idempotent steps, because a `StepRecord` does not know its step's `Replay`. Resume still runs idempotent ones.
+- **`awaits_verification()`** lists every `Failed` whose effect is not `NotApplied`, including idempotent steps, because a `StepRecord` does not know its step's `Replay`. Resume still runs idempotent ones. Changed in 0.6: a record now carries its step's `Replay`, and idempotent steps are no longer listed.
 - **Precheck after an attempt:** when precheck says `Unknown` after an attempt whose effect was not applied, the step ends `Failed` with that attempt's error (the proposal only covered an unknown earlier attempt). A `refused` precheck after an attempt with an unknown effect ends `OutcomeUnknown`, not `Failed`.
 - **A `NotApplied` verdict on a prechecked step** still runs the precheck before the attempt, instead of the verdict skipping it.
-- **Durable starts without a start-recording observer** (none, or a closure) refuse every step with `NotRun(StartNotRecorded)`.
+- **Durable starts take the observer:** `durable_starts(observer)` needs a `DurableObserver`, so durable starts without a start-recording observer (none, or a closure) do not compile, instead of the proposal's flag refusing every step at run time (see "Durable starts" above).
 - **Breaker:** found in the same sweep, `refused` now counts as a success for the breaker, like an HTTP 4xx.

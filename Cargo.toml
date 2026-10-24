@@ -8,8 +8,8 @@ members  = [
 resolver = "2"
 
 [workspace.package]
-# No shared `version`: Callisto writes each crate's version itself and keeps michi-core, michi-pipeline and the npm
-# package equal through its fixed group (callisto.toml). CI's version-sync job checks they agree.
+# No shared `version`: Callisto writes each crate's version itself and keeps michi-core, michi-graph, michi-pipeline
+# and the npm package equal through its fixed group (callisto.toml). CI's version-sync job checks they agree.
 edition      = "2021"
 rust-version = "1.93"
 license      = "FSL-1.1-MIT"

@@ -131,7 +131,7 @@ impl std::error::Error for ToonError {}
 #[non_exhaustive]
 pub struct ToonOptions {
     /// Snake_case type name, e.g. `"issue"`, `"component"`: the key of the list entry. Names outside TOON's
-    /// unquoted-key pattern are quoted (§7.3); `totalCount` and `help` are reserved.
+    /// unquoted-key pattern are quoted (§7.3); `totalCount`, `help` and `recovery` are reserved.
     pub type_name: String,
     /// Ordered, distinct field names for the header, e.g. `["number", "title", "state"]`, quoted when §7.3 requires.
     /// Not emitted when `rows` is empty (an empty list renders as `type: []`).
@@ -158,7 +158,8 @@ pub struct ToonOptions {
 }
 
 impl ToonOptions {
-    /// Create a new ToonOptions struct with type_name and fields.
+    /// Create options from a type name, fields and rows, with no total count or hints, the default 200-char cell cap
+    /// and no truncation hint.
     #[must_use]
     pub fn new(type_name: impl Into<String>, fields: Vec<String>, rows: Vec<Vec<Value>>) -> Self {
         Self {

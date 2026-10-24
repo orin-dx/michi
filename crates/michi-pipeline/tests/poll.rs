@@ -1,5 +1,5 @@
-//! The poll step: one attempt that checks on a fixed schedule until ready, a definitive failure, its deadline or
-//! cancellation. All on Tokio's paused clock.
+//! The poll step: one attempt that checks on a fixed schedule until ready, an error that is not retryable, its
+//! deadline or cancellation. All on Tokio's paused clock.
 
 mod common;
 

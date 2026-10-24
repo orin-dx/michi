@@ -1,6 +1,6 @@
 # 7. Pipeline execution: plans, run records and replay safety
 
-Status: Accepted
+Status: Accepted. Amended in 0.5: the `definitive` replay class became `Refused` (not applied) and `Ambiguous` (effect unknown), and plan validation and ordering moved to `michi-graph`. See `crates/michi-pipeline/CHANGELOG.md`.
 
 ## Context
 

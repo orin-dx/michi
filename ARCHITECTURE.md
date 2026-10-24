@@ -4,7 +4,7 @@ This document describes how the `michi` workspace crates fit together.
 
 ## Workspace Layout
 
-`michi` is structured as a virtual Cargo workspace (the root `Cargo.toml` has no `[package]`) with two published crates in `crates/` and one unpublished binding crate in `packages/`:
+`michi` is structured as a virtual Cargo workspace (the root `Cargo.toml` has no `[package]`) with three published crates in `crates/` and one unpublished binding crate in `packages/`:
 
 ```text
 michi (workspace root, virtual manifest)
@@ -31,15 +31,15 @@ graph LR
     node -- "features = [napi]" --> core
 ```
 
-`michi-core`, `michi-graph`, `michi-pipeline` and `michi-node` version in lockstep (each crate's `version`, kept equal by Callisto), released together as a Callisto fixed group. `michi-graph` is MIT and depends on nothing in michi; `michi-pipeline` keeps its types out of its public API. The workspace crates depend on each other through exact `=x.y.z` pins, so a mixed set never resolves.
+`michi-core`, `michi-graph`, `michi-pipeline` and `michi-node` version in lockstep (each crate's `version`, kept equal by Callisto), released together as a Callisto fixed group. `michi-graph` is MIT and depends on nothing in michi; `michi-pipeline` keeps `michi-graph`'s types out of its public API. The workspace crates depend on each other through exact `=x.y.z` pins, so a mixed set never resolves.
 
 ## Component Overview
 
 | Crate / Package | Responsibility | Runtime Dependencies |
 | --- | --- | --- |
-| `michi-core` | All sync AXI primitives. `toon`: TOON list rendering and parsing with stack-inlined `CompactString` cells. `truncate`: UTF-8 char-boundary content truncation (`floor_char_boundary`). `truncation`: `TruncationOutcome`, the report of what a list cap cut. `resilience`: retry back-off math, `Retry-After` HTTP date parsing, FNV-1a idempotency keys. Response DTOs: `AgentResponse`, `DomainError`, `StatusResponse`, `CallToolResult`, and the `Pipeline` data type. The public `resilience`, `truncate` and `truncation` items are re-exported at the crate root by explicit list. | `thiserror`, `compact_str` (Optional: `serde`, `serde_json`, `schemars`, `miette`, `napi`, `napi-derive`) |
-| `michi-pipeline` | Async execution of a validated `Plan` of steps: one `JoinSet` scheduler (sequential or capped parallel), a returned `RunRecord` whose statuses are `michi-core`'s `StepStatus`, `resume` from a record, a keyed `BreakerRegistry`, a per-run `RetryBudget`, `CancellationToken` and a `StepObserver`. Own `ExecutionError` and `PlanError` types, converting into `DomainError` via `From` — not variants of `michi_core::Error`. See `docs/spec/08-pipeline-execution.md`. | `michi-core`, `michi-graph`, `tokio`, `tokio-util`, `thiserror` (optional: `serde`) |
-| `michi-graph` | MIT, `no_std` + `alloc`. Deterministic dependency graphs: `GraphBuilder` declares nodes and kinded edges, `Graph` may hold cycles, and validation returns a `Dag` or every violation at once. Topological order, layers, ready sets, ancestors and descendants, all following one caller-chosen tie-break. See `docs/spec/09-graph.md`. | none |
+| `michi-core` | All sync AXI primitives. `toon`: TOON list rendering (no public parser) with stack-inlined `CompactString` cells. `truncate`: UTF-8 char-boundary content truncation (`floor_char_boundary`). `truncation`: `TruncationOutcome`, the report of what a list cap cut. `resilience`: retry back-off math, `Retry-After` HTTP date parsing, FNV-1a idempotency keys. Response DTOs: `AgentResponse`, `DomainError`, `StatusResponse`, `CallToolResult`, and the `Pipeline` data type. The public `resilience`, `truncate` and `truncation` items are re-exported at the crate root by explicit list. | `thiserror`, `compact_str` (Optional: `serde`, `serde_json`, `schemars`, `miette`, `napi`, `napi-derive`) |
+| `michi-pipeline` | Async execution of a validated `Plan` of steps: one `JoinSet` scheduler (sequential or capped parallel, with optional per-key concurrency limits), shared deadline groups, poll steps (`poll_step`) and blocking steps (`step_blocking`), a returned `RunRecord` whose statuses are `michi-core`'s `StepStatus`, `resume` from a record, a keyed `BreakerRegistry`, a per-run `RetryBudget`, `CancellationToken` and a `StepObserver`. Own `ExecutionError` and `PlanError` types, converting into `DomainError` via `From` — not variants of `michi_core::Error`. See `docs/spec/08-pipeline-execution.md`. | `michi-core`, `michi-graph`, `tokio`, `tokio-util`, `thiserror` (optional: `serde`) |
+| `michi-graph` | MIT, `no_std` + `alloc`. Deterministic dependency graphs: `GraphBuilder` declares nodes and kinded edges, `Graph` may hold cycles, and validation returns a `Dag` or every violation at once. A `Dag<K, E>` keeps each edge's kind, so `ready_by_edge` can judge edges by kind. Topological order, layers, ready sets, ancestors and descendants, all following one caller-chosen tie-break. See `docs/spec/09-graph.md`. | none |
 | `packages/michi-node` | NAPI cdylib shim for `@orin-dx/michi`. Not published to crates.io. | `michi-core` (`napi` feature), `napi`, `napi-derive` |
 
 ## Data Composition & Render Flow

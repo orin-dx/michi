@@ -107,8 +107,8 @@ struct Slot {
     waiting: BTreeSet<usize>,
 }
 
-/// A deadline group's window. It opens when the group's first step is dispatched; `ends` is `None` while it is shut
-/// or when its end is too far away for the clock to represent.
+/// A deadline group's window. It opens when the group's first step is dispatched; `ends` is `None` until then, or
+/// when its end is too far away for the clock to represent.
 struct Window {
     key: String,
     length: Duration,
@@ -620,8 +620,9 @@ async fn precheck_once(
 ///
 /// Healthy: a client error (the downstream answered and rejected this request, so it is up) and
 /// [`ExecutionError::refused`] (the step rejected the work before any call, so it says nothing about the downstream).
-/// Neither: cancellation and interruption. Failure: everything else, including [`ExecutionError::rejected`] (a
-/// dependency turned the request away) and [`ExecutionError::failed`] (the step can't say what happened).
+/// Neither: cancellation, interruption and a passed deadline. Failure: everything else, including
+/// [`ExecutionError::rejected`] (a dependency turned the request away) and [`ExecutionError::failed`] (the step can't
+/// say what happened).
 fn report_failure(guard: Option<AdmissionGuard>, err: &ExecutionError) {
     if let Some(guard) = guard {
         match err.innermost() {
@@ -823,8 +824,8 @@ fn is_client_error(status: u16) -> bool {
 }
 
 /// The backoff before retry `attempt + 1`: michi-core's [`next_retry_delay`], except that a server's `retry_after` is
-/// honoured in full even past `RetryConfig::max_delay`, which caps only the exponential backoff. The step deadline
-/// still bounds it: the caller stops retrying if the wait would end past the deadline.
+/// honoured in full even past `RetryConfig::max_delay`, which caps only the exponential backoff. The step's deadline
+/// (its own or its group's) still bounds it: the caller stops retrying if the wait would end past the deadline.
 fn retry_delay(retry: &RetryConfig, attempt: u32, seed: f64, retry_after: Option<Duration>) -> Option<Duration> {
     let backoff = next_retry_delay(retry, attempt, seed, retry_after)?;
     Some(retry_after.map_or(backoff, |hint| backoff.max(ceil_to_millis(hint))))
@@ -861,8 +862,9 @@ fn derived_jitter_seed(run_id: &RunId, step_id: &StepId, attempt: u32) -> f64 {
 }
 
 /// The terminal status and final error for a step whose last attempt failed with `err`. `cancelled` says whether the
-/// step's cancellation token had fired. A step that returns [`ExecutionError::Cancelled`] while it had not stopped on
-/// its own, so it ends `Failed`: a root cause that resume runs again, not a `Skipped(Cancelled)` consequence.
+/// step's cancellation token had fired. A step that returns [`ExecutionError::Cancelled`] while the token had not
+/// fired stopped on its own, so it ends `Failed`: a root cause that resume runs again, not a `Skipped(Cancelled)`
+/// consequence.
 ///
 /// An error whose effect is unknown ends a step that is not idempotent `OutcomeUnknown`, wrapped in
 /// [`ExecutionError::AmbiguousOutcome`], so resume holds it (or, for a prechecked step, runs its precheck) instead of

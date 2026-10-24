@@ -1,5 +1,7 @@
 # Spec Parity Implementation Plan
 
+> **Historical record.** This dated document shows what was planned or decided at the time; much of it has since changed. Don't implement from it. For current behavior, see [`docs/spec/`](../../spec/README.md), [`ARCHITECTURE.md`](../../../ARCHITECTURE.md) and the [ADRs](../../adr/README.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Bring the michi crate's actual implementation up to what `docs/01-spec.md` describes, closing every gap between the two — while explicitly preserving the handful of places where the shipped implementation has already superseded the spec for good, documented reasons (napi v3, `divan` not `criterion`, zero-dep-by-default architecture).

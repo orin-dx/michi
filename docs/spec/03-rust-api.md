@@ -8,7 +8,13 @@
 pub use error::{DomainError, Error, ErrorClass, ErrorCode, Sensitive, MAY_HAVE_TAKEN_EFFECT_HINT};
 pub use response::{AgentResponse, OutputFormat};
 pub use kv::{render_kv, KvError, KvItem, KvValue};
-// … audience, empty, hints, idempotency, mcp, recovery, status
+pub use audience::Audience;
+pub use empty::{empty_state, empty_state_with_hints, try_empty_state, try_empty_state_with_hints};
+pub use hints::{append_hints, render_hints, Hint};
+pub use idempotency::{FailedOp, PartialSuccess};
+pub use mcp::{CallToolResult, ContentBlock, StructuredContentError};
+pub use recovery::{append_recovery, render_recovery, RecoveryHint};
+pub use status::{Health, StatusItem, StatusResponse};
 pub use resilience::{
     already_done, is_retryable_status, next_retry_delay, parse_retry_after, parse_retry_after_at,
     render_already_done, AlreadyDone, IdempotencyKey, RetryBudget, RetryConfig, RetryConfigError,
@@ -19,7 +25,7 @@ pub use truncation::{truncate_by_count, truncate_by_size, TruncationOutcome};
 pub type Result<T> = std::result::Result<T, Error>;
 ```
 
-The root re-exports are explicit lists (0.4.0 replaced the `resilience::*` and `truncate::*` globs), so a new item in a module does not appear at the root by accident. `toon` is not re-exported at the root; its items are reached as `michi_core::toon::ToonOptions`, `michi_core::toon::list()`, and so on. There is no `michi` crate (the name on crates.io belongs to an unrelated project); consumers who prefer `michi::` paths rename the dependency with `michi = { package = "michi-core", version = "0.3" }`.
+The root re-exports are explicit lists (0.4.0 replaced the `resilience::*` and `truncate::*` globs), so a new item in a module does not appear at the root by accident. `toon`, `pipeline` and `telemetry` are not re-exported at the root; their items are reached as `michi_core::toon::ToonOptions`, `michi_core::toon::list()`, `michi_core::pipeline::StepStatus`, and so on. There is no `michi` crate (the name on crates.io belongs to an unrelated project); consumers who prefer `michi::` paths rename the dependency with `michi = { package = "michi-core", version = "0.7" }`.
 
 ## `toon` — List Rendering
 
@@ -52,6 +58,21 @@ impl ToonOptions {
     /// differs from fields.len() (checked in that order). Any other name is valid and is quoted per TOON 4.4 §7.3.
     pub fn validate(&self) -> Result<ToonDocument<'_>, ToonError>;
 }
+impl Default for ToonOptions { ... } // empty type name, no fields or rows, max_cell_len 200
+
+/// Proof that the options validated; only `ToonOptions::validate()` (or `ToonDocument::validate`) builds one.
+pub struct ToonDocument<'a> { /* private */ }
+impl<'a> ToonDocument<'a> {
+    pub fn validate(opts: &'a ToonOptions) -> Result<Self, ToonError>;
+    pub fn render(&self) -> String;
+}
+
+pub fn render_toon(opts: &ToonOptions) -> Result<String, ToonError>; // validate, then render
+
+/// TOON 4.4 encoders michi uses internally, public for callers composing their own blocks.
+pub fn escape_value(v: &str) -> Cow<'_, str>;   // quote only when §7.2 requires
+pub fn escape_value_quoted(v: &str) -> String;  // always quote, §7.1 escapes
+pub fn escape_key(k: &str) -> Cow<'_, str>;     // quote unless ^[A-Za-z_][A-Za-z0-9_.]*$ (§7.3)
 
 pub const MAX_FIELDS: usize = 1_000;
 pub const MAX_CELLS: usize = 1_000_000;
@@ -67,12 +88,14 @@ pub enum Value {
     Null,
 }
 
-impl From<&str> for Value { ... }
-impl From<String> for Value { ... }
-impl From<i64> for Value { ... }
-impl From<f32> for Value { ... } // keeps the f32's shortest digits: 0.1f32 renders 0.1
+impl From<&str> for Value { ... }    // also &String, String, CompactString, Cow<str>
+impl From<Option<String>> for Value { ... } // None is Null
+impl From<i32> for Value { ... }     // also u32, i64
+impl From<u64> for Value { ... }     // also usize: Int when it fits i64, otherwise UInt
+impl From<f32> for Value { ... }     // keeps the f32's shortest digits: 0.1f32 renders 0.1
 impl From<f64> for Value { ... }
 impl From<bool> for Value { ... }
+impl Display for Value { ... }       // content without TOON quoting; numbers in canonical form
 
 #[non_exhaustive]
 pub enum ToonError {
@@ -140,12 +163,48 @@ impl DomainError {
     pub fn render_json(&self) -> String;
     pub fn to_call_tool_result(&self) -> CallToolResult;
 }
+impl Display for DomainError { ... } // "{code label}: {message}"
+
+#[non_exhaustive]
+pub enum ErrorCode {
+    InvalidInput, NotFound, Unauthorized, Forbidden, Conflict,
+    RateLimited, Unavailable, Timeout, ExternalFailure,
+}
+impl ErrorCode {
+    pub fn label(&self) -> &'static str;           // snake_case: "invalid_input", "not_found", …
+    pub fn is_retryable_by_default(&self) -> bool; // RateLimited, Unavailable
+    pub fn may_have_taken_effect(&self) -> bool;   // Timeout
+    pub fn default_class(&self) -> ErrorClass;     // User / Internal / Ambiguous (Timeout)
+}
+
+#[non_exhaustive]
+pub enum ErrorClass { User, Internal, Transient, Ambiguous }
+
+pub const MAY_HAVE_TAKEN_EFFECT_HINT: &str =
+    "the operation may have taken effect; verify whether it completed before retrying, unless it is idempotent";
+
+/// The crate's unified error. Display: "Invalid input: {m}", "Not found: {m}", "{code}: {message}".
+#[non_exhaustive]
+pub enum Error {
+    InvalidInput(String),
+    NotFound(String),
+    Domain(DomainError), // From<DomainError>
+}
+impl Error {
+    pub fn render(&self) -> String;
+    pub fn exit_code(&self) -> i32; // always 1
+    pub fn class(&self) -> ErrorClass;
+    pub fn is_retryable(&self) -> bool; // class() == Transient
+}
+
+/// Omits its content from Debug and Display (both print "<redacted>").
+pub struct Sensitive<T>(pub T);
 ```
 
 - `render()` outputs a TOON 4.4 document: `error: <code>`, `message: …` (quoted per §7.2), `causes[N]: …` when there are causes, `exit_code: 1`, then `help[N]: …` and `recovery[1]{tool,params,reason}:` when set. `Error::render()` uses the same shape for every variant (`error: invalid_input` / `error: not_found` for the non-domain variants). See [02-toon-format.md](02-toon-format.md#agent-facing-blocks).
-- `render_github_annotation()` outputs a GitHub Actions annotation (`::error title=code::message`). Newlines and CRs are percent-encoded.
+- `render_github_annotation()` outputs a GitHub Actions annotation (`::error title=code::message`). The message is encoded as workflow command data (`%` → `%25` first, then CR → `%0D`, LF → `%0A`); the title also encodes `:` and `,`.
 - `retryable` means calling again is expected to help without repeating an effect. `DomainError::new` sets it from `ErrorCode::is_retryable_by_default()`: `true` for `RateLimited` and `Unavailable` (the request was not processed), `false` for every other code. A `Timeout` or `ExternalFailure` may have taken effect, so mark it `.retryable(true)` only when the operation is idempotent. `Error::is_retryable()` and `ErrorClass::Transient` follow the field.
-- A `Timeout` that is not marked retryable is `ErrorClass::Ambiguous` (no answer came back, so the operation may or may not have taken effect: not the caller's fault and not an internal error), and `DomainError::new` gives it the hint `MAY_HAVE_TAKEN_EFFECT_HINT` ("verify whether it completed before retrying, unless it is idempotent"). `.retryable(true)` makes it `Transient` and removes that hint; `.retryable(false)` puts it back. `ExternalFailure` covers too much (a failed local walk, a server error) to say, so it stays `Internal` with no automatic hint; add your own when you know the operation may have applied.
+- A `Timeout` that is not marked retryable is `ErrorClass::Ambiguous` (no answer came back, so the operation may or may not have taken effect: not the caller's fault and not an internal error), and `DomainError::new` gives it the hint `MAY_HAVE_TAKEN_EFFECT_HINT` ("the operation may have taken effect; verify whether it completed before retrying, unless it is idempotent"). `.retryable(true)` makes it `Transient` and removes that hint; `.retryable(false)` puts it back. `ExternalFailure` covers too much (a failed local walk, a server error) to say, so it stays `Internal` with no automatic hint; add your own when you know the operation may have applied.
 - `render_json()` outputs a JSON object: `{"isError":true,"error":"...","message":"...","causes":[...],"retryable":bool,"hints":[...],"recovery":null|{...}}`. `causes` and `hints` are always present, `[]` when empty; serde and the `schemars` schema match it.
 - `from_error(code, err)` sets `message` to `err.to_string()` and walks `err.source()`, adding each link's `Display` to `causes`. A link whose text the last kept text (the message or the previous kept cause) already contains is skipped, since `thiserror` messages often embed their source (`#[error("walk failed: {0}")]`). The walk stops after 128 links. Nothing is stored but text: `source()` on a `DomainError` stays `None`, and it stays `Clone + Send + Sync`. Line breaks stay inside their cause; `render()` escapes them.
 - With the `miette` feature, `Diagnostic::help()` lists the hints, then one `caused by: …` line per cause (`None` when there are neither). The GitHub annotation stays message-only.
@@ -157,6 +216,14 @@ impl DomainError {
 `AgentResponse` composes lists, key-value single items, hints, and audience routing. It is a **consuming** builder — every setter takes `self` by value and returns `Self`, so calls chain (`AgentResponse::new("t").items(...).hint(...)`), not `&mut self` mutation:
 
 ```rust
+/// The default TOON cell cap, in chars (`michi_core::response::DEFAULT_TRUNCATE_CELLS`; not at the root).
+pub const DEFAULT_TRUNCATE_CELLS: usize = 200;
+
+#[non_exhaustive]
+#[derive(Default)]
+pub enum OutputFormat { #[default] Text, Json }
+
+#[non_exhaustive]
 pub struct AgentResponse { ... }
 
 impl AgentResponse {
@@ -185,6 +252,8 @@ impl AgentResponse {
     pub fn render_kv(&self) -> String;
     /// Just the `help[N]: …` document for `.hint()`/`.hints()`.
     pub fn render_hints_only(&self) -> String;
+    /// `as_error()` was called, or the TOON rows / KV items fail validation. Validates without rendering.
+    pub fn is_error(&self) -> bool;
     /// `"user"` falls back to `render(OutputFormat::Text)` when `.human_content()` was never set.
     pub fn render_for(&self, audience: Audience) -> String;
     pub fn has_human_content(&self) -> bool;
@@ -194,7 +263,7 @@ impl AgentResponse {
 
 `render_json()` is not part of the public API — it's reached only via `render(OutputFormat::Json)`.
 
-The TOON slot is stored as a `ToonOptions` and validated and rendered by reference, so a render never copies the rows. `is_error()` validates without rendering. Hints and recovery are appended to the rendered body in place.
+The TOON slot is stored as a `ToonOptions` and validated and rendered by reference, so a render never copies the rows. `is_error()` validates without rendering. Hints and recovery are appended to the rendered body in place. `render(OutputFormat::Json)` is `{"body":…,"hints":[…],"recovery":[…],"isError":bool}`, the same object `to_call_tool_result()` puts in `structured_content`.
 
 `truncation(&outcome, guidance)` sets the count and the cut hint in one call, so `totalCount` and `help[]` always describe the same cut. It does not touch the rows: `AgentResponse` holds TOON `Value` rows, not the caller's `T`, so pass `outcome.kept` (converted) to `.items(...)`. A later `.total_count()` or `.hints()` still overrides it.
 
@@ -235,14 +304,16 @@ impl FailedOp {
 pub enum AlreadyDone { Yes { result: String }, No }
 pub fn already_done(stored: Option<String>) -> AlreadyDone;
 pub fn render_already_done(operation: &str, summary: &str, hints: &[String]) -> String;
-pub struct IdempotencyKey(pub String);
+pub struct IdempotencyKey(pub String); // also From<String>, From<&str>
 impl IdempotencyKey {
     pub fn new(s: impl Into<String>) -> Self;
+    pub fn as_str(&self) -> &str;
+    /// "{operation}:{FNV-1a 64 of data, 16 lowercase hex digits}"
     pub fn from_hash(operation: &str, data: &[u8]) -> Self;
 }
 ```
 
-### Key-value, hints, recovery and status blocks
+### Key-value, hints, recovery, empty, status and pipeline blocks
 
 Every block renderer returns a finished TOON 4.4 document with no trailing newline; the `append_*` helpers join a block onto a document with one LF. The forms are listed in [02-toon-format.md](02-toon-format.md#agent-facing-blocks).
 
@@ -253,6 +324,7 @@ pub struct KvItem { pub key: String, pub value: KvValue }
 impl KvItem { pub fn new(key: impl Into<String>, value: KvValue) -> Self; }
 #[non_exhaustive]
 pub enum KvValue { Text(String), Int(i64), Float(f64, u8), Bool(bool), Duration(Duration), Missing }
+impl KvValue { pub const FULL_PRECISION: u8 = u8::MAX; }
 #[non_exhaustive]
 pub enum KvError { ReservedKey { key: String }, DuplicateKey { key: String } }
 /// `key: value` lines, then `totalCount` and `help`. Err for a repeated key or a reserved
@@ -260,6 +332,11 @@ pub enum KvError { ReservedKey { key: String }, DuplicateKey { key: String } }
 pub fn render_kv(items: &[KvItem], total_count: Option<usize>, hints: &[Hint]) -> Result<String, KvError>;
 
 // michi_core::hints
+pub struct Hint(pub String); // also From<&str>, From<String>, Display
+impl Hint {
+    pub fn new(s: impl Into<String>) -> Self;
+    pub fn as_str(&self) -> &str;
+}
 pub fn render_hints(hints: &[Hint]) -> String;               // help[N]: h1,h2
 pub fn append_hints(out: &mut String, hints: &[Hint]);
 
@@ -274,16 +351,48 @@ impl RecoveryHint {
 pub fn render_recovery(hints: &[RecoveryHint]) -> String;    // recovery[N]{tool,params,reason}:
 pub fn append_recovery(out: &mut String, hints: &[RecoveryHint]);
 
+// michi_core::empty
+pub fn empty_state(type_name: &str) -> String;                    // type_name: []\ntotalCount: 0
+pub fn empty_state_with_hints(type_name: &str, hints: &[Hint]) -> String; // … then help[N]
+/// Err(ToonError::InvalidTypeName) for totalCount/help/recovery; the non-try forms render the
+/// `error: toon_validation_failed` block instead.
+pub fn try_empty_state(type_name: &str) -> Result<String, ToonError>;
+pub fn try_empty_state_with_hints(type_name: &str, hints: &[Hint]) -> Result<String, ToonError>;
+
 // michi_core::status
+#[non_exhaustive]
+pub enum Health { Ok, Degraded(String), Error(String) } // reason in the String
 #[non_exhaustive]
 pub struct StatusItem { pub key: String, pub value: KvValue, pub health: Option<Health> }
 impl StatusItem {
     pub fn new(key: impl Into<String>, value: KvValue) -> Self;   // health: None
     pub fn health(self, health: Health) -> Self;
 }
-impl StatusResponse { pub fn render(&self) -> String; }      // tool, description, items[N]{key,value,health,reason}:, help
+#[non_exhaustive]
+pub struct StatusResponse { pub tool_name: String, pub description: String, pub items: Vec<StatusItem>, pub hints: Vec<Hint> }
+impl StatusResponse {
+    pub fn new(tool_name: impl Into<String>, description: impl Into<String>, items: Vec<StatusItem>) -> Self;
+    pub fn with_hints(self, hints: Vec<Hint>) -> Self;
+    pub fn render(&self) -> String;                           // tool, description, items[N]{key,value,health,reason}:, help
+}
 
 // michi_core::pipeline
+#[non_exhaustive]
+pub enum StepStatus {
+    Pending, Running, Completed, CompletedEarlier, Failed,
+    OutcomeUnknown(UnknownCause), Skipped(SkipReason), NotRun(NotRunReason), Panicked,
+}
+#[non_exhaustive]
+pub enum UnknownCause { Timeout, Gateway, Cancelled, Interrupted, StepFailed }
+#[non_exhaustive]
+pub enum SkipReason { PrerequisiteFailed, Cancelled }
+#[non_exhaustive]
+pub enum NotRunReason { CircuitOpen, Unverified, StartNotRecorded }
+impl StepStatus {
+    pub fn label(&self) -> &'static str;          // "pending", …, "outcome_unknown", "not_run", "panicked"
+    pub fn reason(&self) -> Option<&'static str>; // "timeout", "prerequisite_failed", "circuit_open", …
+    pub fn is_success(&self) -> bool;             // Completed or CompletedEarlier
+}
 #[non_exhaustive]
 pub struct PipelineStep { pub id: String, pub name: String, pub status: StepStatus }
 impl PipelineStep { pub fn new(id: impl Into<String>, name: impl Into<String>, status: StepStatus) -> Self; }
@@ -292,17 +401,30 @@ impl PipelineStep { pub fn new(id: impl Into<String>, name: impl Into<String>, s
 pub struct Pipeline { pub id: String, pub steps: Vec<PipelineStep> }
 impl Pipeline {
     pub fn new(id: impl Into<String>, steps: Vec<PipelineStep>) -> Self;
-    pub fn render(&self) -> String;                           // step[N]{id,name,status,reason}:
+    pub fn render(&self) -> String;                           // step[N]{id,name,status,reason}:, or step: []
+}
+
+// michi_core::audience
+#[non_exhaustive]
+pub enum Audience { Assistant, User } // serde: "assistant" / "user"
+
+// michi_core::telemetry
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoopProvider;
+impl NoopProvider {
+    pub fn span(&self, name: &str);             // no-op
+    pub fn count(&self, name: &str, value: u64); // no-op
 }
 ```
 
-The structs above are `#[non_exhaustive]` from 0.4.0: build them with their constructors, then read or assign their public fields as before. Struct literals and exhaustive destructuring work only inside michi-core, so adding a field later is not a breaking change. `Value`, `KvValue`, `AlreadyDone` and `RetryConfigError` are `#[non_exhaustive]` enums: a `match` outside michi-core needs a `_` arm.
+The structs above are `#[non_exhaustive]` from 0.4.0: build them with their constructors, then read or assign their public fields as before. Struct literals and exhaustive destructuring work only inside michi-core, so adding a field later is not a breaking change. `Value`, `KvValue`, `AlreadyDone`, `RetryConfigError` and the other enums marked `#[non_exhaustive]` above need a `_` arm in a `match` outside michi-core.
 
 `KvValue::Float(f, decimals)` rounds `f` to `decimals` places and writes the rounded value in canonical TOON number form, so `Float(1.5, 3)` is `1.5`, not `1.500`; `KvValue::FULL_PRECISION` (255) never rounds, so `Float(5e-324, KvValue::FULL_PRECISION)` is `5e-324` in TOON and in the JSON companions, while a smaller count rounds as asked (`Float(1e-300, 2)` is `0`); `Missing` is `null`; `Duration` is the string `1.5s`. `AgentResponse`'s KV path turns a `KvError` into a `kv_validation_failed` error body and sets `is_error`, like `toon_validation_failed` on the TOON path.
 
 ## `truncate` — Char-Boundary Truncation
 
 ```rust
+#[non_exhaustive]
 pub struct Truncated {
     pub content: String,
     /// Byte length (not char count) of the input, truncated or not.
@@ -384,8 +506,10 @@ impl RetryConfig {
     /// Normalizing constructor — clamps out-of-range values.
     pub fn new(max_retries: u32, base_delay: Duration, max_delay: Duration, jitter_factor: f64) -> Self;
     /// Strict constructor — returns Err for out-of-range values.
-    pub fn try_new(...) -> Result<Self, RetryConfigError>;
+    pub fn try_new(max_retries: u32, base_delay: Duration, max_delay: Duration, jitter_factor: f64)
+        -> Result<Self, RetryConfigError>;
 }
+impl Default for RetryConfig { ... } // 3 retries, 500ms base, 30s max, jitter 0.2
 
 #[non_exhaustive]
 pub enum RetryConfigError {
@@ -402,7 +526,24 @@ pub fn next_retry_delay(
 ) -> Option<Duration>;
 
 pub fn parse_retry_after(header_value: &str) -> Option<Duration>;
+/// parse_retry_after with the current time passed in.
+pub fn parse_retry_after_at(header_value: &str, now: SystemTime) -> Option<Duration>;
 pub fn is_retryable_status(status: u16) -> bool;
+
+/// Retries earned by successes (tower's TpsBudget shape): each success deposits `ratio` of a
+/// retry, each retry withdraws one, the balance never exceeds `max`. No clock.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetryBudget { /* private */ }
+impl RetryBudget {
+    /// Normalizing: ratio clamped to [0.0, 1000.0] (NaN → 0.0); `max` floored to `reserve`.
+    pub fn new(ratio: f64, reserve: u32, max: u32) -> Self;
+    pub fn deposit(&mut self);
+    pub fn try_withdraw(&mut self) -> bool;
+    pub fn available(&self) -> u32;
+}
+impl Default for RetryBudget { ... } // new(0.1, 10, 100)
 ```
+
+`next_retry_delay` returns `None` once `attempt >= max_retries`; otherwise `base_delay × 2^attempt` plus jitter, raised to `retry_after` when larger and capped at `max_delay` (`base_delay` and `retry_after` round up to whole milliseconds first). `RetryConfig::new` clamps `jitter_factor` to `[0.0, 1.0]` (NaN → 0.0), floors `max_delay` to 1ms and caps `base_delay` at `max_delay`.
 
 Calculates exponential backoff with caller-supplied jitter and parses RFC 9110 `Retry-After` HTTP header values (delay-seconds, saturating at `u64::MAX`, and HTTP-dates with fixed-width digit fields; a past date, before 1970 too, is a zero delay). `is_retryable_status` is true for 429, 502, 503 and 504; only 429 and 503 say the request was not processed, so retry a 502 or 504 automatically only for an idempotent request.

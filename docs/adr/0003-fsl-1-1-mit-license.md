@@ -1,6 +1,6 @@
 # 3. License the workspace under FSL-1.1-MIT
 
-Status: Accepted
+Status: Accepted. Amended 2026-10-22: `michi-graph` is MIT (see `docs/spec/06-decisions.md`, "Resolved 2026-10-22 — michi-graph: an MIT leaf crate"). Every other crate and the Node package stay FSL-1.1-MIT.
 
 ## Context
 
