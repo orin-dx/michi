@@ -472,7 +472,7 @@ pub async fn resume(prior: &RunRecord, plan: &Plan, opts: &ResumeOptions) -> Res
     // fingerprint covers structure only, so a plan edited since the run can have tightened it. A record without a
     // replay (saved by hand or by an older version) has nothing to add, so the plan's applies.
     let replay_of = |step: &crate::ExecStep, prev: &StepRecord| {
-        let now = step.runner().replay();
+        let now = step.replay();
         prev.replay().map_or(now, |then| stricter(then, now))
     };
     for step_id in opts.verified.keys() {

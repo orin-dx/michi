@@ -43,6 +43,8 @@ pub trait Step: Send + Sync {
 }
 ```
 
+`ExecStep::new` and `ExecStep::from_arc` call `replay()` and `attempt_bound()` once, when the step is built, and the run uses those values everywhere (the scheduler, the record's stored replay, resume). They are the caller's code and run outside the scheduler's panic guard, so reading them mid-run would let a panic there unwind `execute` after effects had happened and lose the whole record. Read at construction, a panic surfaces in the caller's plan-building code before anything runs. Both should therefore be constant for a runner; `precheck` and `run` stay per-attempt and are guarded.
+
 Steps return `()`: they act through side effects and share state through `Arc` captures. Outputs do not flow between steps.
 
 `StepContext` carries the run id, step id, attempt number (0-based), a cancellation token that is a child of the run's token, the step's deadline if one is set (the earlier of its own and its group's), when the executor will cut this attempt (`attempt_deadline()`) and the attempt timeout configured for the step (`attempt_timeout()`). `idempotency_key()` is `run_id:step_id`. It stays the same across attempts and across resume, so a step that passes it to a deduplicating downstream gets each effect applied once. The attempt number is for logging and backoff only and is never part of the key.

@@ -370,7 +370,7 @@ impl RunRecord {
                     pending
                 });
                 // The plan knows each step's replay, even for a hand-saved `in_flight` record.
-                record.replay = Some(step.runner().replay());
+                record.replay = Some(step.replay());
                 record
             })
             .collect();

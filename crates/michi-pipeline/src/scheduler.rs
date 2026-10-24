@@ -396,7 +396,7 @@ impl<'a> Scheduler<'a> {
     fn job(&self, i: usize) -> (Job, Running) {
         let step = &self.plan.steps()[i];
         let attempts: Attempts = Arc::default();
-        let replay = step.runner().replay();
+        let replay = step.replay();
         let breaker = self.opts.breakers.as_ref().map(|registry| {
             let key = step.effective_breaker_key().to_string();
             let breaker = registry.breaker(&key);
@@ -406,7 +406,7 @@ impl<'a> Scheduler<'a> {
         let job = Job {
             runner: Arc::clone(step.runner()),
             replay,
-            bound: step.runner().attempt_bound(),
+            bound: step.attempt_bound(),
             run_id: self.run_id.clone(),
             step_id: step.id().clone(),
             token: self.run_token.child_token(),
@@ -506,7 +506,7 @@ impl<'a> Scheduler<'a> {
     }
 
     fn set_terminal(&mut self, i: usize, mut record: StepRecord) {
-        record.replay = self.plan.steps().get(i).map(|s| s.runner().replay());
+        record.replay = self.plan.steps().get(i).map(|s| s.replay());
         let opts = self.opts;
         if observe(opts, |o| o.on_step_finished(&self.run_id, &record)) {
             self.observer_panics = self.observer_panics.saturating_add(1);

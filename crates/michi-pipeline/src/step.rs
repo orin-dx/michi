@@ -211,7 +211,8 @@ pub trait Step: Send + Sync {
     fn run<'a>(&'a self, ctx: &'a StepContext) -> StepFuture<'a>;
 
     /// Whether the step may be replayed after an attempt whose effect is unknown. Defaults to
-    /// [`Replay::NotIdempotent`].
+    /// [`Replay::NotIdempotent`]. Read once, when the [`crate::ExecStep`] is built, and fixed for the step's life in
+    /// the plan: it should not change between calls, and a panic here surfaces at plan construction.
     fn replay(&self) -> Replay {
         Replay::NotIdempotent
     }
@@ -229,7 +230,8 @@ pub trait Step: Send + Sync {
     }
 
     /// What bounds each attempt. Defaults to [`AttemptBound::Timeout`]; a step that waits by design until its deadline
-    /// returns [`AttemptBound::Deadline`]. A precheck always runs under the attempt timeout.
+    /// returns [`AttemptBound::Deadline`]. A precheck always runs under the attempt timeout. Read once, when the
+    /// [`crate::ExecStep`] is built, like [`Step::replay`].
     fn attempt_bound(&self) -> AttemptBound {
         AttemptBound::Timeout
     }
