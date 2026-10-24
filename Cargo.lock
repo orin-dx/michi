@@ -430,7 +430,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "michi-core"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "compact_str",
  "divan",
@@ -448,7 +448,7 @@ dependencies = [
 
 [[package]]
 name = "michi-graph"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "divan",
  "proptest",
@@ -456,7 +456,7 @@ dependencies = [
 
 [[package]]
 name = "michi-node"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "michi-core",
  "napi",
@@ -466,7 +466,7 @@ dependencies = [
 
 [[package]]
 name = "michi-pipeline"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "divan",
  "michi-core",

@@ -1,5 +1,9 @@
 # michi-node
 
+## 0.7.0
+
+- Released together with the `michi` fixed group.
+
 ## 0.6.0
 
 - Released together with the `michi` fixed group.
