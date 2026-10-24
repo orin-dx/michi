@@ -757,3 +757,7 @@ What shipped:
 ### Resolved 2026-10-24 — The trust model is written down
 
 [`02-toon-format.md`](02-toon-format.md#trust-model) states what michi guarantees (one value cannot create extra lines, fields or cells; C0 controls are escaped; michi's own signals cannot be produced by cell text) and what it does not (prompt injection in data; C1 controls, U+2028/2029, bidi and tag characters pass through verbatim per TOON 4.4 §7.1; `audience` is advisory; `human_content` is not escaped). The one rule for callers: hints, recovery text, error messages, type and field names and the truncation hint come from the tool author, never from data; cells are data. The same line is in the doc comments of `Hint::new`, the `RecoveryHint` constructors and the `DomainError` message, cause and hint setters. Deliberately not added: an `Untrusted<T>` wrapper, a strict-Unicode mode and a redesign of `Sensitive`. Each is a bigger API for a risk the rule above already names, and none has a second independent tool asking for it ([`PRINCIPLES.md`](../../PRINCIPLES.md) gate 3).
+
+### Resolved 2026-10-24 — Automatic format selection is deferred past 1.0
+
+Choosing a body encoding by data shape is not built. It needs measurements of format by shape and at least two consumers hand-rolling the same logic ([`PRINCIPLES.md`](../../PRINCIPLES.md) gate 3); callers choose the body today. See [ADR 9](../adr/0009-v1-positioning-and-criteria.md).
