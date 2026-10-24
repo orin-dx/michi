@@ -344,7 +344,7 @@ A step can then only run once its marker is saved, so a rebuilt record never sho
 
 ## Resume
 
-`resume(&prior, &plan, &ResumeOptions).await` continues an interrupted run. It returns `Err(ResumeError)` before running anything if the plan's fingerprint differs from the record's (`FingerprintMismatch`), the record names a step the plan lacks (`UnknownStep`), or a step marked verified is not awaiting verification (`NotAwaitingVerification`). It always runs under the prior record's `RunId`, so idempotency keys stay stable. There is no way to resume under a new id.
+`resume(&prior, &plan, &ResumeOptions).await` continues an interrupted run. It returns `Err(ResumeError)` before running anything if the plan's fingerprint differs from the record's (`FingerprintMismatch`), the record names a step the plan lacks (`UnknownStep`), a step marked verified is not awaiting verification (`NotAwaitingVerification`), or the record is contradictory (`ContradictoryRecord`, below). It always runs under the prior record's `RunId`, so idempotency keys stay stable. There is no way to resume under a new id.
 
 Resume decides per step from the prior record:
 
@@ -356,6 +356,8 @@ Resume decides per step from the prior record:
 | `Skipped`, `NotRun`, `Pending`, missing | runs again |
 | `OutcomeUnknown`, `Panicked`, `Running` | a verdict decides; without one, idempotent: runs again; `Prechecked`: runs, precheck decides; otherwise held |
 | a status this version does not know | held as it is |
+
+**A completed step proves its prerequisites completed.** Before deciding anything, resume (and `RunRecord::from_parts`) applies that rule down the graph: a prerequisite of a `Completed` or `CompletedEarlier` step that is missing from the saved records, or saved only as `Pending` or `Running`, becomes `CompletedEarlier` with the reason "inferred from a completed dependent", and its own prerequisites likewise. This covers a store that lost some writes (say B's finished record was saved but A's was not): A is not run again. A prerequisite recorded in a state that contradicts the dependent (`Failed`, `Skipped`, `NotRun`, `Panicked` or `OutcomeUnknown`) cannot come from a real run, so the record is refused with `ResumeError::ContradictoryRecord { step_id, step_status, prerequisite, prerequisite_status }` (a `Conflict` as a `DomainError`) and nothing runs.
 
 **Which replay class resume uses.** Resume takes the stricter of the class the record stored when the step ran and the class the plan's runner reports now (strictest first: `NotIdempotent`, `Prechecked`, `Idempotent`). So a plan edited from idempotent to not idempotent since the run is held like any other unknown outcome, instead of being invoked again on the record's old word; and a step that was not idempotent when it ran stays held after the plan calls it idempotent, because the earlier attempt was made without that promise. A record with no stored class (saved by hand, or by an older version) defers to the plan. The plan fingerprint covers structure only (step ids and prerequisites), not replay class, runner or options, so it does not catch such edits. If you swap a runner for a different implementation between a run and its resume, that is your responsibility: michi cannot tell the new runner has other side effects.
 

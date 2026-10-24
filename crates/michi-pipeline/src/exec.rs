@@ -8,6 +8,7 @@ use std::time::Duration;
 use michi_core::pipeline::{StepStatus, UnknownCause};
 use michi_core::resilience::{RetryBudget, RetryConfig};
 
+use crate::record::{infer_prerequisites, INFERRED_REASON};
 use crate::scheduler::{self, Initial};
 use crate::{
     BreakerRegistry, CancellationToken, ExecutionError, Plan, PlanFingerprint, Replay, RunId, RunRecord, StepId,
@@ -357,12 +358,31 @@ pub enum ResumeError {
         /// Its status label in the prior record, or `missing`.
         status: &'static str,
     },
+    /// A step is recorded as completed, but one of its prerequisites is recorded in a state that rules that out
+    /// (failed, skipped, not run, panicked or unknown). A completed step proves its prerequisites completed, so the
+    /// record is damaged or was assembled from different runs. Nothing is run.
+    #[error(
+        "step {step_id} is recorded as {step_status} but its prerequisite {prerequisite} is recorded as \
+         {prerequisite_status}; a completed step proves its prerequisites completed, so the record is contradictory"
+    )]
+    ContradictoryRecord {
+        /// The completed step.
+        step_id: StepId,
+        /// Its status label in the record.
+        step_status: &'static str,
+        /// The prerequisite recorded in a contradictory state.
+        prerequisite: StepId,
+        /// That prerequisite's status label in the record.
+        prerequisite_status: &'static str,
+    },
 }
 
 impl From<ResumeError> for michi_core::DomainError {
     fn from(err: ResumeError) -> Self {
         let code = match err {
-            ResumeError::FingerprintMismatch { .. } => michi_core::ErrorCode::Conflict,
+            ResumeError::FingerprintMismatch { .. } | ResumeError::ContradictoryRecord { .. } => {
+                michi_core::ErrorCode::Conflict
+            }
             ResumeError::UnknownStep { .. } | ResumeError::NotAwaitingVerification { .. } => {
                 michi_core::ErrorCode::InvalidInput
             }
@@ -412,8 +432,23 @@ pub async fn resume(prior: &RunRecord, plan: &Plan, opts: &ResumeOptions) -> Res
     }
     // One index instead of a linear `prior.step()` per plan step and per verdict, which made resume O(N²). Every way
     // to build a record (execute, from_parts, deserializing) lists each step once.
-    let mut by_id: BTreeMap<&StepId, &StepRecord> = BTreeMap::new();
+    // In plan order, with prerequisites of completed steps inferred completed (a record deserialized from a store that
+    // lost their writes) and contradictions refused, as `RunRecord::from_parts` does.
+    let mut ordered: Vec<StepRecord> = Vec::with_capacity(plan.len());
+    let mut seen = vec![false; plan.len()];
     for record in prior.steps() {
+        if let Some(i) = plan.index_of(record.step_id()) {
+            if !std::mem::replace(&mut seen[i], true) {
+                ordered.push(record.clone());
+            }
+        }
+    }
+    ordered.sort_by_key(|r| plan.index_of(r.step_id()));
+    if ordered.len() == plan.len() {
+        infer_prerequisites(plan, &mut ordered)?;
+    }
+    let mut by_id: BTreeMap<&StepId, &StepRecord> = BTreeMap::new();
+    for record in &ordered {
         by_id.entry(record.step_id()).or_insert(record);
     }
     // The replay class resume acts on: the stricter of what the run knew and what the plan says now, because the
@@ -443,7 +478,9 @@ pub async fn resume(prior: &RunRecord, plan: &Plan, opts: &ResumeOptions) -> Res
             let replay = replay_of(step, prev);
             match prev.status() {
                 StepStatus::Completed | StepStatus::CompletedEarlier => {
-                    Initial::Done(Box::new(carried_over(prev, "completed earlier in this run")))
+                    let why =
+                        prev.reason().filter(|r| *r == INFERRED_REASON).unwrap_or("completed earlier in this run");
+                    Initial::Done(Box::new(carried_over(prev, why)))
                 }
                 StepStatus::Failed if !prev.awaits_verification_under(replay) => Initial::Run,
                 StepStatus::Failed | StepStatus::OutcomeUnknown(_) | StepStatus::Panicked | StepStatus::Running => {

@@ -191,6 +191,44 @@ impl StepRecord {
     }
 }
 
+/// Why a step was marked `CompletedEarlier` without a record of it completing.
+pub(crate) const INFERRED_REASON: &str = "inferred from a completed dependent";
+
+/// Applies "a completed step proves its prerequisites completed" to `steps`, one record per plan step in declaration
+/// order. A prerequisite that is `Pending` or `Running` becomes `CompletedEarlier`; one recorded in any other
+/// unsuccessful state contradicts the dependent and is an error. Dependents are visited before their prerequisites, so
+/// the inference carries up a chain.
+pub(crate) fn infer_prerequisites(plan: &Plan, steps: &mut [StepRecord]) -> Result<(), ResumeError> {
+    let order: Vec<usize> = plan.topological_order().collect();
+    for &i in order.iter().rev() {
+        if !steps[i].status.is_success() {
+            continue;
+        }
+        for p in plan.prerequisites_of(i) {
+            match steps[p].status {
+                s if s.is_success() => {}
+                StepStatus::Pending | StepStatus::Running => {
+                    let prev = &steps[p];
+                    let mut inferred =
+                        StepRecord::new(prev.step_id.clone(), prev.name.clone(), StepStatus::CompletedEarlier);
+                    inferred.reason = Some(INFERRED_REASON.to_string());
+                    inferred.replay = prev.replay;
+                    steps[p] = inferred;
+                }
+                other => {
+                    return Err(ResumeError::ContradictoryRecord {
+                        step_id: steps[i].step_id.clone(),
+                        step_status: steps[i].status.label(),
+                        prerequisite: steps[p].step_id.clone(),
+                        prerequisite_status: other.label(),
+                    });
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The overall verdict of a run, one recovery action each.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -297,11 +335,15 @@ impl RunRecord {
     ///   status.
     /// - A plan step with no saved record is `Pending`, so a record missing steps never reads as a success.
     /// - A step saved as `Running` may have taken effect: it is a root cause awaiting verification.
+    /// - A step that completed proves its prerequisites completed. A prerequisite with no record, or saved only as
+    ///   `Running` or `Pending`, is therefore `CompletedEarlier` ("inferred from a completed dependent"), transitively:
+    ///   a store that lost the first writes does not make resume run finished work again.
     ///
     /// # Errors
     ///
-    /// [`ResumeError::FingerprintMismatch`] if `plan_fingerprint` is not `plan`'s, and [`ResumeError::UnknownStep`]
-    /// if a saved record names a step the plan does not have.
+    /// [`ResumeError::FingerprintMismatch`] if `plan_fingerprint` is not `plan`'s, [`ResumeError::UnknownStep`] if a
+    /// saved record names a step the plan does not have, and [`ResumeError::ContradictoryRecord`] if a step is
+    /// completed while a prerequisite is recorded failed, skipped, not run, panicked or unknown.
     pub fn from_parts(
         run_id: RunId,
         plan_fingerprint: PlanFingerprint,
@@ -318,7 +360,7 @@ impl RunRecord {
             };
             latest[i] = Some(record);
         }
-        let steps = latest
+        let mut steps: Vec<StepRecord> = latest
             .into_iter()
             .zip(plan.steps())
             .map(|(saved, step)| {
@@ -332,6 +374,7 @@ impl RunRecord {
                 record
             })
             .collect();
+        infer_prerequisites(plan, &mut steps)?;
         Ok(Self {
             run_id,
             plan_fingerprint,

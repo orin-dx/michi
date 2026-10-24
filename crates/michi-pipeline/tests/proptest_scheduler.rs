@@ -365,4 +365,41 @@ proptest! {
             Ok(())
         })?;
     }
+
+    /// A store that lost some records of steps that a saved, completed step depends on does not make resume run
+    /// finished work again: a completed dependent proves its prerequisites completed.
+    #[test]
+    fn lost_records_of_a_completed_steps_prerequisites_never_re_run_them(case in case(), lost in any::<u16>()) {
+        let rt = runtime();
+        rt.block_on(async {
+            let built = build(&case);
+            let first = execute(&built.plan, rid("r"), &options(&case)).await;
+            let status_of = |i: usize| first.step(&sid(&name(i))).expect("recorded").status();
+            // Steps that are a prerequisite of a Completed step; each is itself Completed.
+            let proven: BTreeSet<usize> = case
+                .specs
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| status_of(*i) == StepStatus::Completed)
+                .flat_map(|(_, spec)| spec.deps.iter().copied())
+                .collect();
+            let saved: Vec<_> = (0..case.specs.len())
+                .filter(|i| !(proven.contains(i) && lost >> (i % 16) & 1 == 1))
+                .map(|i| first.step(&sid(&name(i))).expect("recorded").clone())
+                .collect();
+            let calls_before: Vec<u32> = built.calls.iter().map(|c| c.load(Ordering::SeqCst)).collect();
+            let rebuilt = RunRecord::from_parts(rid("r"), built.plan.fingerprint(), &built.plan, saved)
+                .expect("a consistent record rebuilds");
+            built.shared.phase.store(1, Ordering::SeqCst);
+            resume(&rebuilt, &built.plan, &ResumeOptions::new(options(&case))).await.expect("same plan resumes");
+            for i in &proven {
+                prop_assert_eq!(
+                    built.calls[*i].load(Ordering::SeqCst),
+                    calls_before[*i],
+                    "{} is a prerequisite of a completed step and ran again", name(*i)
+                );
+            }
+            Ok(())
+        })?;
+    }
 }
