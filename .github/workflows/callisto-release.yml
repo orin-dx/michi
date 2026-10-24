@@ -392,10 +392,11 @@ jobs:
             --receipt "$RUNNER_TEMP/release-receipt/release-receipt.json" \
             --orchestration-revision "$ORCHESTRATION_SHA"
 
-      # Callisto writes the receipt only after every selected operation succeeded. A run that published a package
-      # to a registry names that version here; a run that only adopted earlier effects (a re-run) or published
-      # nothing leaves the output empty and skips the post-release smoke test.
-      - name: Find the version this run published
+      # Callisto writes the receipt only after every selected operation succeeded. A registry publish that landed in
+      # this run (`published`) or that a re-run adopted from a failed earlier attempt (`alreadySatisfied`) names the
+      # released version here. A receipt without registry publishes, or no receipt, leaves the output empty and
+      # skips the post-release smoke test.
+      - name: Find the version this run released
         id: published
         run: |
           set -euo pipefail
@@ -404,10 +405,10 @@ jobs:
             echo "version=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          versions=$(jq -r '[.outcomes[] | select(.outcome.kind == "published" and .operation.role.kind == "registryPublish")
-            | .operation.version] | unique | join(" ")' "$receipt")
+          versions=$(jq -r '[.outcomes[] | select((.outcome.kind == "published" or .outcome.kind == "alreadySatisfied") and
+            .operation.role.kind == "registryPublish") | .operation.version] | unique | join(" ")' "$receipt")
           if [[ "$versions" == *" "* ]]; then
-            echo "::error::the receipt published several versions ($versions); the smoke test checks one"
+            echo "::error::the receipt covers several released versions ($versions); the smoke test checks one"
             exit 1
           fi
           echo "version=$versions" >> "$GITHUB_OUTPUT"
