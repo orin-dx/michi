@@ -1,6 +1,8 @@
-//! AC-027/AC-029: `#[non_exhaustive]` on `ContentBlock`/`CallToolResult`
-//! prevents struct-literal construction from outside this crate.
-//! AC-036: `Health` has no `Serialize` impl even with the `serde` feature on.
+//! AC-027/AC-029: `#[non_exhaustive]` on `ContentBlock`/`CallToolResult`/`StatusResponse`
+//! prevents struct-literal construction from outside this crate, and on `Audience`
+//! rejects an exhaustive match without a wildcard arm (E0004).
+//! AC-036: `Health`, `StatusItem` and `StatusResponse` have no `Serialize` or `Deserialize` impl even with the
+//! `serde` feature on.
 //! error.rs AC-001/AC-002/AC-023: `ErrorClass`/`ErrorCode`/`Error` are
 //! `#[non_exhaustive]`, so an exhaustive match without a wildcard arm fails
 //! to compile (E0004).

@@ -298,10 +298,12 @@ impl DomainError {
         )
     }
 
-    /// Render as a JSON object matching `AgentResponse::render_json()` shape.
+    /// Render as a compact JSON object, the `structured_content` companion of [`DomainError::render`].
     ///
     /// Keys: `isError`, `error`, `message`, `causes`, `retryable`, `hints`, `recovery`. `causes` and `hints` are
-    /// always present, as `[]` when empty. Client code reading `structured_content` should not need two schemas.
+    /// always present, as `[]` when empty; `recovery` is the hint object, or `null`. The shape differs from
+    /// `AgentResponse`'s JSON (`{body, hints, recovery, isError}`, with `recovery` an array); only `isError` and
+    /// `hints` mean the same in both.
     #[must_use]
     pub fn render_json(&self) -> String {
         let hints_est: usize = self.hints.iter().map(|h| h.as_str().len() + 4).sum();
@@ -512,7 +514,7 @@ impl miette::Diagnostic for DomainError {
     }
 }
 
-/// The unified error type for the michi crate.
+/// The unified error type for michi-core.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {

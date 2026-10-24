@@ -1,4 +1,6 @@
 # michi — Architecture Design
+
+> **Historical record.** This dated document shows what was planned or decided at the time; much of it has since changed. Don't implement from it. For current behavior, see [`docs/spec/`](../../spec/README.md), [`ARCHITECTURE.md`](../../../ARCHITECTURE.md) and the [ADRs](../../adr/README.md).
 > orin-dx · 2026-07-03
 
 This document records the architectural decisions made during the July 2026

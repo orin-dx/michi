@@ -21,15 +21,15 @@
 | What | Why |
 | --- | --- |
 | TOON renderer | New format — token-efficient list encoding for agent context windows |
-| `kv::render_kv()` | Single-item Markdown-KV with aligned columns; no standard Rust equivalent |
+| `kv::render_kv()` | Single item as TOON `key: value` lines; no standard Rust equivalent |
 | `status::StatusResponse` | Typed P8 content-first orientation response |
-| `idempotency::already_done()` | Typed already-done signal with canonical output format |
+| `resilience::already_done()` + `render_already_done()` | Typed already-done signal with canonical output format |
 | `idempotency::PartialSuccess` | General partial-success reporting with per-op recovery hints |
-| `idempotency::IdempotencyKey` | Canonical key construction with stable hashing |
+| `resilience::IdempotencyKey` | Canonical key construction with stable hashing |
 | `AgentResponse` builder | One construction API across every consumer |
 | NAPI wrapper | Cross-language bridge — TypeScript authors never write Rust |
 | Formal TOON grammar | A canonical spec enabling interoperability and testability |
-| `render_hints_only()` | Append hints to an existing body without re-rendering |
+| `render_hints_only()` | Just a response's `help[N]` block, to append to a body rendered elsewhere |
 | `mcp::CallToolResult` + `AgentResponse::to_call_tool_result()` | Assembles a wire-conformant MCP `tools/call` response from an already-built `AgentResponse` |
 | `AgentResponse::render_for()` + `has_human_content()` | Dual agent/human output selection for any consumer, not just MCP — no prior shared primitive covered CLI output mode selection |
 
@@ -57,8 +57,8 @@ All feature flags live on `michi-core` (`crates/michi-core/Cargo.toml`):
 ```toml
 [features]
 default = []
-serde = ["dep:serde", "dep:serde_json"]
-schemars = ["dep:schemars"]
+serde = ["dep:serde", "dep:serde_json", "serde_json/float_roundtrip", "compact_str/serde"]
+schemars = ["dep:schemars", "serde"]
 miette = ["dep:miette"]
 napi = ["dep:napi", "dep:napi-derive", "serde"]
 ```
@@ -66,7 +66,7 @@ napi = ["dep:napi", "dep:napi-derive", "serde"]
 No async runtime dependency, no tokio, no async-std — every public function is sync.
 
 - `serde` is opt-in Rust-side ergonomics: `Serialize`/`Deserialize` on the core value types, plus `toon::list()`. See [01-overview-and-setup.md](01-overview-and-setup.md) for the full dependency rationale.
-- `schemars` implements `JsonSchema` on the types serde serializes (`DomainError`, `CallToolResult`, `ContentBlock`, `RecoveryHint`, `KvValue`, `toon::Value`, the pipeline status types and others), each describing its serde wire form, for MCP `outputSchema` generation. It uses schemars 1.x, so schemas are JSON Schema 2020-12 (`$defs`, `prefixItems`, `const`). Render-only types such as `StatusResponse` and `ToonOptions` have no schema.
+- `schemars` (implies `serde`) implements `JsonSchema` on the types serde serializes (`DomainError`, `CallToolResult`, `ContentBlock`, `RecoveryHint`, `KvValue`, `toon::Value`, the pipeline status types and others), each describing its serde wire form, for MCP `outputSchema` generation. It uses schemars 1.x, so schemas are JSON Schema 2020-12 (`$defs`, `prefixItems`, `const`). Render-only types such as `StatusResponse` and `ToonOptions` have no schema.
 - `miette` implements `miette::Diagnostic` for `DomainError` to render colorized CLI diagnostic cards.
 - `cli` is **not** a Cargo feature of `michi-core` at all. Terminal-aware rendering (line wrapping, colour codes for the `degraded`/`error` health signals in `status::StatusResponse`) is out of scope for v1, since michi v1 targets agent consumers only.
 - When that work is actually built, it lands as its own crate, downstream of `pipeline`, rather than a feature flag here — see [ARCHITECTURE.md](../../ARCHITECTURE.md) and [06-decisions.md](06-decisions.md) for the crate-boundary rule and the v2 scope sketch.
@@ -75,7 +75,7 @@ No async runtime dependency, no tokio, no async-std — every public function is
 
 ## Versioning and release
 
-- Published to [crates.io](https://crates.io) as two crates, `michi-core` and `michi-pipeline` (first release 0.3.1). The name `michi` on crates.io belongs to an unrelated project
+- Published to [crates.io](https://crates.io) as three crates, `michi-core`, `michi-pipeline` (first release 0.3.1) and `michi-graph` (first release 0.5.0). The name `michi` on crates.io belongs to an unrelated project
 - Published to [npmjs.com](https://npmjs.com) as `@orin-dx/michi`, with one native package per platform
 - NAPI binaries for six targets, built natively or cross-compiled with `cargo-zigbuild` (see [04-mcp-and-napi.md](04-mcp-and-napi.md)):
   - macOS: `darwin-arm64`, `darwin-x64`
@@ -92,13 +92,13 @@ No async runtime dependency, no tokio, no async-std — every public function is
 
 Format changes are major versions. Treat the rendered string as a contract — the snapshot tests exist to make accidental format drift a failing build, not a silent breaking change.
 
-**MSRV policy:** `rust-version = "1.96"` is the declared minimum. A bump happens only when a needed language or `std` feature requires it, gets recorded in the CHANGELOG, and counts as a **minor** bump — never a patch.
+**MSRV policy:** `rust-version = "1.93"` is the declared minimum. A bump happens only when a needed language or `std` feature requires it, gets recorded in the CHANGELOG, and counts as a **minor** bump — never a patch.
 
-**Version sync:** `michi-core`, `michi-pipeline`, and the npm package share one version (each crate's own `version`, written by Callisto), released in lockstep as a Callisto fixed group named `michi`. `michi-pipeline` depends on `michi-core` through an exact `=` pin, so a mixed set never resolves.
+**Version sync:** `michi-core`, `michi-pipeline`, `michi-graph` and the npm package share one version (each crate's own `version`, written by Callisto), released in lockstep as a Callisto fixed group named `michi`. `michi-pipeline` depends on `michi-core` and `michi-graph` through exact `=` pins, so a mixed set never resolves.
 
-- A `version-sync` CI job asserts the npm package version equals the workspace version on every push/PR, so `michi-core` at `0.3.1` and the `@orin-dx/michi` npm package at `0.3.1` always describe the same source.
-- `.github/workflows/callisto-release.yml` uses Callisto to open version PRs and publish after a verified merge. The first release establishes versioned packages for downstream integration; consumer integration is a post-release validation, not a publication prerequisite (see [ADR 4](../adr/0004-publish-before-consumer-integration.md)).
-- When no native binary matches a consumer's platform, the TypeScript fallback export loads instead.
+- A `version-sync` CI job asserts on every push/PR that the three crates' versions and the npm package version are equal, so `michi-core` at `0.7.0` and the `@orin-dx/michi` npm package at `0.7.0` always describe the same source.
+- `.github/workflows/callisto-release.yml` uses Callisto to open version PRs and publish after a verified merge. Consumer integration is a post-release validation, not a publication prerequisite (see [ADR 4](../adr/0004-publish-before-consumer-integration.md)).
+- When no native binary matches a consumer's platform, loading the package throws; there is no JavaScript fallback.
 
 ---
 
@@ -108,7 +108,7 @@ Format changes are major versions. Treat the rendered string as a contract — t
 | -------------------------------------- | ------- | ----------------------------------- |
 | `render_toon()` — 100 items, 4 fields  | < 500µs | Simple string allocation, no I/O    |
 | `render_toon()` — 1000 items, 4 fields | < 3ms   | Linear in N×fields                  |
-| `render_kv()` — 10 items               | < 20µs  | Column-width scan + string join     |
+| `render_kv()` — 10 items               | < 20µs  | Key check + one string pass         |
 | `render_hints()` — 5 hints             | < 10µs  | Trivial string join                 |
 | `truncate_inline()`                    | < 5µs   | Single pass, char boundary safe     |
 | `parse_retry_after()`                  | < 2µs   | String parse only                   |
@@ -136,7 +136,7 @@ Benchmarks live in `crates/michi-core/benches/` and run via `divan`; CI builds t
 **Unit tests** (in-crate, `#[cfg(test)]`):
 
 - TOON grammar: one test per grammar production
-- KV: alignment, unicode keys, missing values, every `KvValue` variant
+- KV: one space after the colon (no alignment), unicode keys, missing values, every `KvValue` variant, reserved and duplicate keys
 - Escaping: commas, quotes, null, empty string, unicode
 - Truncation: exact boundary, under, over, unicode char boundary safety
 - Hints: empty, single, multiple, long strings
@@ -159,7 +159,7 @@ Benchmarks live in `crates/michi-core/benches/` and run via `divan`; CI builds t
 **Snapshot tests** (`insta`, `tests/snapshot_tests.rs`):
 
 - Canonical TOON examples from this spec — exact byte-for-byte match
-- KV column alignment across different key lengths
+- KV items with mixed value types and key lengths
 - Status response with mixed health signals
 - Format stability, to catch accidental drift across versions
 
@@ -167,7 +167,7 @@ Benchmarks live in `crates/michi-core/benches/` and run via `divan`; CI builds t
 
 - Every NAPI export with representative inputs
 - Error cases: mismatched row lengths, oversized inputs, null values
-- `AgentResponse` builder via NAPI, every path — including the `Option`/`take` "already rendered" guard
+- `AgentResponse` builder via NAPI, every path — including the `Option`/`take` "already consumed" guard
 - Platform binary loading on the CI matrix, on every target whose runner can execute the binary (darwin-arm64, linux-x64-gnu, linux-arm64-gnu)
 
 **Consumer integration tests:**

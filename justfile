@@ -30,11 +30,11 @@ test-crates-default:
     cargo nextest run -p michi-graph
     cargo nextest run -p michi-pipeline
 
-# michi-graph is MIT: fail if a non-permissive license enters its normal or build dependencies.
 # The fixed group's semver release type from pending changesets (front matter only; michi-graph excluded).
 pending-release-type:
     python3 scripts/pending-release-type.py "$(grep -m1 '^version' crates/michi-core/Cargo.toml | sed -E 's/version *= *"(.*)"/\1/')"
 
+# michi-graph is MIT: fail if a non-permissive license enters its normal or build dependencies.
 check-graph-license:
     python3 scripts/test_check_permissive_deps.py
     cargo metadata --format-version 1 --all-features | python3 scripts/check-permissive-deps.py michi-graph
@@ -119,7 +119,8 @@ doc-check:
 # same check.
 check-api:
     bash scripts/check-semver.sh
-    # michi-graph has no crates.io baseline until its first release; CI's semver job skips it until then.
+    # michi-graph is checked on its own, against its latest crates.io release (its release type comes from its version).
+    # The leading `-` ignores a failure, a holdover from before its first publish; CI's semver job does not ignore it.
     -cargo semver-checks check-release -p michi-graph
 
 # Unused-dependency check.

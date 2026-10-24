@@ -1,6 +1,6 @@
 # 1. Keep async pipeline execution in its own crate
 
-Status: Accepted
+Status: Accepted. Dependency detail amended by [ADR 5](0005-two-crates-one-version.md): there is no `michi` facade or `michi-resilience`; `michi-pipeline` depends on `michi-core`, `michi-graph` and Tokio.
 
 ## Context
 

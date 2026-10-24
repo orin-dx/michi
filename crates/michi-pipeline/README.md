@@ -111,7 +111,7 @@ If the deadline comes first, the step fails with `ExecutionError::DeadlinePassed
 
 ## Blocking work
 
-`step_blocking` runs a synchronous closure on Tokio's blocking thread pool, for steps that shell out to `cargo`, `npm` or `twine`. A blocking closure can't be stopped from outside: after a timeout or cancellation the executor stops waiting, but the closure keeps running, so it should watch `ctx.cancellation()`, which fires then, and kill any child process it started. A non-idempotent blocking step never starts a second closure while an earlier one of the same run may still be running.
+`step_blocking` runs a synchronous closure on Tokio's blocking thread pool, for steps that shell out to `cargo`, `npm` or `twine`. A blocking closure can't be stopped from outside: after a timeout or cancellation the executor stops waiting, but the closure keeps running, so it should watch `ctx.cancellation()`, which fires then, and kill any child process it started. A non-idempotent blocking step never starts a second closure while an earlier one with the same idempotency key (the same step in the same run) is still running.
 
 ```rust
 use michi_pipeline::{step_blocking, ExecutionError};

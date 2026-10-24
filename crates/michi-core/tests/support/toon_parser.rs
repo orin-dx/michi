@@ -30,13 +30,18 @@ use michi_core::toon::Value;
 /// A decoded primitive (§4). Numbers keep their canonical text so tests compare exact output digits.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Prim {
+    /// A string, unquoted and unescaped.
     Str(String),
+    /// A number, as its canonical text.
     Num(String),
+    /// `true` or `false`.
     Bool(bool),
+    /// `null`.
     Null,
 }
 
 impl Prim {
+    /// `Prim::Str` from a `&str`.
     pub fn str(s: &str) -> Self {
         Self::Str(s.to_string())
     }
@@ -60,10 +65,12 @@ pub enum Node {
 /// A decoded root object, in document order.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Doc {
+    /// Each root key with its decoded value.
     pub entries: Vec<(String, Node)>,
 }
 
 impl Doc {
+    /// The value of root key `key`, if present.
     pub fn get(&self, key: &str) -> Option<&Node> {
         self.entries.iter().find(|(k, _)| k == key).map(|(_, v)| v)
     }
@@ -72,12 +79,15 @@ impl Doc {
 /// A decoded michi list document: the type entry, then optional `totalCount` and `help` entries, in that order.
 #[derive(Debug, PartialEq)]
 pub struct ParsedToon {
+    /// The list entry's key.
     pub type_name: String,
     /// Field names of the tabular header; empty for `key: []` and for a list of empty objects.
     pub fields: Vec<String>,
     /// Decoded rows; for a list of empty objects, one empty row per item.
     pub rows: Vec<Vec<Prim>>,
+    /// The `totalCount` entry, if present.
     pub total_count: Option<usize>,
+    /// The `help` entry's strings; empty when there is none.
     pub hints: Vec<String>,
 }
 

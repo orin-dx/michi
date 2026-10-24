@@ -116,8 +116,10 @@ impl<K: fmt::Display> fmt::Display for Cycle<K> {
     }
 }
 
-/// Every problem validation found, in a fixed order: duplicates, then edge problems by the dependent's declaration
-/// position and the edge's, then cycles in the validation's [`crate::Order`]. Never empty.
+/// Every problem validation found, in a fixed order: duplicates, then [`Violation::TooManyNodes`], then edge
+/// problems, then cycles, each group in the validation's [`crate::Order`]. Under [`crate::Order::Declaration`] edge
+/// problems go by the dependent's declaration position, then the edge's; under [`crate::Order::Key`] by the
+/// dependent's key, then the missing key. Never empty.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Violations<K> {
     list: Vec<Violation<K>>,

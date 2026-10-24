@@ -155,8 +155,8 @@ impl std::fmt::Debug for ExecOptions {
 
 impl ExecOptions {
     /// The defaults: sequential, skip dependents, `RetryConfig::default()`, 30 s per attempt, no step or group
-    /// deadlines, jitter seeded per run, step and attempt, 5 s cancellation grace, `RetryBudget::default()`, no breakers, no
-    /// concurrency limits, no observer, no durable starts.
+    /// deadlines, jitter seeded per run, step and attempt, 5 s cancellation grace, `RetryBudget::default()`, no
+    /// breakers, no concurrency limits, no observer, no durable starts.
     #[must_use]
     pub fn new() -> Self {
         Self::default()

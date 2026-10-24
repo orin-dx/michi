@@ -1,6 +1,6 @@
 # Callisto publishing migration
 
-Status: Callisto 0.10 adopted; release sequence set by ADR 4.
+Status: Callisto 0.10 adopted; release sequence set by ADR 4. The release workflow has since moved to Callisto 0.12 (`.github/workflows/callisto-release.yml`); the evidence below is from the 0.10 migration.
 
 ## Evidence
 

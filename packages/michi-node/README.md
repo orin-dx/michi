@@ -67,6 +67,9 @@ Every string these functions return for an agent is a TOON 4.4 document with no 
 | `renderPartialSuccess` | `(completed: string[], failed: JsFailedOp[], skipped: string[]) => string` — the summary, `completed[N]`, the `failed[N]{operation,reason}:` table, `skipped[N]` and the failed ops' `recovery[N]{tool,params,reason}:` table |
 | `renderPipeline` | `(steps: JsPipelineStep[]) => string` — the table `step[N]{id,name,status,reason}:`; `status` is a `StepStatus` label (`completed`, `outcome_unknown`, …) and `reason` is required exactly for `outcome_unknown`, `skipped` and `not_run` |
 | `truncate` | `(content: string, maxChars: number, hint: string) => string` — `truncate("a".repeat(200), 50, "full=true")` gives 17 × `a` + `" (183 more chars — use full=true)"`; an empty `hint` drops the `— use …` clause |
+| `parseRetryAfter` | `(headerValue: string) => number \| null` — an RFC 9110 `Retry-After` value (delay-seconds or HTTP-date) in seconds; a past date is `0`, a malformed value `null` |
+| `nextRetryDelay` | `(maxRetries, baseDelayMs, maxDelayMs, jitterFactor, jitterSeed, attempt, retryAfterMs?) => number \| null` — the next back-off delay in ms, or `null` once retries are used up; pass a random `jitterSeed` in `[0, 1]` per call |
+| `isRetryableStatus` | `(status: number) => boolean` — `true` for 429, 502, 503 and 504; retry 502 and 504 only for idempotent requests |
 
 ### `AgentResponse` class
 
@@ -89,6 +92,8 @@ Setters return `void`, not `this`, so call them as sequential statements rather 
 | `.renderJson` | `() => string` — compact JSON: `{"body":...,"hints":[...],"recovery":[...],"isError":bool}` |
 | `.renderHintsOnly` | `() => string` — just the `help[N]: …` line |
 | `.humanContent` | `(text: string) => void` — attach a `user`-audience companion block for `toCallToolResult()` |
+| `.hasHumanContent` | `() => boolean` — whether `.humanContent()` was set |
+| `.renderFor` | `(audience: "assistant" \| "user") => string` — `"user"` returns the `humanContent` block if set, otherwise the assistant rendering |
 | `.toCallToolResult` | `() => CallToolResult` — the MCP `tools/call` response shape: `{content, isError, structuredContent}`, with each content block's `annotations.audience` set correctly |
 
 Full type definitions ship in `index.d.ts`. See the [main repo](https://github.com/orin-dx/michi) for the complete primitive set, the TOON grammar, and the `michi-core` Rust API this wraps (this package always carries the same version as `michi-core`).

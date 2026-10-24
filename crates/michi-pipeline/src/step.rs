@@ -194,9 +194,9 @@ pub type PrecheckFuture<'a> = Pin<Box<dyn Future<Output = Result<Precheck, Execu
 /// facts: whether retrying could help ([`ExecutionError::is_retryable`]) and whether its effect may have landed
 /// ([`ExecutionError::effect`]). From those and [`Step::replay`]:
 ///
-/// - **Not applied** ([`crate::Effect::NotApplied`]): circuit open, `Cancelled`, HTTP 4xx and 503,
-///   [`ExecutionError::refused`] and [`ExecutionError::rejected`]. Retried if retryable; otherwise the step ends
-///   `Failed` and resume runs it again.
+/// - **Not applied** ([`crate::Effect::NotApplied`]): circuit open, `Cancelled`, a passed deadline
+///   ([`ExecutionError::DeadlinePassed`]), HTTP 4xx and 503, [`ExecutionError::refused`] and
+///   [`ExecutionError::rejected`]. Retried if retryable; otherwise the step ends `Failed` and resume runs it again.
 /// - **Unknown** ([`crate::Effect::Unknown`]): a timeout, HTTP 5xx other than 503, an interruption, a panic,
 ///   [`ExecutionError::failed`] and [`ExecutionError::transient`]. Retried only if retryable and the step is
 ///   [`Replay::Idempotent`] or [`Replay::Prechecked`]. Otherwise the step ends `OutcomeUnknown` and resume holds it

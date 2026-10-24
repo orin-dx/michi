@@ -57,7 +57,6 @@ A thin napi-rs wrapper around `michi-core`, built with its `napi` feature enable
 - `napi-rs` with `napi-derive` proc-macros — clean Rust in, C-ABI glue and TypeScript types out, generated at compile time
 - Typed `#[napi(object)]` structs (`JsToonValue`, `JsKvItem`, ...) for the dynamic FFI boundary (cell values, recovery params) — kept as tagged Rust enums converted by hand, not `serde_json::Value`. `serde_json` does enter the tree once `napi` is enabled (for `toCallToolResult()`'s typed `structuredContent`), but the two are independent choices — `JsToonValue`/`JsKvItem` stay their own explicit shape because a `Value` would silently accept malformed input instead of matching a documented variant.
 - Platform-aware binary loading via the generated `index.js`
-- TypeScript fallback export for environments without the native binary
 - Six published targets, one `packages/michi-node/npm/<platform>` package each (`napi.targets` in `package.json`):
   - `aarch64-apple-darwin` (`darwin-arm64`)
   - `x86_64-apple-darwin` (`darwin-x64`)
@@ -112,7 +111,7 @@ impl JsAgentResponse {
         fields: Vec<String>,
     ) -> napi::Result<()> {
         let b = self.inner.take()
-            .ok_or_else(|| napi::Error::from_reason("response already rendered"))?;
+            .ok_or_else(|| napi::Error::from_reason("AgentResponse already consumed"))?;
         let field_refs: Vec<&str> = fields.iter().map(String::as_str).collect();
         let converted = convert_rows(rows);              // JsToonValue → michi_core::toon::Value
         self.inner = Some(b.items(converted, &field_refs));
@@ -122,7 +121,7 @@ impl JsAgentResponse {
     #[napi(catch_unwind)]
     pub fn render_toon(&self) -> napi::Result<String> {
         self.inner.as_ref()
-            .ok_or_else(|| napi::Error::from_reason("response already consumed"))
+            .ok_or_else(|| napi::Error::from_reason("AgentResponse already consumed"))
             .map(|b| b.render_toon())
     }
 }
@@ -206,9 +205,9 @@ None of these thirteen inputs is ever silently clamped, truncated, or defaulted 
 
 - It tries a locally compiled `.node` file first, so `napi build` during development needs no reinstall.
 - It then falls back to the per-platform optional-dependency npm package matching `process.platform`/`process.arch`.
-- On Linux it also branches on glibc vs. musl via `detect-libc`.
+- On Linux it also branches on glibc vs. musl.
 - Each platform binary ships as its own npm package under `optionalDependencies`, with `cpu`/`os` fields so package managers install only the matching one.
-- If neither a local `.node` nor a matching optional dep is present, the require throws — no silent degradation, so the package's TypeScript fallback export should surface a clear error.
+- If neither a local `.node` nor a matching optional dep is present, the require throws — no silent degradation. There is no JavaScript fallback implementation: the package's `files` are `index.js`, `index.d.ts` and its changelog, and the binaries come from the platform packages.
 
 > Known pitfall: npm sometimes omits optional platform deps from `package-lock.json` when the lockfile was generated on a different architecture (npm/cli#4828). Prefer `pnpm`, or regenerate the lockfile on the target arch.
 
@@ -225,9 +224,9 @@ None of these thirteen inputs is ever silently clamped, truncated, or defaulted 
 
 CI builds all six NAPI targets. The macOS targets build on the arm64 `macos-latest` runner, `x86_64-apple-darwin` through rustup's target and Apple's universal SDK (no extra linker); `x86_64-unknown-linux-gnu` builds natively on `ubuntu-latest`; the musl targets and `aarch64-unknown-linux-gnu` link with `cargo-zigbuild`, `aarch64-unknown-linux-gnu` on GitHub's `ubuntu-24.04-arm` runner. The Node tests run where the runner loads the binary natively: `darwin-arm64`, `linux-x64-gnu` and `linux-arm64-gnu`.
 
-`.github/workflows/callisto-release.yml` uses Callisto 0.11. Ordinary pushes to `main` create or update a version PR when changesets are present. A verified merge of that managed PR, carrying its `.callisto/release-decision.json`, runs Callisto's CI release: `callisto release plan`, a release build of all six targets (the runner and cross-compile choice per target come from `callisto matrix`, except that `x86_64-apple-darwin` builds on `macos-latest` rather than Callisto 0.11's retired `macos-13`; `aarch64` Linux cross-compiles with `cargo-zigbuild` on `ubuntu-latest`), then `callisto release execute`, which publishes the committed `packages/michi-node/npm/<platform>` packages before `@orin-dx/michi`, then pushes the release tags (no GitHub releases: no package lists `github-release` in `publish-to`). The build's generated `index.js` and `index.d.ts` ship in the npm package; neither they nor the `.node` files are committed.
+`.github/workflows/callisto-release.yml` uses Callisto 0.12. Ordinary pushes to `main` create or update a version PR when changesets are present. A verified merge of that managed PR, carrying its `.callisto/release-decision.json`, runs Callisto's CI release: `callisto release plan`, a release build of all six targets (the runner and cross-compile choice per target come from `callisto matrix`, except that `x86_64-apple-darwin` builds on `macos-latest` rather than the retired `macos-13`; `aarch64` Linux cross-compiles with `cargo-zigbuild` on `ubuntu-latest`), then `callisto release execute`, which publishes the crates to crates.io and the committed `packages/michi-node/npm/<platform>` packages before `@orin-dx/michi`, then pushes the release tags. `michi-core` is the one package that lists `github-release`: each version gets one GitHub release, tagged `michi@{version}`; the other packages keep `{name}@{version}` tags. The build's generated `index.js` and `index.d.ts` ship in the npm package; neither they nor the `.node` files are committed.
 
-The pipeline has not produced a release yet: neither `michi-core`/`michi-pipeline` on crates.io nor `@orin-dx/michi` on npm exists. The three packages ship one version through the Callisto fixed group, and the first release establishes the published versions for downstream integration; consumer integration follows publication (see [ADR 4](../adr/0004-publish-before-consumer-integration.md)). The `version-sync` CI job checks that the npm package version matches the workspace version in the root `Cargo.toml`.
+The first published release was 0.3.1 (0.3.0 was never published). The four packages — `michi-core`, `michi-pipeline`, `michi-graph` and `@orin-dx/michi` — ship one version through the Callisto fixed group; consumer integration follows publication (see [ADR 4](../adr/0004-publish-before-consumer-integration.md)). The `version-sync` CI job checks that the three crates' `version` fields and the npm package version are equal.
 
 **Windows is a non-goal for v1.** michi's agent consumers (MCP servers, CLIs invoked by coding agents) run on Linux and macOS hosts; a `windows-x64` target would add `cargo-xwin` tooling and another CI lane for no current consumer. Nothing blocks adding it later.
 
@@ -370,7 +369,7 @@ export type JsAgentResponse = AgentResponse;
 
 </details>
 
-The resilience-, status-, and error-domain surface, added by SPEC-ARCH-004 and the status/error NAPI wrappers — every numeric position here is validated through the newtype kernel in `crates/michi-core/src/napi/num.rs` per the "Numeric boundary" section below, not left to `ToInt32`/implicit coercion:
+The resilience-, status-, and error-domain surface, added by SPEC-ARCH-004 and the status/error NAPI wrappers — every numeric position here is validated through the newtype kernel in `crates/michi-core/src/napi/num.rs` per the "Numeric boundary" section above, not left to `ToInt32`/implicit coercion:
 
 <details>
 <summary>Full resilience-, error-, and status-domain <code>index.d.ts</code> (57 lines)</summary>

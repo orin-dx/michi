@@ -1,5 +1,7 @@
 # MCP Integration, DX Polish, and Doc/Hygiene Reconciliation — Implementation Plan
 
+> **Historical record.** This dated document shows what was planned or decided at the time; much of it has since changed. Don't implement from it. For current behavior, see [`docs/spec/`](../../spec/README.md), [`ARCHITECTURE.md`](../../../ARCHITECTURE.md) and the [ADRs](../../adr/README.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Close the primitives → MCP `CallToolResult` gap with an always-compiled `mcp` module and a real-object NAPI export, ship the two DX fixes worth shipping (opt-in `serde` feature + `toon::list()`), and correct every stale/wrong documentation claim found during the doc audit — all per `docs/superpowers/specs/2026-07-09-mcp-integration-design.md`.

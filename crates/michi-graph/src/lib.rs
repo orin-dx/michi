@@ -8,7 +8,8 @@
 //! 2. [`Graph::validate`] (every edge) or [`Graph::validate_filtered`] (edges you choose) returns a [`Dag`], or
 //!    [`Violations`] listing every problem at once: duplicate nodes, unknown dependencies, self-dependencies and
 //!    cycles, each cycle with one concrete loop.
-//! 3. Query the [`Dag`]: topological order, layers, ready sets, ancestors and descendants.
+//! 3. Query the [`Dag`]: topological order, layers, ready sets (judged per edge kind with [`Dag::ready_by_edge`]),
+//!    ancestors and descendants.
 //!
 //! The caller picks how ties break ([`Order::Declaration`] or [`Order::Key`]) and every output follows it, so the same
 //! input always gives the same result. Nothing recurses, so long chains cannot overflow the stack.

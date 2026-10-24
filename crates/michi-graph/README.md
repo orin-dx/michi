@@ -5,7 +5,7 @@ Deterministic dependency graphs for dev tools: steps in a pipeline, operations i
 - **Every problem at once.** Validation reports duplicate nodes, unknown dependencies, self-dependencies and cycles in one list, in a fixed order. Each cycle names all of its members and one concrete loop.
 - **Deterministic.** Ties break by declaration order or by key, your choice, and every output follows it: the topological order (the smallest valid one), layers, ready sets, closures and cycle reports.
 - **No recursion.** A 100,000-node chain or cycle validates without touching the stack limit.
-- **Edge kinds.** Give edges a kind (runtime, dev, …) and choose per validation which kinds count, so one graph yields several dags.
+- **Edge kinds.** Give edges a kind (runtime, dev, …) and choose per validation which kinds count, so one graph yields several dags. A `Dag<K, E>` keeps each edge's kind (`prerequisite_edges`), and `ready_by_edge` judges each edge by its kind, for graphs where some kinds are satisfied earlier than others.
 
 ```rust
 use michi_graph::{Dag, Order};

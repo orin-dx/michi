@@ -5,7 +5,7 @@ use std::future::Future;
 /// A cooperative cancellation signal, cheap to clone. Hold one clone on the side that decides to cancel and pass
 /// another into [`crate::ExecOptions::cancellation`].
 ///
-/// Wraps `tokio_util::sync::CancellationToken`, so tokio-util's 0.x type never appears in michi's public API.
+/// Wraps `tokio_util::sync::CancellationToken`, so tokio-util's 0.x type never appears in michi-pipeline's public API.
 /// Cancelling a token cancels every child made from it, never its parent.
 #[derive(Debug, Clone, Default)]
 pub struct CancellationToken(tokio_util::sync::CancellationToken);

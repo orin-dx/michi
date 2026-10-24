@@ -2,7 +2,8 @@ use std::fmt::Write as _;
 
 /// Status of an individual pipeline step.
 ///
-/// Each terminal status maps to one recovery action an agent can take; see `docs/spec/08-pipeline-execution.md`.
+/// Each terminal status maps to one recovery action an agent can take; see "Status model" in
+/// `docs/spec/08-pipeline-execution.md`.
 /// Only [`StepStatus::Completed`] and [`StepStatus::CompletedEarlier`] count as success.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -19,7 +20,8 @@ pub enum StepStatus {
     /// Its effect was already in place, so it was not run: it succeeded earlier in the same run (carried over by
     /// resume), the caller verified it as applied, or its precheck found the effect already applied.
     CompletedEarlier,
-    /// Ran and failed: definitively, or with an error that is safe to replay.
+    /// Failed definitively, or with an error that is safe to replay. Also covers a step that was never started
+    /// because its deadline group's window had closed (michi-pipeline's `DeadlinePassed`).
     Failed,
     /// Ran, but whether it took effect is unknown. Verify before running it again.
     OutcomeUnknown(UnknownCause),

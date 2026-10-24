@@ -5,7 +5,8 @@
 //! # Resilience
 //!
 //! Retry configuration, delay calculation, RFC 9110 `Retry-After` parsing,
-//! and FNV-1a idempotency primitives.
+//! retryable HTTP statuses, a [`RetryBudget`], and idempotency primitives:
+//! FNV-1a [`IdempotencyKey`]s and already-done detection ([`already_done`]).
 
 use std::time::Duration;
 

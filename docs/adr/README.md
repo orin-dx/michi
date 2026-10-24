@@ -10,11 +10,11 @@ Use `Proposed` while a decision is under review and `Accepted` once it is implem
 
 | ADR | Decision | Status |
 | --- | --- | --- |
-| [0001](0001-async-pipeline-separate-crate.md) | Keep async pipeline execution in its own crate. | Accepted |
+| [0001](0001-async-pipeline-separate-crate.md) | Keep async pipeline execution in its own crate. | Accepted; dependency detail amended by ADR 5 |
 | [0002](0002-consumer-integration-before-crates-io.md) | Require an external consumer integration before the first crates.io release. | Superseded by ADR 4 |
-| [0003](0003-fsl-1-1-mit-license.md) | License the workspace under FSL-1.1-MIT. | Accepted |
+| [0003](0003-fsl-1-1-mit-license.md) | License the workspace under FSL-1.1-MIT. | Accepted; amended: `michi-graph` is MIT |
 | [0004](0004-publish-before-consumer-integration.md) | Publish an initial version before requiring downstream integration. | Accepted |
-| [0005](0005-two-crates-one-version.md) | Publish `michi-core` and `michi-pipeline` on one version; no facade. Amends ADR 1's dependency detail. | Accepted |
+| [0005](0005-two-crates-one-version.md) | Publish `michi-core` and `michi-pipeline` on one version; no facade. Amends ADR 1's dependency detail. | Accepted; amended: `michi-graph` joined the group |
 | [0006](0006-toon-4-4-conformance.md) | Every agent-facing block is TOON 4.4 encoder output; no michi dialect. | Accepted |
-| [0007](0007-pipeline-plans-records-replay.md) | Run pipelines from a validated plan into a strict run record, with one replay rule for retries and resume. | Accepted |
+| [0007](0007-pipeline-plans-records-replay.md) | Run pipelines from a validated plan into a strict run record, with one replay rule for retries and resume. | Accepted; amended in 0.5 |
 | [0008](0008-capacity-limits.md) | Cap core document shapes and give every NAPI call a length and byte budget. | Accepted |

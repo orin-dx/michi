@@ -252,7 +252,7 @@ fn all_toon_rendering_goes_through_toon_document() {
     // Only the free function `render_toon(&ToonOptions) -> Result<String, ToonError>`
     // is in scope here -- its call sites always look like `render_toon(&x)`.
     // This deliberately excludes: its own `fn render_toon(` definitions (in
-    // michi-toon/src/lib.rs and src/napi.rs -- a different, NAPI-layer
+    // src/toon/mod.rs and src/napi.rs -- the latter a different, NAPI-layer
     // `render_toon` that has always returned `napi::Result<String>`, unaffected
     // by this spec); `AgentResponse::render_toon(&self) -> String`, a distinct,
     // deliberately-infallible method (its own call sites are `.render_toon()`,
