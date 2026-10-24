@@ -298,6 +298,8 @@ jobs:
     permissions:
       contents: write
       id-token: write
+    outputs:
+      smoke_version: ${{ steps.published.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -390,6 +392,26 @@ jobs:
             --receipt "$RUNNER_TEMP/release-receipt/release-receipt.json" \
             --orchestration-revision "$ORCHESTRATION_SHA"
 
+      # Callisto writes the receipt only after every selected operation succeeded. A run that published a package
+      # to a registry names that version here; a run that only adopted earlier effects (a re-run) or published
+      # nothing leaves the output empty and skips the post-release smoke test.
+      - name: Find the version this run published
+        id: published
+        run: |
+          set -euo pipefail
+          receipt="$RUNNER_TEMP/release-receipt/release-receipt.json"
+          if [[ ! -f "$receipt" ]]; then
+            echo "version=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          versions=$(jq -r '[.outcomes[] | select(.outcome.kind == "published" and .operation.role.kind == "registryPublish")
+            | .operation.version] | unique | join(" ")' "$receipt")
+          if [[ "$versions" == *" "* ]]; then
+            echo "::error::the receipt published several versions ($versions); the smoke test checks one"
+            exit 1
+          fi
+          echo "version=$versions" >> "$GITHUB_OUTPUT"
+
       - name: Summarize the receipt
         if: always()
         run: |
@@ -411,3 +433,29 @@ jobs:
           path: ${{ runner.temp }}/release-receipt
           if-no-files-found: ignore
           retention-days: 30
+
+  # Installs the versions just published from the public registries into clean projects on each platform we ship
+  # prebuilt binaries for, and uses them (scripts/smoke-published.sh). Needs no secrets and no write access. It
+  # cannot undo a release: a failure here is the alarm that the published packages are broken.
+  smoke-published:
+    name: Smoke-test the published release (${{ matrix.os }})
+    needs: [release-candidate, execute]
+    if: needs.execute.result == 'success' && needs.execute.outputs.smoke_version != ''
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      RELEASED_VERSION: ${{ needs.execute.outputs.smoke_version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.release-candidate.outputs.release_source_sha }}
+          persist-credentials: false
+
+      - name: Install the published packages and use them
+        run: scripts/smoke-published.sh "$RELEASED_VERSION"
