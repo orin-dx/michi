@@ -51,7 +51,11 @@ test-node: build-node
     cd packages/michi-node && pnpm test
 
 # ── Lint & Format ───────────────────────────────────────────────────────────
-check: fmt-check clippy doc-check fuzz-check deny typos fmt-md-check
+check: fmt-check clippy doc-check fuzz-check zizmor deny typos fmt-md-check
+
+# Static security audit of the workflows (needs zizmor 1.29.0, the version CI runs).
+zizmor:
+    zizmor --offline .github
 
 # Compile the fuzz targets on stable. fuzz/ is outside the workspace, so nothing else builds it; CI does the same.
 fuzz-check:

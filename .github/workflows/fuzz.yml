@@ -39,6 +39,8 @@ jobs:
       TARGET: ${{ matrix.target }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       # cargo-fuzz needs nightly for the sanitizer flags. The repo's rust-toolchain.toml pins stable for everything
       # else, so nightly is requested per command (`cargo +nightly`) instead of replacing the default.
       - name: Install nightly
