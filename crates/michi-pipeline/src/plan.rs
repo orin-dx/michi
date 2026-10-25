@@ -310,6 +310,8 @@ impl std::str::FromStr for PlanFingerprint {
         if s.len() != 16 || !s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
             return Err(ParseFingerprintError(s.to_string()));
         }
+        // The shape check above makes this infallible; the error type carries the input, not a `ParseIntError`.
+        #[allow(clippy::map_err_ignore)]
         u64::from_str_radix(s, 16).map(Self).map_err(|_| ParseFingerprintError(s.to_string()))
     }
 }

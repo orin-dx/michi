@@ -46,6 +46,7 @@
 
 #![warn(missing_docs)]
 #![warn(clippy::unwrap_used, clippy::expect_used)]
+#![warn(clippy::panic, clippy::map_err_ignore)]
 #![warn(clippy::disallowed_types)]
 #![warn(clippy::must_use_candidate, clippy::missing_errors_doc, clippy::missing_panics_doc)]
 #![warn(missing_debug_implementations)]
