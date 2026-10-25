@@ -1,8 +1,3 @@
 fn main() {
-    let _ = michi_core::truncate::Truncated {
-        content: String::new(),
-        original_len: 0,
-        was_truncated: false,
-        signal: None,
-    };
+    let _ = michi_core::truncate::Truncated { content: String::new(), original_chars: 0, removed: 0 };
 }
