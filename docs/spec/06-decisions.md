@@ -761,3 +761,11 @@ What shipped:
 ### Resolved 2026-10-24 — Automatic format selection is deferred past 1.0
 
 Choosing a body encoding by data shape is not built. It needs measurements of format by shape and at least two consumers hand-rolling the same logic ([`PRINCIPLES.md`](../../PRINCIPLES.md) gate 3); callers choose the body today. See [ADR 9](../adr/0009-v1-positioning-and-criteria.md).
+
+### Resolved 2026-10-24 — `truncate()` reports the cut out of band
+
+The earlier decision kept `truncate()`, `truncate_inline()` and the Node `truncate` unchanged, with the in-band `" (N more chars — use hint)"` suffix. That suffix has the same flaw as the TOON cell marker: data can end the same way. `truncate()` itself is a core primitive (a tool cutting one large payload needs a char-safe cut), so it is kept and its report moved out of the text.
+
+- **New shape:** `truncate(content, max_chars) -> Truncated { content, original_chars, removed }`. A cut keeps `max_chars - 1` chars and ends in a plain `…`, the rule cut TOON cells follow. `Truncated::was_truncated()` and `Truncated::hint(guidance)` (`cut {removed} of {original_chars} chars; {guidance}`) mirror `TruncationOutcome::hint` for lists. Node: `truncate(content, maxChars)` returns `{ content, originalChars, removed, wasTruncated }`.
+- **Removed:** `truncate_inline()`, the `hint` parameter, the `signal` field and the byte-length `original_len`. The suffix arithmetic (digits of `removed`, clause length) is gone with them.
+- **Breaking** for any caller of the old signature. None is known: the only users were michi's own tests, the fuzz target and the Node tests.

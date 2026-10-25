@@ -19,7 +19,7 @@ pub use resilience::{
     already_done, is_retryable_status, next_retry_delay, parse_retry_after, parse_retry_after_at,
     render_already_done, AlreadyDone, IdempotencyKey, RetryBudget, RetryConfig, RetryConfigError,
 };
-pub use truncate::{truncate, truncate_inline, Truncated};
+pub use truncate::{truncate, Truncated};
 pub use truncation::{truncate_by_count, truncate_by_size, TruncationOutcome};
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -433,31 +433,34 @@ The structs above are `#[non_exhaustive]` from 0.4.0: build them with their cons
 ```rust
 #[non_exhaustive]
 pub struct Truncated {
+    /// The input when it fits; otherwise its first `max_chars - 1` chars followed by a plain `…`.
     pub content: String,
-    /// Byte length (not char count) of the input, truncated or not.
-    pub original_len: usize,
-    pub was_truncated: bool,
-    /// The in-band marker at the end of content, leading space stripped: "(N more chars — use hint)",
-    /// "(N more chars)" or "…". None when not truncated or when max_chars is 0.
-    pub signal: Option<String>,
+    /// Chars in the input.
+    pub original_chars: usize,
+    /// Chars of the input not in `content` (not counting the `…`); 0 when nothing was cut.
+    pub removed: usize,
 }
 
-pub fn truncate(content: &str, max_chars: usize, hint: &str) -> Truncated;
-pub fn truncate_inline(content: &str, max_chars: usize, hint: &str) -> String;
+impl Truncated {
+    pub fn was_truncated(&self) -> bool;
+    /// `cut {removed} of {original_chars} chars; {guidance}`, or without `; …` for empty guidance. None when not cut.
+    pub fn hint(&self, guidance: impl Into<String>) -> Option<Hint>;
+}
+
+pub fn truncate(content: &str, max_chars: usize) -> Truncated;
 ```
 
-Truncates strings safely at Unicode scalar boundaries without splitting UTF-8 code points. `max_chars` counts chars, and the result never exceeds it. The marker is plain text inside the string, so data can imitate it: use these for a single free-text payload, not for TOON cells. The TOON renderer cuts cells itself and reports each cut in a separate `truncated` block ([TOON format](02-toon-format.md#truncation)):
+Cuts a string at a Unicode scalar boundary, never inside a UTF-8 code point. `max_chars` counts chars and `content` never exceeds it. A cut keeps `max_chars - 1` chars and ends in `…`, the same rule a cut TOON cell follows ([TOON format](02-toon-format.md#truncation)). The cut is reported in `removed` and `hint()`, never inside the text, so data cannot imitate it. Add the hint to the response's `help[]` hints, which come from the tool author.
 
-| Input     | `max_chars` | `hint`        | `content`                                        |
-| --------- | ----------- | ------------- | ------------------------------------------------ |
-| 200 × `a` | 50          | `"full=true"` | 17 × `a` + `" (183 more chars — use full=true)"` |
-| 100 × `a` | 40          | `""`          | 24 × `a` + `" (76 more chars)"`                  |
-| 100 × `a` | 3           | `"x"`         | `"aa…"`                                          |
-| 100 × `a` | 1 / 0       | any           | `"…"` / `""`                                     |
+| Input     | `max_chars` | `content`               | `removed` |
+| --------- | ----------- | ----------------------- | --------- |
+| `hello`   | 100         | `hello`                 | 0         |
+| 200 × `a` | 50          | 49 × `a` + `…`          | 151       |
+| 100 × `a` | 1 / 0       | `…` / `` (empty string) | 100 / 100 |
 
-- The count is the chars **removed** (input chars minus kept chars), sized so the suffix's own digits fit within `max_chars`.
-- The `— use {hint}` clause is the caller's instruction and is omitted when `hint` is empty; michi never supplies one. The `&str` signature stays so the NAPI `truncate(content, maxChars, hint)` export is unchanged.
-- When the suffix plus one kept char does not fit, the result is the first `max_chars - 1` chars and `…`, never a fragment of the suffix. `was_truncated` is still `true`.
+- Cutting can split a multi-part emoji or a flag pair, since the unit is the scalar value, not the grapheme cluster. The result is valid UTF-8 and cannot panic.
+- michi never supplies the `guidance`: it is the caller's instruction for getting the rest (`pass full=true`).
+- This replaces the earlier `truncate(content, max_chars, hint)` and `truncate_inline()`, which appended a `" (N more chars — use hint)"` suffix inside the string. Data could end the same way, so the report moved out of band, as it did for cells.
 
 ## `truncation` — What a List Cap Cut
 

@@ -336,16 +336,40 @@ pub fn render_recovery(hints: Vec<JsRecoveryHint>) -> napi::Result<String> {
     Ok(crate::recovery::render_recovery(&converted))
 }
 
-/// Truncate one free-text string to `maxChars` Unicode scalar values with an in-band, agent-readable suffix:
-/// `" ({removed} more chars — use {hint})"`, or `" ({removed} more chars)"` when `hint` is the empty string. A cap
-/// too small for that suffix keeps `maxChars - 1` chars and ends with `…` (`maxChars` 0 returns an empty string).
-/// The marker is plain text, so data can imitate it: do not use this for TOON cells, which `renderToon` and
-/// `JsAgentResponse` cut and report out of band.
+/// The result of [`truncate`] (JavaScript-friendly).
+#[napi(object)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JsTruncated {
+    /// The text to show: the input when it fits, otherwise its first `maxChars - 1` chars followed by a plain `…`.
+    pub content: String,
+    /// Length of the input in chars.
+    #[napi(js_name = "originalChars")]
+    pub original_chars: u32,
+    /// How many chars of the input are not in `content`; `0` when nothing was cut.
+    pub removed: u32,
+    /// Whether any chars were cut (`removed > 0`).
+    #[napi(js_name = "wasTruncated")]
+    pub was_truncated: bool,
+}
+
+/// Cut one free-text string to `maxChars` Unicode scalar values. Text that fits is returned unchanged; a longer text
+/// keeps its first `maxChars - 1` chars and ends in `…` (`maxChars` 0 returns an empty string). The cut is reported
+/// in `removed` and `wasTruncated`, never inside `content`, so the text cannot carry a message that data could
+/// imitate. Tell the agent how to get the rest through a hint you write yourself, for example
+/// `cut ${removed} of ${originalChars} chars; pass full=true`.
 #[napi(catch_unwind)]
 #[allow(clippy::needless_pass_by_value)] // napi-derive requires owned String for JS string params
 #[must_use]
-pub fn truncate(content: String, #[napi(ts_arg_type = "number")] max_chars: JsCount, hint: String) -> String {
-    crate::truncate::truncate_inline(&content, max_chars.get(), &hint)
+pub fn truncate(content: String, #[napi(ts_arg_type = "number")] max_chars: JsCount) -> JsTruncated {
+    let t = crate::truncate::truncate(&content, max_chars.get());
+    // A JS string is far below 2^32 chars, so saturating never happens in practice; it keeps the cast panic-free.
+    let to_u32 = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+    JsTruncated {
+        was_truncated: t.was_truncated(),
+        original_chars: to_u32(t.original_chars),
+        removed: to_u32(t.removed),
+        content: t.content,
+    }
 }
 
 /// A key-value item for [`JsAgentResponse::kv_items`] (JavaScript-friendly).
@@ -1659,24 +1683,24 @@ mod tests {
 
     #[test]
     fn truncate_basic() {
+        let max = JsCount::try_from(100.0).expect("100 is a valid count");
         assert_eq!(
-            truncate(
-                "hello".to_string(),
-                JsCount::try_from(100.0).expect("100 is a valid count"),
-                "full=true".to_string()
-            ),
-            "hello"
+            truncate("hello".to_string(), max),
+            JsTruncated { content: "hello".to_string(), original_chars: 5, removed: 0, was_truncated: false }
         );
     }
 
     #[test]
-    fn truncate_empty_hint_has_no_use_clause() {
-        let max = JsCount::try_from(40.0).expect("40 is a valid count");
-        assert_eq!(truncate("a".repeat(100), max, String::new()), format!("{} (76 more chars)", "a".repeat(24)));
+    fn truncate_reports_the_cut_outside_the_text() {
         let max = JsCount::try_from(40.0).expect("40 is a valid count");
         assert_eq!(
-            truncate("a".repeat(100), max, "x".to_string()),
-            format!("{} (84 more chars — use x)", "a".repeat(16))
+            truncate("a".repeat(100), max),
+            JsTruncated {
+                content: format!("{}…", "a".repeat(39)),
+                original_chars: 100,
+                removed: 61,
+                was_truncated: true,
+            }
         );
     }
 

@@ -298,13 +298,20 @@ export declare function renderHints(hints: Array<string>): string;
 /** Appends the help block to a TOON document: one LF first unless `body` is empty or already ends in one. */
 export declare function appendHints(body: string, hints: Array<string>): string;
 
-/** Only the inline form crosses the NAPI boundary — unlike Rust's `truncate()`,
- * which returns a richer `Truncated` struct, this returns the final string directly.
- * Suffix: `" ({removed} more chars — use {hint})"`, or `" ({removed} more chars)"` for an
- * empty `hint`; a cap too small for it gives `maxChars - 1` chars and `…`.
- * The marker is plain text, so data can imitate it: for one free-text payload, not for TOON
- * cells (`renderToon` and `AgentResponse` cut cells and report them in a `truncated` block). */
-export declare function truncate(content: string, maxChars: number, hint: string): string;
+export interface JsTruncated {
+  /** The input when it fits; otherwise its first `maxChars - 1` chars and a plain `…`. */
+  content: string;
+  originalChars: number;
+  /** Chars of the input not in `content`; 0 when nothing was cut. */
+  removed: number;
+  wasTruncated: boolean;
+}
+
+/** Cut one free-text string on a char boundary. The cut is reported in `removed` and
+ * `wasTruncated`, never inside `content`, so data cannot imitate it. Write your own hint,
+ * for example `cut ${removed} of ${originalChars} chars; pass full=true`. Cells are cut and
+ * reported by `renderToon` and `AgentResponse` (in a `truncated` block). */
+export declare function truncate(content: string, maxChars: number): JsTruncated;
 
 export interface JsRecoveryHint {
   tool: string;
@@ -509,6 +516,6 @@ export interface JsAlreadyDone {
 export declare function alreadyDone(stored?: string | undefined | null): JsAlreadyDone;
 ```
 
-`truncate` is already the inline form (`truncate_inline`), so there is no separate `truncateInline` export. Rust's richer `truncate()` result (`Truncated`) does not cross the boundary.
+`truncate` returns the same fields as Rust's `Truncated` (`content`, `originalChars`, `removed`, `wasTruncated`); `Truncated::hint()` does not cross the boundary, so build the hint text in JavaScript.
 
 </details>

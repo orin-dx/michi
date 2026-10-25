@@ -122,7 +122,7 @@ pub use resilience::{
     already_done, is_retryable_status, next_retry_delay, parse_retry_after, parse_retry_after_at, render_already_done,
     AlreadyDone, IdempotencyKey, RetryBudget, RetryConfig, RetryConfigError,
 };
-pub use truncate::{truncate, truncate_inline, Truncated};
+pub use truncate::{truncate, Truncated};
 pub use truncation::{truncate_by_count, truncate_by_size, TruncationOutcome};
 
 /// Crate-level `Result` alias.

@@ -1,19 +1,19 @@
-//! Truncation never splits a char, never exceeds its bound, keeps a prefix of the input and reports the cut exactly.
+//! Truncation never splits a char, never exceeds its bound, keeps a prefix of the input and reports the cut out of band.
 
 #![no_main]
 
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
-use michi_core::{truncate, truncate_by_count, truncate_by_size, truncate_inline};
+use michi_core::{truncate, truncate_by_count, truncate_by_size};
 
 #[derive(Arbitrary, Debug)]
 struct Input {
     content: String,
-    hint: String,
-    /// Small limits hit the suffix/ellipsis edge cases; a raw `usize` hits the overflow ones.
+    /// Small limits hit the ellipsis edge cases; a raw `usize` hits the overflow ones.
     small_max: u8,
     big_max: usize,
     use_big: bool,
+    guidance: String,
     items: Vec<(u8, u32)>,
     budget: usize,
     count_max: u8,
@@ -23,37 +23,31 @@ fuzz_target!(|input: Input| {
     let max = if input.use_big { input.big_max } else { usize::from(input.small_max) };
     let chars = input.content.chars().count();
 
-    let t = truncate(&input.content, max, &input.hint);
-    assert_eq!(t.original_len, input.content.len());
+    let t = truncate(&input.content, max);
+    assert_eq!(t.original_chars, chars);
     assert!(t.content.chars().count() <= max, "{} > {max}: {:?}", t.content.chars().count(), t.content);
-    assert_eq!(truncate_inline(&input.content, max, &input.hint), t.content);
 
     if chars <= max {
-        assert!(!t.was_truncated);
+        // Fits: returned unchanged, nothing reported.
+        assert!(!t.was_truncated());
+        assert_eq!(t.removed, 0);
         assert_eq!(t.content, input.content);
-        assert_eq!(t.signal, None);
-    } else if max == 0 {
-        assert!(t.was_truncated);
-        assert_eq!(t.content, "");
-        assert_eq!(t.signal, None);
+        assert!(t.hint(input.guidance.as_str()).is_none());
     } else {
-        assert!(t.was_truncated);
-        let signal = t.signal.as_deref().expect("a truncated result carries its signal");
-        let kept = if signal == "\u{2026}" {
-            let kept = t.content.strip_suffix('\u{2026}').expect("ends with the ellipsis");
-            assert_eq!(kept.chars().count(), max - 1);
-            kept
-        } else {
-            let kept = t.content.strip_suffix(signal).and_then(|s| s.strip_suffix(' ')).expect("ends with the signal");
-            let clause = if input.hint.is_empty() { String::new() } else { format!(" \u{2014} use {}", input.hint) };
-            let removed = chars - kept.chars().count();
-            assert_eq!(signal, format!("({removed} more chars{clause})"));
-            assert!(kept.chars().count() >= 1);
-            kept
-        };
-        // The kept part is a whole-char prefix of the input.
-        assert!(input.content.starts_with(kept));
-        assert!(input.content.is_char_boundary(kept.len()));
+        // Cut: the first `max - 1` chars (none for a cap of 0) plus a plain `…`, exactly `max` chars, and the
+        // removed count is everything not kept. The text carries no message: only the ellipsis was added.
+        assert!(t.was_truncated());
+        let kept_chars = max.saturating_sub(1);
+        assert_eq!(t.removed, chars - kept_chars);
+        let want: String =
+            if max == 0 { String::new() } else { input.content.chars().take(kept_chars).chain(['\u{2026}']).collect() };
+        assert_eq!(t.content, want);
+        assert_eq!(t.content.chars().count(), max);
+        // The report lives in the hint, in the form michi documents.
+        let hint = t.hint(input.guidance.as_str()).expect("a cut has a hint");
+        let base = format!("cut {} of {chars} chars", t.removed);
+        let want_hint = if input.guidance.is_empty() { base } else { format!("{base}; {}", input.guidance) };
+        assert_eq!(hint.as_str(), want_hint);
     }
 
     // truncate_by_count: a prefix, at most `max` long, with the total recorded.

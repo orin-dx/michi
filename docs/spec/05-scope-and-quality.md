@@ -14,7 +14,7 @@
 | Retryable status classification | Hardcoded booleans per caller | `resilience::is_retryable_status()` |
 | Error classification shape | Ad hoc per tool | `error::Error`, `error::DomainError`, `error::ErrorCode` |
 | Empty state handling | Ad hoc per tool (often silent) | `empty::empty_state()` |
-| Truncation | Ad hoc per tool, no standard signal | `truncate::truncate()`, `truncate_inline()`; for lists, `TruncationOutcome` and `AgentResponse::truncation()` |
+| Truncation | Ad hoc per tool, no standard signal | `truncate::truncate()`; for lists, `TruncationOutcome` and `AgentResponse::truncation()` |
 
 ### Genuinely new — no shared primitive existed before this
 
@@ -112,7 +112,7 @@ Format changes are major versions. Treat the rendered string as a contract — t
 | `render_toon()` — 1000 items, 4 fields | < 3ms   | Linear in N×fields                  |
 | `render_kv()` — 10 items               | < 20µs  | Key check + one string pass         |
 | `render_hints()` — 5 hints             | < 10µs  | Trivial string join                 |
-| `truncate_inline()`                    | < 5µs   | Single pass, char boundary safe     |
+| `truncate()`                           | < 5µs   | Single pass, char boundary safe     |
 | `parse_retry_after()`                  | < 2µs   | String parse only                   |
 | `next_retry_delay()`                   | < 1µs   | Pure arithmetic                     |
 | NAPI boundary overhead                 | < 5µs   | Established from napi-rs benchmarks |
@@ -153,7 +153,7 @@ Benchmarks live in `crates/michi-core/benches/` and run via `divan`; CI builds t
 **Property tests** (`proptest`, `tests/`):
 
 - `render_toon()` output is grammar-valid for arbitrary string inputs
-- `truncate_inline()` never returns a string longer than `limit` chars, suffix included, and its count plus the kept chars equals the input char count
+- `truncate()` never returns a string longer than `max_chars` chars, and `removed` plus the kept chars equals the input char count
 - TOON round-trip: render → parse (test-only parser) → compare values
 - `parse_retry_after()` never panics on arbitrary strings
 - `next_retry_delay()` always returns a value within `[base_delay, max_delay]`

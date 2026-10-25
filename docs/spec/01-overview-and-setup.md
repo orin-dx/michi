@@ -203,7 +203,7 @@ michi/                           (workspace root — virtual manifest, no packag
           mod.rs                 # ToonOptions, ToonError, render_toon(), list() (serde feature), size limits
           escape.rs              # escape_value(), escape_value_quoted(), escape_key(); canonical numbers
           render.rs              # Value, ToonDocument; string assembly with pre-allocated capacity
-        truncate.rs              # Truncated, truncate(), truncate_inline()
+        truncate.rs              # Truncated, truncate()
         truncation.rs            # TruncationOutcome, truncate_by_count(), truncate_by_size()
       benches/
         toon_render.rs, kv_render.rs
