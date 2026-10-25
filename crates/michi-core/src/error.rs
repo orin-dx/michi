@@ -197,7 +197,9 @@ impl DomainError {
     /// The `source()` chain is **not** copied: underlying errors often carry URLs with tokens, file paths and other
     /// internals that should not reach an agent. Use [`DomainError::from_error_with_causes`] to opt in to the chain.
     /// The top-level `Display` is still agent-visible, so make sure it is safe to show; if it is not, build the
-    /// error with [`DomainError::new`] and a message you wrote. The message is tool-author text, never data.
+    /// error with [`DomainError::new`] and a message you wrote. The message is tool-author text, never data. As a
+    /// safety net, `user:password@` in any URL is replaced with `[REDACTED]` ([`crate::redact::redact_url_userinfo`]);
+    /// that is best-effort and covers nothing else.
     ///
     /// ```
     /// use michi_core::{DomainError, ErrorCode};
@@ -212,12 +214,13 @@ impl DomainError {
     /// assert!(e.causes.is_empty());
     /// ```
     pub fn from_error(code: ErrorCode, err: &(dyn std::error::Error + 'static)) -> Self {
-        Self::new(code, err.to_string())
+        Self::new(code, crate::redact::redact_url_userinfo(&err.to_string()))
     }
 
     /// Like [`DomainError::from_error`], and also copies the `source()` chain into `causes`. Opt-in: every link's
     /// `Display` becomes agent-visible text, so use it only when the whole chain is safe to show (no URLs with
-    /// tokens, no paths or internals you would not print to an end user).
+    /// tokens, no paths or internals you would not print to an end user). URL userinfo is redacted in every link, as in
+    /// [`DomainError::from_error`].
     ///
     /// Each `source()` link, outermost first, adds its `Display` as one entry of `causes` (never a hint: causes are
     /// diagnosis, hints are guidance). A link whose text is already contained in the last text kept (the message, or
@@ -246,7 +249,7 @@ impl DomainError {
         let mut link = err.source();
         for _ in 0..MAX_CAUSE_LINKS {
             let Some(e) = link else { break };
-            let text = e.to_string();
+            let text = crate::redact::redact_url_userinfo(&e.to_string());
             let previous = out.causes.last().unwrap_or(&out.message);
             if !previous.contains(text.as_str()) {
                 out.causes.push(text);

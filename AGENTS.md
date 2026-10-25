@@ -60,6 +60,7 @@ All modules live in `crates/michi-core/src/`.
 | `error` | Unified `michi_core::Error` type with agent rendering |
 | `idempotency` | Partial-success reporting (`PartialSuccess`/`FailedOp`) — despite the name, idempotency keys and already-done detection live in `resilience` (`AlreadyDone`/`already_done()`), not here |
 | `resilience` | Retry config, delay calculation, retry-after parsing |
+| `redact` | Best-effort redaction: known secrets and URL userinfo; applied by `DomainError::from_error` |
 | `status` | Health/status response rendering |
 | `recovery` | Recovery hint blocks |
 | `response` | `AgentResponse` builder — composes all primitives |
