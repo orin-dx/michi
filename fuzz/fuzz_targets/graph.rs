@@ -182,7 +182,7 @@ fuzz_target!(|input: Input| {
     for ix in dag.ready(ok, |_| true) {
         assert!(dag.prerequisites(ix).iter().all(|p| dag.key(*p).is_some_and(ok)));
     }
-    let _ = dag.ready_by_edge(|_| true, |_, kind| *kind != 2).count();
+    let _ = dag.ready_by_edge(|_, kind| *kind != 2, |_| true).count();
     let _ = dag.canonical().count();
 });
 

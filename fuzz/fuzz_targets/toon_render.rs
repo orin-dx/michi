@@ -6,7 +6,6 @@
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
 use michi_core::toon::{render_toon, ToonOptions, Value};
-use michi_core::truncate_inline;
 
 #[path = "../../crates/michi-core/tests/support/toon_parser.rs"]
 mod toon_parser;
@@ -83,9 +82,39 @@ fuzz_target!(|input: Input| {
 
     let Ok(out) = render_toon(&opts) else { return };
 
+    // The cut rule, written out here independently of the library: a string cell of more than `cap` chars keeps its
+    // first `cap - 1` chars and ends in `…` (a cap of 0 gives the empty string), and the cut is reported in the
+    // `truncated` block as (row, field, chars removed).
+    let cap = input.max_cell_len.map_or(200, usize::from);
+    let kept = cap.saturating_sub(1);
+    let mut cuts: Vec<(usize, usize, String, usize)> = Vec::new();
+    for (r, row) in rows.iter().enumerate() {
+        for (c, value) in row.iter().enumerate() {
+            if let Value::Str(s) = value {
+                let chars = s.chars().count();
+                if chars > cap {
+                    let shown: String =
+                        if cap == 0 { String::new() } else { s.chars().take(kept).chain(['…']).collect() };
+                    cuts.push((r, c, shown, chars - kept));
+                }
+            }
+        }
+    }
+
+    // With a non-empty truncation hint and at least one cut, one more line joins the caller's `help` hints.
+    let mut expected_hints = input.hints.clone();
+    if let Some(hint) = input.truncation_hint.as_deref().filter(|h| !h.is_empty() && !cuts.is_empty()) {
+        expected_hints.push(format!("Cut cells are listed in the truncated block; use {hint} for the full value"));
+    }
+
     // Escaping: no raw CR, and the line count is exactly what the header declares, so no cell or hint made a line.
     assert!(!out.contains('\r'), "raw CR in {out:?}");
-    let expected_lines = 1 + nrows + usize::from(input.total_count.is_some()) + usize::from(!input.hints.is_empty());
+    let truncated_lines = if cuts.is_empty() { 0 } else { 1 + cuts.len() };
+    let expected_lines = 1
+        + nrows
+        + usize::from(input.total_count.is_some())
+        + usize::from(!expected_hints.is_empty())
+        + truncated_lines;
     assert_eq!(out.matches('\n').count() + 1, expected_lines, "line count in {out:?}");
 
     // Canonical TOON 4.4: the strict decoder rejects anything an encoder must not emit.
@@ -96,17 +125,21 @@ fuzz_target!(|input: Input| {
         assert_eq!(parsed.fields, input.fields);
     }
     assert_eq!(parsed.total_count, input.total_count.map(|n| n as usize));
-    assert_eq!(parsed.hints, input.hints);
+    assert_eq!(parsed.hints, expected_hints);
+    let reported: Vec<(usize, String, usize)> =
+        cuts.iter().map(|(r, c, _, removed)| (*r, input.fields[*c].clone(), *removed)).collect();
+    assert_eq!(parsed.truncated, reported, "truncated block in {out:?}");
 
-    // Every cell decodes to its value; a string cell to exactly what `truncate_inline` gives it.
-    let max = input.max_cell_len.map_or(200, usize::from);
-    let hint = input.truncation_hint.as_deref().unwrap_or("");
-    for (parsed_row, row) in parsed.rows.iter().zip(&rows) {
+    // Every cell decodes to its value; a cut string cell to exactly its kept chars plus `…`.
+    for (r, (parsed_row, row)) in parsed.rows.iter().zip(&rows).enumerate() {
         assert_eq!(parsed_row.len(), width);
-        for (got, value) in parsed_row.iter().zip(row) {
+        for (c, (got, value)) in parsed_row.iter().zip(row).enumerate() {
             match value {
                 Value::Str(s) => {
-                    let want = truncate_inline(s, max, hint);
+                    let want = cuts
+                        .iter()
+                        .find(|(cr, cc, ..)| (*cr, *cc) == (r, c))
+                        .map_or_else(|| s.to_string(), |cut| cut.2.clone());
                     assert_eq!(got, &toon_parser::Prim::Str(want), "string cell {s:?}");
                 }
                 // `value_to_prim` spells floats with `to_string`, which is not canonical TOON for tiny or huge values;

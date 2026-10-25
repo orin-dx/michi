@@ -89,6 +89,8 @@ pub struct ParsedToon {
     pub total_count: Option<usize>,
     /// The `help` entry's strings; empty when there is none.
     pub hints: Vec<String>,
+    /// The `truncated` block's rows as `(row, field, removed)`; empty when no cell was cut.
+    pub truncated: Vec<(usize, String, usize)>,
 }
 
 /// Decode a michi list document strictly. See the module docs for what is rejected.
@@ -104,9 +106,27 @@ pub fn parse(input: &str) -> Result<ParsedToon, String> {
     };
     let mut total_count = None;
     let mut hints = Vec::new();
+    let mut truncated = Vec::new();
+    let mut seen_truncated = false;
     let mut seen_help = false;
     for (key, node) in entries {
         match (key.as_str(), node) {
+            // The out-of-band cut report comes right after the list, before `totalCount` and `help`.
+            ("truncated", Node::Table { fields, rows })
+                if !seen_truncated && total_count.is_none() && !seen_help && fields == ["row", "field", "removed"] =>
+            {
+                seen_truncated = true;
+                for cells in rows {
+                    let [Prim::Num(row), Prim::Str(field), Prim::Num(removed)] = &cells[..] else {
+                        return Err(format!("truncated row has the wrong shape: {cells:?}"));
+                    };
+                    truncated.push((
+                        row.parse().map_err(|e| format!("truncated row {row:?}: {e}"))?,
+                        field.clone(),
+                        removed.parse().map_err(|e| format!("truncated removed {removed:?}: {e}"))?,
+                    ));
+                }
+            }
             ("totalCount", Node::Prim(Prim::Num(n))) if total_count.is_none() && !seen_help => {
                 total_count = Some(n.parse().map_err(|e| format!("totalCount {n:?}: {e}"))?);
             }
@@ -122,7 +142,7 @@ pub fn parse(input: &str) -> Result<ParsedToon, String> {
             (key, node) => return Err(format!("unexpected entry {key:?}: {node:?}")),
         }
     }
-    Ok(ParsedToon { type_name, fields, rows, total_count, hints })
+    Ok(ParsedToon { type_name, fields, rows, total_count, hints, truncated })
 }
 
 /// Decode a root object strictly. See the module docs for what is rejected.
