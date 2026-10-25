@@ -68,7 +68,7 @@ fn check_bytes(what: &str, s: &str, max: usize) -> napi::Result<()> {
 /// Value type for a TOON row cell (JavaScript-friendly).
 ///
 /// Use the `type` field to discriminate: `"str"`, `"int"`, `"float"`, `"bool"`, `"null"`.
-#[napi(object)]
+#[napi(object, js_name = "ToonValue")]
 #[derive(Debug, Clone, Default)]
 pub struct JsToonValue {
     /// Discriminant: `"str"`, `"int"`, `"float"`, `"bool"`, or `"null"`.
@@ -94,7 +94,7 @@ pub struct JsToonValue {
 }
 
 /// Options for rendering a TOON document (JavaScript-friendly).
-#[napi(object)]
+#[napi(object, js_name = "ToonOptions")]
 #[derive(Debug, Clone)]
 pub struct JsToonOptions {
     /// Snake_case type name, e.g. `"issue"`, `"component"`.
@@ -122,22 +122,22 @@ fn js_value_to_rust(v: JsToonValue) -> napi::Result<crate::toon::Value> {
         "str" => v
             .str_val
             .map(|s| crate::toon::Value::Str(s.into()))
-            .ok_or_else(|| napi::Error::from_reason("JsToonValue: type is \"str\" but strVal is missing")),
+            .ok_or_else(|| napi::Error::from_reason("ToonValue: type is \"str\" but strVal is missing")),
         "int" => v
             .int_val
             .map(|n| crate::toon::Value::Int(n.get()))
-            .ok_or_else(|| napi::Error::from_reason("JsToonValue: type is \"int\" but intVal is missing")),
+            .ok_or_else(|| napi::Error::from_reason("ToonValue: type is \"int\" but intVal is missing")),
         "float" => v
             .float_val
             .map(|n| crate::toon::Value::Float(n.get()))
-            .ok_or_else(|| napi::Error::from_reason("JsToonValue: type is \"float\" but floatVal is missing")),
+            .ok_or_else(|| napi::Error::from_reason("ToonValue: type is \"float\" but floatVal is missing")),
         "bool" => v
             .bool_val
             .map(crate::toon::Value::Bool)
-            .ok_or_else(|| napi::Error::from_reason("JsToonValue: type is \"bool\" but boolVal is missing")),
+            .ok_or_else(|| napi::Error::from_reason("ToonValue: type is \"bool\" but boolVal is missing")),
         "null" => Ok(crate::toon::Value::Null),
         other => Err(napi::Error::from_reason(format!(
-            "JsToonValue: unknown type {other:?}: expected \"str\", \"int\", \"float\", \"bool\", or \"null\""
+            "ToonValue: unknown type {other:?}: expected \"str\", \"int\", \"float\", \"bool\", or \"null\""
         ))),
     }
 }
@@ -161,7 +161,7 @@ fn js_value_to_rust(v: JsToonValue) -> napi::Result<crate::toon::Value> {
 /// document over michi-core's shape caps. Any other type
 /// or field name is valid and is quoted when TOON 4.4 §7.3 requires.
 /// The error `reason` is `toon_validation_failed: ` followed by the `ToonError` Display text.
-#[napi(catch_unwind, js_name = "renderToon", ts_args_type = "opts: JsToonOptions")]
+#[napi(catch_unwind, js_name = "renderToon", ts_args_type = "opts: ToonOptions")]
 pub fn render_toon_js(opts: Unknown<'_>) -> napi::Result<String> {
     let mut budget = Budget::new();
     let obj = input::object(opts, "opts")?;
@@ -301,7 +301,7 @@ pub fn append_hints(body: String, hints: Vec<String>) -> napi::Result<String> {
 /// A recovery hint for [`render_recovery`] (JavaScript-friendly — no
 /// structured params over this boundary; use `AgentResponse.recoveryHint`
 /// for the common case, or the Rust API directly for typed params).
-#[napi(object)]
+#[napi(object, js_name = "RecoveryHint")]
 #[derive(Debug, Clone)]
 pub struct JsRecoveryHint {
     /// The tool/operation name the agent should call to recover.
@@ -316,7 +316,7 @@ pub struct JsRecoveryHint {
 ///
 /// Returns an error if `hints` exceeds `MAX_HINTS` entries, a `tool` exceeds 4 KiB, a `reason` exceeds 1 MiB, or the
 /// call's strings exceed 64 MiB in all.
-#[napi(catch_unwind, js_name = "renderRecovery", ts_args_type = "hints: Array<JsRecoveryHint>")]
+#[napi(catch_unwind, js_name = "renderRecovery", ts_args_type = "hints: Array<RecoveryHint>")]
 pub fn render_recovery_js(hints: Unknown<'_>) -> napi::Result<String> {
     let mut budget = Budget::new();
     let hints = List::new(hints, "hints")?;
@@ -337,7 +337,7 @@ pub fn render_recovery(hints: Vec<JsRecoveryHint>) -> napi::Result<String> {
 }
 
 /// The result of [`truncate()`] (JavaScript-friendly).
-#[napi(object)]
+#[napi(object, js_name = "Truncated")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JsTruncated {
     /// The text to show: the input when it fits, otherwise its first `maxChars - 1` chars followed by a plain `…`.
@@ -373,7 +373,7 @@ pub fn truncate(content: String, #[napi(ts_arg_type = "number")] max_chars: JsCo
 }
 
 /// A key-value item for [`JsAgentResponse::kv_items`] (JavaScript-friendly).
-#[napi(object)]
+#[napi(object, js_name = "KvItem")]
 #[derive(Debug, Clone)]
 pub struct JsKvItem {
     /// The field name.
@@ -387,11 +387,11 @@ fn js_kv_value_to_rust(v: JsToonValue) -> napi::Result<crate::kv::KvValue> {
         "str" => v
             .str_val
             .map(crate::kv::KvValue::Text)
-            .ok_or_else(|| napi::Error::from_reason("JsToonValue: type is \"str\" but strVal is missing")),
+            .ok_or_else(|| napi::Error::from_reason("ToonValue: type is \"str\" but strVal is missing")),
         "int" => v
             .int_val
             .map(|n| crate::kv::KvValue::Int(n.get()))
-            .ok_or_else(|| napi::Error::from_reason("JsToonValue: type is \"int\" but intVal is missing")),
+            .ok_or_else(|| napi::Error::from_reason("ToonValue: type is \"int\" but intVal is missing")),
         "float" => {
             // Without `decimalsVal`, keep the number exact: its shortest decimals, as RecoveryHint deserialization
             // does, or FULL_PRECISION (never rounds) for a value below about 1e-254.
@@ -400,15 +400,15 @@ fn js_kv_value_to_rust(v: JsToonValue) -> napi::Result<crate::kv::KvValue> {
                 .map_or_else(|| v.float_val.map_or(0, |n| crate::kv::exact_decimals(n.get())), JsDecimals::get_u8);
             v.float_val
                 .map(|n| crate::kv::KvValue::Float(n.get(), decimals))
-                .ok_or_else(|| napi::Error::from_reason("JsToonValue: type is \"float\" but floatVal is missing"))
+                .ok_or_else(|| napi::Error::from_reason("ToonValue: type is \"float\" but floatVal is missing"))
         }
         "bool" => v
             .bool_val
             .map(crate::kv::KvValue::Bool)
-            .ok_or_else(|| napi::Error::from_reason("JsToonValue: type is \"bool\" but boolVal is missing")),
+            .ok_or_else(|| napi::Error::from_reason("ToonValue: type is \"bool\" but boolVal is missing")),
         "null" => Ok(crate::kv::KvValue::Missing),
         other => Err(napi::Error::from_reason(format!(
-            "JsToonValue: unknown type {other:?}: expected \"str\", \"int\", \"float\", \"bool\", or \"null\""
+            "ToonValue: unknown type {other:?}: expected \"str\", \"int\", \"float\", \"bool\", or \"null\""
         ))),
     }
 }
@@ -423,7 +423,7 @@ fn js_kv_value_to_rust(v: JsToonValue) -> napi::Result<crate::kv::KvValue> {
 #[napi(
     catch_unwind,
     js_name = "renderKv",
-    ts_args_type = "items: Array<JsKvItem>, totalCount: number | undefined | null, hints: Array<string>"
+    ts_args_type = "items: Array<KvItem>, totalCount: number | undefined | null, hints: Array<string>"
 )]
 pub fn render_kv_js(items: Unknown<'_>, total_count: Option<JsCount>, hints: Unknown<'_>) -> napi::Result<String> {
     let mut budget = Budget::new();
@@ -555,8 +555,9 @@ pub fn is_retryable_status(#[napi(ts_arg_type = "number")] status: JsHttpStatus)
 #[napi(
     catch_unwind,
     js_name = "renderDomainError",
-    ts_args_type = "code: string, message: string, hints: Array<string>, githubAnnotation?: boolean | undefined | null, \
-                    causes?: Array<string> | undefined | null"
+    ts_args_type = "code: 'invalid_input' | 'not_found' | 'unauthorized' | 'forbidden' | 'conflict' | 'rate_limited' | \
+                    'unavailable' | 'timeout' | 'external_failure', message: string, hints: Array<string>, \
+                    githubAnnotation?: boolean | undefined | null, causes?: Array<string> | undefined | null"
 )]
 pub fn render_domain_error_js(
     code: Unknown<'_>,
@@ -628,7 +629,7 @@ pub fn render_domain_error(
 }
 
 /// A component status item for [`render_status`].
-#[napi(object)]
+#[napi(object, js_name = "StatusItem")]
 #[derive(Debug, Clone)]
 pub struct JsStatusItem {
     /// Component key.
@@ -649,7 +650,7 @@ pub struct JsStatusItem {
 #[napi(
     catch_unwind,
     js_name = "renderStatus",
-    ts_args_type = "toolName: string, description: string, items: Array<JsStatusItem>, hints?: Array<string> | undefined | null"
+    ts_args_type = "toolName: string, description: string, items: Array<StatusItem>, hints?: Array<string> | undefined | null"
 )]
 pub fn render_status_js(
     tool_name: Unknown<'_>,
@@ -725,7 +726,7 @@ pub fn render_status(
 
 /// MCP content-block annotations (JavaScript-friendly). Currently carries
 /// only `audience` — michi has no concept of MCP's optional `priority`.
-#[napi(object)]
+#[napi(object, js_name = "Annotations")]
 #[derive(Debug, Clone)]
 pub struct JsAnnotations {
     /// `["assistant"]` or `["user"]` — which surface(s) this block targets.
@@ -734,7 +735,7 @@ pub struct JsAnnotations {
 
 /// One MCP content block (JavaScript-friendly). Wire-conformant with MCP's
 /// text content shape: `{type: "text", text, annotations: {audience: [...]}}`.
-#[napi(object)]
+#[napi(object, js_name = "ContentBlock")]
 #[derive(Debug, Clone)]
 pub struct JsContentBlock {
     /// Always `"text"` — michi only ever produces text content blocks.
@@ -747,7 +748,7 @@ pub struct JsContentBlock {
 }
 
 /// The MCP `CallToolResult` shape, returned by [`JsAgentResponse::to_call_tool_result`].
-#[napi(object)]
+#[napi(object, js_name = "CallToolResult")]
 #[derive(Debug, Clone)]
 pub struct JsCallToolResult {
     /// Text content blocks.
@@ -852,7 +853,7 @@ impl JsAgentResponse {
     /// more than 1,000,000 cells in all; while converting, a field name over 4 KiB, a cell over 1 MiB, more than
     /// 64 MiB of strings in the call, or an invalid cell; then strings that would take the response past its 64 MiB
     /// total. The builder is unchanged on error.
-    #[napi(catch_unwind, js_name = "items", ts_args_type = "rows: Array<Array<JsToonValue>>, fields: Array<string>")]
+    #[napi(catch_unwind, js_name = "items", ts_args_type = "rows: Array<Array<ToonValue>>, fields: Array<string>")]
     pub fn items_js(&mut self, rows: Unknown<'_>, fields: Unknown<'_>) -> napi::Result<()> {
         let mut budget = Budget::new();
         let rows = List::new(rows, "rows")?;
@@ -925,7 +926,7 @@ impl JsAgentResponse {
     /// Rejects more than 1,000 items before converting any, a key over 4 KiB, a value over 1 MiB, more than 64 MiB
     /// of strings in the call, an invalid value, or strings that would take the response past its 64 MiB total. The
     /// builder is unchanged on error.
-    #[napi(catch_unwind, js_name = "kvItems", ts_args_type = "items: Array<JsKvItem>")]
+    #[napi(catch_unwind, js_name = "kvItems", ts_args_type = "items: Array<KvItem>")]
     pub fn kv_items_js(&mut self, items: Unknown<'_>) -> napi::Result<()> {
         let mut budget = Budget::new();
         let items = List::new(items, "items")?;
@@ -1233,7 +1234,7 @@ pub fn empty_state_with_hints(type_name: String, hints: Vec<String>) -> napi::Re
 }
 
 /// One failed operation for [`render_partial_success`] (JavaScript-friendly).
-#[napi(object)]
+#[napi(object, js_name = "FailedOp")]
 #[derive(Debug, Clone)]
 pub struct JsFailedOp {
     /// Identifier of the operation that failed.
@@ -1241,7 +1242,7 @@ pub struct JsFailedOp {
     /// Human-readable failure reason.
     pub reason: String,
     /// Optional recovery hint for this failure (no structured params over this boundary).
-    #[napi(ts_type = "JsRecoveryHint | null")]
+    #[napi(ts_type = "RecoveryHint | null")]
     pub recovery: Option<JsRecoveryHint>,
 }
 
@@ -1256,7 +1257,7 @@ pub struct JsFailedOp {
 #[napi(
     catch_unwind,
     js_name = "renderPartialSuccess",
-    ts_args_type = "completed: Array<string>, failed: Array<JsFailedOp>, skipped: Array<string>"
+    ts_args_type = "completed: Array<string>, failed: Array<FailedOp>, skipped: Array<string>"
 )]
 pub fn render_partial_success_js(
     completed: Unknown<'_>,
@@ -1311,7 +1312,7 @@ fn recovery_hint_from_js(h: JsRecoveryHint) -> crate::recovery::RecoveryHint {
 }
 
 /// One pipeline step for [`render_pipeline`] (JavaScript-friendly).
-#[napi(object)]
+#[napi(object, js_name = "PipelineStep")]
 #[derive(Debug, Clone)]
 pub struct JsPipelineStep {
     /// Step identifier.
@@ -1401,7 +1402,7 @@ fn parse_step_status(status: &str, reason: Option<&str>) -> napi::Result<crate::
 /// Rejects an unknown `status`, a missing or unknown `reason` for `outcome_unknown`, `skipped` or `not_run`, a
 /// `reason` on any other status, more than 10,000 steps, an `id`, `status` or `reason` over 4 KiB, a `name` over
 /// 1 MiB, and more than 64 MiB of strings per call.
-#[napi(catch_unwind, js_name = "renderPipeline", ts_args_type = "steps: Array<JsPipelineStep>")]
+#[napi(catch_unwind, js_name = "renderPipeline", ts_args_type = "steps: Array<PipelineStep>")]
 pub fn render_pipeline_js(steps: Unknown<'_>) -> napi::Result<String> {
     let mut budget = Budget::new();
     let steps = List::new(steps, "steps")?;
@@ -1427,7 +1428,7 @@ pub fn render_pipeline(steps: Vec<JsPipelineStep>) -> napi::Result<String> {
 }
 
 /// The result of [`already_done`] (JavaScript-friendly).
-#[napi(object)]
+#[napi(object, js_name = "AlreadyDone")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JsAlreadyDone {
     /// Whether the operation completed in a previous call.
@@ -1446,7 +1447,7 @@ pub struct JsAlreadyDone {
     catch_unwind,
     js_name = "alreadyDone",
     ts_args_type = "stored?: string | undefined | null",
-    ts_return_type = "JsAlreadyDone"
+    ts_return_type = "AlreadyDone"
 )]
 pub fn already_done_js(stored: Option<Unknown<'_>>) -> napi::Result<JsAlreadyDone> {
     let mut budget = Budget::new();
@@ -1667,6 +1668,40 @@ mod tests {
             let err = empty_state(name.to_string()).expect_err("reserved root key");
             assert!(err.reason.starts_with("toon_validation_failed: "), "{}", err.reason);
             assert!(err.reason.contains(name), "{}", err.reason);
+        }
+    }
+
+    // The TypeScript type of renderDomainError's `code` lists every ErrorCode label. The match has no wildcard, so
+    // adding an ErrorCode fails to compile here until the union in the export's `ts_args_type` is extended.
+    #[test]
+    fn render_domain_error_code_union_names_every_error_code() {
+        use crate::ErrorCode;
+        let src = include_str!("napi.rs");
+        let start = src.find("js_name = \"renderDomainError\"").expect("the export is declared");
+        let declaration = &src[start..start + 700];
+        for code in [
+            ErrorCode::InvalidInput,
+            ErrorCode::NotFound,
+            ErrorCode::Unauthorized,
+            ErrorCode::Forbidden,
+            ErrorCode::Conflict,
+            ErrorCode::RateLimited,
+            ErrorCode::Unavailable,
+            ErrorCode::Timeout,
+            ErrorCode::ExternalFailure,
+        ] {
+            match code {
+                ErrorCode::InvalidInput
+                | ErrorCode::NotFound
+                | ErrorCode::Unauthorized
+                | ErrorCode::Forbidden
+                | ErrorCode::Conflict
+                | ErrorCode::RateLimited
+                | ErrorCode::Unavailable
+                | ErrorCode::Timeout
+                | ErrorCode::ExternalFailure => {}
+            }
+            assert!(declaration.contains(&format!("'{}'", code.label())), "missing {} in {declaration}", code.label());
         }
     }
 

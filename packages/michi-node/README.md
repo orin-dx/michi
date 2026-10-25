@@ -53,19 +53,19 @@ Every string these functions return for an agent is a TOON 4.4 document with no 
 
 | Function | Signature |
 | --- | --- |
-| `renderToon` | `(opts: JsToonOptions) => string` — TOON list rendering |
+| `renderToon` | `(opts: ToonOptions) => string` — TOON list rendering |
 | `emptyState` | `(typeName: string) => string` — definitive empty-state block |
 | `emptyStateWithHints` | `(typeName: string, hints: string[]) => string` — the empty-state block plus `help[N]: …`; like `emptyState`, throws `toon_validation_failed: …` for a `totalCount`/`help`/`recovery` type name |
 | `renderHints` | `(hints: string[]) => string` — the inline array `help[N]: h1,h2` |
 | `appendHints` | `(body: string, hints: string[]) => string` — append `help[N]: …` to a document, on its own line |
-| `renderRecovery` | `(hints: JsRecoveryHint[]) => string` — the table `recovery[N]{tool,params,reason}:` (`params` is `"{}"` here; an absent reason is `null`) |
-| `renderKv` | `(items: JsKvItem[], totalCount?: number, hints: string[]) => string` — `key: value` lines; throws `kv_validation_failed: …` for a repeated key or a `totalCount`/`help`/`recovery` key |
+| `renderRecovery` | `(hints: RecoveryHint[]) => string` — the table `recovery[N]{tool,params,reason}:` (`params` is `"{}"` here; an absent reason is `null`) |
+| `renderKv` | `(items: KvItem[], totalCount?: number, hints: string[]) => string` — `key: value` lines; throws `kv_validation_failed: …` for a repeated key or a `totalCount`/`help`/`recovery` key |
 | `renderDomainError` | `(code, message, hints, githubAnnotation?, causes?) => string` — `error`, `message`, `causes`, `exit_code`, `help` |
 | `renderStatus` | `(toolName, description, items, hints?) => string` — `tool`, `description`, the table `items[N]{key,value,health,reason}:`, `help` |
 | `renderAlreadyDone` | `(operation, summary, hints) => string` — `operation`, `status: already_done`, `summary`, `help` |
 | `alreadyDone` | `(stored?: string \| null) => { done: boolean, result?: string }` — classify an idempotency lookup: any stored string (even empty) is done |
-| `renderPartialSuccess` | `(completed: string[], failed: JsFailedOp[], skipped: string[]) => string` — the summary, `completed[N]`, the `failed[N]{operation,reason}:` table, `skipped[N]` and the failed ops' `recovery[N]{tool,params,reason}:` table |
-| `renderPipeline` | `(steps: JsPipelineStep[]) => string` — the table `step[N]{id,name,status,reason}:`; `status` is a `StepStatus` label (`completed`, `outcome_unknown`, …) and `reason` is required exactly for `outcome_unknown`, `skipped` and `not_run` |
+| `renderPartialSuccess` | `(completed: string[], failed: FailedOp[], skipped: string[]) => string` — the summary, `completed[N]`, the `failed[N]{operation,reason}:` table, `skipped[N]` and the failed ops' `recovery[N]{tool,params,reason}:` table |
+| `renderPipeline` | `(steps: PipelineStep[]) => string` — the table `step[N]{id,name,status,reason}:`; `status` is a `StepStatus` label (`completed`, `outcome_unknown`, …) and `reason` is required exactly for `outcome_unknown`, `skipped` and `not_run` |
 | `truncate` | `(content: string, maxChars: number) => { content, originalChars, removed, wasTruncated }` — text that fits comes back unchanged; a longer text keeps its first `maxChars - 1` chars and ends in `…`, and the cut is reported in `removed` and `wasTruncated`, never inside `content`. Add your own hint, for example `cut ${removed} of ${originalChars} chars; pass full=true`, to the response's `help[]`. |
 | `parseRetryAfter` | `(headerValue: string) => number \| null` — an RFC 9110 `Retry-After` value (delay-seconds or HTTP-date) in seconds; a past date is `0`, a malformed value `null` |
 | `nextRetryDelay` | `(maxRetries, baseDelayMs, maxDelayMs, jitterFactor, jitterSeed, attempt, retryAfterMs?) => number \| null` — the next back-off delay in ms, or `null` once retries are used up; pass a random `jitterSeed` in `[0, 1]` per call |
@@ -80,12 +80,12 @@ Setters return `void`, not `this`, so call them as sequential statements rather 
 | Method | Signature |
 | --- | --- |
 | `constructor` | `(typeName: string)` |
-| `.items` | `(rows: JsToonValue[][], fields: string[]) => void` |
+| `.items` | `(rows: ToonValue[][], fields: string[]) => void` |
 | `.totalCount` | `(n: number) => void` |
-| `.kvItems` | `(items: JsKvItem[]) => void` |
+| `.kvItems` | `(items: KvItem[]) => void` |
 | `.hint` | `(hint: string) => void` |
 | `.recoveryHint` | `(tool: string, reason?: string) => void` |
-| `.truncationHint` | `(hint: string) => void` — the caller's instruction for getting a cut cell in full (same as `JsToonOptions.truncationHint`). Cut cells end in `…` and are listed in a `truncated[N]{row,field,removed}:` block; when a cell was cut, the hint adds one `help[]` line after your own hints. Without it the block still reports each cut |
+| `.truncationHint` | `(hint: string) => void` — the caller's instruction for getting a cut cell in full (same as `ToonOptions.truncationHint`). Cut cells end in `…` and are listed in a `truncated[N]{row,field,removed}:` block; when a cell was cut, the hint adds one `help[]` line after your own hints. Without it the block still reports each cut |
 | `.asError` | `() => void` |
 | `.renderToon` | `() => string` — slot-specific, reads only `items`/`fields` |
 | `.renderKv` | `() => string` — slot-specific, reads only `kvItems` |

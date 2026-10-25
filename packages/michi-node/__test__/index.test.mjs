@@ -973,7 +973,7 @@ void describe('input limits bound the work (capacity limits)', () => {
     assert.throws(() => renderHints('nope'), /^Error: hints must be an array$/)
     assert.throws(() => renderToon({ typeName: 't', fields: 'a', rows: [], hints: [] }), /fields must be an array/)
     assert.throws(() => renderToon({ typeName: 't', fields: ['a'], rows: [5], hints: [] }), /each row must be an array/)
-    assert.throws(() => renderToon({ typeName: 't', fields: ['a'], rows: [[5]], hints: [] }), /JsToonValue must be an object/)
+    assert.throws(() => renderToon({ typeName: 't', fields: ['a'], rows: [[5]], hints: [] }), /ToonValue must be an object/)
     assert.throws(() => renderToon({ fields: [], rows: [], hints: [] }), /Missing field `typeName`/)
   })
 
