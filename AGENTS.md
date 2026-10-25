@@ -5,7 +5,7 @@
 - Always prefix shell commands with `rtk`.
 - `just test` — run all tests (Rust + Node)
 - `just test-rust` — Rust tests only (cargo nextest)
-- `just check` — fmt + clippy (`--all-targets`, single workspace-wide invocation, matches CI) + deny + typos + markdown fmt
+- `just check` — fmt + clippy (`--all-targets`, single workspace-wide invocation, matches CI) + rustdoc with warnings denied + fuzz targets build + deny + typos + markdown fmt
 - `just pre-push` — fmt-check + `lint-affected` (moon-detected affected crates only, one multi `-p` clippy invocation — not the full workspace)
 - `just build-node` — compile NAPI binary for local platform
 - `just bench` — run divan benchmarks
