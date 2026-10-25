@@ -264,7 +264,7 @@ async fn client_errors_do_not_count_as_breaker_failures() {
         let run = execute(&p, rid(&format!("r{i}")), &ExecOptions::new().breakers(Arc::clone(&registry))).await;
         assert_eq!(status(&run, "a"), StepStatus::Failed, "run {i}: a 404 says the downstream is up");
     }
-    assert_eq!(registry.breaker("a").phase(), michi_pipeline::BreakerPhase::Closed);
+    assert_eq!(registry.phase("a"), Some(michi_pipeline::BreakerPhase::Closed));
 
     for status_code in [408, 429, 500] {
         let registry = Arc::new(BreakerRegistry::new(BreakerConfig::new(2, Duration::from_secs(30))));
@@ -296,7 +296,7 @@ async fn a_client_error_resets_the_consecutive_failure_count() {
         let run = execute(&p, rid(&format!("r{i}")), &opts).await;
         assert_eq!(status(&run, "a"), StepStatus::Failed, "run {i}");
     }
-    assert_eq!(registry.breaker("a").phase(), michi_pipeline::BreakerPhase::Closed, "500, 400, 500 is not 2 in a row");
+    assert_eq!(registry.phase("a"), Some(michi_pipeline::BreakerPhase::Closed), "500, 400, 500 is not 2 in a row");
 }
 
 // ---- 0.4 API hygiene: every public type is Debug, without bounds on the caller's closure ----

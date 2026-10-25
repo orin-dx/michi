@@ -64,7 +64,7 @@ mod scheduler;
 mod step;
 
 pub use blocking::{step_blocking, BlockingStep};
-pub use breaker::{BreakerConfig, BreakerPhase, BreakerRegistry, CircuitBreaker};
+pub use breaker::{BreakerConfig, BreakerPhase, BreakerRegistry};
 pub use cancel::CancellationToken;
 pub use error::{Effect, ExecutionError, ReplayClass};
 pub use exec::{

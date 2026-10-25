@@ -241,7 +241,7 @@ async fn a_precheck_is_not_reported_to_the_breaker() {
     let opts = ExecOptions::new().breakers(Arc::clone(&registry));
     for i in 0..3 {
         let _ = execute(&p, rid(&format!("r{i}")), &opts).await;
-        assert_eq!(registry.breaker("publish").phase(), BreakerPhase::Closed, "run {i}");
+        assert_eq!(registry.phase("publish"), Some(BreakerPhase::Closed), "run {i}");
     }
 }
 
