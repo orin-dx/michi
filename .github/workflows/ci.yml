@@ -126,6 +126,18 @@ jobs:
         env:
           MSRV: ${{ steps.msrv.outputs.version }}
 
+  fuzz-build:
+    name: Fuzz targets build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: orin-dx/actions/setup-rust@2521888266780dabc7f5fd4c32b02d6ab82849db # v1.1
+        with:
+          cache-key: fuzz-build
+      # fuzz/ is outside the workspace, so nothing else compiles it: an API change would break its targets unnoticed.
+      # Without --locked: Callisto bumps the michi versions, which the fuzz crate's own lockfile does not follow.
+      - run: cargo check --manifest-path fuzz/Cargo.toml --bins
+
   graph-license:
     name: michi-graph stays permissive
     runs-on: ubuntu-latest

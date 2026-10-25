@@ -30,7 +30,7 @@ test-crates-default:
     cargo nextest run -p michi-graph
     cargo nextest run -p michi-pipeline
 
-# The fixed group's semver release type from pending changesets (front matter only; michi-graph excluded).
+# The fixed group's semver release type from pending changesets (front matter only).
 pending-release-type:
     python3 scripts/pending-release-type.py "$(grep -m1 '^version' crates/michi-core/Cargo.toml | sed -E 's/version *= *"(.*)"/\1/')"
 

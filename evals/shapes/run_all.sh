@@ -11,7 +11,7 @@ export PYTHONPATH="$PYDEPS"
 export TIKTOKEN_CACHE_DIR="$HERE/tiktoken_cache"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$TMP/shapes-eval-target}"
 
-(cd "$HERE" && npm install --silent)
+(cd "$HERE/../../packages/michi-node" && pnpm install --frozen-lockfile --silent)
 python3 "$HERE/gen_shapes.py"
 (cd "$HERE" && node toon_ref.mjs)
 (cd "$HERE/michi-render" && cargo run --release -q -- "$HERE")
