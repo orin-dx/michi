@@ -500,6 +500,21 @@ pub fn truncate_by_size<T>(items: Vec<T>, budget: usize, size_of: impl FnMut(&T)
 | `truncate_by_size(vec![100, 1], 10, \|n\| *n)` | `[]` | `Some("showing 0 of 2; pass --all")` |
 | `TruncationOutcome::new(vec![c, d], 4)` | `[c, d]` | `Some("showing 2 of 4; pass --all")` |
 
+## `redact` — Best-Effort Redaction
+
+```rust
+pub const REDACTED: &str = "[REDACTED]";
+
+pub fn redact_secrets(text: &str, secrets: &[&str]) -> String;
+pub fn redact_url_userinfo(text: &str) -> String;
+```
+
+Not re-exported at the crate root; use `michi_core::redact::…`.
+
+- `redact_secrets` replaces each known secret with `[REDACTED]`. Empty secrets are ignored, the longest secret wins when one contains another, and the text is scanned once, so the marker is never searched again and redacting twice changes nothing.
+- `redact_url_userinfo` replaces the `user:password@` part of every `scheme://…` URL. A URL ends at whitespace, a quote, a backtick, `<` or `>`; everything up to the last `@` inside it is userinfo, so a password containing `@` or `/` is removed whole. A URL with no userinfo but an `@` later in its path (`https://host/pkg@1.2`) is over-redacted; that is the safe direction. Email addresses are not URLs and pass through.
+- Neither finds secrets in general. They are a second line of defense after keeping secrets out of messages. `DomainError::from_error` and `from_error_with_causes` apply `redact_url_userinfo` to the error text they copy, because URLs with credentials are the common leak in errors from HTTP and database clients. `DomainError::new`, `cause` and `hint` take tool-author text and do not redact it.
+
 ## `resilience` — Retry & Idempotency Primitives
 
 ```rust
