@@ -1,5 +1,10 @@
 # michi-graph
 
+## 0.8.0
+
+- Breaking: `Dag::ready_by_edge` now takes `satisfied` first and `eligible` second, the same order as `Dag::ready`. In 0.7.0 it took `ready_by_edge(eligible, satisfied)` while `ready` took `ready(satisfied, eligible)`, an easy swap to make. Migration: swap the two arguments, `dag.ready_by_edge(eligible, satisfied)` becomes `dag.ready_by_edge(satisfied, eligible)`. A call left in the old order fails to compile because the closures' shapes differ (`satisfied` takes the edge kind too). `ready`'s signature is unchanged; its docs now name each closure's role.
+- Docs: the README now scopes its TOON claims to what was measured (token savings on flat, uniform 100-row lists; retrieval accuracy within noise on single-hop questions), says TOON here is for models reading tool output, and states that `michi-pipeline` resume is at-least-once per step unless the step passes its idempotency key to a downstream that deduplicates. Adds a plain License section.
+
 ## 0.7.1
 
 - Docs and doc comments match the 0.7 code: the READMEs, crate and module docs, and the Node package's API tables list every export (`parseRetryAfter`, `nextRetryDelay`, `isRetryableStatus`, `AgentResponse.renderFor`, `.hasHumanContent`), and several comments that described removed behavior are corrected. No behavior changes.
