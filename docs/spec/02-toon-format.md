@@ -207,7 +207,7 @@ A string cell longer than `max_cell_len` chars (default 200) is cut, and the cut
 - When the caller sets `ToonOptions::truncation_hint` (`AgentResponse::truncation_hint`, NAPI `truncationHint`) and a cell was cut, michi adds one line to `help[]`, after the caller's own hints: `Cut cells are listed in the truncated block; use {hint} for the full value`. michi does not know the calling tool's parameters, so it never invents a hint; an empty hint is the same as none. The hint is tool-author text and travels in the trusted `help` channel, not in a cell.
 - The cap counts chars **before** escaping and quoting: a cut cell is then quoted and escaped by the rules above, so a cell holding `"`, `\`, a line break or a comma is written longer than `max_cell_len`.
 - Numbers, booleans and `null` are never truncated.
-- `truncate::truncate()` and `truncate_inline()` (and NAPI `truncate`) still append an in-band `" ({removed} more chars — use {hint})"` suffix. That marker is plain text, so use those for one free-text payload, not for TOON cells.
+- `truncate::truncate()` (and NAPI `truncate`) cuts one free-text string the same way and reports the cut in `Truncated::removed`, not in the text, so the text never carries a message that data could imitate.
 
 ## Size limits
 

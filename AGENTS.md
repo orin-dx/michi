@@ -5,7 +5,7 @@
 - Always prefix shell commands with `rtk`.
 - `just test` — run all tests (Rust + Node)
 - `just test-rust` — Rust tests only (cargo nextest)
-- `just check` — fmt + clippy (`--all-targets`, single workspace-wide invocation, matches CI) + deny + typos + markdown fmt
+- `just check` — fmt + clippy (`--all-targets`, single workspace-wide invocation, matches CI) + rustdoc with warnings denied + fuzz targets build + deny + typos + markdown fmt
 - `just pre-push` — fmt-check + `lint-affected` (moon-detected affected crates only, one multi `-p` clippy invocation — not the full workspace)
 - `just build-node` — compile NAPI binary for local platform
 - `just bench` — run divan benchmarks
@@ -60,6 +60,7 @@ All modules live in `crates/michi-core/src/`.
 | `error` | Unified `michi_core::Error` type with agent rendering |
 | `idempotency` | Partial-success reporting (`PartialSuccess`/`FailedOp`) — despite the name, idempotency keys and already-done detection live in `resilience` (`AlreadyDone`/`already_done()`), not here |
 | `resilience` | Retry config, delay calculation, retry-after parsing |
+| `redact` | Best-effort redaction: known secrets and URL userinfo; applied by `DomainError::from_error` |
 | `status` | Health/status response rendering |
 | `recovery` | Recovery hint blocks |
 | `response` | `AgentResponse` builder — composes all primitives |

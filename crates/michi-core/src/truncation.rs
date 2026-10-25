@@ -60,7 +60,7 @@ impl<T> TruncationOutcome<T> {
     /// `showing {kept} of {total_before}` when `guidance` is empty. `None` when nothing was cut.
     ///
     /// `guidance` is the caller's instruction for getting the rest (`pass --limit 120`, `use offset=50`): michi never
-    /// invents a flag the calling tool may not have, as with [`truncate`](crate::truncate::truncate)'s hint.
+    /// invents a flag the calling tool may not have, as with [`Truncated::hint`](crate::truncate::Truncated::hint).
     #[must_use]
     pub fn hint(&self, guidance: impl Into<String>) -> Option<Hint> {
         if !self.truncated() {

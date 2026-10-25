@@ -1,11 +1,5 @@
 error[E0639]: cannot create non-exhaustive struct using struct expression
  --> tests/ui-fail/truncate_struct_literal.rs:2:13
   |
-2 |       let _ = michi_core::truncate::Truncated {
-  |  _____________^
-3 | |         content: String::new(),
-4 | |         original_len: 0,
-5 | |         was_truncated: false,
-6 | |         signal: None,
-7 | |     };
-  | |_____^
+2 |     let _ = michi_core::truncate::Truncated { content: String::new(), original_chars: 0, removed: 0 };
+  |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

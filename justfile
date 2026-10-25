@@ -30,7 +30,7 @@ test-crates-default:
     cargo nextest run -p michi-graph
     cargo nextest run -p michi-pipeline
 
-# The fixed group's semver release type from pending changesets (front matter only; michi-graph excluded).
+# The fixed group's semver release type from pending changesets (front matter only).
 pending-release-type:
     python3 scripts/pending-release-type.py "$(grep -m1 '^version' crates/michi-core/Cargo.toml | sed -E 's/version *= *"(.*)"/\1/')"
 
@@ -51,7 +51,15 @@ test-node: build-node
     cd packages/michi-node && pnpm test
 
 # ── Lint & Format ───────────────────────────────────────────────────────────
-check: fmt-check clippy deny typos fmt-md-check
+check: fmt-check clippy doc-check fuzz-check zizmor deny typos fmt-md-check
+
+# Static security audit of the workflows (needs zizmor 1.29.0, the version CI runs).
+zizmor:
+    zizmor --offline .github
+
+# Compile the fuzz targets on stable. fuzz/ is outside the workspace, so nothing else builds it; CI does the same.
+fuzz-check:
+    cargo check --manifest-path fuzz/Cargo.toml --bins
 
 lint:
     moon run :lint

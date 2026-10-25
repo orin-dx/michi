@@ -54,7 +54,7 @@ The wire rules, for output and input:
 What that does and does not establish:
 
 - The SDK's `CallToolResultSchema` is a loose object and its content-block schemas silently drop unknown keys, and it treats `annotations` as optional. So the test also parses each result with `.strict()` variants of the SDK's own schemas, requires the parse to equal the input, and asserts the exact key set by hand. A wrong key (`audience` at the top level, `is_error`), a missing `type`, or a missing `annotations` all fail.
-- Covered: the NAPI path (the shipped binary's `JsCallToolResult`), over assistant and user blocks, error results, `structuredContent`, hints, recovery, empty states, truncation, multi-section responses, Unicode and newline-heavy text, and a seeded fuzz of adversarial strings. Each result must also survive `JSON.parse(JSON.stringify(x))` unchanged.
+- Covered: the NAPI path (the shipped binary's `CallToolResult`), over assistant and user blocks, error results, `structuredContent`, hints, recovery, empty states, truncation, multi-section responses, Unicode and newline-heavy text, and a seeded fuzz of adversarial strings. Each result must also survive `JSON.parse(JSON.stringify(x))` unchanged.
 - Not covered: the Rust `serde` path in `mcp.rs` (it has its own Rust tests, but is not run through the SDK); semantic rules the schema cannot express (that `structuredContent` matches a tool's declared `outputSchema`, or that `text` is a sensible rendering); other spec revisions; and the JSON-RPC envelope around the result, since michi builds only the `result` object.
 
 ---
@@ -246,7 +246,7 @@ The first published release was 0.3.1 (0.3.0 was never published). The four pack
 
 This is auto-generated, never hand-written — `napi build` regenerates it from the `#[napi]` attributes in `crates/michi-core/src/napi.rs` every time.
 
-- Every object type is `Js`-prefixed, matching its Rust struct name: `JsToonValue`, `JsToonOptions`, `JsKvItem`, `JsRecoveryHint`, `JsStatusItem`, `JsFailedOp`, `JsPipelineStep`, `JsAlreadyDone`, `JsContentBlock`, `JsAnnotations`, `JsCallToolResult`.
+- Object types export without a prefix: `ToonValue`, `ToonOptions`, `KvItem`, `RecoveryHint`, `StatusItem`, `FailedOp`, `PipelineStep`, `AlreadyDone`, `ContentBlock`, `Annotations`, `CallToolResult`, `Truncated`. Their Rust structs keep a `Js` prefix (`JsToonValue`, ...) and are renamed with `js_name`.
 - There's no unprefixed `ToonValue`/`CallToolResult`/etc. in the real output, whatever an older sketch of this section might have suggested.
 
 What's actually in `packages/michi-node/index.d.ts` today (rendering-domain surface; the resilience-, status-, and error-domain functions follow further down):
@@ -256,7 +256,7 @@ What's actually in `packages/michi-node/index.d.ts` today (rendering-domain surf
 
 ```typescript
 /** Scalar TOON/KV cell value. Discriminate via `type`. */
-export interface JsToonValue {
+export interface ToonValue {
   type: string; // "str" | "int" | "float" | "bool" | "null"
   strVal?: string;
   intVal?: number;
@@ -267,11 +267,11 @@ export interface JsToonValue {
   decimalsVal?: number;
 }
 
-export interface JsToonOptions {
+export interface ToonOptions {
   typeName: string;
   fields: Array<string>;
   /** Rows, each parallel to `fields`. Capped at MAX_ROWS rows, MAX_FIELDS values per row. */
-  rows: Array<Array<JsToonValue>>;
+  rows: Array<Array<ToonValue>>;
   totalCount?: number;
   /** Required, not optional — pass an empty array for no hints. Capped at MAX_HINTS. */
   hints: Array<string>;
@@ -283,7 +283,7 @@ export interface JsToonOptions {
 /** Throws if rows/fields/hints, or any row, exceed this module's per-call size
  * limits — protects Node's single-threaded event loop from unbounded
  * synchronous allocation on a crafted call. */
-export declare function renderToon(opts: JsToonOptions): string;
+export declare function renderToon(opts: ToonOptions): string;
 
 /** Render a definitive empty-state TOON response: `typeName: []\ntotalCount: 0` (no trailing newline).
  * Throws `toon_validation_failed: …` for a reserved `typeName` (`totalCount`, `help`, `recovery`, `truncated`), like `renderToon`. */
@@ -298,15 +298,22 @@ export declare function renderHints(hints: Array<string>): string;
 /** Appends the help block to a TOON document: one LF first unless `body` is empty or already ends in one. */
 export declare function appendHints(body: string, hints: Array<string>): string;
 
-/** Only the inline form crosses the NAPI boundary — unlike Rust's `truncate()`,
- * which returns a richer `Truncated` struct, this returns the final string directly.
- * Suffix: `" ({removed} more chars — use {hint})"`, or `" ({removed} more chars)"` for an
- * empty `hint`; a cap too small for it gives `maxChars - 1` chars and `…`.
- * The marker is plain text, so data can imitate it: for one free-text payload, not for TOON
- * cells (`renderToon` and `AgentResponse` cut cells and report them in a `truncated` block). */
-export declare function truncate(content: string, maxChars: number, hint: string): string;
+export interface Truncated {
+  /** The input when it fits; otherwise its first `maxChars - 1` chars and a plain `…`. */
+  content: string;
+  originalChars: number;
+  /** Chars of the input not in `content`; 0 when nothing was cut. */
+  removed: number;
+  wasTruncated: boolean;
+}
 
-export interface JsRecoveryHint {
+/** Cut one free-text string on a char boundary. The cut is reported in `removed` and
+ * `wasTruncated`, never inside `content`, so data cannot imitate it. Write your own hint,
+ * for example `cut ${removed} of ${originalChars} chars; pass full=true`. Cells are cut and
+ * reported by `renderToon` and `AgentResponse` (in a `truncated` block). */
+export declare function truncate(content: string, maxChars: number): Truncated;
+
+export interface RecoveryHint {
   tool: string;
   /** No structured params over this boundary — use `AgentResponse.recoveryHint()`
    * for the common case, or the Rust API directly for typed params. */
@@ -315,32 +322,32 @@ export interface JsRecoveryHint {
 
 /** The TOON 4.4 table `recovery[N]{tool,params,reason}:`; params is always `"{}"` over this boundary and an
  * absent reason is `null`. */
-export declare function renderRecovery(hints: Array<JsRecoveryHint>): string;
+export declare function renderRecovery(hints: Array<RecoveryHint>): string;
 
-export interface JsAnnotations {
+export interface Annotations {
   /** `["assistant"]` or `["user"]` — michi has no concept of MCP's optional `priority`. */
   audience: Array<string>;
 }
 
-export interface JsContentBlock {
+export interface ContentBlock {
   /** Always `"text"` — michi only ever produces text content blocks. */
   type: string;
   text: string;
-  annotations: JsAnnotations;
+  annotations: Annotations;
 }
 
 /** `structuredContent` is a real parsed value here (unlike `renderJson()`'s
  * string), since it crosses the boundary as a typed `#[napi(object)]` field,
  * not hand-built JSON text. */
-export interface JsCallToolResult {
-  content: Array<JsContentBlock>;
+export interface CallToolResult {
+  content: Array<ContentBlock>;
   isError: boolean;
   structuredContent: any;
 }
 
-export interface JsKvItem {
+export interface KvItem {
   key: string;
-  value: JsToonValue;
+  value: ToonValue;
 }
 
 /** High-level builder — mirrors the Rust `AgentResponse` API. Every mutator
@@ -348,9 +355,9 @@ export interface JsKvItem {
  * sequential statements, not method chaining. */
 export declare class AgentResponse {
   constructor(typeName: string);
-  items(rows: Array<Array<JsToonValue>>, fields: Array<string>): void;
+  items(rows: Array<Array<ToonValue>>, fields: Array<string>): void;
   totalCount(n: number): void;
-  kvItems(items: Array<JsKvItem>): void;
+  kvItems(items: Array<KvItem>): void;
   hint(hint: string): void;
   recoveryHint(tool: string, reason?: string): void;
   /** The caller's instruction for getting a cut TOON cell in full; added to `help[]` when a cell was cut. Not called:
@@ -377,7 +384,7 @@ export declare class AgentResponse {
    * section above for where this crate *does* use `serde_json`, and why). */
   renderJson(): string;
   renderHintsOnly(): string;
-  toCallToolResult(): JsCallToolResult;
+  toCallToolResult(): CallToolResult;
 }
 export type JsAgentResponse = AgentResponse;
 ```
@@ -435,10 +442,10 @@ export declare function renderDomainError(
 ): string;
 
 /** A component status item for `renderStatus`. */
-export interface JsStatusItem {
+export interface StatusItem {
   /** Component key. */
   key: string;
-  value: JsToonValue;
+  value: ToonValue;
   /** Health state: `"ok"`, `"degraded: <reason>"`, or `"error: <reason>"`. */
   health?: string;
 }
@@ -448,28 +455,28 @@ export interface JsStatusItem {
 export declare function renderStatus(
   toolName: string,
   description: string,
-  items: Array<JsStatusItem>,
+  items: Array<StatusItem>,
   hints?: Array<string> | undefined | null,
 ): string;
 
 /** One failed operation for `renderPartialSuccess`. */
-export interface JsFailedOp {
+export interface FailedOp {
   operation: string;
   reason: string;
   /** No structured params over this boundary. */
-  recovery?: JsRecoveryHint | null;
+  recovery?: RecoveryHint | null;
 }
 
 /** Render `PartialSuccess`: a quoted summary, `completed[N]: …`, the `failed[N]{operation,reason}:` table,
  * `skipped[N]: …` (empty categories omitted), then one `recovery[N]{tool,params,reason}:` table. */
 export declare function renderPartialSuccess(
   completed: Array<string>,
-  failed: Array<JsFailedOp>,
+  failed: Array<FailedOp>,
   skipped: Array<string>,
 ): string;
 
 /** One step for `renderPipeline`: the labels `StepStatus::label` and `StepStatus::reason` write. */
-export interface JsPipelineStep {
+export interface PipelineStep {
   id: string;
   name: string;
   status:
@@ -497,18 +504,18 @@ export interface JsPipelineStep {
 }
 
 /** Render pipeline state as `step[N]{id,name,status,reason}:`, or `step: []` with no steps. */
-export declare function renderPipeline(steps: Array<JsPipelineStep>): string;
+export declare function renderPipeline(steps: Array<PipelineStep>): string;
 
-export interface JsAlreadyDone {
+export interface AlreadyDone {
   done: boolean;
   /** The stored result when `done`. */
   result?: string;
 }
 
 /** Classify an idempotency lookup: any stored string (even empty) is done; `null`/`undefined` is not. */
-export declare function alreadyDone(stored?: string | undefined | null): JsAlreadyDone;
+export declare function alreadyDone(stored?: string | undefined | null): AlreadyDone;
 ```
 
-`truncate` is already the inline form (`truncate_inline`), so there is no separate `truncateInline` export. Rust's richer `truncate()` result (`Truncated`) does not cross the boundary.
+`truncate` returns the same fields as Rust's `Truncated` (`content`, `originalChars`, `removed`, `wasTruncated`); `Truncated::hint()` does not cross the boundary, so build the hint text in JavaScript.
 
 </details>

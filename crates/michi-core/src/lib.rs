@@ -48,7 +48,7 @@
 //! - [`response`]: [`AgentResponse`], which composes the primitives into one reply.
 //! - [`mcp`]: MCP `CallToolResult` assembly.
 //! - [`resilience`]: retry delays, `Retry-After` parsing, retry budgets and idempotency keys.
-//! - [`truncate`](mod@truncate): UTF-8 safe truncation of one string, with a stable marker.
+//! - [`truncate`](mod@truncate): UTF-8 safe truncation of one string, with the cut reported outside the text.
 //! - [`truncation`]: what a cap on a list cut ([`TruncationOutcome`]), however the survivors were chosen.
 //!
 //! ## Features
@@ -88,6 +88,8 @@ pub mod napi;
 pub mod pipeline;
 /// Structured recovery hints (`recovery[]`).
 pub mod recovery;
+/// Best-effort redaction of known secrets and URL userinfo.
+pub mod redact;
 /// Retry delay calculation, `Retry-After` parsing, retry budgets, idempotency keys and already-done detection.
 pub mod resilience;
 /// `AgentResponse` builder.
@@ -123,7 +125,7 @@ pub use resilience::{
     already_done, is_retryable_status, next_retry_delay, parse_retry_after, parse_retry_after_at, render_already_done,
     AlreadyDone, IdempotencyKey, RetryBudget, RetryConfig, RetryConfigError,
 };
-pub use truncate::{truncate, truncate_inline, Truncated};
+pub use truncate::{truncate, Truncated};
 pub use truncation::{truncate_by_count, truncate_by_size, TruncationOutcome};
 
 /// Crate-level `Result` alias.
