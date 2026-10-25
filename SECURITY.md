@@ -30,9 +30,9 @@ Out of scope: issues in consuming applications that misuse the API in ways the t
 
 `michi-core`, `michi-pipeline`, `michi-graph` and `@orin-dx/michi` release together on one version.
 
-| Version | Supported |
-| ------- | --------- |
-| 0.7.x   | Yes       |
-| < 0.7   | No        |
+| Version             | Supported |
+| ------------------- | --------- |
+| Latest release      | Yes       |
+| Any earlier release | No        |
 
-Security fixes ship as a new 0.7.x patch release. Before 1.0, fixes are not backported to older minor versions; upgrade to the latest. Versions before 0.3.1 were never published.
+Security fixes ship in a new release of all four packages. Before 1.0, fixes are not backported to earlier minor versions; upgrade to the latest. Versions before 0.3.1 were never published.

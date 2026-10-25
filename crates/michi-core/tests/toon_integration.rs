@@ -146,8 +146,7 @@ fn crate_root_reexports_are_reachable() {
         f64,
         Option<std::time::Duration>,
     ) -> Option<std::time::Duration> = michi_core::next_retry_delay;
-    let _: fn(&str, usize, &str) -> michi_core::Truncated = michi_core::truncate;
-    let _: fn(&str, usize, &str) -> String = michi_core::truncate_inline;
+    let _: fn(&str, usize) -> michi_core::Truncated = michi_core::truncate;
     let _ = michi_core::RecoveryHint::new("t");
     let _ = michi_core::StatusResponse::new("t", "d", vec![]);
 }

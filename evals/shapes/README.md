@@ -18,7 +18,7 @@ Formats: TOON from michi (`toon`), TOON from the official reference encoder (`to
 
 ```bash
 pip install --target "$TMPDIR/py" tiktoken==0.14.0 pyyaml tomli_w tomli    # tomli only on Python < 3.11
-(cd evals/shapes && npm install)                                            # @toon-format/toon 4.4.0
+(cd packages/michi-node && pnpm install --frozen-lockfile)                  # @toon-format/toon 4.4.0 (devDependency)
 ```
 
 ## Build everything (no model calls)
@@ -52,7 +52,7 @@ python3 summarize.py            # results/summary.md, results/misses_<label>.md
 | File | Purpose |
 | --- | --- |
 | `gen_shapes.py` | seeded shapes and questions with ground truth |
-| `toon_ref.mjs`, `package.json` | reference TOON encoder 4.4.0 |
+| `toon_ref.mjs` | reference TOON encoder 4.4.0 (from `packages/michi-node`'s devDependency) |
 | `michi-render/` | michi's TOON (list and key-value) |
 | `render_formats.py` | JSON, YAML, TOML, XML and Markdown renderers, `manifest.json` |
 | `count_tokens.py` | tiktoken counts |

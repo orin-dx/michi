@@ -166,7 +166,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "michi-core"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "compact_str",
  "serde",
@@ -190,11 +190,11 @@ dependencies = [
 
 [[package]]
 name = "michi-graph"
-version = "0.7.0"
+version = "0.7.1"
 
 [[package]]
 name = "michi-pipeline"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "michi-core",
  "michi-graph",

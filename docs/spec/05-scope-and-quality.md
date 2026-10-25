@@ -14,7 +14,7 @@
 | Retryable status classification | Hardcoded booleans per caller | `resilience::is_retryable_status()` |
 | Error classification shape | Ad hoc per tool | `error::Error`, `error::DomainError`, `error::ErrorCode` |
 | Empty state handling | Ad hoc per tool (often silent) | `empty::empty_state()` |
-| Truncation | Ad hoc per tool, no standard signal | `truncate::truncate()`, `truncate_inline()`; for lists, `TruncationOutcome` and `AgentResponse::truncation()` |
+| Truncation | Ad hoc per tool, no standard signal | `truncate::truncate()`; for lists, `TruncationOutcome` and `AgentResponse::truncation()` |
 
 ### Genuinely new — no shared primitive existed before this
 
@@ -104,6 +104,32 @@ Format changes are major versions. Treat the rendered string as a contract — t
 
 ---
 
+## Stability before 1.0
+
+Until 1.0, any public item or rendered string can change in a minor release, and the changeset says how to migrate. The "format changes are major" rule above applies from 1.0. This section says where change is most likely and what we intend to hold still, so nobody builds on sand by accident. See [ADR 9](../adr/0009-v1-positioning-and-criteria.md).
+
+**Intended design that may still change.** These are part of what michi is for, but nothing has used them yet, so their shape is not settled:
+
+| Item | Why it may change |
+| --- | --- |
+| `status` (`StatusResponse`, `StatusItem`, `Health`) | No consumer has used it |
+| `PartialSuccess`, `FailedOp` | [Spec 07](07-wisp-and-monokl-envelope.md) proposes widening them, which would change the rendered output |
+| `AlreadyDone`, `already_done()` (Node `alreadyDone`) | The check half of the idempotency design; no caller yet |
+| `Sensitive<T>` | A redaction wrapper no renderer takes yet |
+| `telemetry::NoopProvider` | A placeholder for an observability seam |
+| `Dag::ready_by_edge` and edge kinds | New in 0.7; the argument order has changed once already |
+| The `schemars` feature | JSON Schemas for MCP `outputSchema`; no consumer yet |
+| `michi-pipeline`: `ExecutionError` variants, `StepObserver`, `DurableObserver`, `ExecOptions` defaults | Nothing runs pipelines yet |
+| `michi-pipeline` `serde` shape of `RunRecord` | Callers persist it, so any change is called out in the changeset and old records are reported, never misread |
+| `mcp::CallToolResult.structured_content` as a JSON string, `RecoveryHint.params` as a list of pairs | Representation choices that may become typed |
+| The rendered `exit_code: 1` line in error blocks | Constant today; kept as the CLI-facing seam |
+
+**What we try to hold still** (an intention, not a promise until 1.0): the TOON structure of each block (entry names, key order, quoting per TOON 4.4), the `ErrorCode` labels, and the reserved list type names (`totalCount`, `help`, `recovery`, `truncated`).
+
+**Prose and defaults that can change in any release:** the wording of hints michi writes (for example the `Cut cells are listed in the truncated block` line), error message text, and default limits (the 200-char cell cap, the retry defaults, the pipeline timeouts and the retry-after cap).
+
+---
+
 ## Performance contract
 
 | Operation                              | Target  | Basis                               |
@@ -112,7 +138,7 @@ Format changes are major versions. Treat the rendered string as a contract — t
 | `render_toon()` — 1000 items, 4 fields | < 3ms   | Linear in N×fields                  |
 | `render_kv()` — 10 items               | < 20µs  | Key check + one string pass         |
 | `render_hints()` — 5 hints             | < 10µs  | Trivial string join                 |
-| `truncate_inline()`                    | < 5µs   | Single pass, char boundary safe     |
+| `truncate()`                           | < 5µs   | Single pass, char boundary safe     |
 | `parse_retry_after()`                  | < 2µs   | String parse only                   |
 | `next_retry_delay()`                   | < 1µs   | Pure arithmetic                     |
 | NAPI boundary overhead                 | < 5µs   | Established from napi-rs benchmarks |
@@ -153,7 +179,7 @@ Benchmarks live in `crates/michi-core/benches/` and run via `divan`; CI builds t
 **Property tests** (`proptest`, `tests/`):
 
 - `render_toon()` output is grammar-valid for arbitrary string inputs
-- `truncate_inline()` never returns a string longer than `limit` chars, suffix included, and its count plus the kept chars equals the input char count
+- `truncate()` never returns a string longer than `max_chars` chars, and `removed` plus the kept chars equals the input char count
 - TOON round-trip: render → parse (test-only parser) → compare values
 - `parse_retry_after()` never panics on arbitrary strings
 - `next_retry_delay()` always returns a value within `[base_delay, max_delay]`
