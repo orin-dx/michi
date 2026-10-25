@@ -193,8 +193,8 @@ impl Budget {
     /// One `JsToonValue` object. Only the payload field its `type` names (plus `decimalsVal` for floats) is read, so
     /// an unused payload costs nothing.
     fn toon_value(&mut self, value: Unknown<'_>) -> napi::Result<JsToonValue> {
-        let obj = object(value, "JsToonValue")?;
-        let r#type = self.string_prop(&obj, "type", "JsToonValue type", MAX_NAME_BYTES)?;
+        let obj = object(value, "ToonValue")?;
+        let r#type = self.string_prop(&obj, "type", "ToonValue type", MAX_NAME_BYTES)?;
         let mut out = JsToonValue { r#type, ..JsToonValue::default() };
         match out.r#type.as_str() {
             "str" => out.str_val = self.opt_string_prop(&obj, "strVal", "strVal", MAX_STRING_BYTES)?,
@@ -246,7 +246,7 @@ impl Budget {
         check_len("items", items.len(), max)?;
         let mut out = Vec::with_capacity(items.len());
         for i in 0..items.len {
-            let obj = object(items.get(i)?, "JsKvItem")?;
+            let obj = object(items.get(i)?, "KvItem")?;
             let key = self.string_prop(&obj, "key", "key", MAX_NAME_BYTES)?;
             let value = self.toon_value(prop(&obj, "value")?.ok_or_else(|| missing("value"))?)?;
             out.push(JsKvItem { key, value });
@@ -259,7 +259,7 @@ impl Budget {
         check_len("items", items.len(), max)?;
         let mut out = Vec::with_capacity(items.len());
         for i in 0..items.len {
-            let obj = object(items.get(i)?, "JsStatusItem")?;
+            let obj = object(items.get(i)?, "StatusItem")?;
             let key = self.string_prop(&obj, "key", "key", MAX_NAME_BYTES)?;
             let value = self.toon_value(prop(&obj, "value")?.ok_or_else(|| missing("value"))?)?;
             let health = self.opt_string_prop(&obj, "health", "health", MAX_STRING_BYTES)?;
@@ -270,7 +270,7 @@ impl Budget {
 
     /// One `JsRecoveryHint` object.
     fn recovery_hint(&mut self, value: Unknown<'_>) -> napi::Result<JsRecoveryHint> {
-        let obj = object(value, "JsRecoveryHint")?;
+        let obj = object(value, "RecoveryHint")?;
         let tool = self.string_prop(&obj, "tool", "tool", MAX_NAME_BYTES)?;
         let reason = self.opt_string_prop(&obj, "reason", "reason", MAX_STRING_BYTES)?;
         Ok(JsRecoveryHint { tool, reason })
@@ -281,7 +281,7 @@ impl Budget {
         check_len("failed", ops.len(), max)?;
         let mut out = Vec::with_capacity(ops.len());
         for i in 0..ops.len {
-            let obj = object(ops.get(i)?, "JsFailedOp")?;
+            let obj = object(ops.get(i)?, "FailedOp")?;
             let operation = self.string_prop(&obj, "operation", "operation", MAX_NAME_BYTES)?;
             let reason = self.string_prop(&obj, "reason", "reason", MAX_STRING_BYTES)?;
             let recovery = match prop(&obj, "recovery")? {
@@ -298,7 +298,7 @@ impl Budget {
         check_len("steps", steps.len(), max)?;
         let mut out = Vec::with_capacity(steps.len());
         for i in 0..steps.len {
-            let obj = object(steps.get(i)?, "JsPipelineStep")?;
+            let obj = object(steps.get(i)?, "PipelineStep")?;
             let id = self.string_prop(&obj, "id", "id", MAX_NAME_BYTES)?;
             let name = self.string_prop(&obj, "name", "name", MAX_STRING_BYTES)?;
             let status = self.string_prop(&obj, "status", "status", MAX_NAME_BYTES)?;
