@@ -47,7 +47,7 @@
 //! - [`response`]: [`AgentResponse`], which composes the primitives into one reply.
 //! - [`mcp`]: MCP `CallToolResult` assembly.
 //! - [`resilience`]: retry delays, `Retry-After` parsing, retry budgets and idempotency keys.
-//! - [`truncate`](mod@truncate): UTF-8 safe truncation of one string, with a stable marker.
+//! - [`truncate`](mod@truncate): UTF-8 safe truncation of one string, with the cut reported outside the text.
 //! - [`truncation`]: what a cap on a list cut ([`TruncationOutcome`]), however the survivors were chosen.
 //!
 //! ## Features

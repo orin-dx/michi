@@ -6,7 +6,7 @@
 //!
 //! Cut one string on a UTF-8 char boundary and report the cut out of band.
 //!
-//! [`truncate`] returns the kept text and the number of chars removed in separate fields, so the text never carries
+//! [`truncate()`] returns the kept text and the number of chars removed in separate fields, so the text never carries
 //! a message that a value could imitate. This is the same rule a cut TOON cell follows: keep `max_chars - 1` chars
 //! and end in `…`. For what a cap on a **list** cut, see [`crate::truncation`].
 
@@ -15,9 +15,9 @@ use crate::hints::Hint;
 /// The marker a cut ends with (U+2026 HORIZONTAL ELLIPSIS).
 const ELLIPSIS: char = '\u{2026}';
 
-/// Result of cutting one string with [`truncate`].
+/// Result of cutting one string with [`truncate()`].
 ///
-/// `#[non_exhaustive]`: read the fields, but build values only through [`truncate`].
+/// `#[non_exhaustive]`: read the fields, but build values only through [`truncate()`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Truncated {

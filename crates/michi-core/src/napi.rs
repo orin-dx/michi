@@ -336,7 +336,7 @@ pub fn render_recovery(hints: Vec<JsRecoveryHint>) -> napi::Result<String> {
     Ok(crate::recovery::render_recovery(&converted))
 }
 
-/// The result of [`truncate`] (JavaScript-friendly).
+/// The result of [`truncate()`] (JavaScript-friendly).
 #[napi(object)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JsTruncated {
