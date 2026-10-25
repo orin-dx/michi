@@ -20,11 +20,11 @@ TOON 4.4 is one encoder for the body, and today the only one. It is the right ch
 **1.0 criteria.** A crate goes to 1.0 when both hold:
 
 1. At least two independent consumers have run it on a published release for several weeks.
-2. The frozen surface equals what those consumers use. Unused public surface is marked experimental or dropped before 1.0.
+2. What 1.0 promises is what those consumers use. Intended design that no consumer has used yet stays, marked unstable in the docs. Legacy, duplicate and implementation-detail surface is removed or hidden before 1.0.
 
 "Independent" means different tools by different authors, as in [PRINCIPLES.md](../../PRINCIPLES.md) gate 3. Passing tests, completeness and a long feature list are not criteria.
 
-**Version split (proposed, open).** `michi-core` heads toward 1.0 on its own. `michi-pipeline` and `michi-graph` stay 0.x until a consumer runs them. This needs a change to the `michi` fixed group in `callisto.toml`, which today releases all four packages on one version (ADR 5). This record does not change `callisto.toml`. Whether to split, and how the npm package versions against `michi-core`, needs the maintainer's decision before this ADR is accepted.
+**Versions (decided).** All four packages stay in the `michi` fixed group on one version through 1.0 ([ADR 5](0005-two-crates-one-version.md)), so they reach 1.0 together. A split was considered and rejected by the maintainer, who prefers one version for the whole family. Intended design with no caller yet stays in and is marked unstable in the docs, not removed.
 
 **Deferred past 1.0.** Each needs evidence that does not exist yet:
 
@@ -37,13 +37,13 @@ TOON 4.4 is one encoder for the body, and today the only one. It is the right ch
 
 - Call 0.7 feature-complete and tag 1.0. Rejected: it freezes surface no consumer has used.
 - Keep TOON as the headline. Rejected: the evidence supports a narrower claim, and the contract is what still matters if a better body encoding appears.
-- Keep one version for all four packages through 1.0. Possible and simpler to release, but it ties `michi-pipeline` and `michi-graph` to a freeze their usage has not earned. Left open above.
+- Let `michi-core` reach 1.0 alone while `michi-pipeline` and `michi-graph` stay 0.x. Rejected: one fixed version for the whole family is simpler to release and to explain, and it was decided earlier ([ADR 5](0005-two-crates-one-version.md)).
 
 ## Consequences
 
 - README and benchmark docs state the measured scope and what is untested.
-- Pre-1.0 breakage stays acceptable. Surface with no consumer can still change or go.
-- 1.0 may arrive later than the feature set suggests, and for `michi-core` only.
+- Pre-1.0 breakage stays acceptable. Legacy and duplicate surface can change or go. Intended design stays even without a caller; its stability is documented, not assumed.
+- 1.0 may arrive later than the feature set suggests, and it arrives for all four packages together.
 
 ## Sources
 
