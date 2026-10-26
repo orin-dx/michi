@@ -24,6 +24,11 @@
 - Benchmarks: divan (not criterion)
 - Tests: `cargo nextest run` (not `cargo test`)
 
+## Testing
+
+- A claim needs a test that fails when the claim breaks. Check by breaking the code on purpose (a mutant) and watching the test fail, then revert.
+- Performance: no CI gate on absolute time or percent change (shared runners are too noisy to mean anything). `crates/*/tests/scaling.rs` check the complexity class instead: 10x the input must not take 30x as long (linear ~10x, quadratic ~100x). Add a case there when you add or document a linear-time path. `just bench` is for looking at constant factors by hand.
+
 ## Writing
 
 - Write docs in plain, concise language. Keep them friendly and scannable; remove filler and AI-sounding prose.
