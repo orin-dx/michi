@@ -13,3 +13,4 @@ lcov.info
 /.claude/
 /.entire/
 /.gemini/
+mutants.out/
