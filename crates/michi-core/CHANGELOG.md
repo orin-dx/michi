@@ -1,5 +1,9 @@
 # michi-core
 
+## 0.9.0
+
+- Released together with the `michi` fixed group.
+
 ## 0.8.0
 
 - michi-core: truncation is reported out of band, and `DomainError::from_error` no longer copies the cause chain.
