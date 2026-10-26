@@ -1,0 +1,17 @@
+# cargo-mutants: mutants that cannot change behavior, so a test can never catch them. Each entry says why. Anything
+# else that survives a run is a missing test, not an exclusion.
+exclude_re = [
+  # `u32::MAX` nodes (4 billion) is the only input where `n < u32::MAX` and `n <= u32::MAX` differ, and where the
+  # `index < decls.len()` bound in `depends_on` meets the overflow sentinel `u32::MAX`.
+  "replace match guard n < u32::MAX with true in GraphBuilder<K, E>::node",
+  "replace < with <= in GraphBuilder<K, E>::node",
+  # (Anchored to the line: the ancestor check on the line above is caught and must stay in the run. If an edit moves
+  # the line, the mutant resurfaces as a miss and the entry needs the new number.)
+  "builder.rs:102:.*replace < with <= in GraphBuilder<K, E>::depends_on",
+  # `topo.len() <= n` always holds, so `<=` only enters the cycle search on acyclic graphs, where it finds nothing.
+  "replace < with <= in Graph<K, E>::validate_filtered",
+  # Every cyclic component reaching `cycles_in` has more than one node or a self-loop, and the self-loop arm comes
+  # first, so the `len() > 1` guard of the next arm is always true there.
+  "replace match guard component.len\\(\\) > 1 with true in Graph<K, E>::cycles_in",
+  "replace > with >= in Graph<K, E>::cycles_in",
+]
