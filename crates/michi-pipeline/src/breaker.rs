@@ -93,7 +93,7 @@ pub(crate) enum Admission {
 /// The executor admits a step once, retries it within that one admission, and reports one outcome. A HalfOpen probe
 /// gets exactly one attempt. Get breakers from a [`BreakerRegistry`].
 #[derive(Debug)]
-pub struct CircuitBreaker {
+pub(crate) struct CircuitBreaker {
     config: BreakerConfig,
     state: Mutex<BreakerState>,
     epoch: tokio::time::Instant,
@@ -265,7 +265,7 @@ impl BreakerRegistry {
 
     /// The breaker for `key`, created closed if it does not exist yet.
     #[must_use]
-    pub fn breaker(&self, key: &str) -> Arc<CircuitBreaker> {
+    pub(crate) fn breaker(&self, key: &str) -> Arc<CircuitBreaker> {
         let mut breakers = self.breakers.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(b) = breakers.get(key) {
             return Arc::clone(b);

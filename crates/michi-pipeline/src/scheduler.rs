@@ -10,12 +10,13 @@ use tokio::task::JoinSet;
 use tokio::time::Instant;
 
 use crate::breaker::AdmissionGuard;
+use crate::breaker::CircuitBreaker;
 use crate::error::millis;
 use crate::exec::{ExecOptions, FailurePolicy, Mode, StepObserver};
 use crate::plan::Fnv;
 use crate::{
-    AttemptBound, AttemptRecord, CancellationToken, CircuitBreaker, Effect, ExecutionError, Plan, Precheck, Replay,
-    ReplayClass, RunId, RunRecord, Step, StepContext, StepId, StepRecord,
+    AttemptBound, AttemptRecord, CancellationToken, Effect, ExecutionError, Plan, Precheck, Replay, ReplayClass, RunId,
+    RunRecord, Step, StepContext, StepId, StepRecord,
 };
 
 /// How a step enters the scheduler: to be run, or already terminal (carried over by resume).
