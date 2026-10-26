@@ -1,5 +1,22 @@
 # michi-node
 
+## 0.8.0
+
+- michi-core: truncation is reported out of band, and `DomainError::from_error` no longer copies the cause chain.
+  
+  **Truncated TOON cells.** A cell longer than `max_cell_len` used to end in text such as `(233 more chars — use full=true)`, and a cell whose own data ended the same way was indistinguishable from a real cut. A cut cell now keeps `max_cell_len - 1` chars and ends in a plain `…`, and every cut is listed in a new `truncated[N]{row,field,removed}:` block after the list (`row` is 0-based, `removed` is the chars cut). `truncation_hint` (`truncationHint` in Node) still carries your "get it in full" instruction, now as one extra line in `help[]` (`Cut cells are listed in the truncated block; use full=true for the full value`) that appears only when a cell was cut. `AgentResponse` merges that line into its own hints, in the text, JSON and MCP outputs. `truncated` is now a reserved list type name, like `totalCount`, `help` and `recovery`. `truncate()`, `truncate_inline()` and the Node `truncate()` are unchanged: they still append the in-band suffix, so use them for a single free-text string, not for TOON cells.
+  
+  Migrate: anything that parsed `(N more chars` out of a cell should read the `truncated` block instead; snapshots of truncated output need regenerating; rename a list type called `truncated`.
+  
+  **`DomainError::from_error`** now keeps only the error's own `Display` as `message`. The `source()` chain, which often holds URLs with tokens or file paths, stays out of agent-visible output. To keep the chain as `causes`, call the new `DomainError::from_error_with_causes` (the old behaviour). The top-level message is still shown, so make sure it is safe too.
+  
+  **Docs.** `docs/spec/02-toon-format.md` has a new trust model section: michi guarantees one value cannot create extra lines, fields or cells, and does not stop prompt injection in data; hints, recovery text, error messages, type and field names come from the tool author, never from data.
+- Docs: the README now scopes its TOON claims to what was measured (token savings on flat, uniform 100-row lists; retrieval accuracy within noise on single-hop questions), says TOON here is for models reading tool output, and states that `michi-pipeline` resume is at-least-once per step unless the step passes its idempotency key to a downstream that deduplicates. Adds a plain License section.
+- `truncate()` reports the cut outside the text. The old form appended `" (N more chars — use hint)"` inside the returned string, which data could imitate, the same flaw cut TOON cells had. Now `truncate(content, max_chars)` returns `Truncated { content, original_chars, removed }`: text that fits comes back unchanged, and a longer text keeps its first `max_chars - 1` chars and ends in a plain `…`. `Truncated::hint(guidance)` gives the `cut N of M chars; …` line for the response's `help[]`.
+  
+  Migrate: drop the `hint` argument; read `removed` (or call `hint(guidance)`) instead of parsing the suffix; replace `truncate_inline(c, n, h)` with `truncate(c, n).content` and report the cut yourself. In Node, `truncate(content, maxChars)` now returns `{ content, originalChars, removed, wasTruncated }` instead of a string.
+- The Node package's TypeScript types lose their `Js` prefix: `ToonValue`, `ToonOptions`, `KvItem`, `RecoveryHint`, `StatusItem`, `FailedOp`, `PipelineStep`, `AlreadyDone`, `ContentBlock`, `Annotations`, `CallToolResult` and `Truncated` (the `AgentResponse` class already had none). Runtime behavior is unchanged except that error messages name the new type (`ToonValue must be an object`). `renderDomainError`'s `code` is now typed as the union of the nine error labels (`'invalid_input' | 'not_found' | ...`) instead of `string`; the runtime still rejects anything else. Migrate: rename the imported types.
+
 ## 0.7.1
 
 - Docs and doc comments match the 0.7 code: the READMEs, crate and module docs, and the Node package's API tables list every export (`parseRetryAfter`, `nextRetryDelay`, `isRetryableStatus`, `AgentResponse.renderFor`, `.hasHumanContent`), and several comments that described removed behavior are corrected. No behavior changes.

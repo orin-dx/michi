@@ -5,6 +5,7 @@ too-many-lines-threshold     = 150
 # Allow unwrap/expect in test code — idiomatic and avoids hundreds of #[allow] attrs
 allow-unwrap-in-tests  = true
 allow-expect-in-tests  = true
+allow-panic-in-tests   = true
 
 # Cognitive complexity (default is 25, we lower slightly)
 cognitive-complexity-threshold = 20

@@ -37,6 +37,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 #![warn(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
+#![warn(clippy::panic, clippy::map_err_ignore)]
 #![warn(clippy::must_use_candidate, clippy::missing_errors_doc, clippy::missing_panics_doc)]
 #![warn(missing_debug_implementations)]
 
