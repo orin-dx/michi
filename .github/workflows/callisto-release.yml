@@ -403,18 +403,8 @@ jobs:
         id: published
         run: |
           set -euo pipefail
-          receipt="$RUNNER_TEMP/release-receipt/release-receipt.json"
-          if [[ ! -f "$receipt" ]]; then
-            echo "version=" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          versions=$(jq -r '[.outcomes[] | select((.outcome.kind == "published" or .outcome.kind == "alreadySatisfied") and
-            .operation.role.kind == "registryPublish") | .operation.version] | unique | join(" ")' "$receipt")
-          if [[ "$versions" == *" "* ]]; then
-            echo "::error::the receipt covers several released versions ($versions); the smoke test checks one"
-            exit 1
-          fi
-          echo "version=$versions" >> "$GITHUB_OUTPUT"
+          version=$(scripts/released-version.sh "$RUNNER_TEMP/release-receipt/release-receipt.json")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Summarize the receipt
         if: always()

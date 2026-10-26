@@ -110,6 +110,7 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
       - run: python3 scripts/test_check_api_docs.py
+      - run: python3 scripts/test_released_version.py
       - name: Check the spec moves with the API
         env:
           GH_TOKEN: ${{ github.token }}
