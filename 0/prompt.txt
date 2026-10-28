@@ -1,0 +1,1 @@
+Do deep analysis of githubt looking for popular and well architected repos to learn from. Consider stars, users, etc
