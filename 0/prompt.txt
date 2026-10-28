@@ -1,0 +1,3 @@
+Claude claims to have fixed all the issues you found. Can you first verify that claim and then check if it introduced new ones? Or if there are others we missed?
+
+Any architecture concerns? Any semantic model smells?
