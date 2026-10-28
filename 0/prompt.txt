@@ -1,0 +1,1 @@
+How about other repos trying to build a library for agentic tooling?
