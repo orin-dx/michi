@@ -10,7 +10,4 @@ lcov.info
 /.worktrees
 /.moon/cache
 /.moon/hooks
-/.claude/
-/.entire/
-/.gemini/
 mutants.out/
