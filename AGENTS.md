@@ -74,3 +74,8 @@ All modules live in `crates/michi-core/src/`.
 | `pipeline` | Pipeline pure data type + render (execution lives in `crates/michi-pipeline`, not `crates/michi-core`) |
 | `telemetry` | No-op telemetry provider (`NoopProvider`) — zero-cost default, always compiled |
 | `napi` | NAPI export surface for `@orin-dx/michi` (`napi` feature only) — the one module allowed `unsafe` |
+
+<!-- entire-agent:begin -->
+Read .entire/agent-guide.md for this repository's workflow, source inspection, and verification guidance.
+@.entire/agent-guide.md
+<!-- entire-agent:end -->
