@@ -1,0 +1,59 @@
+What can we learn from this repo for michi? https://github.com/moonrepo/starbase
+
+---
+
+Do deep analysis of githubt looking for popular and well architected repos to learn from. Consider stars, users, etc
+
+---
+
+How about other repos trying to build a library for agentic tooling?
+
+---
+
+What about agentic stuff from cloudflare?
+
+---
+
+Ok, do deep analysis on these projects, how they approach agentic workflows, libraries, etc. Anything we can learn from their codebases?
+
+---
+
+Can we think through and validate all of these things before we propose changes?
+
+---
+
+What or starbase?
+
+---
+
+Anything else we learned from all the repos we came up with?
+
+---
+
+Let's evaluate our code and come up with a comprehensive proposal of how to adopt our learnings
+
+---
+
+Do any of these apply to callisto? caliper? monokl? firkin?
+
+---
+
+<send_user_message_question_reply>
+[{"answer":"We haven't started writing firkin, just spec and docs for now","question":"Where is Firkin’s code? `/Users/gabe/Projects/firkin` is empty, and I couldn’t identify a public repo. A repo URL or local path would let me validate its fit in the proposal.","questionItemId":"[\"request_user_input_async\",\"call_dc7774dc890b4646896d517475c7e33b\",0]"}]
+</send_user_message_question_reply>
+
+---
+
+Can you dig into all of the projects, do investigation, planning, analysis so we can put together some plans?
+
+---
+
+summarize for me
+
+---
+
+We're already using michi-graph in callisto
+
+---
+
+What else should I not trust from you given that obvious mistake?

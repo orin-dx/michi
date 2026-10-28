@@ -1,0 +1,44 @@
+{
+  "cli_version": "0.12.3-nightly.202610261136.c4f103d8d",
+  "checkpoint_id": "01M60D1D5NS15HA9Z71ZB193CP",
+  "session_id": "01a16fdb-2058-7501-b4d8-bd0d3a7d348d",
+  "strategy": "manual-commit",
+  "created_at": "2026-10-28T04:42:04.43205Z",
+  "branch": "main",
+  "checkpoints_count": 12,
+  "save_step_count": 4,
+  "files_touched": [
+    ".pnpm-store/v11/index.db",
+    "docs/research/README.md",
+    "docs/research/cross-project-adoption-2026-10-24.md"
+  ],
+  "agent": "Codex",
+  "model": "gpt-6-sol",
+  "turn_id": "04e364fb358e",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 978214,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 25329024,
+    "output_tokens": 65281,
+    "api_call_count": 200,
+    "subagent_tokens_complete": true
+  },
+  "redaction": {
+    "replacements": 214,
+    "layers": {
+      "betterleaks": 1,
+      "connection_string": 0,
+      "credential_key": 0,
+      "credential_value": 4,
+      "credentialed_uri": 1,
+      "entropy": 302,
+      "key_context": 0,
+      "provider_token": 0,
+      "shell_stdin": 0
+    }
+  },
+  "session_metrics": {
+    "turn_count": 12
+  }
+}
