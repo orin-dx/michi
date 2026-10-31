@@ -13,7 +13,7 @@ importers:
         version: 1.32.1(zod@4.6.7)
       '@napi-rs/cli':
         specifier: ^3.10.8
-        version: 3.10.8(@emnapi/core@1.9.2)(@emnapi/runtime@1.9.2)(@types/node@26.6.5)(emnapi@1.11.1)
+        version: 3.10.9(@emnapi/core@1.9.2)(@emnapi/runtime@1.9.2)(@types/node@26.6.5)(emnapi@1.11.1)
       '@toon-format/toon':
         specifier: 4.4.0
         version: 4.4.0
@@ -29,6 +29,25 @@ importers:
       typescript:
         specifier: ^7.0.2
         version: 7.0.2
+    optionalDependencies:
+      '@orin-dx/michi-darwin-arm64':
+        specifier: 0.9.0
+        version: 0.9.0
+      '@orin-dx/michi-darwin-x64':
+        specifier: 0.9.0
+        version: 0.9.0
+      '@orin-dx/michi-linux-arm64-gnu':
+        specifier: 0.9.0
+        version: 0.9.0
+      '@orin-dx/michi-linux-arm64-musl':
+        specifier: 0.9.0
+        version: 0.9.0
+      '@orin-dx/michi-linux-x64-gnu':
+        specifier: 0.9.0
+        version: 0.9.0
+      '@orin-dx/michi-linux-x64-musl':
+        specifier: 0.9.0
+        version: 0.9.0
 
 packages:
 
@@ -191,8 +210,8 @@ packages:
       '@cfworker/json-schema':
         optional: true
 
-  '@napi-rs/cli@3.10.8':
-    resolution: {integrity: sha512-hg7m8VwECTIIHxNzajDG8QgtTOEVAKiIVLCLCW90Th6Z5R/ijWjh16iaQrRvXj4ve/S2fcXYo5cctCWJ8aVxIg==}
+  '@napi-rs/cli@3.10.9':
+    resolution: {integrity: sha512-RpzJrTDlSxUi2Deo+dh4bmDTKklAVe295aSQjZspwbZyUBG7twbXbiKskL2w/bL4kNg3DdkrwbI/iQwI9kgQaQ==}
     engines: {node: ^20.17.0 || ^22.13.0 || >= 23.5.0}
     hasBin: true
     peerDependencies:
@@ -601,6 +620,46 @@ packages:
 
   '@octokit/types@16.0.0':
     resolution: {integrity: sha512-sKq+9r1Mm4efXW1FCk7hFSeJo4QKreL/tTbR0rz/qx/r1Oa2VV83LTA/H/MuCOX7uCIJmQVRKBcbmWoySjAnSg==}
+
+  '@orin-dx/michi-darwin-arm64@0.9.0':
+    resolution: {integrity: sha512-UQxZK8eLJonf97oicpOqNC2g4qqW3M1pKQzx7iSluiX3LkY/Cd/U8I8i+YXvxHG5nfIN7mC7Cp9uSEolEMXprQ==}
+    engines: {node: '>= 18'}
+    cpu: [arm64]
+    os: [darwin]
+
+  '@orin-dx/michi-darwin-x64@0.9.0':
+    resolution: {integrity: sha512-NnsoRpRw6n7hzJ4gPzACAMjS6t8/IToV21X+sFM3n/TIaI6G+AT0JCXoMY/OmcmNY5ruq5xkTVdoOdtdtluNwQ==}
+    engines: {node: '>= 18'}
+    cpu: [x64]
+    os: [darwin]
+
+  '@orin-dx/michi-linux-arm64-gnu@0.9.0':
+    resolution: {integrity: sha512-OXV80ZXWYdQvOaoZNo2mnGjHnP3aGDHIsdkkjMbtLNjMKAGM77PYiDaOtMjqcYP5MrrlRCrJ9GpuO2NsfkPUYA==}
+    engines: {node: '>= 18'}
+    cpu: [arm64]
+    os: [linux]
+    libc: [glibc]
+
+  '@orin-dx/michi-linux-arm64-musl@0.9.0':
+    resolution: {integrity: sha512-txE5JlK3v6qv2DlRav5bTbUoFncoyKYPZSi/+1CiCNW0evJhrnrjwxbLAHplEiJ2BFnGaomJ5cUEI6sP55KJeA==}
+    engines: {node: '>= 18'}
+    cpu: [arm64]
+    os: [linux]
+    libc: [musl]
+
+  '@orin-dx/michi-linux-x64-gnu@0.9.0':
+    resolution: {integrity: sha512-UE4jJEsA7AorEzQinxD9q5hJOj+h3m+xvubPVtUuYE7aNf8EWyM0wPvbo6TsQIna0+MHPcAbCpSWE/jHyciOcA==}
+    engines: {node: '>= 18'}
+    cpu: [x64]
+    os: [linux]
+    libc: [glibc]
+
+  '@orin-dx/michi-linux-x64-musl@0.9.0':
+    resolution: {integrity: sha512-jLqpykDkm7cVbWyDcYQn8JgR6jCKMnRi5fjyOpFXlYfOoNfkH8SUJKoLaZcKjixJmpy+lClLvl/yj3LVbO/iGA==}
+    engines: {node: '>= 18'}
+    cpu: [x64]
+    os: [linux]
+    libc: [musl]
 
   '@oxlint-tsgolint/darwin-arm64@7.0.2004':
     resolution: {integrity: sha512-uJk3ttju7Lz+Nv8WG4CsLyewoL1qf/Ny8S8OksJ7Bm/F14Tc9gMfW6arM1PCc57IzH/X/I79YsCWTgxX1FKibQ==}
@@ -1414,7 +1473,7 @@ snapshots:
   '@inquirer/external-editor@3.0.3(@types/node@26.6.5)':
     dependencies:
       chardet: 2.2.0
-      iconv-lite: 0.7.2
+      iconv-lite: 0.7.3
     optionalDependencies:
       '@types/node': 26.6.5
 
@@ -1507,7 +1566,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@napi-rs/cli@3.10.8(@emnapi/core@1.9.2)(@emnapi/runtime@1.9.2)(@types/node@26.6.5)(emnapi@1.11.1)':
+  '@napi-rs/cli@3.10.9(@emnapi/core@1.9.2)(@emnapi/runtime@1.9.2)(@types/node@26.6.5)(emnapi@1.11.1)':
     dependencies:
       '@inquirer/prompts': 8.5.2(@types/node@26.6.5)
       '@napi-rs/cross-toolchain': 1.0.3(@emnapi/core@1.9.2)(@emnapi/runtime@1.9.2)
@@ -1817,7 +1876,7 @@ snapshots:
       '@octokit/endpoint': 11.0.3
       '@octokit/request-error': 7.1.0
       '@octokit/types': 16.0.0
-      content-type: 2.0.0
+      content-type: 2.1.0
       json-with-bigint: 3.5.8
       universal-user-agent: 7.0.3
 
@@ -1831,6 +1890,24 @@ snapshots:
   '@octokit/types@16.0.0':
     dependencies:
       '@octokit/openapi-types': 27.0.0
+
+  '@orin-dx/michi-darwin-arm64@0.9.0':
+    optional: true
+
+  '@orin-dx/michi-darwin-x64@0.9.0':
+    optional: true
+
+  '@orin-dx/michi-linux-arm64-gnu@0.9.0':
+    optional: true
+
+  '@orin-dx/michi-linux-arm64-musl@0.9.0':
+    optional: true
+
+  '@orin-dx/michi-linux-x64-gnu@0.9.0':
+    optional: true
+
+  '@orin-dx/michi-linux-x64-musl@0.9.0':
+    optional: true
 
   '@oxlint-tsgolint/darwin-arm64@7.0.2004':
     optional: true
