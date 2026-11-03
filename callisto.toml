@@ -33,7 +33,7 @@ release-trigger = "changeset"
 
 # michi-node: NAPI cdylib + npm package
 [[package]]
-match = "npm/michi-node"
+match = "npm/@orin-dx/michi"
 publish-to = ["npm"]
 release-trigger = "changeset"
 
