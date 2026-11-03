@@ -1,0 +1,18 @@
+Pick up the michi work (orin-dx/michi). Read AGENTS.md, PRINCIPLES.md and the memory index first.
+
+Standing rules: keep all four packages on one lockstep version (Callisto fixed group). Don't remove deliberate or future-looking design. Keep PRs few, and don't add packages or files nobody asked for. Ask before spending money or merging a release PR. No claude.ai session links in commits or PRs. Use `/usr/bin/git`, one plain command at a time (the worktree guard rejects compound git/gh commands).
+
+State as of 2026-11-02:
+- Released: michi@0.9.0 (latest). 0.8.0 had npm provenance and passing smoke jobs.
+- Callisto: michi is pinned to 0.12.0; the latest is 0.17.0. Task: bump it on a branch, run its dry-run plan and `status --check --strict`, check the workflow for the removed `pending_pr_label` input and for config tables that now fail to load (`[init]`, `[release.profiles]`), and open a DRAFT PR with the findings. Don't merge it.
+- Open PRs: #97 (oxfmt ignores the Entire-generated markdown; unblocks main's red Markdown check), #92 (`merge_group` trigger; its old red run was a transient Node download failure, re-run), #84 (release-receipt script; I'd close it), dependabot #93-#96 (red only because of #97).
+- Waiting on my OK: CI tidy (delete "Bench (build only)", run Deny weekly, merge the two small toolchain jobs) and making checks required in the `main` ruleset (it has no required status checks today, so CI can't block a merge). Consider pinning an exact Node version in .prototools.
+- Next work: run `cargo mutants` on michi-core (1,140 mutants) and michi-pipeline (517) and close the real gaps like #88 did for graph; exclusions go in .cargo/mutants.toml with a reason.
+- My decisions still open: a `Format::{Toon, Json}` per-call option (TOON wins on flat lists, JSON is at least as good elsewhere), accepting ADR 0009, module renames, public tuple fields. Small-model TOON accuracy runs are due; ask before spending anything.
+- Check how the repo uses Entire trails ("Entire Gates" fails on dependabot PRs; I haven't looked) and whether GitHub releases should carry assets or attestations (0.9.0 has none).
+
+Start by checking `gh pr list` and main's CI, then do the Callisto bump.
+
+---
+
+Let's make sure we create a PR to update the entire hooks too. Appropriately use Entire Trails for tracking our work in logical groups.

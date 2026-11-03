@@ -1,0 +1,85 @@
+{
+  "cli_version": "0.12.3-nightly.202611020622.d7012996f",
+  "checkpoint_id": "01M6FB9MEMH50TZ0VHM7XA528N",
+  "session_id": "1f70a6e4-0d99-45cc-9880-eeabded67d62",
+  "strategy": "manual-commit",
+  "created_at": "2026-11-03T00:00:27.248372Z",
+  "branch": "worktree-callisto-0-17",
+  "checkpoints_count": 1,
+  "files_touched": [
+    ".github/workflows/callisto-release.yml",
+    "callisto.toml"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-sonnet-5-5",
+  "turn_id": "0bdc97d5e9ee",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 70,
+    "cache_creation_tokens": 89990,
+    "cache_read_tokens": 3419423,
+    "output_tokens": 13705,
+    "api_call_count": 35
+  },
+  "redaction": {
+    "replacements": 2,
+    "layers": {
+      "betterleaks": 0,
+      "connection_string": 0,
+      "credential_key": 0,
+      "credential_value": 0,
+      "credentialed_uri": 0,
+      "entropy": 2,
+      "key_context": 0,
+      "provider_token": 0,
+      "shell_stdin": 0
+    }
+  },
+  "summary": {
+    "intent": "Pick up the michi work: bump Callisto from 0.12.0 to 0.17.0 on a branch, run its dry-run plan and `status --check --strict`, check for removed inputs and config tables that no longer load, and open a draft PR with the findings (not merging).",
+    "outcome": "Bumped the Callisto pin to 0.17.0 in the workflow, fixed a callisto.toml match that stopped applying to npm/michi-node, and verified strict status, dry-run and a lockstep version dry-run (all four packages to 0.9.1). The commit was being retried outside the sandbox after the pre-commit hook failed; the draft PR was not opened yet.",
+    "learnings": {
+      "repo": [
+        "The user's PR list was stale: #92 and #93-#97 were already merged and `gh pr list` showed no open PRs. The only red item on main was the Fuzz run, so the session state in the prompt should be verified before acting on it.",
+        "Callisto 0.17.0's release tag is annotated, so the tag object has to be dereferenced to get the commit SHA for pinning.",
+        "Under Callisto 0.17 the `npm/michi-node` match in callisto.toml stopped matching (strict status warned), so the npm rule needed a changed match.",
+        "The Callisto config and workflow have no `pending_pr_label`, `setup_git_user`, `[init]` or `[release.profiles]`, so the removed inputs and tables do not affect michi.",
+        "With no changesets, the release dry-run only reports 'Nothing to release'. A throwaway changeset (a patch bump moving all four packages to 0.9.1) showed the lockstep fixed group still works.",
+        "The pre-commit hook runs a moon format check that needs network and git config access, so it fails in the sandbox."
+      ],
+      "code": [
+        {
+          "path": ".github/workflows/callisto-release.yml",
+          "finding": "Callisto 0.12.0 pins were updated to 0.17.0 (version and tag SHA)."
+        },
+        {
+          "path": "callisto.toml",
+          "finding": "The package match for npm/michi-node was adjusted so the npm rule still applies under Callisto 0.17."
+        }
+      ],
+      "workflow": [
+        "The worktree guard rejects compound git/gh commands, so commands must be split into single plain `/usr/bin/git` or `gh` calls.",
+        "`gh` cannot verify TLS inside the sandbox (macOS keychain), so GitHub calls and the hook-running commit must be run outside the sandbox.",
+        "Download release binaries into fresh empty directories and extract them there, per the untrusted-download handling rules.",
+        "Exercise a dry-run with a temporary changeset when the real plan is empty, and delete the changeset afterward."
+      ]
+    },
+    "friction": [
+      "Sandbox network blocks and TLS verification failures on `gh` forced several retries outside the sandbox.",
+      "The initial task state was out of date (PRs listed as open were merged), which cost investigation time.",
+      "Release-asset listing and binary download steps were each run twice, likely from sandbox failures.",
+      "The commit's pre-commit hook failed in the sandbox because of a git config lock and network access, so the commit needed a retry outside it.",
+      "Compound commands were rejected by the worktree guard and had to be split."
+    ],
+    "open_items": [
+      "Open the DRAFT PR for the Callisto 0.17.0 bump with the findings, and do not merge it; confirm the commit succeeded first.",
+      "Investigate the Fuzz failure on main (build failure root cause was being traced).",
+      "Do the Entire hooks update as a separate PR and track both under trails; examine how the repo uses Entire trails and why 'Entire Gates' fails on dependabot PRs.",
+      "CI tidy (delete 'Bench (build only)', run Deny weekly, merge the two small toolchain jobs), making checks required in the `main` ruleset, and pinning an exact Node version in .prototools are awaiting user OK.",
+      "Run `cargo mutants` on michi-core (1,140 mutants) and michi-pipeline (517), close real gaps, and put exclusions with reasons in .cargo/mutants.toml.",
+      "User decisions are still open: the `Format::{Toon, Json}` option, ADR 0009, module renames and public tuple fields; small-model TOON accuracy runs need approval before spending.",
+      "Decide whether GitHub releases should carry assets or attestations (0.9.0 has none).",
+      "PR #84 (release-receipt script) was proposed for closing; check its status."
+    ]
+  }
+}
