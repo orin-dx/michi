@@ -1,0 +1,89 @@
+{
+  "cli_version": "0.12.3-nightly.202611020622.d7012996f",
+  "checkpoint_id": "01M6FCB9TDZWAJJCSVNZVY52DQ",
+  "session_id": "1f70a6e4-0d99-45cc-9880-eeabded67d62",
+  "strategy": "manual-commit",
+  "created_at": "2026-11-03T00:18:50.778067Z",
+  "branch": "fix-fuzz-target",
+  "checkpoints_count": 4,
+  "files_touched": [
+    "justfile"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-sonnet-5-5",
+  "turn_id": "320921e70a2d",
+  "checkpoint_transcript_start": 576,
+  "transcript_lines_at_start": 576,
+  "compact_transcript_start": 40,
+  "token_usage": {
+    "input_tokens": 74,
+    "cache_creation_tokens": 47452,
+    "cache_read_tokens": 5427636,
+    "output_tokens": 15820,
+    "api_call_count": 37
+  },
+  "redaction": {
+    "replacements": 20,
+    "layers": {
+      "betterleaks": 4,
+      "connection_string": 0,
+      "credential_key": 0,
+      "credential_value": 0,
+      "credentialed_uri": 0,
+      "entropy": 16,
+      "key_context": 0,
+      "provider_token": 0,
+      "shell_stdin": 0
+    }
+  },
+  "session_metrics": {
+    "turn_count": 4
+  },
+  "summary": {
+    "intent": "Bump the Callisto release tooling to 0.17.0 in the michi repo, refresh the Entire agent hooks, and then fix the red scheduled Fuzz job on main, with each change on its own branch, Entire trail and draft PR.",
+    "outcome": "Draft PRs #98 (Callisto 0.17.0 bump with a config fix) and #99 (Entire hooks refresh) were opened with trails #174 and #175. The fuzz fix to the justfile was committed in a worktree after a 5-second smoke run passed, but its trail and PR had not yet been created.",
+    "learnings": {
+      "repo": [
+        "callisto.toml: since 0.14.0 the package spec `npm/michi-node` matches nothing, so it must be `npm/@orin-dx/michi`, the same spelling the fixed group uses. Otherwise the npm package loses its publish-to and release-trigger rules.",
+        "`callisto status --check --strict` warns on an unmatched package spec and is a quick validation. A throwaway patch changeset with `version --dry-run --strict` showed lockstep moving all four packages from 0.9.0 to 0.9.1.",
+        "Merging the Callisto bump PR does not cut a release. The next version PR will be the first real run on 0.17.0.",
+        "`entire trail create` pushes the branch and opens a backing draft PR automatically, so a separate `gh pr create` fails with 'PR already exists'. The PR body must keep the hidden Entire marker.",
+        "`entire agent add claude-code` and `entire agent add codex` also move the moon `pre-push` git hook to `pre-push.pre-entire`. Without `--force` they leave the Brain pre-edit hook intact.",
+        "Main's scheduled Fuzz job fails on all five targets because the 2026-10-31 nightly rejects the address sanitizer on the static musl target.",
+        "Running the fuzz recipe modifies the tracked `fuzz/Cargo.lock` (michi crates 0.8.0 to 0.9.0), so it must be restored before committing an unrelated fix.",
+        "michi-graph 0.8.0 and 0.9.0 are both on crates.io and not yanked. The `ready_by_edge` swap shipped in 0.8.0 as a breaking change."
+      ],
+      "code": [
+        {
+          "path": "justfile",
+          "finding": "The fuzz recipe was edited to pin the fuzz target and sanitizer setting. A 5-second smoke run of one target did 110k runs with no crash, confirming the recipe works."
+        }
+      ],
+      "workflow": [
+        "Sandboxed `gh` and `entire` fail because `us.auth.entire.io` and `api.github.com` are not on the network allowlist. `gh` also hits TLS verification problems from the macOS keychain, so an unsandboxed retry may still be needed.",
+        "Verify claims about tooling constraints before stating them. The assistant wrongly said entire only worked unsandboxed without having tested it in the sandbox.",
+        "When a PR-body guard trips on wording, passing the body as a file with `--body-file` works around it.",
+        "Use separate worktrees per change so each has its own branch, trail and PR.",
+        "Check build artifacts such as lockfiles after smoke runs and revert unrelated changes before committing.",
+        "Per the user's standing rule, claude.ai session lines are left out of commits and PRs."
+      ]
+    },
+    "friction": [
+      "Sandbox network restrictions blocked `gh` and `entire`, forcing unsandboxed retries. The assistant misdiagnosed this at first and was corrected by the user.",
+      "`gh pr create` failed because `entire trail create` had already opened a backing PR, which forced extra inspection steps.",
+      "The PR body guard rejected some wording, requiring the body to be written to a temp file.",
+      "The assistant's question about the PR shims was ambiguous and needed two rounds before the user said to keep what exists.",
+      "`entire agent add` moved the moon `pre-push` hook and printed a path under a different worktree, leaving it unclear whether `pre-push` still runs.",
+      "The fuzz smoke run dirtied the tracked `fuzz/Cargo.lock`."
+    ],
+    "open_items": [
+      "Create the Entire trail and draft PR for the fuzz fix, which is committed but not pushed.",
+      "Confirm where the relocated `pre-push.pre-entire` hook lives and that the moon `pre-push` still runs.",
+      "`entire doctor` reports 9 stuck Codex sessions and no Entire commit hooks in this clone. Fixing that needs `entire doctor --force`, which the user must run.",
+      "CI was not checked on PRs #98 and #99, and the release workflow has not yet run on Callisto 0.17.0.",
+      "The redundant macOS runner override in the `plan` job was left in place.",
+      "Not started: the CI tidy and required checks (awaiting user OK), `cargo mutants`, the Entire Gates failure on dependabot PRs, and GitHub release assets and attestations.",
+      "Consider adding `us.auth.entire.io` and `api.github.com` to the sandbox allowlist via `/sandbox`."
+    ]
+  }
+}
