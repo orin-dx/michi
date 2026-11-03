@@ -45,7 +45,7 @@ jobs:
       # else, so nightly is requested per command (`cargo +nightly`) instead of replacing the default.
       - name: Install nightly
         run: rustup toolchain install nightly --profile minimal --no-self-update
-      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2
+      - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2
         with:
           tool: cargo-fuzz,just
       # The corpus grows run over run: each run restores the latest one for its target and saves its own.

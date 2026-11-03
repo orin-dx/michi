@@ -3,6 +3,8 @@ docs/superpowers/
 docs/projects/
 
 # Generated / vendored
+# Written by the Entire tooling, which keeps one command per line; reformatting joins them into paragraphs.
+.entire/
 target/
 packages/michi-node/target/
 packages/michi-node/node_modules/
