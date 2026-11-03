@@ -176,7 +176,10 @@ fuzz target seconds="60":
     if [ -d "fuzz/seeds/{{target}}" ]; then args+=("fuzz/seeds/{{target}}"); fi
     opts=(-max_total_time={{seconds}})
     if [ -f "fuzz/dictionaries/{{target}}.dict" ]; then opts+=("-dict=fuzz/dictionaries/{{target}}.dict"); fi
-    cargo +nightly fuzz run "{{target}}" "${args[@]}" -- "${opts[@]}"
+    # cargo-fuzz defaults --target to its own build's triple. CI installs a musl build of it, and nightly rejects the
+    # address sanitizer on statically linked musl, so build for the nightly toolchain's host instead.
+    host=$(rustc +nightly -vV | sed -n 's/^host: //p')
+    cargo +nightly fuzz run --target "$host" "{{target}}" "${args[@]}" -- "${opts[@]}"
 
 # ── Continuous Development ──────────────────────────────────────────────────
 watch:
