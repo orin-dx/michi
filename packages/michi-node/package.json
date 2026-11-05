@@ -45,7 +45,7 @@
     "check": "pnpm typecheck && pnpm lint"
   },
   "devDependencies": {
-    "@modelcontextprotocol/sdk": "1.32.1",
+    "@modelcontextprotocol/sdk": "1.32.2",
     "@napi-rs/cli": "^3.10.8",
     "@toon-format/toon": "4.4.0",
     "@types/node": "^26.6.5",
