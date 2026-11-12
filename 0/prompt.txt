@@ -1,0 +1,36 @@
+Let's cleanup any left over branches, worktrees, and anything related to work merged and/or done
+
+---
+
+What should we work on now?
+
+---
+
+delete refactor/remove-dead-surface and start the TOON pilot
+
+---
+
+<task-notification>
+<task-id>bwfysh6rt</task-id>
+<tool-use-id>toolu_0118uQWHyL65Q7eXM83AGoPW</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-gabe-Projects-michi/56a8fbf1-b9bc-443b-9356-06ab035dbfa6/tasks/bwfysh6rt.output</output-file>
+<status>completed</status>
+<summary>Background command "rm -f results/pilot_probe-gemini* &amp;&amp; nohup python3 pilot/run_pilot.py --model-cmd 'pilot/cmd/agy.sh gemini-3.8-flash-medium' --label r2-agy-gemini-3-8-flash --repeats 1 --jobs 4 --timeout 240 &gt; $CLAUDE_JOB_DIR/tmp/gemini.log 2&gt;&amp;1 &amp;
+sleep 2; agy --help 2&gt;&amp;1 | grep -i -A3 model | head -12; agy models 2&gt;&amp;1 | head -20" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+It's been a while
+
+---
+
+Let's update to the latest callisto
+
+---
+
+Leverage all features available that make sense to use
+
+---
+
+releases, attestation, tags, etc
