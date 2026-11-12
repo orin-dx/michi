@@ -121,10 +121,10 @@ jobs:
 
       # The default version command (`callisto version`) refreshes lockfiles
       # and the action appends --emit-decision .callisto/release-decision.json.
-      - uses: orin-dx/callisto/.github/actions/callisto-action@ff116694c00f08ce7edc3f1b00ed4fa1d6ffd084 # callisto@0.17.0
+      - uses: orin-dx/callisto/.github/actions/callisto-action@aebeedcdaa1dce8f0d9ad1836844ab6be68daf1f # callisto@0.20.0
         with:
           mode: version-pr
-          version: callisto@0.17.0
+          version: callisto@0.20.0
           branch: main
           release_branch: callisto/version-packages
         env:
@@ -148,9 +148,11 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: orin-dx/callisto/.github/actions/setup-callisto@ff116694c00f08ce7edc3f1b00ed4fa1d6ffd084 # callisto@0.17.0
+      - uses: orin-dx/callisto/.github/actions/setup-callisto@aebeedcdaa1dce8f0d9ad1836844ab6be68daf1f # callisto@0.20.0
         with:
-          version: callisto@0.17.0
+          version: callisto@0.20.0
+          # Run only a Callisto binary whose attestation verifies; the default falls back to a crates.io build.
+          verification: require
 
       - name: Plan the release
         env:
@@ -226,6 +228,8 @@ jobs:
     runs-on: ${{ matrix.hostRunner }}
     permissions:
       contents: read
+      attestations: write
+      id-token: write
     env:
       TRIPLE: ${{ matrix.triple }}
       USE_CROSS: ${{ matrix.useCross }}
@@ -267,6 +271,12 @@ jobs:
           if [[ "$USE_CROSS" == true ]]; then args+=(--cross-compile); fi
           pnpm build "${args[@]}"
 
+      # Sign the exact bytes that get published; the execute job verifies this before it holds any registry credential.
+      - name: Attest the napi addon
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/napi-out/*.node
+
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: napi-${{ matrix.artifactName }}
@@ -296,6 +306,7 @@ jobs:
       group: callisto-release-execute
       cancel-in-progress: false
     permissions:
+      attestations: read
       contents: write
       id-token: write
     outputs:
@@ -308,9 +319,10 @@ jobs:
           # Callisto pushes the release tags from this checkout.
           persist-credentials: true # zizmor: ignore[artipacked]
 
-      - uses: orin-dx/callisto/.github/actions/setup-callisto@ff116694c00f08ce7edc3f1b00ed4fa1d6ffd084 # callisto@0.17.0
+      - uses: orin-dx/callisto/.github/actions/setup-callisto@aebeedcdaa1dce8f0d9ad1836844ab6be68daf1f # callisto@0.20.0
         with:
-          version: callisto@0.17.0
+          version: callisto@0.20.0
+          verification: require
 
       - uses: orin-dx/actions/setup-proto-node-pnpm@2521888266780dabc7f5fd4c32b02d6ab82849db # v1.1
         if: needs.plan.outputs.has_napi == 'true'
@@ -343,6 +355,25 @@ jobs:
 
       - name: Verify the handoff
         run: (cd "$RUNNER_TEMP/release-intent" && shasum -a 256 -c release-intent.json.sha256)
+
+      # Attestations carry this run's SHA, so a binary from another run or workflow fails here, before placement.
+      - name: Verify the napi addon attestations
+        if: needs.plan.outputs.has_napi == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          addons=("$RUNNER_TEMP"/napi-artifacts/*.node)
+          if [[ "${#addons[@]}" -eq 0 ]]; then
+            echo "::error::no napi addons to verify"
+            exit 1
+          fi
+          for addon in "${addons[@]}"; do
+            gh attestation verify "$addon" --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/callisto-release.yml" \
+              --signer-digest "$GITHUB_SHA" --source-digest "$GITHUB_SHA" --deny-self-hosted-runners
+          done
 
       # Everything placed here is gitignored, so the checkout stays clean:
       # the .node files go into the committed npm/<platform> package dirs.

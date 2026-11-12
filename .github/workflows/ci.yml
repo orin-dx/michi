@@ -33,6 +33,17 @@ jobs:
           persist-credentials: false
       - uses: moonrepo/setup-toolchain@261c62cb5b0f580c7be7c8cd0f023a2e96756095 # v0.6.4
 
+  # Callisto's own pre-flight: config health, package discovery, changeset syntax, and a dry run of the release plan.
+  callisto:
+    name: Callisto pre-flight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: orin-dx/callisto/.github/actions/callisto-validate@aebeedcdaa1dce8f0d9ad1836844ab6be68daf1f # callisto@0.20.0
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
