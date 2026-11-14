@@ -7,6 +7,10 @@ updates:
     cooldown:
       default-days: 7
     groups:
+      # One release train: napi-derive emits calls that only a matching napi has, and the manifests' `version = "3"`
+      # cannot say so, so a split bump compiles nowhere. Dependabot makes one PR per group.
+      napi:
+        patterns: ["napi", "napi-*"]
       cargo:
         patterns: ["*"]
 
