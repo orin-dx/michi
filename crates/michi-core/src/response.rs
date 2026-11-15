@@ -1,6 +1,7 @@
 use crate::hints::Hint;
 use crate::kv::KvItem;
 use crate::recovery::RecoveryHint;
+use crate::section::{Section, SectionBody};
 use crate::toon::Value;
 
 /// The serialisation format for `AgentResponse::render`.
@@ -34,6 +35,9 @@ pub struct AgentResponse {
     toon: crate::toon::ToonOptions,
     target: RenderTarget,
     single_item: Vec<KvItem>,
+    /// Sections added with [`section`](Self::section), rendered in insertion order after the `items()` / `kv_items()`
+    /// slot (when one was set). Empty for every response that predates sections, which renders as it always did.
+    sections: Vec<Section>,
     hints: Vec<Hint>,
     recovery: Vec<RecoveryHint>,
     is_error: bool,
@@ -47,6 +51,7 @@ impl AgentResponse {
             toon: crate::toon::ToonOptions::new(type_name, Vec::new(), Vec::new()).max_cell_len(DEFAULT_TRUNCATE_CELLS),
             target: RenderTarget::Unset,
             single_item: Vec::new(),
+            sections: Vec::new(),
             hints: Vec::new(),
             recovery: Vec::new(),
             is_error: false,
@@ -108,6 +113,18 @@ impl AgentResponse {
     pub fn kv_items(mut self, items: Vec<KvItem>) -> Self {
         self.single_item = items;
         self.target = RenderTarget::Kv;
+        self
+    }
+
+    /// Append a section. Sections render in insertion order after the `items()` / `kv_items()` slot, if one was set;
+    /// the caller owns ordering. A response with no section, or one section and no `items()` / `kv_items()`, renders
+    /// exactly as the sugar for that section would.
+    ///
+    /// The response's cell cap ([`truncate_cells_at`](Self::truncate_cells_at)) and truncation hint apply to every
+    /// `Toon` body. A section's `totalCount` comes from [`Section::total_count`], not from the response's.
+    #[must_use]
+    pub fn section(mut self, section: Section) -> Self {
+        self.sections.push(section);
         self
     }
 
@@ -181,15 +198,52 @@ impl AgentResponse {
     }
 
     /// The caller's hints, then michi's own truncation line when there is one: a single `help` block.
-    fn hints_with<'a>(&'a self, extra: Option<&Hint>) -> std::borrow::Cow<'a, [Hint]> {
-        match extra {
-            None => std::borrow::Cow::Borrowed(&self.hints),
-            Some(e) => {
-                let mut all = Vec::with_capacity(self.hints.len() + 1);
-                all.extend(self.hints.iter().cloned());
-                all.push(e.clone());
-                std::borrow::Cow::Owned(all)
+    fn hints_with<'a>(&'a self, extra: &[Hint]) -> std::borrow::Cow<'a, [Hint]> {
+        if extra.is_empty() {
+            std::borrow::Cow::Borrowed(&self.hints)
+        } else {
+            let mut all = Vec::with_capacity(self.hints.len() + extra.len());
+            all.extend(self.hints.iter().cloned());
+            all.extend(extra.iter().cloned());
+            std::borrow::Cow::Owned(all)
+        }
+    }
+
+    /// The options a `Toon` section renders by: the response's cell cap and truncation hint, the section's own
+    /// `totalCount` rule. Copies the rows, which the single-slot path avoids by rendering its options in place.
+    fn section_options(
+        &self,
+        name: &str,
+        fields: &[String],
+        rows: &[Vec<Value>],
+        shown_total: Option<usize>,
+    ) -> crate::toon::ToonOptions {
+        let mut opts = crate::toon::ToonOptions::new(name, fields.to_vec(), rows.to_vec());
+        opts.total_count = shown_total;
+        opts.max_cell_len = self.toon.max_cell_len;
+        opts.truncation_hint.clone_from(&self.toon.truncation_hint);
+        opts
+    }
+
+    /// One section's text, whether it is a validation-failure error block, and michi's truncation `help[]` line.
+    fn section_body(&self, s: &Section) -> (String, bool, Option<Hint>) {
+        let total = s.shown_total();
+        match &s.body {
+            SectionBody::Toon { fields, rows } => match self.section_options(&s.name, fields, rows, total).validate() {
+                Ok(doc) => {
+                    let (body, extra) = doc.render_parts();
+                    (body, false, extra.map(Hint::new))
+                }
+                Err(e) => (validation_error_body("toon_validation_failed", &e.to_string()), true, None),
+            },
+            SectionBody::Kv(items) if items.is_empty() => {
+                (total.map_or_else(String::new, |n| format!("totalCount: {n}")), false, None)
             }
+            SectionBody::Kv(items) => match crate::kv::render_kv(items, total, &[]) {
+                Ok(body) => (body, false, None),
+                Err(e) => (validation_error_body("kv_validation_failed", &e.to_string()), true, None),
+            },
+            SectionBody::Text(text) => (text.clone(), false, None),
         }
     }
 
@@ -210,7 +264,7 @@ impl AgentResponse {
 
     /// The selected body, and whether this response is an error: set by `as_error()` or by a body that failed
     /// validation. Every output surface reads its error flag from here so text, JSON and MCP never disagree.
-    fn body(&self) -> (String, bool, Option<Hint>) {
+    fn body(&self) -> (String, bool, Vec<Hint>) {
         let (body, failed, extra) = match self.target {
             RenderTarget::Toon | RenderTarget::Unset => self.toon_body(),
             RenderTarget::Kv => {
@@ -218,13 +272,37 @@ impl AgentResponse {
                 (body, failed, None)
             }
         };
-        (body, failed || self.is_error, extra)
+        let mut extras: Vec<Hint> = extra.into_iter().collect();
+        if self.sections.is_empty() {
+            return (body, failed || self.is_error, extras);
+        }
+        // With sections the legacy slot renders only when `items()` / `kv_items()` was called; an untouched response
+        // has no body of its own to put before them. Parts are joined with one LF and empty parts are skipped.
+        let slot_unused = self.target == RenderTarget::Unset;
+        let mut failed = failed && !slot_unused;
+        let mut out = if slot_unused { String::new() } else { body };
+        if slot_unused {
+            extras.clear();
+        }
+        for s in &self.sections {
+            let (part, part_failed, part_extra) = self.section_body(s);
+            failed |= part_failed;
+            extras.extend(part_extra);
+            if part.is_empty() {
+                continue;
+            }
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(&part);
+        }
+        (out, failed || self.is_error, extras)
     }
 
     /// Compose the text document: body, help block, recovery block. Each part is a TOON 4.4 document without a
     /// trailing newline and the append helpers join them with one LF, so the result is one root object whose keys
     /// are unique (the body cannot use `totalCount`, `help`, `recovery` or `truncated`). Appends to `body` in place.
-    fn finish_text(&self, mut body: String, extra: Option<&Hint>) -> String {
+    fn finish_text(&self, mut body: String, extra: &[Hint]) -> String {
         let hints = self.hints_with(extra);
         if !hints.is_empty() || !self.recovery.is_empty() {
             body.reserve(1 + hints.len() * 60 + self.recovery.len() * 80);
@@ -247,29 +325,40 @@ impl AgentResponse {
     #[must_use]
     pub fn render_toon(&self) -> String {
         let (body, _, extra) = self.toon_body();
-        self.finish_text(body, extra.as_ref())
+        self.finish_text(body, extra.as_slice())
     }
 
     /// Render via the KV path.
     #[must_use]
     pub fn render_kv(&self) -> String {
-        self.finish_text(self.kv_body().0, None)
+        self.finish_text(self.kv_body().0, &[])
     }
 
     fn render_text(&self) -> String {
         let (body, _, extra) = self.body();
-        self.finish_text(body, extra.as_ref())
+        self.finish_text(body, &extra)
     }
 
     /// Whether this response is an error: `as_error()` was called, or the TOON rows or KV items failed validation and
     /// the body is a `toon_validation_failed` or `kv_validation_failed` error block. Validates without rendering.
     #[must_use]
     pub fn is_error(&self) -> bool {
+        let slot_failed = match self.target {
+            RenderTarget::Toon | RenderTarget::Unset => self.toon.validate().is_err(),
+            RenderTarget::Kv => crate::kv::validate_keys(&self.single_item).is_err(),
+        };
+        if self.sections.is_empty() {
+            return self.is_error || slot_failed;
+        }
         self.is_error
-            || match self.target {
-                RenderTarget::Toon | RenderTarget::Unset => self.toon.validate().is_err(),
-                RenderTarget::Kv => crate::kv::validate_keys(&self.single_item).is_err(),
-            }
+            || (slot_failed && self.target != RenderTarget::Unset)
+            || self.sections.iter().any(|s| match &s.body {
+                SectionBody::Toon { fields, rows } => {
+                    self.section_options(&s.name, fields, rows, s.shown_total()).validate().is_err()
+                }
+                SectionBody::Kv(items) => crate::kv::validate_keys(items).is_err(),
+                SectionBody::Text(_) => false,
+            })
     }
 
     /// Render just the `help[N]:` block for `self.hints`.
@@ -297,9 +386,9 @@ impl AgentResponse {
     #[must_use]
     pub fn to_call_tool_result(&self) -> crate::mcp::CallToolResult {
         let (body, is_error, extra) = self.body();
-        let structured_content = self.json_from_body(&body, is_error, extra.as_ref());
+        let structured_content = self.json_from_body(&body, is_error, &extra);
         let mut content = vec![crate::mcp::ContentBlock {
-            text: self.finish_text(body, extra.as_ref()),
+            text: self.finish_text(body, &extra),
             audience: vec![crate::audience::Audience::Assistant],
         }];
         if let Some(human) = &self.human_content {
@@ -313,10 +402,10 @@ impl AgentResponse {
 
     fn render_json(&self) -> String {
         let (body, is_error, extra) = self.body();
-        self.json_from_body(&body, is_error, extra.as_ref())
+        self.json_from_body(&body, is_error, &extra)
     }
 
-    fn json_from_body(&self, body: &str, is_error: bool, extra: Option<&Hint>) -> String {
+    fn json_from_body(&self, body: &str, is_error: bool, extra: &[Hint]) -> String {
         let hints = self.hints_with(extra);
         let capacity =
             body.len() + hints.iter().map(|h| h.as_str().len() + 16).sum::<usize>() + self.recovery.len() * 64 + 64;

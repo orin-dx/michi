@@ -1,0 +1,5 @@
+---
+michi-core: minor
+---
+
+michi-core: `AgentResponse` can hold several blocks. Add them with `.section(Section)`; a `Section` is a TOON list, a key-value block or a text fragment (`Section::toon`, `Section::kv`, `Section::text`), optionally with a pre-truncation `total_count`. Sections render in the order you add them, then `help[]` and `recovery[]`. `items()` and `kv_items()` are unchanged, and a response with no sections or one renders byte for byte as before.

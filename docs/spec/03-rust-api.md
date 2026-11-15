@@ -287,6 +287,38 @@ Plain data types for the envelope in [07-wisp-and-monokl-envelope.md](07-wisp-an
 
 Rendering is crate-private for now and is wired into `AgentResponse` separately. The `budget:` block lists `tokensUsed`, `bytesUsed`, `maxTokens`, `maxBytes`, `maxItems` when set, then `truncated`; the `sections[n]{name,returned,total,truncated}:` roll-up follows only when asked for, and an unknown `total` is a `null` cell. The `provenance:` block lists entries in order, then `fingerprint`. Labels are encoded as TOON keys and values as TOON strings, so newlines and colons in caller text cannot start a line of their own.
 
+### Sections (`section`)
+
+A response can hold several blocks. `AgentResponse::section(Section)` appends one; sections render in insertion order, after the `items()` / `kv_items()` slot when one was set, and before `help[]` and `recovery[]`. The caller owns the order.
+
+```rust
+#[non_exhaustive] #[derive(Debug, Clone)]
+pub struct Section { pub name: String, pub body: SectionBody, pub returned_count: usize, pub total_count: Option<usize>, pub truncated: bool }
+
+#[non_exhaustive] #[derive(Debug, Clone)]
+pub enum SectionBody { Toon { fields: Vec<String>, rows: Vec<Vec<Value>> }, Kv(Vec<KvItem>), Text(String) }
+
+impl Section {
+    pub fn toon(name: impl Into<String>, fields: Vec<String>, rows: Vec<Vec<Value>>) -> Self;
+    pub fn kv(name: impl Into<String>, items: Vec<KvItem>) -> Self;
+    pub fn text(name: impl Into<String>, body: impl Into<String>) -> Self;
+    pub fn total_count(self, total: Option<usize>) -> Self;
+    pub fn truncated(self, truncated: bool) -> Self;
+    /// Text bodies only; ignored for Toon and Kv.
+    pub fn returned_count(self, n: usize) -> Self;
+    /// rows.len() / items.len() for Toon and Kv, the declared count for Text.
+    pub fn count(&self) -> usize;
+}
+```
+
+- `Toon` bodies render as a TOON list named `name`, with the response's `truncate_cells_at` cap and `truncation_hint` applied. `Kv` bodies render as `key: value` lines (the name is not printed). `Text` bodies pass through unchanged.
+- `totalCount: n` follows a section only when `total_count` is `Some(n)` with `n` above the section's count. This differs from the response-level `total_count()`, which always prints.
+- `returned_count` is derived for `Toon` and `Kv`, so the public field cannot disagree with the body: render never panics and never clamps in debug only. `Text` keeps the declared value.
+- An empty `Toon` section renders `name: []`; an empty `Kv` section renders nothing (or `totalCount: n` when a larger total is set).
+- A section that fails validation renders the same `error:` block as the single-slot path and makes `is_error()` true.
+- `render(Json)` keeps its four keys; `body` holds the text render. Cut-cell `help[]` lines from every section merge into the one `help` block. Each `Toon` section emits its own `truncated[N]{...}` block, so two cut sections in one response produce two such blocks.
+- One section behaves exactly as the matching sugar: `items(rows, fields)` is a `Toon` section named for the response's type, `kv_items(items)` a `Kv` one. `render_toon()` and `render_kv()` still read their named slot only, and ignore sections.
+
 ### Idempotency
 
 ```rust
