@@ -806,10 +806,26 @@ fn cell_bytes(v: &JsToonValue) -> usize {
     v.str_val.as_ref().map_or(0, String::len)
 }
 
+/// What one cell costs a response that keeps it: the stored value plus its string. Every cell keeps a
+/// [`crate::toon::Value`] whatever its type, so a table of numbers or nulls is not free.
+fn cell_cost(v: &JsToonValue) -> usize {
+    std::mem::size_of::<crate::toon::Value>().saturating_add(cell_bytes(v))
+}
+
+/// What one row costs beyond its cells: the row vector. `Array(100000).fill([])` has no cells and still keeps
+/// 100,000 of these.
+const ROW_OVERHEAD: usize = std::mem::size_of::<Vec<crate::toon::Value>>();
+
+/// What one field name costs: its string and the `String` that holds it.
+fn field_cost(f: &str) -> usize {
+    std::mem::size_of::<String>().saturating_add(f.len())
+}
+
 /// NAPI wrapper around [`crate::response::AgentResponse`].
 ///
-/// Besides each call's own limits, one object holds at most 64 MiB of caller strings across all its calls (type name,
-/// fields, cells, keys, hints, recovery hints, truncation hint and human content). A call that would pass that total
+/// Besides each call's own limits, one object holds at most 64 MiB across all its calls: caller strings (type name,
+/// fields, cells, keys, hints, recovery hints, truncation hint and human content) plus the storage rows and cells
+/// keep, so a table of empty rows, numbers or nulls is charged too. A call that would pass that total
 /// is rejected and leaves the builder unchanged; replacing `truncationHint` or `humanContent` gives the old value's
 /// bytes back first. Every `items` and `kvItems` call adds a section, so their bytes add up; each section is also
 /// charged the type name's bytes plus 64, so empty calls are not free.
@@ -928,8 +944,8 @@ impl JsAgentResponse {
         }
         let bytes = fields
             .iter()
-            .map(String::len)
-            .chain(rows.iter().flatten().map(cell_bytes))
+            .map(|f| field_cost(f.as_str()))
+            .chain(rows.iter().map(|row| row.iter().map(cell_cost).fold(ROW_OVERHEAD, usize::saturating_add)))
             .fold(self.section_cost(), usize::saturating_add);
         self.held.check_replace(0, bytes)?;
         let converted: Vec<Vec<crate::toon::Value>> = rows
@@ -975,7 +991,7 @@ impl JsAgentResponse {
         }
         let bytes = items
             .iter()
-            .map(|i| i.key.len().saturating_add(cell_bytes(&i.value)))
+            .map(|i| std::mem::size_of::<String>().saturating_add(i.key.len()).saturating_add(cell_cost(&i.value)))
             .fold(self.section_cost(), usize::saturating_add);
         self.held.check_replace(0, bytes)?;
         let converted = items
@@ -2171,6 +2187,38 @@ mod tests {
             assert!(accepted < 20_000, "{accepted} empty sections accepted (kv: {kv})");
             assert!(accepted > 10_000, "{accepted} empty sections accepted (kv: {kv}): overhead too large");
         }
+    }
+
+    #[test]
+    fn agent_response_rows_and_non_string_cells_are_charged_for_the_storage_they_keep() {
+        // `Array(100000).fill([])`: no strings at all, yet every call keeps 100,000 row vectors. Charging string
+        // bytes only let a loop of these retain gigabytes, since each call now appends a section instead of
+        // replacing the rows.
+        let empty_rows = || vec![Vec::<JsToonValue>::new(); MAX_ROWS];
+        let mut r = JsAgentResponse::new("t".to_string());
+        let mut accepted = 0usize;
+        while accepted < 1_000 {
+            if r.items(empty_rows(), vec![], None).is_err() {
+                break;
+            }
+            accepted += 1;
+        }
+        // 64 MiB / (100,000 rows * 24 bytes) is about 27 calls. Uncharged, the loop would run to its cap.
+        assert!(accepted < 100, "{accepted} calls of {MAX_ROWS} empty rows accepted");
+        assert!(accepted > 5, "{accepted} calls accepted: row charge is too large");
+
+        // A cell that is not a string also keeps a `Value`, so a number-only table is not free either.
+        let null_cell = || JsToonValue { r#type: "null".to_string(), ..JsToonValue::default() };
+        let mut r = JsAgentResponse::new("t".to_string());
+        assert!(r.items(vec![vec![null_cell()]], vec!["a".to_string()], None).is_ok(), "a null cell is a valid cell");
+        let mut accepted = 0usize;
+        while accepted < 100_000 {
+            if r.items(vec![vec![null_cell(); MAX_FIELDS]; 1_000], vec![], None).is_err() {
+                break;
+            }
+            accepted += 1;
+        }
+        assert!(accepted < 100, "{accepted} calls of 1M non-string cells accepted");
     }
 
     // --- AC-026: hint() and recovery_hint() are independently capped;
