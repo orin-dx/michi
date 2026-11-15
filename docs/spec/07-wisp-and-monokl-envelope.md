@@ -1,8 +1,8 @@
 # The Wisp / monokl Response Envelope
 
-> **Status: Proposed.** This design is not implemented. The inclusion case remains open; see the notes below.
+> **Status: Accepted ([ADR 10](../adr/0010-response-envelope-accepted.md)); partly implemented.** Sections, `BudgetSummary`, `ProvenanceBlock` and the JSON envelope (sections 1, 2, 3 and 5) are built in `michi-core`. Section 4 (the per-op index in `PartialSuccess`) lands in a separate PR. The published `outputSchema` in section 5 is not built. Where this text and the code differ, the code and [03-rust-api.md](03-rust-api.md) are current; the deviations are listed in [06-decisions.md](06-decisions.md) under "Envelope implementation deviations (gate 5)".
 
-This proposal describes how one `AgentResponse` could carry a monokl batch result or Wisp briefing: named sections, budget and provenance summaries, and index-bearing operation outcomes.
+This design describes how one `AgentResponse` carries a monokl batch result or Wisp briefing: named sections, budget and provenance summaries, and index-bearing operation outcomes.
 
 This is the michi half of a contract written down in three places. monokl's `docs/spec/08-library-session-api.md` §7 defines the batch `QueryResponse`; Wisp's `docs/02-architecture-and-contracts.md` §11–§12 defines the MCP surface that renders it; this doc defines what michi must hold for either of them to render through it. Nothing here changes how michi serializes MCP — that part is already right.
 
@@ -188,7 +188,7 @@ Rendered as a KV block after `budget:`:
 ```text
 provenance:
   analyzer: rust-analyzer@0.3.2
-  observedAt: 1756950000000
+  observedAt: "1756950000000"
   precision: exact
   fingerprint: b3f1c0d2e4a58691
 ```
