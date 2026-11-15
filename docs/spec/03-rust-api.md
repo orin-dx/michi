@@ -276,6 +276,17 @@ The TOON slot is stored as a `ToonOptions` and validated and rendered by referen
 
 `total_count` applies to both paths. On the KV path with no items the body is just `totalCount: N` (the free `render_kv` still returns `""` for empty items), so a count the caller set is never dropped; with neither items nor a count the body is empty.
 
+### Budget and provenance types (`budget`, `provenance`)
+
+Plain data types for the envelope in [07-wisp-and-monokl-envelope.md](07-wisp-and-monokl-envelope.md) §2 and §3. All four are `#[non_exhaustive]`, derive `Debug`, `Clone`, `Default` (where it makes sense), `PartialEq` and `Eq`, and have builder methods. Behind `serde` they derive `Serialize` with camelCase keys (absent `Option`s skipped); behind `schemars` they derive `JsonSchema`.
+
+- `BudgetSummary`: optional `max_tokens`, `max_bytes`, `max_items`, `tokens_used`, `bytes_used`; `truncated: bool`; `sections: Vec<SectionCost>`. Builders: `new`, `max_tokens`, `max_bytes`, `max_items`, `tokens_used`, `bytes_used`, `truncated`, `section`.
+- `SectionCost`: `name`, `returned`, optional `total`, `truncated`. Builders: `new(name, returned)`, `total`, `truncated`.
+- `ProvenanceBlock`: ordered `entries: Vec<ProvenanceEntry>` and optional `fingerprint`. Builders: `new`, `entry(label, value)`, `fingerprint`.
+- `ProvenanceEntry`: `label`, `value`; `new(label, value)`.
+
+Rendering is crate-private for now and is wired into `AgentResponse` separately. The `budget:` block lists `tokensUsed`, `bytesUsed`, `maxTokens`, `maxBytes`, `maxItems` when set, then `truncated`; the `sections[n]{name,returned,total,truncated}:` roll-up follows only when asked for, and an unknown `total` is a `null` cell. The `provenance:` block lists entries in order, then `fingerprint`. Labels are encoded as TOON keys and values as TOON strings, so newlines and colons in caller text cannot start a line of their own.
+
 ### Sections (`section`)
 
 A response can hold several blocks. `AgentResponse::section(Section)` appends one; sections render in insertion order, after the `items()` / `kv_items()` slot when one was set, and before `help[]` and `recovery[]`. The caller owns the order.
