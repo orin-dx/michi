@@ -292,7 +292,11 @@ void describe(`MCP CallToolResult conformance (SDK protocol ${LATEST_PROTOCOL_VE
     const blocks = [
       renderStatus('tool', 'a tool', [{ key: 'db', value: s('up'), health: 'ok' }], ['all good']),
       renderPipeline([{ id: 'a', name: 'Build', status: 'completed' }]),
-      renderPartialSuccess(['a'], [{ operation: 'b', reason: 'timeout' }], ['c']),
+      renderPartialSuccess(
+        [{ index: 0, operation: 'a' }],
+        [{ index: 1, operation: 'b', reason: 'timeout' }],
+        [{ index: 2, operation: 'c' }],
+      ),
       renderRecovery([{ tool: 'retry', reason: 'transient' }]),
     ]
     for (const text of blocks) check('renderer output', (r) => r.humanContent(text))

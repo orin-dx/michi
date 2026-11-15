@@ -1237,6 +1237,9 @@ pub fn empty_state_with_hints(type_name: String, hints: Vec<String>) -> napi::Re
 #[napi(object, js_name = "FailedOp")]
 #[derive(Debug, Clone)]
 pub struct JsFailedOp {
+    /// Position in the caller's op slice.
+    #[napi(ts_type = "number")]
+    pub index: JsCount,
     /// Identifier of the operation that failed.
     pub operation: String,
     /// Human-readable failure reason.
@@ -1246,18 +1249,34 @@ pub struct JsFailedOp {
     pub recovery: Option<JsRecoveryHint>,
 }
 
-/// Render a partial-success report: a quoted summary, `completed[N]: …`, the `failed[N]{operation,reason}:` table,
-/// `skipped[N]: …` (empty categories omitted), then the failed operations' recovery hints as one
-/// `recovery[N]{tool,params,reason}:` table.
+/// One completed or skipped operation for [`render_partial_success`] (JavaScript-friendly).
+#[napi(object, js_name = "OpRef")]
+#[derive(Debug, Clone)]
+pub struct JsOpRef {
+    /// Position in the caller's op slice. `results[index]` answers `ops[index]`.
+    #[napi(ts_type = "number")]
+    pub index: JsCount,
+    /// Display name for the operation.
+    pub operation: String,
+    /// A stable machine token such as `budget_exhausted`, never prose. Rendered for skipped operations only.
+    #[napi(ts_type = "string | null")]
+    pub reason: Option<String>,
+}
+
+/// Render a partial-success report: a quoted summary, then `completed[N]{index,operation}:`,
+/// `failed[N]{index,operation,reason}:` and `skipped[N]{index,operation,reason}:` tables (empty categories omitted),
+/// then the failed operations' recovery hints as one `recovery[N]{tool,params,reason}:` table. A skipped operation
+/// without a `reason` renders `null` there.
 ///
 /// # Errors
 ///
-/// Rejects more than 10,000 entries in `completed`, `failed` or `skipped`, a step id, `operation` or recovery `tool`
-/// over 4 KiB, a `reason` over 1 MiB, and more than 64 MiB of strings per call.
+/// Rejects more than 10,000 entries in `completed`, `failed` or `skipped`, an `operation`, an `OpRef` `reason` or a
+/// recovery `tool` over 4 KiB, a failed `reason` over 1 MiB, an `index` that is not an integer in `0..=2^53-1`, and
+/// more than 64 MiB of strings per call.
 #[napi(
     catch_unwind,
     js_name = "renderPartialSuccess",
-    ts_args_type = "completed: Array<string>, failed: Array<FailedOp>, skipped: Array<string>"
+    ts_args_type = "completed: Array<OpRef>, failed: Array<FailedOp>, skipped: Array<OpRef>"
 )]
 pub fn render_partial_success_js(
     completed: Unknown<'_>,
@@ -1271,9 +1290,9 @@ pub fn render_partial_success_js(
     input::check_len("completed", completed.len(), MAX_STEPS)?;
     input::check_len("failed", failed.len(), MAX_STEPS)?;
     input::check_len("skipped", skipped.len(), MAX_STEPS)?;
-    let completed = budget.strings(&completed, "completed", MAX_STEPS, "completed step", MAX_NAME_BYTES)?;
+    let completed = budget.op_refs(&completed, "completed", MAX_STEPS)?;
     let failed = budget.failed_ops(&failed, MAX_STEPS)?;
-    let skipped = budget.strings(&skipped, "skipped", MAX_STEPS, "skipped step", MAX_NAME_BYTES)?;
+    let skipped = budget.op_refs(&skipped, "skipped", MAX_STEPS)?;
     render_partial_success(completed, failed, skipped)
 }
 
@@ -1283,9 +1302,9 @@ pub fn render_partial_success_js(
 ///
 /// Rejects more than `MAX_STEPS` entries in any list.
 pub fn render_partial_success(
-    completed: Vec<String>,
+    completed: Vec<JsOpRef>,
     failed: Vec<JsFailedOp>,
-    skipped: Vec<String>,
+    skipped: Vec<JsOpRef>,
 ) -> napi::Result<String> {
     input::check_len("completed", completed.len(), MAX_STEPS)?;
     input::check_len("failed", failed.len(), MAX_STEPS)?;
@@ -1293,14 +1312,25 @@ pub fn render_partial_success(
     let failed = failed
         .into_iter()
         .map(|f| {
-            let op = crate::idempotency::FailedOp::new(f.operation, f.reason);
+            let op = crate::idempotency::FailedOp::new(f.index.get(), f.operation, f.reason);
             match f.recovery {
                 Some(h) => op.recovery(recovery_hint_from_js(h)),
                 None => op,
             }
         })
         .collect();
-    Ok(crate::idempotency::PartialSuccess::new(completed, failed, skipped).render())
+    let op_refs = |ops: Vec<JsOpRef>| -> Vec<crate::idempotency::OpRef> {
+        ops.into_iter()
+            .map(|o| {
+                let op = crate::idempotency::OpRef::new(o.index.get(), o.operation);
+                match o.reason {
+                    Some(r) => op.reason(r),
+                    None => op,
+                }
+            })
+            .collect()
+    };
+    Ok(crate::idempotency::PartialSuccess::new(op_refs(completed), failed, op_refs(skipped)).render())
 }
 
 fn recovery_hint_from_js(h: JsRecoveryHint) -> crate::recovery::RecoveryHint {

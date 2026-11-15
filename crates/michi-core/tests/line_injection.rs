@@ -5,7 +5,7 @@ use michi_core::resilience::render_already_done;
 use michi_core::toon::{render_toon, ToonOptions, Value};
 use michi_core::{
     empty_state, render_hints, render_kv, render_recovery, DomainError, ErrorCode, FailedOp, Hint, KvItem, KvValue,
-    PartialSuccess, RecoveryHint, StatusItem, StatusResponse,
+    OpRef, PartialSuccess, RecoveryHint, StatusItem, StatusResponse,
 };
 
 mod support;
@@ -100,7 +100,11 @@ fn already_done_fields() {
 
 #[test]
 fn partial_success_operations() {
-    let ps = PartialSuccess::new(vec![INJECTED.into()], vec![FailedOp::new("op", INJECTED)], vec![]);
+    let ps = PartialSuccess::new(
+        vec![OpRef::new(0, INJECTED)],
+        vec![FailedOp::new(1, INJECTED, INJECTED)],
+        vec![OpRef::new(2, INJECTED).reason(INJECTED)],
+    );
     assert_not_injected(&ps.render());
 }
 

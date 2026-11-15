@@ -113,7 +113,7 @@ Until 1.0, any public item or rendered string can change in a minor release, and
 | Item | Why it may change |
 | --- | --- |
 | `status` (`StatusResponse`, `StatusItem`, `Health`) | No consumer has used it |
-| `PartialSuccess`, `FailedOp` | [Spec 07](07-wisp-and-monokl-envelope.md) proposes widening them, which would change the rendered output |
+| `PartialSuccess`, `FailedOp`, `OpRef` | Widened with the op index per [Spec 07](07-wisp-and-monokl-envelope.md) §4; still no consumer |
 | `AlreadyDone`, `already_done()` (Node `alreadyDone`) | The check half of the idempotency design; no caller yet |
 | `Sensitive<T>` | A redaction wrapper no renderer takes yet |
 | `telemetry::NoopProvider` | A placeholder for an observability seam |

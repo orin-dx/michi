@@ -1,7 +1,7 @@
 use michi_core::empty::empty_state_with_hints;
 use michi_core::error::{DomainError, ErrorCode};
 use michi_core::hints::Hint;
-use michi_core::idempotency::{FailedOp, PartialSuccess};
+use michi_core::idempotency::{FailedOp, OpRef, PartialSuccess};
 use michi_core::kv::{render_kv, KvItem, KvValue};
 use michi_core::recovery::RecoveryHint;
 use michi_core::response::{AgentResponse, OutputFormat};
@@ -94,10 +94,10 @@ fn snapshot_call_tool_result_kv() {
 #[test]
 fn snapshot_partial_success_full() {
     let ps = PartialSuccess::new(
-        vec!["create_issue".into(), "add_label".into()],
-        vec![FailedOp::new("assign_user", "User 'ghost' not found")
+        vec![OpRef::new(0, "create_issue"), OpRef::new(1, "add_label")],
+        vec![FailedOp::new(2, "assign_user", "User 'ghost' not found")
             .recovery(RecoveryHint::new("assign_user").param("user", KvValue::Text("alice".into())))],
-        vec!["notify_team".into()],
+        vec![OpRef::new(3, "notify_team").reason("budget_exhausted")],
     );
     insta::assert_snapshot!(ps.render());
 }

@@ -279,32 +279,58 @@ The TOON slot is stored as a `ToonOptions` and validated and rendered by referen
 ### Idempotency
 
 ```rust
-// In michi_core::idempotency (also at michi_core::PartialSuccess, michi_core::FailedOp)
+// In michi_core::idempotency (also at michi_core::PartialSuccess, michi_core::FailedOp, michi_core::OpRef)
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpRef {
+    /// Position in the caller's op slice: `results[index]` answers `ops[index]`.
+    pub index: usize,
+    pub operation: String,
+    /// A caller-defined machine token (`budget_exhausted`, `deadline`). Rendered for skipped ops only.
+    pub reason: Option<String>,
+}
+
+impl OpRef {
+    pub fn new(index: usize, operation: impl Into<String>) -> Self;
+    pub fn reason(self, reason: impl Into<String>) -> Self;
+}
+
 #[non_exhaustive]
 #[derive(Default)]
 pub struct PartialSuccess {
-    pub completed: Vec<String>,
+    pub completed: Vec<OpRef>,
     pub failed: Vec<FailedOp>,
-    pub skipped: Vec<String>,
+    pub skipped: Vec<OpRef>,
 }
 
 impl PartialSuccess {
-    pub fn new(completed: Vec<String>, failed: Vec<FailedOp>, skipped: Vec<String>) -> Self;
+    pub fn new(completed: Vec<OpRef>, failed: Vec<FailedOp>, skipped: Vec<OpRef>) -> Self;
     pub fn render(&self) -> String;
     pub fn exit_code(&self) -> i32;   // 0 = no failures, 1 = any failed
 }
 
 #[non_exhaustive]
 pub struct FailedOp {
+    pub index: usize,
     pub operation: String,
     pub reason: String,
     pub recovery: Option<RecoveryHint>,
 }
 
 impl FailedOp {
-    pub fn new(operation: impl Into<String>, reason: impl Into<String>) -> Self;
+    pub fn new(index: usize, operation: impl Into<String>, reason: impl Into<String>) -> Self;
     pub fn recovery(self, hint: RecoveryHint) -> Self;
 }
+
+// PartialSuccess::render, the order and index of every row are the caller's, never renumbered:
+// partial_success: "2 completed, 1 failed, 1 skipped"
+// completed[2]{index,operation}:
+//   0,symbols
+//   1,dependents
+// failed[1]{index,operation,reason}:
+//   2,refs,"symbol not found: RetryPolicy"
+// skipped[1]{index,operation,reason}:
+//   3,search,budget_exhausted        <- `null` when the OpRef has no reason
 
 // In michi_core::resilience (also at michi_core::already_done, michi_core::AlreadyDone)
 #[non_exhaustive]

@@ -10,7 +10,8 @@ use michi_core::response::{AgentResponse, OutputFormat};
 use michi_core::toon::Value;
 use michi_core::{
     append_hints, append_recovery, empty_state_with_hints, render_hints, render_kv, render_recovery, DomainError,
-    ErrorCode, FailedOp, Health, Hint, KvItem, KvValue, PartialSuccess, RecoveryHint, StatusItem, StatusResponse,
+    ErrorCode, FailedOp, Health, Hint, KvItem, KvValue, OpRef, PartialSuccess, RecoveryHint, StatusItem,
+    StatusResponse,
 };
 
 mod support;
@@ -308,16 +309,17 @@ fn unified_error_variants_use_the_domain_error_shape() {
 #[test]
 fn partial_success_full_example() {
     let ps = PartialSuccess::new(
-        vec!["create_issue".into(), "add_label".into()],
-        vec![FailedOp::new("assign_user", "User 'ghost' not found")
+        vec![OpRef::new(0, "create_issue"), OpRef::new(1, "add_label")],
+        vec![FailedOp::new(2, "assign_user", "User 'ghost' not found")
             .recovery(RecoveryHint::new("assign_user").param("user", KvValue::Text("alice".into())))],
-        vec!["notify_team".into()],
+        vec![OpRef::new(3, "notify_team").reason("budget_exhausted")],
     );
     let out = ps.render();
     assert_eq!(
         out,
-        "partial_success: \"2 completed, 1 failed, 1 skipped\"\ncompleted[2]: create_issue,add_label\n\
-         failed[1]{operation,reason}:\n  assign_user,User 'ghost' not found\nskipped[1]: notify_team\n\
+        "partial_success: \"2 completed, 1 failed, 1 skipped\"\ncompleted[2]{index,operation}:\n  0,create_issue\n  \
+         1,add_label\nfailed[1]{index,operation,reason}:\n  2,assign_user,User 'ghost' not found\n\
+         skipped[1]{index,operation,reason}:\n  3,notify_team,budget_exhausted\n\
          recovery[1]{tool,params,reason}:\n  assign_user,\"{\\\"user\\\":\\\"alice\\\"}\",null"
     );
     conformant(&out);
@@ -332,12 +334,17 @@ fn partial_success_empty_is_just_the_summary() {
 }
 
 #[test]
-fn partial_success_operation_names_are_quoted_in_inline_arrays() {
-    let ps = PartialSuccess::new(vec!["a, b".into(), "-x".into()], vec![], vec!["".into()]);
+fn partial_success_operation_names_are_quoted_in_table_cells() {
+    let ps = PartialSuccess::new(
+        vec![OpRef::new(0, "a, b"), OpRef::new(1, "-x")],
+        vec![],
+        vec![OpRef::new(2, "").reason("")],
+    );
     let out = ps.render();
     assert_eq!(
         out,
-        "partial_success: \"2 completed, 0 failed, 1 skipped\"\ncompleted[2]: \"a, b\",\"-x\"\nskipped[1]: \"\""
+        "partial_success: \"2 completed, 0 failed, 1 skipped\"\ncompleted[2]{index,operation}:\n  0,\"a, b\"\n  1,\"-x\"\n\
+         skipped[1]{index,operation,reason}:\n  2,\"\",\"\""
     );
     conformant(&out);
 }

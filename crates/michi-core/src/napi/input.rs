@@ -9,7 +9,8 @@
 use napi::bindgen_prelude::{FromNapiValue, JsObjectValue as _, Object, Unknown};
 use napi::{JsString, JsValue as _, ValueType};
 
-use super::{JsFailedOp, JsKvItem, JsPipelineStep, JsRecoveryHint, JsStatusItem, JsToonValue};
+use super::num::JsCount;
+use super::{JsFailedOp, JsKvItem, JsOpRef, JsPipelineStep, JsRecoveryHint, JsStatusItem, JsToonValue};
 
 /// Most cells (row values) one call may pass.
 pub(crate) const MAX_CELLS: usize = 1_000_000;
@@ -282,13 +283,28 @@ impl Budget {
         let mut out = Vec::with_capacity(ops.len());
         for i in 0..ops.len {
             let obj = object(ops.get(i)?, "FailedOp")?;
+            let index = typed_prop::<JsCount>(&obj, "index")?.ok_or_else(|| missing("index"))?;
             let operation = self.string_prop(&obj, "operation", "operation", MAX_NAME_BYTES)?;
             let reason = self.string_prop(&obj, "reason", "reason", MAX_STRING_BYTES)?;
             let recovery = match prop(&obj, "recovery")? {
                 Some(value) if !is_nullish(value)? => Some(self.recovery_hint(value)?),
                 _ => None,
             };
-            out.push(JsFailedOp { operation, reason, recovery });
+            out.push(JsFailedOp { index, operation, reason, recovery });
+        }
+        Ok(out)
+    }
+
+    /// `JsOpRef[]`, at most `max` items. `reason` may be absent, `undefined` or `null`.
+    pub(crate) fn op_refs(&mut self, ops: &List<'_>, what: &str, max: usize) -> napi::Result<Vec<JsOpRef>> {
+        check_len(what, ops.len(), max)?;
+        let mut out = Vec::with_capacity(ops.len());
+        for i in 0..ops.len {
+            let obj = object(ops.get(i)?, "OpRef")?;
+            let index = typed_prop::<JsCount>(&obj, "index")?.ok_or_else(|| missing("index"))?;
+            let operation = self.string_prop(&obj, "operation", "operation", MAX_NAME_BYTES)?;
+            let reason = self.nullable_string_prop(&obj, "reason", MAX_NAME_BYTES)?;
+            out.push(JsOpRef { index, operation, reason });
         }
         Ok(out)
     }

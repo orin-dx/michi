@@ -155,14 +155,17 @@ summary: item 42 was deleted in run abc
 help[1]: Call get_item with id=42 to confirm
 ```
 
-**Partial success (`PartialSuccess::render`)** — the summary is a quoted string, `completed`/`skipped` inline arrays (§9.1), `failed` a table; empty categories are omitted:
+**Partial success (`PartialSuccess::render`)** — the summary is a quoted string, and `completed`, `failed` and `skipped` are tables (§9.3) whose first column is the op's `index` in the caller's batch; empty categories are omitted. A skipped op's `reason` column is `null` when it has none:
 
 ```
 partial_success: "2 completed, 1 failed, 1 skipped"
-completed[2]: create_issue,add_label
-failed[1]{operation,reason}:
-  assign_user,User 'ghost' not found
-skipped[1]: notify_team
+completed[2]{index,operation}:
+  0,create_issue
+  1,add_label
+failed[1]{index,operation,reason}:
+  2,assign_user,User 'ghost' not found
+skipped[1]{index,operation,reason}:
+  3,notify_team,budget_exhausted
 recovery[1]{tool,params,reason}:
   assign_user,"{\"user\":\"alice\"}",null
 ```
