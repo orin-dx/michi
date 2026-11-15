@@ -1,0 +1,15 @@
+{
+  "tool_use_id": "toolu_01ToY5FbmpSfXEAFaREKc1Uq",
+  "agent_id": "a55c847be94a2cfb7",
+  "subagent_type": "general-purpose",
+  "task_description": "Envelope slice B: budget, provenance",
+  "token_usage": {
+    "input_tokens": 58,
+    "cache_creation_tokens": 79559,
+    "cache_read_tokens": 2447113,
+    "output_tokens": 27902,
+    "api_call_count": 29
+  },
+  "started_at": "2026-11-14T18:04:39.736205-08:00",
+  "completed_at": "2026-11-14T18:10:55.965468-08:00"
+}

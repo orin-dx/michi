@@ -1,0 +1,15 @@
+{
+  "tool_use_id": "toolu_01BdtcVwG1vtKtGCrZuDaxfS",
+  "agent_id": "a9e7b671bc0749e4b",
+  "subagent_type": "general-purpose",
+  "task_description": "Envelope slice A: sections",
+  "token_usage": {
+    "input_tokens": 60,
+    "cache_creation_tokens": 92517,
+    "cache_read_tokens": 2685856,
+    "output_tokens": 32119,
+    "api_call_count": 30
+  },
+  "started_at": "2026-11-14T18:04:39.9175-08:00",
+  "completed_at": "2026-11-14T18:10:58.928985-08:00"
+}

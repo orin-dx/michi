@@ -1,0 +1,108 @@
+{
+  "cli_version": "0.13.5-nightly.202611131617.95eabf579",
+  "checkpoint_id": "01M7EFKE3MSXNCV6032K1QJ8E6",
+  "session_id": "56a8fbf1-b9bc-443b-9356-06ab035dbfa6",
+  "strategy": "manual-commit",
+  "created_at": "2026-11-15T02:12:17.762202Z",
+  "branch": "feat/envelope-budget-provenance",
+  "checkpoints_count": 23,
+  "save_step_count": 3,
+  "files_touched": [],
+  "agent": "Claude Code",
+  "model": "claude-sonnet-5-5",
+  "turn_id": "02a41d2e074d",
+  "checkpoint_transcript_start": 331,
+  "transcript_lines_at_start": 331,
+  "compact_transcript_start": 30,
+  "token_usage": {
+    "input_tokens": 256,
+    "cache_creation_tokens": 613967,
+    "cache_read_tokens": 26236115,
+    "output_tokens": 88540,
+    "api_call_count": 127,
+    "subagent_tokens": {
+      "input_tokens": 202,
+      "cache_creation_tokens": 330290,
+      "cache_read_tokens": 9287830,
+      "output_tokens": 93514,
+      "api_call_count": 101
+    }
+  },
+  "redaction": {
+    "replacements": 4,
+    "layers": {
+      "betterleaks": 2,
+      "connection_string": 0,
+      "credential_key": 0,
+      "credential_value": 0,
+      "credentialed_uri": 4,
+      "entropy": 0,
+      "key_context": 0,
+      "provider_token": 0,
+      "shell_stdin": 0
+    }
+  },
+  "session_metrics": {
+    "turn_count": 28
+  },
+  "summary": {
+    "intent": "Bump Callisto to its latest release in the michi repo, then diagnose and fix the CI failures on Dependabot PRs at their root cause, and decide and start the next most valuable michi library work (the multi-section envelope for waiting consumers).",
+    "outcome": "Merged-ready draft PRs: #104 (Callisto 0.20.0 with attestation/verification and CI pre-flight), #109 (replace six brittle trybuild serde snapshots with compile-time not-impl assertions and add a napi Dependabot group). Envelope work is underway as parallel agent PRs #110 and #111 plus an integrator, with the PartialSuccess slice still running. TOON benchmarking was deprioritised and pipeline freeze proposed.",
+    "learnings": {
+      "repo": [
+        "Callisto is pinned in .github/workflows/callisto-release.yml by commit SHA plus a version comment; both the `uses:` SHA and `version:` input must be updated together.",
+        "CI uses floating `stable` toolchain (rust-toolchain.toml) and only fuzz has a schedule, so a new rustc breaks main silently until an unrelated PR (here Dependabot's) runs and appears to be at fault.",
+        "trybuild .stderr snapshots in crates/michi-core/tests/ui-fail compare rustc's full rendering; the six *_no_serde/*_no_deserialize cases quoted serde_json source and broke with rustc 1.100.0. Error-code-based cases (E0004, E0639) are stable.",
+        "napi, napi-derive and napi-derive-backend are a lockstep family; manifests say `version = \"3\"` so Cargo cannot catch incompatible pairs (napi 3.16.1 + napi-derive 3.7.0 fails; 3.16.2 + 3.7.1 compiles).",
+        "Licences: michi-core and michi-pipeline are FSL-1.1-MIT; only michi-graph is MIT. Callisto's callisto-model is MIT and must never depend on FSL crates, so it only uses michi-graph.",
+        "Callisto does not use michi-pipeline (release execution is synchronous over a DAG); it hand-rolls redaction/truncation/retry-after which overlap michi-core but differ in behaviour. Token-shape redaction is the only possible michi gap, with one consumer.",
+        "Pre-commit hook runs fmt-check via moon and needs writes to .git/config, so commits must run outside the sandbox; `just semver` does not exist.",
+        "PRINCIPLES.md / ADR 9 gate (two independent consumers before a primitive) was recognised as inapplicable to not-yet-existing primitives; the envelope in docs/spec/07 is demanded by Monokl §11.1 and Wisp contracts.",
+        "TOON renders numeric-looking strings quoted, so spec 07's unquoted observedAt example is wrong; duplicate `truncated` keys occur with two cut sections."
+      ],
+      "code": [
+        {
+          "path": "crates/michi-core/tests/no_serde_impls.rs",
+          "line": 26,
+          "end_line": 30,
+          "finding": "Ambiguity-trick not-impl assertions for Health: Serialize and StatusItem: Deserialize; adding an impl makes the file fail to compile with E0283, verified by mutants."
+        },
+        {
+          "path": ".github/dependabot.yml",
+          "finding": "Added a `napi` group (napi, napi-*) so lockstep crates are proposed together."
+        },
+        {
+          "path": ".github/workflows/callisto-release.yml",
+          "finding": "Added setup-callisto verification: require, build-provenance attestation of each .node file, and gh attestation verify in the execute job before using registry credentials."
+        }
+      ],
+      "workflow": [
+        "Local checkouts can be far behind origin (Callisto was 227 commits behind); use git ls-remote/shallow clone of the tag rather than trusting local state or stale notes.",
+        "A red check on every unrelated PR points to main/toolchain, not the PR diffs; compare toolchain versions in logs between last green and failing runs.",
+        "Sandbox blocks cargo registry cache and .git/config writes, pnpm network, compound shell with heredocs/unquoted globs; split commands into plain steps and rerun outside the sandbox when needed.",
+        "Verify claims against repos rather than inferring (user pushed back on assumptions about Callisto's use of pipeline and the waiting consumers); distinguish verified from inferred in reports.",
+        "Parallel Sonnet subagents with a shared brief file and per-branch worktrees, with stacked PRs merged-updated without force-push, was used for the envelope work."
+      ]
+    },
+    "friction": [
+      "Dependabot PRs appeared broken by their bumps but the cause was an unrelated rustc update; Entire Gates failure reason remained opaque (external link).",
+      "Sandbox restrictions repeatedly forced retries: cargo registry cache writes, pre-commit hook git config writes, pnpm unable to reach npm so fmt-md-check could not run, shell writes to the memory index.",
+      "Agy quota exhaustion (~168h reset) invalidated the Gemini TOON pilot: 367 of 470 records errored, and the harness treats errored records as done.",
+      "The assistant repeatedly ranked work on unverified assumptions (pipeline consumers, which consumer is waiting, applying the two-consumer gate to nonexistent primitives) and was corrected by the user several times.",
+      "Initial grep on Callisto with an unquoted glob returned empty results that looked like a negative finding.",
+      "Branch deletion was classifier-denied until the user explicitly authorised cleanup."
+    ],
+    "open_items": [
+      "Watch the first real release to confirm the new attest/verify steps from #104 work; no changeset is pending so no version PR exists.",
+      "Merge #109 follow-ups: rebase Dependabot PRs; recreate #106 so napi 3.16.2 / napi-derive 3.7.1 are used (reported as merged by the user afterwards).",
+      "Decide the fate of stash@{1} (docs/research/cross-project-adoption-2026-10-24.md): commit or drop.",
+      "Record pipeline freeze decision in docs/spec/06-decisions.md and mark michi-pipeline unstable per ADR 9; verify existing marking.",
+      "Fix stale docs: spec README lists 10-pipeline-effects as proposed though implemented in 0.5, MCP version claim in 04-mcp-and-napi.md, manifest example in 01-overview, and observedAt example in spec 07.",
+      "Envelope work in flight: PartialSuccess agent (feat/partial-success-op-index) still running; integrator (feat/envelope-wiring) to wire budget/provenance, JSON keys, schema, ADR superseding ADR 9 line, fix duplicate `truncated` keys; remove #[allow(dead_code)] on budget/provenance functions; then one Opus review for byte-compat, hostile strings and panics. Typed structured_content/outputSchema slice not yet started.",
+      "Consider build-checking Monokl and Caliper main against michi-core 0.9 and recording mismatches.",
+      "Possible future items: token-shape redaction (needs second consumer), a research note on TokenEconomizer lessons (task-level cost/turns evaluation of michi hints), licence choice (FSL) review by the user.",
+      "Scheduled CI run on main was explicitly skipped by the user; toolchain-drift detection remains unaddressed.",
+      "TOON pilot work (Gemini re-run, GPT-OSS 120B model ID) intentionally stopped per user preference saved to memory."
+    ]
+  }
+}
