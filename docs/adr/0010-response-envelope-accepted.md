@@ -12,7 +12,7 @@ Supersedes the "The Wisp and monokl envelope ... stays a proposal" bullet in [AD
 
 The owner approved the design for implementation on 2026-11-15, knowing gate 3 is not met in the strict sense. The envelope is built in `michi-core`: `Section`, `AgentResponse::budget`, `AgentResponse::provenance`, and the JSON `sections`, `budget` and `provenance` keys. It adds no dependency and no feature flag.
 
-Because it ships ahead of independent use, it carries the ADR 9 rule for design with no caller: it is marked unstable in the docs, and 1.0 promises only what consumers have used by then. The per-op index in `PartialSuccess` (spec 07 section 4) is a separate, breaking change and lands on its own.
+Because it ships ahead of independent use, it carries the ADR 9 rule for design with no caller: it is marked unstable in the docs (a "Stability" note in spec 07 and in the rustdoc of `Section`, `BudgetSummary` and `ProvenanceBlock`), and 1.0 promises only what consumers have used by then. The per-op index in `PartialSuccess` (spec 07 section 4) is a separate, breaking change and lands on its own.
 
 ## Alternatives
 

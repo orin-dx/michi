@@ -4,11 +4,22 @@ use crate::kv::KvItem;
 use crate::toon::Value;
 
 /// One named block within a response. A response may hold any number; they render in insertion order.
+///
+/// A section is a root key of the rendered TOON document: a list or text section under its `name`, a KV section as its
+/// item keys. Root keys must be unique, so two sections cannot share a name, and no name or KV key may be one of the
+/// keys michi writes itself (`budget`, `sections`, `provenance`, `truncated`, `totalCount`, `help`, `recovery`). A
+/// response that breaks this renders the `toon_validation_failed` error naming the key, never invalid TOON.
+///
+/// # Stability
+///
+/// The multi-section envelope (this type, [`crate::BudgetSummary`], [`crate::ProvenanceBlock`]) is unstable. It
+/// shipped ahead of a second independent consumer (ADR 10), so its shape may change before 1.0, and 1.0 promises only
+/// what consumers have used by then.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct Section {
-    /// The section's type name: the identifier at the head of its TOON line. KV and text bodies carry no heading, so
-    /// the name only labels them for the caller.
+    /// The section's type name: the identifier at the head of its TOON line, and the key of a text body. A KV body
+    /// prints no heading, so there the name only labels it for the caller (and for `sections` in JSON).
     pub name: String,
     /// The section's contents.
     pub body: SectionBody,
@@ -35,8 +46,9 @@ pub enum SectionBody {
     },
     /// A single receipt or a small set of labelled scalars.
     Kv(Vec<KvItem>),
-    /// Prose or an already-rendered fragment, passed through unchanged. It is not escaped or validated: the caller
-    /// owns its shape.
+    /// One string value, rendered as `name: <value>` and escaped like any other TOON string (quoted when it has a
+    /// newline, a colon, or looks like a number). Prose cannot start a line of its own, so it cannot forge a `help[]`
+    /// line. It is not a way to insert a fragment of TOON.
     Text(String),
 }
 
@@ -53,8 +65,9 @@ impl Section {
         Self::with(name, items.len(), SectionBody::Kv(items))
     }
 
-    /// A text section, passed through unchanged. `returned_count` starts at 1 for non-empty text and 0 for empty;
-    /// set it with [`returned_count`](Self::returned_count).
+    /// A text section: a single string value, rendered as `name: <escaped body>`. `returned_count` starts at 1 for
+    /// non-empty text and 0 for empty; set it with [`returned_count`](Self::returned_count). A `totalCount` renders
+    /// as for the other bodies, when [`total_count`](Self::total_count) exceeds that count.
     #[must_use]
     pub fn text(name: impl Into<String>, body: impl Into<String>) -> Self {
         let body = body.into();

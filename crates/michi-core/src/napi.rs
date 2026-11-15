@@ -763,6 +763,9 @@ pub struct JsCallToolResult {
     pub structured_content: serde_json::Value,
 }
 
+/// Bytes charged to a response's total for each section beyond its strings: roughly the size of the `Section` itself.
+const SECTION_OVERHEAD: usize = 64;
+
 /// String bytes one [`JsAgentResponse`] holds, per slot. A slot that a call replaces (`truncationHint`,
 /// `humanContent`) gives its old bytes back; `items`, `kvItems`, `hint` and `recoveryHint` each add a block, so they
 /// only add.
@@ -808,7 +811,12 @@ fn cell_bytes(v: &JsToonValue) -> usize {
 /// Besides each call's own limits, one object holds at most 64 MiB of caller strings across all its calls (type name,
 /// fields, cells, keys, hints, recovery hints, truncation hint and human content). A call that would pass that total
 /// is rejected and leaves the builder unchanged; replacing `truncationHint` or `humanContent` gives the old value's
-/// bytes back first. Every `items` and `kvItems` call adds a section, so their bytes add up.
+/// bytes back first. Every `items` and `kvItems` call adds a section, so their bytes add up; each section is also
+/// charged the type name's bytes plus 64, so empty calls are not free.
+///
+/// Both methods name their section for the type name, and a section is a root key in the rendered document. Two
+/// `items` calls, or a `kvItems` key equal to the type name, therefore render the `toon_validation_failed` error
+/// (`isError` true) instead of invalid TOON. The JS surface renders one list per response.
 #[napi(js_name = "AgentResponse")]
 #[derive(Debug)]
 pub struct JsAgentResponse {
@@ -845,11 +853,19 @@ impl JsAgentResponse {
         Ok(Self::new(type_name))
     }
 
+    /// What every section costs before its own strings: a copy of the type name, which names it, plus a fixed
+    /// allowance for the section itself. Without it an empty `items` or `kvItems` call would be free, and a loop of
+    /// them would grow the response past the cap.
+    fn section_cost(&self) -> usize {
+        self.name.len().saturating_add(SECTION_OVERHEAD)
+    }
+
     fn take(&mut self) -> napi::Result<crate::response::AgentResponse> {
         self.inner.take().ok_or_else(|| napi::Error::from_reason("AgentResponse already consumed"))
     }
 
-    /// Append a TOON list section named for the response's type. Every call adds a section, rendered in call order.
+    /// Append a TOON list section named for the response's type. Every call adds a section, rendered in call order;
+    /// a second `items` call repeats the root key and renders the validation error (see the type docs).
     /// `totalCount`, when given, is how many rows existed before any cut; `totalCount: n` renders only when `n` is
     /// larger than the rows passed.
     ///
@@ -914,7 +930,7 @@ impl JsAgentResponse {
             .iter()
             .map(String::len)
             .chain(rows.iter().flatten().map(cell_bytes))
-            .fold(0usize, usize::saturating_add);
+            .fold(self.section_cost(), usize::saturating_add);
         self.held.check_replace(0, bytes)?;
         let converted: Vec<Vec<crate::toon::Value>> = rows
             .into_iter()
@@ -957,8 +973,10 @@ impl JsAgentResponse {
                 items.len()
             )));
         }
-        let bytes =
-            items.iter().map(|i| i.key.len().saturating_add(cell_bytes(&i.value))).fold(0usize, usize::saturating_add);
+        let bytes = items
+            .iter()
+            .map(|i| i.key.len().saturating_add(cell_bytes(&i.value)))
+            .fold(self.section_cost(), usize::saturating_add);
         self.held.check_replace(0, bytes)?;
         let converted = items
             .into_iter()
@@ -2134,6 +2152,25 @@ mod tests {
         // A replaced slot still gives its old bytes back.
         r.truncation_hint("a".repeat(2000)).expect("fits");
         r.truncation_hint("b".to_string()).expect("replacing returns the old bytes to the budget");
+    }
+
+    #[test]
+    fn agent_response_empty_sections_are_charged_for_their_name_and_overhead() {
+        // Each empty `items` / `kvItems` call still stores a section with a copy of the type name, so it costs bytes.
+        for kv in [false, true] {
+            let mut r = JsAgentResponse::new("t".repeat(MAX_NAME_BYTES));
+            let mut accepted = 0usize;
+            while accepted <= 1_000_000 {
+                let added = if kv { r.kv_items(vec![], None) } else { r.items(vec![], vec![], None) };
+                if added.is_err() {
+                    break;
+                }
+                accepted += 1;
+            }
+            // 64 MiB / (4 KiB name + overhead) is about 16k sections; uncharged, the loop would run past a million.
+            assert!(accepted < 20_000, "{accepted} empty sections accepted (kv: {kv})");
+            assert!(accepted > 10_000, "{accepted} empty sections accepted (kv: {kv}): overhead too large");
+        }
     }
 
     // --- AC-026: hint() and recovery_hint() are independently capped;

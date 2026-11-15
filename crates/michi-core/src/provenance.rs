@@ -5,6 +5,14 @@
 /// compares.
 ///
 /// `#[non_exhaustive]`: start from [`ProvenanceBlock::new`] or `Default` and use the builder methods.
+///
+/// Labels are keys of the rendered block, so they must be distinct, and none may be `fingerprint` when a fingerprint is
+/// set. A response with a repeated key renders the `toon_validation_failed` error naming it, never invalid TOON.
+///
+/// # Stability
+///
+/// Part of the multi-section envelope, which is unstable until a second independent consumer has used it (ADR 10).
+/// Its shape may change before 1.0.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]

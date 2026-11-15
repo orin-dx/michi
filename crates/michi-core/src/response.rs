@@ -64,9 +64,14 @@ impl AgentResponse {
     }
 
     /// Append a TOON list section named for the response's type: shorthand for
-    /// `section(Section::toon(name, fields, rows))`. Every call adds a section, so calling it twice, or mixing it with
-    /// [`kv_items`](Self::kv_items), renders every body in call order. To report a total, build the section yourself
-    /// and set [`Section::total_count`].
+    /// `section(Section::toon(name, fields, rows))`. Every call adds a section, rendered in call order.
+    ///
+    /// Sections are root keys, and this shorthand gives each the same name, so for one list per response only: a
+    /// second `items()` call repeats the key `name`, and the response renders the `toon_validation_failed` error
+    /// naming it (and `is_error()` is true) instead of invalid TOON. Mixing with [`kv_items`](Self::kv_items) works
+    /// while no KV key equals the type name. For several lists, give each its own name with
+    /// `.section(Section::toon(distinct_name, ..))`. To report a total, build the section yourself and set
+    /// [`Section::total_count`].
     #[must_use]
     pub fn items(self, rows: Vec<Vec<Value>>, fields: &[&str]) -> Self {
         let name = self.name.clone();
@@ -110,7 +115,9 @@ impl AgentResponse {
     }
 
     /// Append a KV section named for the response's type: shorthand for `section(Section::kv(name, items))`. The name
-    /// is not printed for a KV body. Every call adds a section; see [`items`](Self::items).
+    /// is not printed for a KV body. Every call adds a section, but the item keys are root keys: two calls sharing a
+    /// key render the `toon_validation_failed` error naming it. See [`items`](Self::items); for several KV sections
+    /// use `.section(Section::kv(name, ..))` and keep the keys distinct.
     #[must_use]
     pub fn kv_items(self, items: Vec<KvItem>) -> Self {
         let name = self.name.clone();
@@ -121,7 +128,8 @@ impl AgentResponse {
     /// ordering.
     ///
     /// The response's cell cap ([`truncate_cells_at`](Self::truncate_cells_at)) and truncation hint apply to every
-    /// `Toon` body. A section's `totalCount` comes from [`Section::total_count`].
+    /// `Toon` body. A section's `totalCount` comes from [`Section::total_count`]. Each section is a root key of the
+    /// document, so names must be distinct (see [`Section`]).
     #[must_use]
     pub fn section(mut self, section: Section) -> Self {
         self.sections.push(section);
@@ -175,6 +183,9 @@ impl AgentResponse {
     ///
     /// The limit counts characters before TOON escaping and quoting, so a cell that needs quotes or escapes is
     /// written longer than `limit` (see [`crate::toon::ToonOptions::max_cell_len`]). The KV path is never truncated.
+    ///
+    /// The cap shapes the text render only. The JSON `sections` (and so `structuredContent`) carry every cell in full:
+    /// they are the canonical data, and the text is the token-saving view of it.
     #[must_use]
     pub fn truncate_cells_at(mut self, limit: usize) -> Self {
         self.max_cell_len = limit;
@@ -255,10 +266,64 @@ impl AgentResponse {
                 Err(e) => (Part::failed(&s.name, "toon_validation_failed", &e.to_string()), true, None),
             },
             SectionBody::Kv(items) => kv_part(&s.name, items, total),
+            // One string value under the section's name, escaped like any other value: prose cannot start a line
+            // of its own, so it cannot forge a `help[]` line or break the document.
             SectionBody::Text(text) => {
-                (Part { name: &s.name, text: text.clone(), cuts: Vec::new(), total: None }, false, None)
+                let line = format!("{}: {}", crate::toon::escape_key(&s.name), crate::toon::escape_value(text));
+                (Part { name: &s.name, text: line, cuts: Vec::new(), total }, false, None)
             }
         }
+    }
+
+    /// Whether each block fails validation, without rendering it.
+    fn failed_flags(&self) -> Vec<bool> {
+        self.blocks()
+            .iter()
+            .map(|s| match &s.body {
+                SectionBody::Toon { fields, rows } => {
+                    self.section_options(&s.name, fields, rows, s.shown_total()).validate().is_err()
+                }
+                SectionBody::Kv(items) => crate::kv::validate_keys(items).is_err(),
+                SectionBody::Text(_) => false,
+            })
+            .collect()
+    }
+
+    /// The first root key two blocks of the body would both write, or `None`. Sections render as root keys (a TOON
+    /// list or text section under its name, a KV section as its item keys), beside the keys michi writes itself:
+    /// `budget`, its `sections` table, `provenance`, `truncated`, `totalCount`, `help`, `recovery`, and, for a block
+    /// that failed validation, `error` and `message`. `failed[i]` says whether block `i` failed. The reserved names
+    /// are claimed whether or not that block is present, so validity never depends on the caller's data. Provenance
+    /// labels sit one level down and collide only with each other and the `fingerprint` line.
+    fn root_collision(&self, failed: &[bool]) -> Option<String> {
+        const RESERVED: [&str; 7] = ["budget", "sections", "provenance", "truncated", "totalCount", "help", "recovery"];
+        let blocks = self.blocks();
+        let mut seen: std::collections::HashSet<&str> = RESERVED.into_iter().collect();
+        for (s, failed) in blocks.iter().zip(failed) {
+            if *failed {
+                for key in ["error", "message"] {
+                    if !seen.insert(key) {
+                        return Some(key.to_string());
+                    }
+                }
+                continue;
+            }
+            let keys: Vec<&str> = match &s.body {
+                SectionBody::Toon { .. } | SectionBody::Text(_) => vec![s.name.as_str()],
+                SectionBody::Kv(items) => items.iter().map(|i| i.key.as_str()).collect(),
+            };
+            for key in keys {
+                if !seen.insert(key) {
+                    return Some(key.to_string());
+                }
+            }
+        }
+        let p = self.provenance.as_ref()?;
+        let mut labels: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        if p.fingerprint.is_some() {
+            labels.insert("fingerprint");
+        }
+        p.entries.iter().find(|e| !labels.insert(e.label.as_str())).map(|e| e.label.clone())
     }
 
     /// The body: sections, `budget:`, `provenance:`.
@@ -273,10 +338,12 @@ impl AgentResponse {
         let blocks = self.blocks();
         let mut parts: Vec<Part<'_>> = Vec::with_capacity(blocks.len());
         let mut failed = false;
+        let mut flags: Vec<bool> = Vec::with_capacity(blocks.len());
         let mut extras: Vec<Hint> = Vec::new();
         for s in blocks.iter() {
             let (part, part_failed, extra) = self.section_part(s);
             failed |= part_failed;
+            flags.push(part_failed);
             // One line per cut response is enough: every section's line says the same thing.
             if let Some(h) = extra {
                 if !extras.contains(&h) {
@@ -284,6 +351,11 @@ impl AgentResponse {
                 }
             }
             parts.push(part);
+        }
+        // Two blocks writing one root key would be invalid TOON. Like any other bad input the whole body becomes the
+        // visible validation error, so the caller sees it instead of a document a decoder rejects.
+        if let Some(key) = self.root_collision(&flags) {
+            return (collision_body(&key), true, Vec::new());
         }
         let cutters = parts.iter().filter(|p| !p.cuts.is_empty()).count();
         let totals = parts.iter().filter(|p| p.total.is_some()).count();
@@ -344,14 +416,11 @@ impl AgentResponse {
     /// without rendering.
     #[must_use]
     pub fn is_error(&self) -> bool {
-        self.is_error
-            || self.blocks().iter().any(|s| match &s.body {
-                SectionBody::Toon { fields, rows } => {
-                    self.section_options(&s.name, fields, rows, s.shown_total()).validate().is_err()
-                }
-                SectionBody::Kv(items) => crate::kv::validate_keys(items).is_err(),
-                SectionBody::Text(_) => false,
-            })
+        if self.is_error {
+            return true;
+        }
+        let failed = self.failed_flags();
+        failed.contains(&true) || self.root_collision(&failed).is_some()
     }
 
     /// Render just the `help[N]:` block for `self.hints`.
@@ -461,6 +530,14 @@ fn validation_error_body(code: &str, message: &str) -> String {
     out.push_str("\nmessage: ");
     out.push_str(&message);
     out
+}
+
+/// The body for two blocks that would write the same root key.
+fn collision_body(key: &str) -> String {
+    validation_error_body(
+        "toon_validation_failed",
+        &format!("duplicate root key '{key}': give every section and KV key a distinct name"),
+    )
 }
 
 /// One block of an envelope body before the root-level `truncated` and `totalCount` keys are placed.

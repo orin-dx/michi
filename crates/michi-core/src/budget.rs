@@ -11,6 +11,11 @@ use std::fmt::Write as _;
 /// values reach JSON, where a platform-dependent width means nothing.
 ///
 /// `#[non_exhaustive]`: start from [`BudgetSummary::new`] or `Default` and use the builder methods.
+///
+/// # Stability
+///
+/// Part of the multi-section envelope, which is unstable until a second independent consumer has used it (ADR 10).
+/// Its shape may change before 1.0.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]

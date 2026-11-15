@@ -15,10 +15,10 @@ Historical: this section describes `AgentResponse` before sections shipped. It h
 | `toon: ToonOptions` | 34 | One TOON slot: one `type_name` for the whole response, one `fields`/`rows` table |
 | `single_item: Vec<KvItem>` | 36 | One KV slot |
 | `toon.total_count: Option<usize>` | 34 | One count, for whichever slot renders |
-| `enum RenderTarget { Unset, Toon, Kv }` | 18–22 | The two slots are mutually exclusive |
+| `enum RenderTarget { Unset, Toon, Kv }` (since removed) | 18–22 | The two slots were mutually exclusive |
 | `toon.max_cell_len: usize` | 34 | Per-cell clamp, TOON path only, set by `truncate_cells_at()` (`DEFAULT_TRUNCATE_CELLS = 200`, line 25) |
 
-`items()` (line 59) set `target = RenderTarget::Toon`; `kv_items()` (line 108) set `Kv`; `body()` (line 194) dispatched on `target`, so `render()` read whichever setter ran last. Calling both silently dropped one. A ten-operation batch was not expressible: nine sections disappeared with no error and no signal that they existed. Sections fixed that, and the one-section-model change removed the slots, `RenderTarget`, `render_toon()` and `render_kv()` altogether: `items()` and `kv_items()` append sections now.
+Before this change, `items()` (line 59) set `target = RenderTarget::Toon`; `kv_items()` (line 108) set `Kv`; `body()` (line 194) dispatched on `target`, so `render()` read whichever setter ran last. Calling both silently dropped one. A ten-operation batch was not expressible: nine sections disappeared with no error and no signal that they existed. Sections fixed that, and the one-section-model change removed the slots, `RenderTarget`, `render_toon()` and `render_kv()` altogether: `items()` and `kv_items()` append sections now.
 
 The truncation model has the same shape problem one level down. `truncate_cells_at` clamps a cell. `michi_core::truncate::Truncated { content, original_chars, removed }` describes a string. `michi_core::truncation::TruncationOutcome` describes one list, and `AgentResponse::truncation()` (now `truncated_section()`) turned it into the response's `totalCount` and one `help[]` line. None describes a response of several parts. The only envelope-level "there is more" signal is `total_count: Option<usize>` plus free-text hints — a bare integer with no per-section breakdown, no relation to a budget, and no way to say why anything was dropped. monokl's `BudgetReport` would have to be flattened into free-text `hint()` calls to reach the agent at all.
 
@@ -52,7 +52,7 @@ pub enum SectionBody {
     Toon { fields: Vec<String>, rows: Vec<Vec<Value>> },
     /// A single receipt or a small set of labelled scalars.
     Kv(Vec<KvItem>),
-    /// Prose or an already-rendered fragment michi passes through unchanged.
+    /// One string value, rendered as `name: <escaped value>`: escaped like any TOON string, never raw.
     Text(String),
 }
 
@@ -73,11 +73,15 @@ impl AgentResponse {
 }
 ```
 
-`items()` and `kv_items()` stay, as one-section sugar over the same storage: `items(rows, fields)` becomes `section(Section::toon(self.toon.type_name.clone(), fields, rows))`, `kv_items(items)` becomes `section(Section::kv(self.toon.type_name.clone(), items))`. `RenderTarget` survives as the record of which sugar was used, because `render_toon()` and `render_kv()` are documented to read their named slot unconditionally regardless of the last setter (AC-009) and that behavior has to hold.
+`items()` and `kv_items()` stay, as one-section sugar over the same storage: `items(rows, fields)` is `section(Section::toon(type_name, fields, rows))`, `kv_items(items)` is `section(Section::kv(type_name, items))`. `RenderTarget`, `render_toon()` and `render_kv()` are gone (see 06-decisions, "One section model").
+
+**Sections are root keys.** A section renders as a root key of the TOON document (a list or text section under its name, a KV section as its item keys), so names must be distinct from each other and from the keys michi writes (`budget`, `sections`, `provenance`, `truncated`, `totalCount`, `help`, `recovery`; `error` and `message` when a section fails validation). The sugar names every section for the response, so it serves one list per response; several lists use `section(Section::toon(distinct_name, ..))`. A collision, or two equal provenance labels, never reaches the output as invalid TOON: the response renders the `toon_validation_failed` error naming the key, with `isError` true on every surface.
+
+**Stability.** The envelope (`Section`, `BudgetSummary`, `ProvenanceBlock`) is unstable until a second independent consumer has used it (ADR 10). Its shape may change before 1.0, and the rustdoc on the three types says so.
 
 Two invariants keep this compatible with what already ships:
 
-- **A response with zero or one section renders byte-for-byte as it does today**, on every one of `render(Text)`, `render(Json)`, `render_toon()`, `render_kv()`, and `render_for()`. The existing `insta` snapshots are the test for this; if any of them moves, the change is wrong. Per the SemVer table in [05-scope-and-quality.md](05-scope-and-quality.md) a rendered-output change is a major bump, and multi-section support does not have to be one.
+- **A response with only `items()` or `kv_items()` renders as before, with the output changes listed in 06-decisions ("Output moves, all deliberate")**: `totalCount` only above the rows returned, and a `sections` array in the JSON. This replaces the original "byte-for-byte" rule, dropped when the one-section model removed the legacy slots (pre-1.0, ADR 9).
 - **`returned_count` is derived, not trusted, for `Toon` and `Kv` bodies.** Render functions always succeed ([`PRINCIPLES.md`](../../PRINCIPLES.md)), so a `returned_count` disagreeing with `rows.len()` / `items.len()` is clamped to the real length with a `debug_assert!` alongside — the assert fires under `cargo nextest`, the clamp runs in release. `Text` bodies keep whatever the caller declared, since michi cannot count items in prose.
 
 Rendered, a two-section response is just the sections in order:

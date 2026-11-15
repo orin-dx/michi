@@ -71,7 +71,7 @@ flowchart TB
 
     AR["michi-core::AgentResponse"]
 
-    AR -->|"render() / render_toon() / render_kv()"| text["Plain Text CLI / Tool Stdout"]
+    AR -->|"render(OutputFormat)"| text["Plain Text CLI / Tool Stdout"]
     AR -->|"render_for(Audience)"| textaud["Audience-Routed Output"]
     AR -->|"to_call_tool_result()"| mcpresult["mcp::CallToolResult"]
     mcpresult --> mcpjson["MCP Tools/Call JSON"]
