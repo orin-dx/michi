@@ -65,7 +65,6 @@ impl ProvenanceEntry {
 
 /// Render the `provenance:` block with no trailing newline: entries in order, `fingerprint` last when present.
 /// Labels are encoded as TOON keys and values as TOON strings, so caller text cannot start a line of its own.
-#[allow(dead_code)] // called by the AgentResponse wiring that lands separately
 pub(crate) fn render_provenance_block(p: &ProvenanceBlock) -> String {
     let mut out = String::with_capacity(32 + p.entries.len() * 40 + p.fingerprint.as_ref().map_or(0, |f| f.len() + 20));
     out.push_str("provenance:");
@@ -83,7 +82,6 @@ pub(crate) fn render_provenance_block(p: &ProvenanceBlock) -> String {
 }
 
 /// The provenance as a JSON object: `entries` always present, `fingerprint` only when set.
-#[allow(dead_code)] // called by the AgentResponse wiring that lands separately
 pub(crate) fn provenance_json(p: &ProvenanceBlock) -> String {
     let mut out = String::with_capacity(32 + p.entries.len() * 48);
     out.push_str("{\"entries\":[");

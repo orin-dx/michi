@@ -1,6 +1,6 @@
 # MCP and the NAPI/npm Boundary
 
-> Targets MCP spec version **2025-11-25** (the current stable release). A release candidate for **2026-07-28** exists — described by its own announcement as "the largest revision since launch" — but hasn't shipped yet. Nothing in this doc should be read as covering the RC; revisit this note once it's finalized.
+> Written against MCP spec revision **2025-11-25**, and the conformance test still checks against that revision (the pinned SDK, `@modelcontextprotocol/sdk` 1.32.2). Revision **2026-07-28** has since shipped and is now the current one on modelcontextprotocol.io; it replaces the `initialize` handshake with per-request version negotiation and `server/discover`. This doc has not been reviewed against it. `CallToolResult` itself is built the same way; check it against the new revision before claiming conformance with it.
 
 ## `mcp` module
 
@@ -49,7 +49,7 @@ The wire rules, for output and input:
 
 ### Conformance check
 
-`packages/michi-node/__test__/mcp-conformance.test.mjs` checks every `toCallToolResult()` shape against the official MCP TypeScript SDK's own schema (`CallToolResultSchema` from `@modelcontextprotocol/sdk` 1.32.1, which implements MCP spec revision 2025-11-25). It runs in `pnpm test` and CI. The SDK is a dev dependency of the npm package only; no Rust crate depends on it.
+`packages/michi-node/__test__/mcp-conformance.test.mjs` checks every `toCallToolResult()` shape against the official MCP TypeScript SDK's own schema (`CallToolResultSchema` from `@modelcontextprotocol/sdk` 1.32.2, which implements MCP spec revision 2025-11-25). It runs in `pnpm test` and CI. The SDK is a dev dependency of the npm package only; no Rust crate depends on it.
 
 What that does and does not establish:
 

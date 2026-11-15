@@ -139,13 +139,22 @@ fn invalid_section_is_an_error_on_every_surface() {
     assert!(!AgentResponse::new("t").section(refs()).is_error());
 }
 
+fn assert_json_differs_only_by_sections(with: &str, sugar: &str) {
+    assert!(!sugar.contains("\"sections\""), "{sugar}");
+    let head = sugar.split(",\"hints\"").next().expect("body prefix");
+    assert!(with.starts_with(head), "{with}");
+    assert!(with[head.len()..].starts_with(",\"sections\":["), "{with}");
+    assert!(with.ends_with(&sugar[head.len()..]), "{with}");
+}
+
 #[test]
 fn one_section_matches_the_sugar_on_every_surface() {
     let rows = vec![vec![Value::Int(1), Value::from("open")]];
     let sugar = AgentResponse::new("issues").items(rows.clone(), &["id", "state"]).hint("h");
     let sect = AgentResponse::new("issues").section(Section::toon("issues", fields(&["id", "state"]), rows)).hint("h");
     assert_eq!(sect.render(OutputFormat::Text), sugar.render(OutputFormat::Text));
-    assert_eq!(sect.render(OutputFormat::Json), sugar.render(OutputFormat::Json));
+    // JSON differs only by the `sections` key the section form adds: the `body` string is the same.
+    assert_json_differs_only_by_sections(&sect.render(OutputFormat::Json), &sugar.render(OutputFormat::Json));
     assert_eq!(sect.render_for(Audience::Assistant), sugar.render_for(Audience::Assistant));
     assert_eq!(sect.to_call_tool_result().content[0].text, sugar.to_call_tool_result().content[0].text);
 
@@ -153,7 +162,7 @@ fn one_section_matches_the_sugar_on_every_surface() {
     let sugar = AgentResponse::new("t").kv_items(items.clone());
     let sect = AgentResponse::new("t").section(Section::kv("t", items));
     assert_eq!(sect.render(OutputFormat::Text), sugar.render(OutputFormat::Text));
-    assert_eq!(sect.render(OutputFormat::Json), sugar.render(OutputFormat::Json));
+    assert_json_differs_only_by_sections(&sect.render(OutputFormat::Json), &sugar.render(OutputFormat::Json));
 }
 
 #[test]
@@ -165,11 +174,12 @@ fn render_toon_and_render_kv_still_read_their_slots_unconditionally() {
 }
 
 #[test]
-fn json_keeps_its_four_keys_with_the_text_render_as_body() {
+fn json_carries_the_sections_between_body_and_hints() {
     let r = AgentResponse::new("t").section(symbols()).section(refs());
     let json = r.render(OutputFormat::Json);
     assert!(json.starts_with("{\"body\":\"brief.symbols[2]{name,kind}:\\n"), "{json}");
-    assert!(json.ends_with("\"hints\":[],\"recovery\":[],\"isError\":false}"), "{json}");
+    assert!(json.contains("\",\"sections\":[{\"name\":\"brief.symbols\",\"kind\":\"toon\""), "{json}");
+    assert!(json.ends_with("],\"hints\":[],\"recovery\":[],\"isError\":false}"), "{json}");
 }
 
 #[test]

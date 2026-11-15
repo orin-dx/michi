@@ -62,6 +62,32 @@ fn parses_mixed_root_objects_of_the_other_blocks() {
     );
 }
 
+// A row that starts with a non-ASCII space (U+2028) is data, not an indented `#` comment line.
+#[test]
+fn only_ascii_indentation_makes_a_comment_line() {
+    assert!(decode("t[1]{a}:\n  \u{2028}#x").is_ok());
+    assert!(decode("t[1]{a}:\n  #x").is_err());
+}
+
+// `budget:` and `provenance:` are nested objects one level deep; duplicates inside and deeper nesting must fail.
+#[test]
+fn parses_one_level_nested_objects_and_rejects_the_rest() {
+    let doc = decode("budget:\n  tokensUsed: 5\n  truncated: false\nsections[1]: a").unwrap();
+    assert_eq!(
+        doc.get("budget"),
+        Some(&Node::Object(vec![
+            ("tokensUsed".into(), Prim::Num("5".into())),
+            ("truncated".into(), Prim::Bool(false))
+        ]))
+    );
+    assert_eq!(decode("p:").unwrap().get("p"), Some(&Node::Object(vec![])));
+    assert!(decode("b:\n  a: 1\n  a: 2").unwrap_err().contains("duplicate"));
+    assert!(decode("b:\n  a: 1\nb: 2").unwrap_err().contains("duplicate"));
+    assert!(decode("b:\n  a:\n    c: 1").is_err());
+    assert!(decode("b:\n  a[1]: x").is_err());
+    assert!(decode("b:\n  a:  1").is_err());
+}
+
 // The pre-TOON shapes of those blocks must fail, or the block tests would prove nothing.
 #[test]
 fn rejects_the_legacy_block_formats() {

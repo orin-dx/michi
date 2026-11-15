@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc ec448e3037e9d3c1ecee4c7b93d56420c60d06e2f75c9a2a93cd9b7ab0d417d0 # shrinks to names = [""], cells = [""], labels = [], fp = None, cap = 1, totals = [None, None, None, None, None], slot = false, hint = ""
+cc 933a59b75f2cc2e766db314b6aa43d33b69d2af9f77861c82ea47cf315cf38d7 # shrinks to names = ["", "", ""], cells = [""], labels = [], fp = None, cap = 1, totals = [None, None, None, None, None], slot = false, hint = ""
+cc fd62e16c4310298b12c6d63cc784d4e363f7951039213cb02e103ba355ab85ab # shrinks to names = [""], cells = ["\u{2028}#-\u{2028}\u{2028}\u{2028},,"], labels = [], fp = None, cap = 3, totals = [None, None, None, None, None], slot = false, hint = ""
