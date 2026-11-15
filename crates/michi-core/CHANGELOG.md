@@ -1,5 +1,23 @@
 # michi-core
 
+## 0.10.0
+
+_2026-11-15 · [compare](https://github.com/orin-dx/michi/compare/michi@0.9.0...michi@0.10.0)_
+
+### Minor Changes
+
+- Added `BudgetSummary`, `SectionCost`, `ProvenanceBlock` and `ProvenanceEntry`: plain types for a response-level budget report and a provenance block, with builder methods, camelCase `serde::Serialize` behind the `serde` feature and `schemars::JsonSchema` behind `schemars`. They are not attached to `AgentResponse` yet.
+- michi-core: `AgentResponse` keeps its body in one list of sections. `items()` and `kv_items()` are shorthand that append a section named for the response's type, so calling both renders both bodies in call order instead of silently dropping one, as long as their root keys differ. Every section is a root key of the document: a repeated key (two `items()` calls, two `kv_items()` with a shared key, a name like `budget`, a repeated provenance label) renders the `toon_validation_failed` error naming the key, with `isError` true, instead of invalid TOON. For several lists use `.section(Section::toon(distinct_name, ..))`. The same applies to `@orin-dx/michi`'s `items()` and `kvItems()`, which render one list per response. A `Text` section now renders as one escaped string value (`name: "..."`), not raw prose.
+
+  Breaking: removed `AgentResponse::render_toon()`, `render_kv()`, `total_count()` and `truncation()`, and NAPI `renderToon()`, `renderKv()` and `totalCount()`. A response with only `items()` or `kv_items()` renders the same text, with these exceptions: a `totalCount` line renders only when the total is larger than the rows returned (so an empty list no longer prints `totalCount: 0`), and `render(Json)` / `structuredContent` gain a `sections` array next to `body`.
+
+  Migration: `AgentResponse::new(..).items(..).hints(..).render_toon()` becomes `.render(OutputFormat::Text)`; `.total_count(n)` becomes `Section::toon(name, fields, rows).total_count(Some(n))` passed to `.section(..)`; `.items(rows, f).truncation(&outcome, g)` becomes `.truncated_section(Section::toon(name, f, rows), &outcome, g)`. In JavaScript, `renderToon()` and `renderKv()` become `renderText()`, and `totalCount(n)` becomes the optional third argument of `items(rows, fields, n)` (second of `kvItems(items, n)`).
+- `PartialSuccess` reports each operation's position in your batch, so `results[i]` and `ops[i]` stay aligned in the rendered output. `completed` and `skipped` are `Vec<OpRef>`, a new type with `index`, `operation` and an optional `reason` (a machine token such as `budget_exhausted`), and `FailedOp` gains `index`.
+
+  Breaking: the rendered report changes. `completed[2]: a,b` becomes a table, `completed[2]{index,operation}:` with one `0,a` row per op, and `failed` and `skipped` are `{index,operation,reason}` tables too. A skipped op with no reason renders `null` in that column. Anything that parses the old text must read the new tables. In Rust, build the vectors from `OpRef::new(index, operation)` (add `.reason(token)` for a skipped op) instead of strings, and pass the index as the first argument of `FailedOp::new(index, operation, reason)`. In Node, `renderPartialSuccess` takes `{ index, operation, reason? }` objects for `completed` and `skipped` instead of strings, and each `FailedOp` needs an `index`.
+- michi-core: `AgentResponse::budget(BudgetSummary)` and `AgentResponse::provenance(ProvenanceBlock)` attach a response-level `budget:` block and `provenance:` block. A response now renders its sections, then `budget:`, `provenance:`, `help[]` and `recovery[]`; the per-section roll-up under `budget:` appears only when the response has two or more sections. `render(Json)` and `to_call_tool_result().structured_content` gain `sections`, `budget` and `provenance` keys, present only when set (a response with no section, budget or provenance keeps exactly `body`, `hints`, `recovery` and `isError`). When two or more sections cut cells or report a `totalCount`, each is now one merged TOON table with a leading `section` column (`truncated[N]{section,row,field,removed}:`, `totalCount[N]{section,total}:`) instead of repeating a root key, which TOON forbids.
+- michi-core: `AgentResponse` can hold several blocks. Add them with `.section(Section)`; a `Section` is a TOON list, a key-value block or a single text value, escaped like any TOON string (`Section::toon`, `Section::kv`, `Section::text`), optionally with a pre-truncation `total_count`. Sections render in the order you add them, then `help[]` and `recovery[]`.
+
 ## 0.9.0
 
 - Released together with the `michi` fixed group.

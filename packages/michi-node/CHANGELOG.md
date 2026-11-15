@@ -1,5 +1,11 @@
 # michi-node
 
+## 0.10.0
+
+_2026-11-15 · [compare](https://github.com/orin-dx/michi/compare/michi-node@0.9.0...michi-node@0.10.0)_
+
+- Released together with the `michi` fixed group.
+
 ## 0.9.0
 
 - Released together with the `michi` fixed group.
