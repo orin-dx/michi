@@ -254,9 +254,7 @@ fn all_toon_rendering_goes_through_toon_document() {
     // This deliberately excludes: its own `fn render_toon(` definitions (in
     // src/toon/mod.rs and src/napi.rs -- the latter a different, NAPI-layer
     // `render_toon` that has always returned `napi::Result<String>`, unaffected
-    // by this spec); `AgentResponse::render_toon(&self) -> String`, a distinct,
-    // deliberately-infallible method (its own call sites are `.render_toon()`,
-    // with no `&`-prefixed argument); and prose in comments/string literals
+    // by this spec); and prose in comments/string literals
     // that never happens to contain the literal substring `render_toon(&`.
     // Built via concat() rather than a literal so this test's own source
     // doesn't self-match its own trigger/definition-marker strings.

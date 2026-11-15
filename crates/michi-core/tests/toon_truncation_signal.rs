@@ -99,7 +99,6 @@ fn the_hint_joins_the_callers_own_hints_in_one_help_block() {
         "q".repeat(9)
     );
     assert_eq!(r.render(OutputFormat::Text), expected);
-    assert_eq!(r.render_toon(), expected);
     let json = r.render(OutputFormat::Json);
     assert!(json.contains("\"hints\":[\"Call get_t with id=<id>\",\"Cut cells are listed in the truncated block; use detail=full for the full value\"]"), "{json}");
 }

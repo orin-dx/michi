@@ -763,8 +763,9 @@ pub struct JsCallToolResult {
     pub structured_content: serde_json::Value,
 }
 
-/// String bytes one [`JsAgentResponse`] holds, per slot. A slot that a call replaces (`items`, `kvItems`,
-/// `truncationHint`, `humanContent`) gives its old bytes back; `hint` and `recoveryHint` only add.
+/// String bytes one [`JsAgentResponse`] holds, per slot. A slot that a call replaces (`truncationHint`,
+/// `humanContent`) gives its old bytes back; `items`, `kvItems`, `hint` and `recoveryHint` each add a block, so they
+/// only add.
 #[derive(Debug, Default)]
 struct HeldBytes {
     type_name: usize,
@@ -806,12 +807,14 @@ fn cell_bytes(v: &JsToonValue) -> usize {
 ///
 /// Besides each call's own limits, one object holds at most 64 MiB of caller strings across all its calls (type name,
 /// fields, cells, keys, hints, recovery hints, truncation hint and human content). A call that would pass that total
-/// is rejected and leaves the builder unchanged; replacing `items`, `kvItems`, `truncationHint` or `humanContent`
-/// gives the old value's bytes back first.
+/// is rejected and leaves the builder unchanged; replacing `truncationHint` or `humanContent` gives the old value's
+/// bytes back first. Every `items` and `kvItems` call adds a section, so their bytes add up.
 #[napi(js_name = "AgentResponse")]
 #[derive(Debug)]
 pub struct JsAgentResponse {
     inner: Option<crate::response::AgentResponse>,
+    /// The type name, which names the sections `items` and `kvItems` append.
+    name: String,
     /// Cumulative count of [`Self::hint`] calls, capped at [`MAX_HINTS`].
     hint_count: usize,
     /// Cumulative count of [`Self::recovery_hint`] calls, capped at [`MAX_HINTS`].
@@ -827,7 +830,8 @@ impl JsAgentResponse {
     #[must_use]
     pub fn new(type_name: String) -> Self {
         let held = HeldBytes { type_name: type_name.len(), ..HeldBytes::default() };
-        Self { inner: Some(crate::response::AgentResponse::new(type_name)), hint_count: 0, recovery_count: 0, held }
+        let inner = Some(crate::response::AgentResponse::new(type_name.clone()));
+        Self { inner, name: type_name, hint_count: 0, recovery_count: 0, held }
     }
 
     /// The JS constructor, `new AgentResponse(typeName)`.
@@ -845,16 +849,27 @@ impl JsAgentResponse {
         self.inner.take().ok_or_else(|| napi::Error::from_reason("AgentResponse already consumed"))
     }
 
-    /// Populate the TOON list path.
+    /// Append a TOON list section named for the response's type. Every call adds a section, rendered in call order.
+    /// `totalCount`, when given, is how many rows existed before any cut; `totalCount: n` renders only when `n` is
+    /// larger than the rows passed.
     ///
     /// # Errors
     ///
     /// Rejects, before converting anything, more than 100,000 rows, 1,000 fields or 1,000 values in a row, and
     /// more than 1,000,000 cells in all; while converting, a field name over 4 KiB, a cell over 1 MiB, more than
-    /// 64 MiB of strings in the call, or an invalid cell; then strings that would take the response past its 64 MiB
-    /// total. The builder is unchanged on error.
-    #[napi(catch_unwind, js_name = "items", ts_args_type = "rows: Array<Array<ToonValue>>, fields: Array<string>")]
-    pub fn items_js(&mut self, rows: Unknown<'_>, fields: Unknown<'_>) -> napi::Result<()> {
+    /// 64 MiB of strings in the call, or an invalid cell; a `totalCount` that is not a finite, non-negative integer;
+    /// then strings that would take the response past its 64 MiB total. The builder is unchanged on error.
+    #[napi(
+        catch_unwind,
+        js_name = "items",
+        ts_args_type = "rows: Array<Array<ToonValue>>, fields: Array<string>, totalCount?: number | null"
+    )]
+    pub fn items_js(
+        &mut self,
+        rows: Unknown<'_>,
+        fields: Unknown<'_>,
+        total_count: Option<JsCount>,
+    ) -> napi::Result<()> {
         let mut budget = Budget::new();
         let rows = List::new(rows, "rows")?;
         let fields = List::new(fields, "fields")?;
@@ -862,7 +877,7 @@ impl JsAgentResponse {
         input::check_len("fields", fields.len(), MAX_FIELDS)?;
         let fields = budget.strings(&fields, "fields", MAX_FIELDS, "field name", MAX_NAME_BYTES)?;
         let rows = budget.rows(&rows, MAX_ROWS, MAX_FIELDS, "maximum")?;
-        self.items(rows, fields)
+        self.items(rows, fields, total_count)
     }
 
     /// The Rust-typed core of the `items` method.
@@ -872,7 +887,12 @@ impl JsAgentResponse {
     /// Rejects more than `MAX_ROWS` rows or `MAX_FIELDS` fields or values in a row, an invalid cell, or strings that
     /// would take the response past its 64 MiB total.
     #[allow(clippy::needless_pass_by_value)] // mirrors the JS method, which hands over owned values
-    pub fn items(&mut self, rows: Vec<Vec<JsToonValue>>, fields: Vec<String>) -> napi::Result<()> {
+    pub fn items(
+        &mut self,
+        rows: Vec<Vec<JsToonValue>>,
+        fields: Vec<String>,
+        total_count: Option<JsCount>,
+    ) -> napi::Result<()> {
         if rows.len() > MAX_ROWS {
             return Err(napi::Error::from_reason(format!("rows length {} exceeds maximum of {MAX_ROWS}", rows.len())));
         }
@@ -895,43 +915,33 @@ impl JsAgentResponse {
             .map(String::len)
             .chain(rows.iter().flatten().map(cell_bytes))
             .fold(0usize, usize::saturating_add);
-        self.held.check_replace(self.held.items, bytes)?;
-        let field_refs: Vec<&str> = fields.iter().map(String::as_str).collect();
+        self.held.check_replace(0, bytes)?;
         let converted: Vec<Vec<crate::toon::Value>> = rows
             .into_iter()
             .map(|row| row.into_iter().map(js_value_to_rust).collect::<napi::Result<Vec<_>>>())
             .collect::<napi::Result<Vec<_>>>()?;
         let b = self.take()?;
-        self.inner = Some(b.items(converted, &field_refs));
-        self.held.items = bytes;
+        let name = self.name.clone();
+        let section = crate::section::Section::toon(name, fields, converted).total_count(total_count.map(JsCount::get));
+        self.inner = Some(b.section(section));
+        self.held.items = self.held.items.saturating_add(bytes);
         Ok(())
     }
 
-    /// Set the total available count (TOON path only).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the builder was already consumed (an internal invariant; should not happen in normal use).
-    #[napi(catch_unwind)]
-    pub fn total_count(&mut self, #[napi(ts_arg_type = "number")] n: JsCount) -> napi::Result<()> {
-        let b = self.take()?;
-        self.inner = Some(b.total_count(n.get()));
-        Ok(())
-    }
-
-    /// Populate the KV single-item path.
+    /// Append a KV section named for the response's type; the name is not printed. Every call adds a section,
+    /// rendered in call order. `totalCount` works as in [`Self::items`].
     ///
     /// # Errors
     ///
     /// Rejects more than 1,000 items before converting any, a key over 4 KiB, a value over 1 MiB, more than 64 MiB
-    /// of strings in the call, an invalid value, or strings that would take the response past its 64 MiB total. The
-    /// builder is unchanged on error.
-    #[napi(catch_unwind, js_name = "kvItems", ts_args_type = "items: Array<KvItem>")]
-    pub fn kv_items_js(&mut self, items: Unknown<'_>) -> napi::Result<()> {
+    /// of strings in the call, an invalid value, a `totalCount` that is not a finite, non-negative integer, or
+    /// strings that would take the response past its 64 MiB total. The builder is unchanged on error.
+    #[napi(catch_unwind, js_name = "kvItems", ts_args_type = "items: Array<KvItem>, totalCount?: number | null")]
+    pub fn kv_items_js(&mut self, items: Unknown<'_>, total_count: Option<JsCount>) -> napi::Result<()> {
         let mut budget = Budget::new();
         let items = List::new(items, "items")?;
         let items = budget.kv_items(&items, MAX_FIELDS)?;
-        self.kv_items(items)
+        self.kv_items(items, total_count)
     }
 
     /// The Rust-typed core of the `kvItems` method.
@@ -940,7 +950,7 @@ impl JsAgentResponse {
     ///
     /// Rejects more than `MAX_FIELDS` items, an invalid value, or strings that would take the response past its
     /// 64 MiB total.
-    pub fn kv_items(&mut self, items: Vec<JsKvItem>) -> napi::Result<()> {
+    pub fn kv_items(&mut self, items: Vec<JsKvItem>, total_count: Option<JsCount>) -> napi::Result<()> {
         if items.len() > MAX_FIELDS {
             return Err(napi::Error::from_reason(format!(
                 "items length {} exceeds maximum of {MAX_FIELDS}",
@@ -949,14 +959,16 @@ impl JsAgentResponse {
         }
         let bytes =
             items.iter().map(|i| i.key.len().saturating_add(cell_bytes(&i.value))).fold(0usize, usize::saturating_add);
-        self.held.check_replace(self.held.kv_items, bytes)?;
+        self.held.check_replace(0, bytes)?;
         let converted = items
             .into_iter()
             .map(|i| Ok(crate::kv::KvItem::new(i.key, js_kv_value_to_rust(i.value)?)))
             .collect::<napi::Result<Vec<_>>>()?;
         let b = self.take()?;
-        self.inner = Some(b.kv_items(converted));
-        self.held.kv_items = bytes;
+        let name = self.name.clone();
+        let section = crate::section::Section::kv(name, converted).total_count(total_count.map(JsCount::get));
+        self.inner = Some(b.section(section));
+        self.held.kv_items = self.held.kv_items.saturating_add(bytes);
         Ok(())
     }
 
@@ -1060,34 +1072,18 @@ impl JsAgentResponse {
         Ok(())
     }
 
-    /// Render via the TOON path (`items`/`fields`/`totalCount`), reading only
-    /// that slot regardless of which of `.items()`/`.kvItems()` was called
-    /// last — see [`crate::response::AgentResponse::render_toon`].
+    /// Render the response as text: its sections in call order, then `help[]` and `recovery[]`. The one text render;
+    /// see [`crate::response::AgentResponse::render`].
     ///
     /// # Errors
     ///
     /// Returns an error only if an internal invariant is violated (should not happen in normal use).
     #[napi(catch_unwind)]
-    pub fn render_toon(&self) -> napi::Result<String> {
+    pub fn render_text(&self) -> napi::Result<String> {
         self.inner
             .as_ref()
             .ok_or_else(|| napi::Error::from_reason("AgentResponse already consumed"))
-            .map(crate::response::AgentResponse::render_toon)
-    }
-
-    /// Render via the KV path (`kvItems`/`totalCount`), reading only that
-    /// slot regardless of which of `.items()`/`.kvItems()` was called last —
-    /// see [`crate::response::AgentResponse::render_kv`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error only if an internal invariant is violated (should not happen in normal use).
-    #[napi(catch_unwind)]
-    pub fn render_kv(&self) -> napi::Result<String> {
-        self.inner
-            .as_ref()
-            .ok_or_else(|| napi::Error::from_reason("AgentResponse already consumed"))
-            .map(crate::response::AgentResponse::render_kv)
+            .map(|b| b.render(crate::response::OutputFormat::Text))
     }
 
     /// Render as a compact JSON string (`{"body":...,"hints":[...],"recovery":[...],"isError":bool}`).
@@ -1764,9 +1760,13 @@ mod tests {
     fn js_agent_response_truncation_hint_reaches_toon_body() {
         let mut r = JsAgentResponse::new("t".to_string());
         r.truncation_hint("full=true".to_string()).expect("fresh builder accepts a hint");
-        r.items(vec![vec![JsToonValue { str_val: Some("a".repeat(500)), ..value("str") }]], vec!["a".to_string()])
-            .expect("valid rows");
-        let out = r.render_toon().expect("renders");
+        r.items(
+            vec![vec![JsToonValue { str_val: Some("a".repeat(500)), ..value("str") }]],
+            vec!["a".to_string()],
+            None,
+        )
+        .expect("valid rows");
+        let out = r.render_text().expect("renders");
         assert_eq!(
             out,
             format!(
@@ -1778,14 +1778,15 @@ mod tests {
     }
 
     #[test]
-    fn js_agent_response_items_then_render_toon() {
+    fn js_agent_response_items_then_render_text() {
         let mut r = JsAgentResponse::new("issues".to_string());
         r.items(
             vec![vec![JsToonValue { int_val: Some(JsInt::try_from(1.0).expect("1 is a valid int")), ..value("int") }]],
             vec!["id".to_string()],
+            None,
         )
         .unwrap();
-        let out = r.render_toon().unwrap();
+        let out = r.render_text().unwrap();
         assert!(out.starts_with("issues[1]{id}:"), "got: {out}");
     }
 
@@ -1793,13 +1794,13 @@ mod tests {
     fn js_agent_response_items_rejects_oversized_row() {
         let mut r = JsAgentResponse::new("issue".to_string());
         let err = r
-            .items(vec![(0..=MAX_FIELDS).map(|_| value("null")).collect()], vec!["a".to_string()])
+            .items(vec![(0..=MAX_FIELDS).map(|_| value("null")).collect()], vec!["a".to_string()], None)
             .expect_err("oversized row must be rejected before consuming the builder");
         assert!(err.reason.contains("row length"), "got: {}", err.reason);
 
         // The rejected call must not have consumed the builder via `take()`:
         // a subsequent valid call should still succeed.
-        r.items(vec![vec![value("null")]], vec!["a".to_string()]).expect("builder still usable after rejection");
+        r.items(vec![vec![value("null")]], vec!["a".to_string()], None).expect("builder still usable after rejection");
     }
 
     #[test]
@@ -1807,13 +1808,13 @@ mod tests {
         let mut r = JsAgentResponse::new("issue".to_string());
         // `value("int")` has no `int_val` set, so conversion must fail.
         let err = r
-            .items(vec![vec![value("int")]], vec!["a".to_string()])
+            .items(vec![vec![value("int")]], vec!["a".to_string()], None)
             .expect_err("int value missing intVal must be rejected before consuming the builder");
         assert!(err.reason.contains("intVal is missing"), "got: {}", err.reason);
 
         // The rejected call must not have consumed the builder via `take()`:
         // a subsequent valid call should still succeed.
-        r.items(vec![vec![value("null")]], vec!["a".to_string()]).expect("builder still usable after rejection");
+        r.items(vec![vec![value("null")]], vec!["a".to_string()], None).expect("builder still usable after rejection");
     }
 
     // --- AC-010: JsAgentResponse::items rejects all three oversized paths
@@ -1824,11 +1825,11 @@ mod tests {
         let mut r = JsAgentResponse::new("issue".to_string());
         let rows: Vec<Vec<JsToonValue>> = (0..=MAX_ROWS).map(|_| vec![value("null")]).collect();
         let err = r
-            .items(rows, vec!["a".to_string()])
+            .items(rows, vec!["a".to_string()], None)
             .expect_err("rows over MAX_ROWS must be rejected before consuming the builder");
         assert!(err.reason.contains("rows length"), "got: {}", err.reason);
 
-        r.kv_items(vec![JsKvItem { key: "id".to_string(), value: value("null") }])
+        r.kv_items(vec![JsKvItem { key: "id".to_string(), value: value("null") }], None)
             .expect("builder still usable after rows rejection");
     }
 
@@ -1836,11 +1837,12 @@ mod tests {
     fn ac010_js_agent_response_items_rejects_too_many_fields_and_stays_usable() {
         let mut r = JsAgentResponse::new("issue".to_string());
         let fields: Vec<String> = vec!["f".to_string(); MAX_FIELDS + 1];
-        let err =
-            r.items(vec![], fields).expect_err("fields over MAX_FIELDS must be rejected before consuming the builder");
+        let err = r
+            .items(vec![], fields, None)
+            .expect_err("fields over MAX_FIELDS must be rejected before consuming the builder");
         assert!(err.reason.contains("fields length"), "got: {}", err.reason);
 
-        r.kv_items(vec![JsKvItem { key: "id".to_string(), value: value("null") }])
+        r.kv_items(vec![JsKvItem { key: "id".to_string(), value: value("null") }], None)
             .expect("builder still usable after fields rejection");
     }
 
@@ -1849,12 +1851,13 @@ mod tests {
         let mut r = JsAgentResponse::new("issue".to_string());
         let oversized: Vec<JsKvItem> =
             (0..=MAX_FIELDS).map(|i| JsKvItem { key: format!("k{i}"), value: value("null") }).collect();
-        let err = r.kv_items(oversized).expect_err("oversized items must be rejected before consuming the builder");
+        let err =
+            r.kv_items(oversized, None).expect_err("oversized items must be rejected before consuming the builder");
         assert!(err.reason.contains("items length"), "got: {}", err.reason);
 
         // The rejected call must not have consumed the builder via `take()`:
         // a subsequent valid call should still succeed.
-        r.kv_items(vec![JsKvItem { key: "id".to_string(), value: value("null") }])
+        r.kv_items(vec![JsKvItem { key: "id".to_string(), value: value("null") }], None)
             .expect("builder still usable after rejection");
     }
 
@@ -1863,88 +1866,80 @@ mod tests {
         let mut r = JsAgentResponse::new("issue".to_string());
         // `value("int")` has no `int_val` set, so conversion must fail.
         let err = r
-            .kv_items(vec![JsKvItem { key: "id".to_string(), value: value("int") }])
+            .kv_items(vec![JsKvItem { key: "id".to_string(), value: value("int") }], None)
             .expect_err("int value missing intVal must be rejected before consuming the builder");
         assert!(err.reason.contains("intVal is missing"), "got: {}", err.reason);
 
         // The rejected call must not have consumed the builder via `take()`:
         // a subsequent valid call should still succeed.
-        r.kv_items(vec![JsKvItem { key: "id".to_string(), value: value("null") }])
+        r.kv_items(vec![JsKvItem { key: "id".to_string(), value: value("null") }], None)
             .expect("builder still usable after rejection");
     }
 
     #[test]
-    fn js_agent_response_kv_items_then_render_kv() {
+    fn js_agent_response_kv_items_then_render_text() {
         let mut r = JsAgentResponse::new("issue".to_string());
-        r.kv_items(vec![JsKvItem { key: "id".to_string(), value: value("null") }]).unwrap();
-        let out = r.render_kv().unwrap();
+        r.kv_items(vec![JsKvItem { key: "id".to_string(), value: value("null") }], None).unwrap();
+        let out = r.render_text().unwrap();
         assert!(out.contains("id:"), "got: {out}");
     }
 
     #[test]
-    fn js_agent_response_render_toon_is_slot_specific_even_after_kv_items_called_last() {
+    fn js_agent_response_items_and_kv_items_render_both_in_call_order() {
+        let int = |n: f64| JsToonValue { int_val: Some(JsInt::try_from(n).expect("a valid int")), ..value("int") };
+        let kv_item = |n: f64| JsKvItem { key: "id".to_string(), value: int(n) };
         let mut r = JsAgentResponse::new("issues".to_string());
-        r.items(
-            vec![vec![JsToonValue { int_val: Some(JsInt::try_from(1.0).expect("1 is a valid int")), ..value("int") }]],
-            vec!["id".to_string()],
-        )
-        .unwrap();
-        r.kv_items(vec![JsKvItem {
-            key: "id".to_string(),
-            value: JsToonValue { int_val: Some(JsInt::try_from(99.0).expect("99 is a valid int")), ..value("int") },
-        }])
-        .unwrap();
-        let toon = r.render_toon().unwrap();
-        let kv = r.render_kv().unwrap();
-        assert_eq!(toon, "issues[1]{id}:\n  1");
-        assert_ne!(toon, kv, "render_toon() must not follow the last-called .kvItems()");
+        r.items(vec![vec![int(1.0)]], vec!["id".to_string()], None).unwrap();
+        r.kv_items(vec![kv_item(99.0)], None).unwrap();
+        assert_eq!(r.render_text().unwrap(), "issues[1]{id}:\n  1\nid: 99");
+
+        let mut flipped = JsAgentResponse::new("issues".to_string());
+        flipped.kv_items(vec![kv_item(1.0)], None).unwrap();
+        flipped.items(vec![vec![int(99.0)]], vec!["id".to_string()], None).unwrap();
+        assert_eq!(flipped.render_text().unwrap(), "id: 1\nissues[1]{id}:\n  99");
     }
 
     #[test]
-    fn js_agent_response_render_kv_is_slot_specific_even_after_items_called_last() {
-        let mut r = JsAgentResponse::new("issue".to_string());
-        r.kv_items(vec![JsKvItem {
-            key: "id".to_string(),
-            value: JsToonValue { int_val: Some(JsInt::try_from(1.0).expect("1 is a valid int")), ..value("int") },
-        }])
-        .unwrap();
-        r.items(
-            vec![vec![JsToonValue {
-                int_val: Some(JsInt::try_from(99.0).expect("99 is a valid int")),
-                ..value("int")
-            }]],
-            vec!["id".to_string()],
-        )
-        .unwrap();
-        let kv = r.render_kv().unwrap();
-        let toon = r.render_toon().unwrap();
-        assert!(kv.contains("id: 1"), "got: {kv}");
-        assert_ne!(kv, toon, "render_kv() must not follow the last-called .items()");
+    fn js_agent_response_total_count_rides_on_the_section_and_shows_only_when_larger() {
+        let int = |n: f64| JsToonValue { int_val: Some(JsInt::try_from(n).expect("a valid int")), ..value("int") };
+        let count = |n: f64| Some(JsCount::try_from(n).expect("a valid count"));
+        let mut r = JsAgentResponse::new("t".to_string());
+        r.items(vec![vec![int(1.0)]], vec!["id".to_string()], count(5.0)).unwrap();
+        assert_eq!(r.render_text().unwrap(), "t[1]{id}:\n  1\ntotalCount: 5");
+        let mut same = JsAgentResponse::new("t".to_string());
+        same.items(vec![vec![int(1.0)]], vec!["id".to_string()], count(1.0)).unwrap();
+        assert_eq!(same.render_text().unwrap(), "t[1]{id}:\n  1");
+        let mut kv = JsAgentResponse::new("t".to_string());
+        kv.kv_items(vec![JsKvItem { key: "id".to_string(), value: int(1.0) }], count(3.0)).unwrap();
+        assert_eq!(kv.render_text().unwrap(), "id: 1\ntotalCount: 3");
     }
 
     #[test]
     fn js_agent_response_hint_and_render_hints_only() {
         let mut r = JsAgentResponse::new("t".to_string());
-        r.kv_items(vec![]).unwrap();
+        r.kv_items(vec![], None).unwrap();
         r.hint("do this".to_string()).unwrap();
         assert_eq!(r.render_hints_only().unwrap(), "help[1]: do this");
     }
 
     #[test]
-    fn render_for_assistant_matches_render_toon() {
+    fn render_for_assistant_matches_render_text() {
         let mut r = JsAgentResponse::new("issue".to_string());
-        r.kv_items(vec![JsKvItem {
-            key: "id".to_string(),
-            value: JsToonValue { int_val: Some(JsInt::try_from(1.0).expect("1 is a valid int")), ..value("int") },
-        }])
+        r.kv_items(
+            vec![JsKvItem {
+                key: "id".to_string(),
+                value: JsToonValue { int_val: Some(JsInt::try_from(1.0).expect("1 is a valid int")), ..value("int") },
+            }],
+            None,
+        )
         .unwrap();
-        assert_eq!(r.render_for("assistant".to_string()).unwrap(), r.render_kv().unwrap());
+        assert_eq!(r.render_for("assistant".to_string()).unwrap(), r.render_text().unwrap());
     }
 
     #[test]
     fn render_for_user_returns_human_content_when_set() {
         let mut r = JsAgentResponse::new("t".to_string());
-        r.kv_items(vec![]).unwrap();
+        r.kv_items(vec![], None).unwrap();
         r.human_content("hi there".to_string()).unwrap();
         assert_eq!(r.render_for("user".to_string()).unwrap(), "hi there");
     }
@@ -1952,8 +1947,8 @@ mod tests {
     #[test]
     fn render_for_user_falls_back_when_unset() {
         let mut r = JsAgentResponse::new("t".to_string());
-        r.kv_items(vec![]).unwrap();
-        assert_eq!(r.render_for("user".to_string()).unwrap(), r.render_kv().unwrap());
+        r.kv_items(vec![], None).unwrap();
+        assert_eq!(r.render_for("user".to_string()).unwrap(), r.render_text().unwrap());
     }
 
     // --- AC-017: with items() populated (not kv_items()) and human_content
@@ -1963,8 +1958,12 @@ mod tests {
     #[test]
     fn ac017_render_for_user_with_items_populated_matches_assistant_and_is_nonempty() {
         let mut r = JsAgentResponse::new("issue".to_string());
-        r.items(vec![vec![JsToonValue { str_val: Some("a".to_string()), ..value("str") }]], vec!["name".to_string()])
-            .unwrap();
+        r.items(
+            vec![vec![JsToonValue { str_val: Some("a".to_string()), ..value("str") }]],
+            vec!["name".to_string()],
+            None,
+        )
+        .unwrap();
         let user = r.render_for("user".to_string()).unwrap();
         let assistant = r.render_for("assistant".to_string()).unwrap();
         assert_eq!(
@@ -1977,7 +1976,7 @@ mod tests {
     #[test]
     fn render_for_rejects_unknown_audience() {
         let mut r = JsAgentResponse::new("t".to_string());
-        r.kv_items(vec![]).unwrap();
+        r.kv_items(vec![], None).unwrap();
         let err = r.render_for("nonsense".to_string()).expect_err("should reject");
         assert!(err.reason.contains("nonsense"), "got: {}", err.reason);
     }
@@ -1985,7 +1984,7 @@ mod tests {
     #[test]
     fn has_human_content_reflects_whether_it_was_set() {
         let mut r = JsAgentResponse::new("t".to_string());
-        r.kv_items(vec![]).unwrap();
+        r.kv_items(vec![], None).unwrap();
         assert!(!r.has_human_content().unwrap());
         r.human_content("hi".to_string()).unwrap();
         assert!(r.has_human_content().unwrap());
@@ -1994,7 +1993,7 @@ mod tests {
     #[test]
     fn js_agent_response_render_json_reflects_is_error() {
         let mut r = JsAgentResponse::new("t".to_string());
-        r.kv_items(vec![]).unwrap();
+        r.kv_items(vec![], None).unwrap();
         r.as_error().unwrap();
         assert!(r.render_json().unwrap().contains("\"isError\":true"));
     }
@@ -2037,7 +2036,7 @@ mod tests {
     #[test]
     fn js_agent_response_hint_rejects_after_cumulative_limit_exceeded() {
         let mut r = JsAgentResponse::new("t".to_string());
-        r.kv_items(vec![]).unwrap();
+        r.kv_items(vec![], None).unwrap();
         for i in 0..MAX_HINTS {
             r.hint(format!("hint {i}")).expect("under limit should succeed");
         }
@@ -2048,7 +2047,7 @@ mod tests {
     #[test]
     fn js_agent_response_recovery_hint_rejects_after_cumulative_limit_exceeded() {
         let mut r = JsAgentResponse::new("t".to_string());
-        r.kv_items(vec![]).unwrap();
+        r.kv_items(vec![], None).unwrap();
         for _ in 0..MAX_HINTS {
             r.recovery_hint("retry".to_string(), None).expect("under limit should succeed");
         }
@@ -2077,7 +2076,7 @@ mod tests {
         assert_eq!(accepted, 63);
         assert!(err.reason.starts_with("cumulative byte total "), "{}", err.reason);
         assert!(err.reason.ends_with(&format!("exceeds maximum of {}", input::MAX_INPUT_BYTES)), "{}", err.reason);
-        let rendered = r.render_toon().expect("still usable after the rejected hint");
+        let rendered = r.render_text().expect("still usable after the rejected hint");
         assert!(rendered.len() < input::MAX_INPUT_BYTES + 4096, "rendered {} bytes", rendered.len());
         r.hint("small".to_string()).expect("a hint that still fits is accepted");
     }
@@ -2115,21 +2114,26 @@ mod tests {
     }
 
     #[test]
-    fn agent_response_replaced_slots_return_their_bytes() {
+    fn agent_response_sections_add_their_bytes_and_replaced_slots_return_theirs() {
         let cell = |len: usize| JsToonValue { str_val: Some(big(len)), ..value("str") };
         let rows = |n: usize| (0..n).map(|_| vec![cell(MAX_STRING_BYTES)]).collect::<Vec<_>>();
         let mut r = JsAgentResponse::new("t".to_string());
-        r.items(rows(40), vec!["v".to_string()]).expect("40 MiB of cells fit");
-        r.items(rows(40), vec!["v".to_string()])
-            .expect("items replaces the TOON slot, so its bytes are not added twice");
+        r.items(rows(40), vec!["v".to_string()], None).expect("40 MiB of cells fit");
+        let err = r
+            .items(rows(40), vec!["v".to_string()], None)
+            .expect_err("every items call adds a section, so its bytes add to the first call's");
+        assert!(err.reason.starts_with("cumulative byte total "), "{}", err.reason);
+        r.items(rows(20), vec!["v".to_string()], None)
+            .expect("40 + 20 MiB still fit: the rejected call changed nothing");
         let kv = |n: usize| {
             (0..n).map(|i| JsKvItem { key: format!("k{i}"), value: cell(MAX_STRING_BYTES) }).collect::<Vec<_>>()
         };
-        let err = r.kv_items(kv(30)).expect_err("40 MiB of rows + 30 MiB of KV values pass 64 MiB");
+        let err = r.kv_items(kv(30), None).expect_err("60 MiB of rows + 30 MiB of KV values pass 64 MiB");
         assert!(err.reason.starts_with("cumulative byte total "), "{}", err.reason);
-        assert!(r.render_kv().expect("usable").is_empty(), "the KV slot is unchanged on error");
-        r.items(rows(1), vec!["v".to_string()]).expect("a smaller list fits");
-        r.kv_items(kv(30)).expect("now the KV values fit");
+        r.kv_items(kv(3), None).expect("3 more MiB fit");
+        // A replaced slot still gives its old bytes back.
+        r.truncation_hint("a".repeat(2000)).expect("fits");
+        r.truncation_hint("b".to_string()).expect("replacing returns the old bytes to the budget");
     }
 
     // --- AC-026: hint() and recovery_hint() are independently capped;
@@ -2138,7 +2142,7 @@ mod tests {
     #[test]
     fn ac026_hint_and_recovery_hint_are_independently_capped() {
         let mut r = JsAgentResponse::new("t".to_string());
-        r.kv_items(vec![]).unwrap();
+        r.kv_items(vec![], None).unwrap();
         for i in 0..MAX_HINTS {
             r.hint(format!("h{i}")).expect("hint calls under MAX_HINTS must all succeed");
         }
@@ -2152,10 +2156,13 @@ mod tests {
     #[test]
     fn js_agent_response_to_call_tool_result_basic() {
         let mut r = JsAgentResponse::new("issue".to_string());
-        r.kv_items(vec![JsKvItem {
-            key: "id".to_string(),
-            value: JsToonValue { int_val: Some(JsInt::try_from(1.0).expect("1 is a valid int")), ..value("int") },
-        }])
+        r.kv_items(
+            vec![JsKvItem {
+                key: "id".to_string(),
+                value: JsToonValue { int_val: Some(JsInt::try_from(1.0).expect("1 is a valid int")), ..value("int") },
+            }],
+            None,
+        )
         .unwrap();
         let result = r.to_call_tool_result().unwrap();
         assert_eq!(result.content.len(), 1);
@@ -2167,7 +2174,7 @@ mod tests {
     #[test]
     fn js_agent_response_to_call_tool_result_reflects_is_error() {
         let mut r = JsAgentResponse::new("t".to_string());
-        r.kv_items(vec![]).unwrap();
+        r.kv_items(vec![], None).unwrap();
         r.as_error().unwrap();
         let result = r.to_call_tool_result().unwrap();
         assert!(result.is_error);
@@ -2176,7 +2183,7 @@ mod tests {
     #[test]
     fn js_agent_response_to_call_tool_result_structured_content_is_parsed_json() {
         let mut r = JsAgentResponse::new("t".to_string());
-        r.kv_items(vec![]).unwrap();
+        r.kv_items(vec![], None).unwrap();
         let result = r.to_call_tool_result().unwrap();
         assert!(result.structured_content.get("isError").is_some(), "got: {:?}", result.structured_content);
     }
@@ -2184,7 +2191,7 @@ mod tests {
     #[test]
     fn js_agent_response_to_call_tool_result_includes_user_block_with_correct_annotations() {
         let mut r = JsAgentResponse::new("t".to_string());
-        r.kv_items(vec![]).unwrap();
+        r.kv_items(vec![], None).unwrap();
         r.human_content("friendly summary".to_string()).unwrap();
         let result = r.to_call_tool_result().unwrap();
         assert_eq!(result.content.len(), 2);
@@ -2195,7 +2202,7 @@ mod tests {
     #[test]
     fn js_agent_response_human_content_adds_user_audience_block() {
         let mut r = JsAgentResponse::new("t".to_string());
-        r.kv_items(vec![]).unwrap();
+        r.kv_items(vec![], None).unwrap();
         r.human_content("friendly summary".to_string()).unwrap();
         let result = r.to_call_tool_result().unwrap();
         assert_eq!(result.content.len(), 2);
@@ -2415,10 +2422,14 @@ mod tests {
     // real, parseable, distinguishable JSON. ---
 
     #[test]
-    fn ac044_render_json_is_valid_json_distinct_from_render_toon() {
+    fn ac044_render_json_is_valid_json_distinct_from_render_text() {
         let mut r = JsAgentResponse::new("issue".to_string());
-        r.items(vec![vec![JsToonValue { str_val: Some("a".to_string()), ..value("str") }]], vec!["name".to_string()])
-            .unwrap();
+        r.items(
+            vec![vec![JsToonValue { str_val: Some("a".to_string()), ..value("str") }]],
+            vec!["name".to_string()],
+            None,
+        )
+        .unwrap();
         r.hint("h".to_string()).unwrap();
 
         let json = r.render_json().expect("render_json must succeed");
@@ -2426,7 +2437,7 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&json).expect("render_json output must parse as JSON");
         assert!(parsed.is_object(), "expected a JSON object, got: {parsed:?}");
 
-        let toon = r.render_toon().expect("render_toon must succeed");
+        let toon = r.render_text().expect("render_toon must succeed");
         assert_ne!(json, toon, "render_json output must not be byte-identical to render_toon output");
     }
 
@@ -2439,31 +2450,39 @@ mod tests {
     }
 
     // --- AC-050: a recovery_hint added via the builder appears in
-    // render_toon() output, and presence vs. absence of a reason changes the
+    // render_text() output, and presence vs. absence of a reason changes the
     // rendered output. ---
 
     #[test]
     fn ac050_builder_recovery_hint_appears_in_render_toon_output() {
         let mut r_no_reason = JsAgentResponse::new("issue".to_string());
         r_no_reason
-            .items(vec![vec![JsToonValue { str_val: Some("a".to_string()), ..value("str") }]], vec!["name".to_string()])
+            .items(
+                vec![vec![JsToonValue { str_val: Some("a".to_string()), ..value("str") }]],
+                vec!["name".to_string()],
+                None,
+            )
             .unwrap();
         r_no_reason.recovery_hint("retry".to_string(), None).unwrap();
-        let out_no_reason = r_no_reason.render_toon().unwrap();
+        let out_no_reason = r_no_reason.render_text().unwrap();
         assert!(out_no_reason.contains("retry"), "got: {out_no_reason}");
 
         let mut r_with_reason = JsAgentResponse::new("issue".to_string());
         r_with_reason
-            .items(vec![vec![JsToonValue { str_val: Some("a".to_string()), ..value("str") }]], vec!["name".to_string()])
+            .items(
+                vec![vec![JsToonValue { str_val: Some("a".to_string()), ..value("str") }]],
+                vec!["name".to_string()],
+                None,
+            )
             .unwrap();
         r_with_reason.recovery_hint("retry".to_string(), Some("r".to_string())).unwrap();
-        let out_with_reason = r_with_reason.render_toon().unwrap();
+        let out_with_reason = r_with_reason.render_text().unwrap();
         assert!(out_with_reason.contains("retry"), "got: {out_with_reason}");
         assert!(out_with_reason.contains('r'), "got: {out_with_reason}");
 
         assert_ne!(
             out_no_reason, out_with_reason,
-            "presence of a reason must produce different render_toon() output than its absence"
+            "presence of a reason must produce different render_text() output than its absence"
         );
     }
 
@@ -2479,7 +2498,11 @@ mod tests {
 
         let mut r_items = JsAgentResponse::new("issue".to_string());
         r_items
-            .items(vec![vec![JsToonValue { str_val: Some("a".to_string()), ..value("str") }]], vec!["name".to_string()])
+            .items(
+                vec![vec![JsToonValue { str_val: Some("a".to_string()), ..value("str") }]],
+                vec!["name".to_string()],
+                None,
+            )
             .unwrap();
         let result_items = r_items.to_call_tool_result().expect("items-populated builder must produce Ok");
         assert!(result_items.structured_content.is_object(), "got: {:?}", result_items.structured_content);

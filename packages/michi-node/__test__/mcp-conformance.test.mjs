@@ -231,8 +231,7 @@ void describe(`MCP CallToolResult conformance (SDK protocol ${LATEST_PROTOCOL_VE
 
   void it('truncated lists and truncated cells', () => {
     check('count cut', (r) => {
-      r.items(rows(['a'], ['b']), ['v'])
-      r.totalCount(5000)
+      r.items(rows(['a'], ['b']), ['v'], 5000)
       r.hint('showing 2 of 5000')
     })
     const result = check('cell cut', (r) => {
@@ -275,8 +274,8 @@ void describe(`MCP CallToolResult conformance (SDK protocol ${LATEST_PROTOCOL_VE
           [s('b,c'), i(-2), f(0.1), b(false), nul],
         ],
         ['name', 'n', 'x', 'ok', 'gone'],
+        400,
       )
-      r.totalCount(400)
       r.hint('next: page=2')
       r.hint('filter with state=open')
       r.recoveryHint('list_pages', 'to see more')

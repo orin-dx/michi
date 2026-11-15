@@ -139,22 +139,13 @@ fn invalid_section_is_an_error_on_every_surface() {
     assert!(!AgentResponse::new("t").section(refs()).is_error());
 }
 
-fn assert_json_differs_only_by_sections(with: &str, sugar: &str) {
-    assert!(!sugar.contains("\"sections\""), "{sugar}");
-    let head = sugar.split(",\"hints\"").next().expect("body prefix");
-    assert!(with.starts_with(head), "{with}");
-    assert!(with[head.len()..].starts_with(",\"sections\":["), "{with}");
-    assert!(with.ends_with(&sugar[head.len()..]), "{with}");
-}
-
 #[test]
 fn one_section_matches_the_sugar_on_every_surface() {
     let rows = vec![vec![Value::Int(1), Value::from("open")]];
     let sugar = AgentResponse::new("issues").items(rows.clone(), &["id", "state"]).hint("h");
     let sect = AgentResponse::new("issues").section(Section::toon("issues", fields(&["id", "state"]), rows)).hint("h");
     assert_eq!(sect.render(OutputFormat::Text), sugar.render(OutputFormat::Text));
-    // JSON differs only by the `sections` key the section form adds: the `body` string is the same.
-    assert_json_differs_only_by_sections(&sect.render(OutputFormat::Json), &sugar.render(OutputFormat::Json));
+    assert_eq!(sect.render(OutputFormat::Json), sugar.render(OutputFormat::Json));
     assert_eq!(sect.render_for(Audience::Assistant), sugar.render_for(Audience::Assistant));
     assert_eq!(sect.to_call_tool_result().content[0].text, sugar.to_call_tool_result().content[0].text);
 
@@ -162,15 +153,15 @@ fn one_section_matches_the_sugar_on_every_surface() {
     let sugar = AgentResponse::new("t").kv_items(items.clone());
     let sect = AgentResponse::new("t").section(Section::kv("t", items));
     assert_eq!(sect.render(OutputFormat::Text), sugar.render(OutputFormat::Text));
-    assert_json_differs_only_by_sections(&sect.render(OutputFormat::Json), &sugar.render(OutputFormat::Json));
+    assert_eq!(sect.render(OutputFormat::Json), sugar.render(OutputFormat::Json));
 }
 
 #[test]
-fn render_toon_and_render_kv_still_read_their_slots_unconditionally() {
+fn sugar_and_sections_render_in_call_order() {
     let r = AgentResponse::new("t").items(vec![vec![Value::from("x")]], &["a"]).section(refs());
-    assert_eq!(r.render_toon(), "t[1]{a}:\n  x");
-    assert_eq!(r.render_kv(), "");
     assert_eq!(r.render(OutputFormat::Text), format!("t[1]{{a}}:\n  x\n{REFS_TEXT}"));
+    let flipped = AgentResponse::new("t").section(refs()).items(vec![vec![Value::from("x")]], &["a"]);
+    assert_eq!(flipped.render(OutputFormat::Text), format!("{REFS_TEXT}\nt[1]{{a}}:\n  x"));
 }
 
 #[test]

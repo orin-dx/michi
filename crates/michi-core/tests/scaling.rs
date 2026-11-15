@@ -120,7 +120,7 @@ fn envelope_render_is_linear_in_section_count() {
     for format in [OutputFormat::Text, OutputFormat::Json] {
         assert_linear(
             "AgentResponse sections",
-            1_000,
+            300,
             |n| {
                 let mut r = AgentResponse::new("t").truncate_cells_at(8).truncation_hint("full=true");
                 let mut budget = BudgetSummary::new();

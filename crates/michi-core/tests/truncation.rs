@@ -3,6 +3,7 @@
 
 use michi_core::response::{AgentResponse, OutputFormat};
 use michi_core::toon::Value;
+use michi_core::Section;
 use michi_core::{truncate_by_count, truncate_by_size, Hint, TruncationOutcome};
 
 mod support;
@@ -169,16 +170,15 @@ fn outcomes_compare_and_clone_by_value() {
 
 // --- AgentResponse ---------------------------------------------------------------------------------------------------
 
-fn rows(kept: &[i64]) -> Vec<Vec<Value>> {
-    kept.iter().map(|n| vec![Value::Int(*n)]).collect()
+fn issues(kept: &[i64]) -> Section {
+    Section::toon("issues", vec!["n".into()], kept.iter().map(|n| vec![Value::Int(*n)]).collect())
 }
 
 #[test]
-fn agent_response_truncation_sets_the_count_and_hint_together() {
+fn agent_response_truncated_section_sets_the_count_and_hint_together() {
     let outcome = truncate_by_count(vec![1, 2, 3, 4, 5], 2);
     let r = AgentResponse::new("issues")
-        .items(rows(&outcome.kept), &["n"])
-        .truncation(&outcome, "pass --limit 5")
+        .truncated_section(issues(&outcome.kept), &outcome, "pass --limit 5")
         .hint("call get_issue for details");
     let out = r.render(OutputFormat::Text);
     assert_eq!(
@@ -197,18 +197,25 @@ fn agent_response_truncation_sets_the_count_and_hint_together() {
 }
 
 #[test]
-fn agent_response_truncation_without_a_cut_sets_the_count_and_no_hint() {
+fn agent_response_truncated_section_without_a_cut_adds_no_count_and_no_hint() {
+    // A total equal to the rows returned says nothing new, so `totalCount` stays out (sections render it only when
+    // more existed).
     let outcome = truncate_by_count(vec![1, 2], 5);
-    let r = AgentResponse::new("issues").items(rows(&outcome.kept), &["n"]).truncation(&outcome, "pass --limit 5");
+    let r = AgentResponse::new("issues").truncated_section(issues(&outcome.kept), &outcome, "pass --limit 5");
     let out = r.render(OutputFormat::Text);
-    assert_eq!(out, "issues[2]{n}:\n  1\n  2\ntotalCount: 2");
+    assert_eq!(out, "issues[2]{n}:\n  1\n  2");
+    assert!(!r.render(OutputFormat::Json).contains("\"truncated\":true"));
     decode(&out).unwrap_or_else(|e| panic!("not conformant TOON 4.4: {e}\n{out}"));
 }
 
 #[test]
 fn agent_response_truncation_with_nothing_kept_is_conformant() {
     let outcome = truncate_by_size(vec!["huge".to_string()], 1, String::len);
-    let r = AgentResponse::new("blocks").items(vec![], &["text"]).truncation(&outcome, "raise --budget");
+    let r = AgentResponse::new("blocks").truncated_section(
+        Section::toon("blocks", vec!["text".into()], vec![]),
+        &outcome,
+        "raise --budget",
+    );
     let out = r.render(OutputFormat::Text);
     assert_eq!(out, "blocks: []\ntotalCount: 1\nhelp[1]: showing 0 of 1; raise --budget");
     decode(&out).unwrap_or_else(|e| panic!("not conformant TOON 4.4: {e}\n{out}"));

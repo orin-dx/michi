@@ -17,28 +17,22 @@ pub enum OutputFormat {
     Json,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum RenderTarget {
-    Unset,
-    Toon,
-    Kv,
-}
-
 /// Default per-cell truncation limit used by [`AgentResponse::new`].
 pub const DEFAULT_TRUNCATE_CELLS: usize = 200;
 
-/// Builder for an agent-facing response.
+/// Builder for an agent-facing response: an ordered list of [`Section`]s, an optional budget report and provenance
+/// block, hints and recovery hints.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct AgentResponse {
-    /// The TOON list slot: type name, fields, rows, total count, cell cap and truncation hint, kept as the options
-    /// the renderer validates and renders by reference, so a render never copies the rows. Its `hints` stay empty:
-    /// the response's hints are appended after the body instead.
-    toon: crate::toon::ToonOptions,
-    target: RenderTarget,
-    single_item: Vec<KvItem>,
-    /// Sections added with [`section`](Self::section), rendered in insertion order after the `items()` / `kv_items()`
-    /// slot (when one was set). Empty for every response that predates sections, which renders as it always did.
+    /// The type name given to [`new`](Self::new): it names the sections that [`items`](Self::items) and
+    /// [`kv_items`](Self::kv_items) append, and the empty list an untouched response renders.
+    name: String,
+    /// Per-cell cap for every `Toon` section, set with [`truncate_cells_at`](Self::truncate_cells_at).
+    max_cell_len: usize,
+    /// The caller's instruction for getting a cut cell in full, set with [`truncation_hint`](Self::truncation_hint).
+    truncation_hint: Option<String>,
+    /// Every block, in call order. The one place a response keeps its body.
     sections: Vec<Section>,
     /// Response-level budget report, set with `budget()`.
     budget: Option<BudgetSummary>,
@@ -51,12 +45,14 @@ pub struct AgentResponse {
 }
 
 impl AgentResponse {
-    /// Create a new, empty response for the given type name.
+    /// Create a new, empty response for the given type name. The name labels the sections that
+    /// [`items`](Self::items) and [`kv_items`](Self::kv_items) add. A response that never gets a section, budget or
+    /// provenance renders `name: []`, the definitive empty list.
     pub fn new(type_name: impl Into<String>) -> Self {
         Self {
-            toon: crate::toon::ToonOptions::new(type_name, Vec::new(), Vec::new()).max_cell_len(DEFAULT_TRUNCATE_CELLS),
-            target: RenderTarget::Unset,
-            single_item: Vec::new(),
+            name: type_name.into(),
+            max_cell_len: DEFAULT_TRUNCATE_CELLS,
+            truncation_hint: None,
             sections: Vec::new(),
             budget: None,
             provenance: None,
@@ -67,69 +63,65 @@ impl AgentResponse {
         }
     }
 
-    /// Populate the TOON list path.
+    /// Append a TOON list section named for the response's type: shorthand for
+    /// `section(Section::toon(name, fields, rows))`. Every call adds a section, so calling it twice, or mixing it with
+    /// [`kv_items`](Self::kv_items), renders every body in call order. To report a total, build the section yourself
+    /// and set [`Section::total_count`].
     #[must_use]
-    pub fn items(mut self, rows: Vec<Vec<Value>>, fields: &[&str]) -> Self {
-        self.toon.rows = rows;
-        self.toon.fields = fields.iter().map(|s| (*s).to_string()).collect();
-        self.target = RenderTarget::Toon;
-        self
+    pub fn items(self, rows: Vec<Vec<Value>>, fields: &[&str]) -> Self {
+        let name = self.name.clone();
+        self.section(Section::toon(name, fields.iter().map(|s| (*s).to_string()).collect(), rows))
     }
 
-    /// Set the total available count.
-    #[must_use]
-    pub fn total_count(mut self, n: usize) -> Self {
-        self.toon.total_count = Some(n);
-        self
-    }
-
-    /// Report a list cut in one call: sets the total count to `outcome.total_before` and, only when something was
-    /// cut, appends [`TruncationOutcome::hint`](crate::truncation::TruncationOutcome::hint)`(guidance)`, so the
-    /// `totalCount` and the `help[]` line always describe the same cut.
+    /// Append a section for a cut list, in one call: `section` gets `totalCount` (`outcome.total_before`) and its
+    /// `truncated` flag from `outcome`, and, only when something was cut, [`TruncationOutcome::hint`](crate::truncation::TruncationOutcome::hint) is appended to
+    /// the hints. The count and the `help[]` line therefore always describe the same cut.
     ///
-    /// It does not set the rows: the response holds TOON [`Value`] rows, not the caller's `T`, so pass `outcome.kept`
-    /// (converted to rows) to [`items`](Self::items) yourself. Later [`total_count`](Self::total_count) or
-    /// [`hints`](Self::hints) calls still override what this sets.
+    /// The response holds TOON [`Value`] rows, not the caller's `T`, so build `section` from `outcome.kept`
+    /// (converted to rows). `totalCount` renders only when `total_before` exceeds the section's rows.
     ///
     /// ```
     /// use michi_core::toon::Value;
-    /// use michi_core::{truncate_by_count, AgentResponse, OutputFormat};
+    /// use michi_core::{truncate_by_count, AgentResponse, OutputFormat, Section};
     ///
     /// let outcome = truncate_by_count(vec![1, 2, 3, 4], 2);
     /// let rows = outcome.kept.iter().map(|n| vec![Value::Int(*n)]).collect();
-    /// let r = AgentResponse::new("issues").items(rows, &["n"]).truncation(&outcome, "pass --limit 4");
+    /// let r = AgentResponse::new("issues").truncated_section(
+    ///     Section::toon("issues", vec!["n".into()], rows),
+    ///     &outcome,
+    ///     "pass --limit 4",
+    /// );
     /// assert_eq!(
     ///     r.render(OutputFormat::Text),
     ///     "issues[2]{n}:\n  1\n  2\ntotalCount: 4\nhelp[1]: showing 2 of 4; pass --limit 4"
     /// );
     /// ```
     #[must_use]
-    pub fn truncation<T>(
+    pub fn truncated_section<T>(
         mut self,
+        section: Section,
         outcome: &crate::truncation::TruncationOutcome<T>,
         guidance: impl Into<String>,
     ) -> Self {
-        self.toon.total_count = Some(outcome.total_before);
         if let Some(hint) = outcome.hint(guidance) {
             self.hints.push(hint);
         }
-        self
+        self.section(section.total_count(Some(outcome.total_before)).truncated(outcome.truncated()))
     }
 
-    /// Populate the KV single-item path.
+    /// Append a KV section named for the response's type: shorthand for `section(Section::kv(name, items))`. The name
+    /// is not printed for a KV body. Every call adds a section; see [`items`](Self::items).
     #[must_use]
-    pub fn kv_items(mut self, items: Vec<KvItem>) -> Self {
-        self.single_item = items;
-        self.target = RenderTarget::Kv;
-        self
+    pub fn kv_items(self, items: Vec<KvItem>) -> Self {
+        let name = self.name.clone();
+        self.section(Section::kv(name, items))
     }
 
-    /// Append a section. Sections render in insertion order after the `items()` / `kv_items()` slot, if one was set;
-    /// the caller owns ordering. A response with no section, or one section and no `items()` / `kv_items()`, renders
-    /// exactly as the sugar for that section would.
+    /// Append a section. Sections render in call order, the one place a response keeps its body: the caller owns
+    /// ordering.
     ///
     /// The response's cell cap ([`truncate_cells_at`](Self::truncate_cells_at)) and truncation hint apply to every
-    /// `Toon` body. A section's `totalCount` comes from [`Section::total_count`], not from the response's.
+    /// `Toon` body. A section's `totalCount` comes from [`Section::total_count`].
     #[must_use]
     pub fn section(mut self, section: Section) -> Self {
         self.sections.push(section);
@@ -138,11 +130,11 @@ impl AgentResponse {
 
     /// Attach the response-level budget report; one per response, a second call replaces the first. It renders as a
     /// `budget:` block after the last section (see [`BudgetSummary`] for what it carries), and the per-section
-    /// roll-up appears only when the response renders two or more blocks, counting the `items()` / `kv_items()` slot
-    /// as one when it has content. michi renders the report; it never computes it.
+    /// roll-up appears only when the response has two or more sections. michi renders the report; it never computes
+    /// it.
     ///
-    /// A response with a budget or provenance but no `items()` / `kv_items()` call has no body of its own: the empty
-    /// `type: []` line that an untouched response renders is left out, as it is when sections are present.
+    /// A response with a budget or provenance but no section has no body of its own: the empty `type: []` line that
+    /// an untouched response renders is left out.
     #[must_use]
     pub fn budget(mut self, budget: BudgetSummary) -> Self {
         self.budget = Some(budget);
@@ -185,7 +177,7 @@ impl AgentResponse {
     /// written longer than `limit` (see [`crate::toon::ToonOptions::max_cell_len`]). The KV path is never truncated.
     #[must_use]
     pub fn truncate_cells_at(mut self, limit: usize) -> Self {
-        self.toon.max_cell_len = limit;
+        self.max_cell_len = limit;
         self
     }
 
@@ -195,7 +187,7 @@ impl AgentResponse {
     /// may not have, and the `truncated` block still reports each cut. Pass tool-author text, never data.
     #[must_use]
     pub fn truncation_hint(mut self, hint: impl Into<String>) -> Self {
-        self.toon.truncation_hint = Some(hint.into());
+        self.truncation_hint = Some(hint.into());
         self
     }
 
@@ -213,19 +205,6 @@ impl AgentResponse {
         self
     }
 
-    /// The TOON body, and whether it is a validation-failure error block instead of the requested rows.
-    ///
-    /// The third item is the `help[]` line michi adds when it cut a cell and a truncation hint is set.
-    fn toon_body(&self) -> (String, bool, Option<Hint>) {
-        match self.toon.validate() {
-            Ok(doc) => {
-                let (body, _, extra) = doc.render_parts(true);
-                (body, false, extra.map(Hint::new))
-            }
-            Err(e) => (validation_error_body("toon_validation_failed", &e.to_string()), true, None),
-        }
-    }
-
     /// The caller's hints, then michi's own truncation line when there is one: a single `help` block.
     fn hints_with<'a>(&'a self, extra: &[Hint]) -> std::borrow::Cow<'a, [Hint]> {
         if extra.is_empty() {
@@ -239,7 +218,7 @@ impl AgentResponse {
     }
 
     /// The options a `Toon` section renders by: the response's cell cap and truncation hint, the section's own
-    /// `totalCount` rule. Copies the rows, which the single-slot path avoids by rendering its options in place.
+    /// `totalCount` rule. Copies the rows: `ToonOptions` owns them.
     fn section_options(
         &self,
         name: &str,
@@ -249,44 +228,18 @@ impl AgentResponse {
     ) -> crate::toon::ToonOptions {
         let mut opts = crate::toon::ToonOptions::new(name, fields.to_vec(), rows.to_vec());
         opts.total_count = shown_total;
-        opts.max_cell_len = self.toon.max_cell_len;
-        opts.truncation_hint.clone_from(&self.toon.truncation_hint);
+        opts.max_cell_len = self.max_cell_len;
+        opts.truncation_hint.clone_from(&self.truncation_hint);
         opts
     }
 
-    /// The KV body, and whether it is a validation-failure error block instead of the requested items (a duplicate
-    /// or reserved key, see [`crate::kv::KvError`]).
-    fn kv_body(&self) -> (String, bool) {
-        // `render_kv` renders nothing for no items, dropping the count; a response that set one still reports it,
-        // as the TOON path does (`t: []\ntotalCount: 0`).
-        if self.single_item.is_empty() {
-            let body = self.toon.total_count.map_or_else(String::new, |n| format!("totalCount: {n}"));
-            return (body, false);
-        }
-        match crate::kv::render_kv(&self.single_item, self.toon.total_count, &[]) {
-            Ok(body) => (body, false),
-            Err(e) => (validation_error_body("kv_validation_failed", &e.to_string()), true),
-        }
-    }
-
-    /// Whether the response uses any envelope slot (sections, budget or provenance). Without one it renders exactly
-    /// as it did before the envelope existed.
-    fn has_envelope(&self) -> bool {
-        !self.sections.is_empty() || self.budget.is_some() || self.provenance.is_some()
-    }
-
-    /// The `items()` / `kv_items()` slot as an envelope part.
-    fn slot_part(&self) -> (Part<'_>, bool, Option<Hint>) {
-        match self.target {
-            RenderTarget::Toon | RenderTarget::Unset => match self.toon.validate() {
-                Ok(doc) => {
-                    let (text, cuts, extra) = doc.render_parts(false);
-                    let name = self.toon.type_name.as_str();
-                    (Part { name, text, cuts, total: self.toon.total_count }, false, extra.map(Hint::new))
-                }
-                Err(e) => (Part::failed(&self.toon.type_name, "toon_validation_failed", &e.to_string()), true, None),
-            },
-            RenderTarget::Kv => kv_part(&self.toon.type_name, &self.single_item, self.toon.total_count),
+    /// The blocks to render: the sections, or, for a response with nothing at all, the one empty list that names
+    /// its type. A budget or provenance block stands alone, with no empty list before it.
+    fn blocks(&self) -> std::borrow::Cow<'_, [Section]> {
+        if self.sections.is_empty() && self.budget.is_none() && self.provenance.is_none() {
+            std::borrow::Cow::Owned(vec![Section::toon(self.name.as_str(), Vec::new(), Vec::new())])
+        } else {
+            std::borrow::Cow::Borrowed(&self.sections)
         }
     }
 
@@ -308,16 +261,21 @@ impl AgentResponse {
         }
     }
 
-    /// The body for a response that uses the envelope: slot (if used), sections, `budget:`, `provenance:`.
+    /// The body: sections, `budget:`, `provenance:`.
     ///
     /// Blocks are joined with one LF and empty ones are skipped. `truncated` and `totalCount` are root keys, so they
-    /// may appear once: when one block has them they stay inline where the single-slot render puts them; when two or
-    /// more do, each becomes one table with a leading `section` column, after the last block.
-    fn envelope_body<'a>(&'a self) -> (String, bool, Vec<Hint>) {
-        let mut parts: Vec<Part<'a>> = Vec::with_capacity(self.sections.len() + 1);
+    /// may appear once: when one block has them they stay inline after its list; when two or more do, each becomes
+    /// one table with a leading `section` column, after the last block.
+    ///
+    /// The flag is whether this response is an error: set by `as_error()` or by a block that failed validation.
+    /// Every output surface reads its error flag from here so text, JSON and MCP never disagree.
+    fn body(&self) -> (String, bool, Vec<Hint>) {
+        let blocks = self.blocks();
+        let mut parts: Vec<Part<'_>> = Vec::with_capacity(blocks.len());
         let mut failed = false;
         let mut extras: Vec<Hint> = Vec::new();
-        let mut note = |(part, part_failed, extra): (Part<'a>, bool, Option<Hint>)| {
+        for s in blocks.iter() {
+            let (part, part_failed, extra) = self.section_part(s);
             failed |= part_failed;
             // One line per cut response is enough: every section's line says the same thing.
             if let Some(h) = extra {
@@ -325,17 +283,7 @@ impl AgentResponse {
                     extras.push(h);
                 }
             }
-            part
-        };
-        let mut slot_has_content = false;
-        // An untouched `items()` / `kv_items()` slot has no body of its own to put before the envelope.
-        if self.target != RenderTarget::Unset {
-            let part = note(self.slot_part());
-            slot_has_content = !part.text.is_empty() || part.total.is_some();
             parts.push(part);
-        }
-        for s in &self.sections {
-            parts.push(note(self.section_part(s)));
         }
         let cutters = parts.iter().filter(|p| !p.cuts.is_empty()).count();
         let totals = parts.iter().filter(|p| p.total.is_some()).count();
@@ -356,29 +304,12 @@ impl AgentResponse {
             join_block(&mut out, &total_table(&parts));
         }
         if let Some(b) = &self.budget {
-            let blocks = self.sections.len() + usize::from(slot_has_content);
-            join_block(&mut out, &crate::budget::render_budget_block(b, blocks >= 2));
+            join_block(&mut out, &crate::budget::render_budget_block(b, self.sections.len() >= 2));
         }
         if let Some(p) = &self.provenance {
             join_block(&mut out, &crate::provenance::render_provenance_block(p));
         }
         (out, failed || self.is_error, extras)
-    }
-
-    /// The selected body, and whether this response is an error: set by `as_error()` or by a body that failed
-    /// validation. Every output surface reads its error flag from here so text, JSON and MCP never disagree.
-    fn body(&self) -> (String, bool, Vec<Hint>) {
-        if self.has_envelope() {
-            return self.envelope_body();
-        }
-        let (body, failed, extra) = match self.target {
-            RenderTarget::Toon | RenderTarget::Unset => self.toon_body(),
-            RenderTarget::Kv => {
-                let (body, failed) = self.kv_body();
-                (body, failed, None)
-            }
-        };
-        (body, failed || self.is_error, extra.into_iter().collect())
     }
 
     /// Compose the text document: body, help block, recovery block. Each part is a TOON 4.4 document without a
@@ -403,38 +334,18 @@ impl AgentResponse {
         }
     }
 
-    /// Render via the TOON path.
-    #[must_use]
-    pub fn render_toon(&self) -> String {
-        let (body, _, extra) = self.toon_body();
-        self.finish_text(body, extra.as_slice())
-    }
-
-    /// Render via the KV path.
-    #[must_use]
-    pub fn render_kv(&self) -> String {
-        self.finish_text(self.kv_body().0, &[])
-    }
-
     fn render_text(&self) -> String {
         let (body, _, extra) = self.body();
         self.finish_text(body, &extra)
     }
 
-    /// Whether this response is an error: `as_error()` was called, or the TOON rows or KV items failed validation and
-    /// the body is a `toon_validation_failed` or `kv_validation_failed` error block. Validates without rendering.
+    /// Whether this response is an error: `as_error()` was called, or a section's TOON rows or KV items failed
+    /// validation and its block is a `toon_validation_failed` or `kv_validation_failed` error block. Validates
+    /// without rendering.
     #[must_use]
     pub fn is_error(&self) -> bool {
-        let slot_failed = match self.target {
-            RenderTarget::Toon | RenderTarget::Unset => self.toon.validate().is_err(),
-            RenderTarget::Kv => crate::kv::validate_keys(&self.single_item).is_err(),
-        };
-        if !self.has_envelope() {
-            return self.is_error || slot_failed;
-        }
         self.is_error
-            || (slot_failed && self.target != RenderTarget::Unset)
-            || self.sections.iter().any(|s| match &s.body {
+            || self.blocks().iter().any(|s| match &s.body {
                 SectionBody::Toon { fields, rows } => {
                     self.section_options(&s.name, fields, rows, s.shown_total()).validate().is_err()
                 }
@@ -491,7 +402,7 @@ impl AgentResponse {
         let hints = self.hints_with(extra);
         let capacity =
             body.len() + hints.iter().map(|h| h.as_str().len() + 16).sum::<usize>() + self.recovery.len() * 64 + 64;
-        let mut out = String::with_capacity(capacity + if self.has_envelope() { body.len() + 128 } else { 0 });
+        let mut out = String::with_capacity(capacity + body.len() + 128);
         out.push_str("{\"body\":");
         json_string(&mut out, body);
         if !self.sections.is_empty() {
@@ -571,7 +482,7 @@ impl<'a> Part<'a> {
     }
 }
 
-/// A KV block as a part. No items still reports a count the caller set, as the single-slot render does.
+/// A KV block as a part. No items still reports a larger total the caller set.
 fn kv_part<'a>(name: &'a str, items: &[KvItem], total: Option<usize>) -> (Part<'a>, bool, Option<Hint>) {
     if items.is_empty() {
         return (Part { name, text: String::new(), cuts: Vec::new(), total }, false, None);
@@ -593,7 +504,7 @@ fn join_block(out: &mut String, block: &str) {
     out.push_str(block);
 }
 
-/// The `truncated` block for the cuts of `parts`. A single block uses the shape the single-slot render has
+/// The `truncated` block for the cuts of `parts`. A single block uses the inline shape
 /// (`{row,field,removed}`); several share one table with a leading `section` column.
 fn truncated_table(parts: &[Part<'_>]) -> String {
     use std::fmt::Write as _;
@@ -790,12 +701,13 @@ mod tests {
     }
 
     #[test]
-    fn kv_path_with_no_items_keeps_the_total_count() {
-        let r = AgentResponse::new("t").kv_items(vec![]).total_count(0);
-        assert_eq!(r.render(OutputFormat::Text), "totalCount: 0");
+    fn kv_section_with_no_items_still_reports_a_larger_total() {
+        let r = AgentResponse::new("t").section(Section::kv("k", vec![]).total_count(Some(3)));
+        assert_eq!(r.render(OutputFormat::Text), "totalCount: 3");
         let json = r.render(OutputFormat::Json);
-        assert!(json.starts_with("{\"body\":\"totalCount: 0\","), "{json}");
-        let with_hint = AgentResponse::new("t").kv_items(vec![]).total_count(3).hint("try another id");
+        assert!(json.starts_with("{\"body\":\"totalCount: 3\","), "{json}");
+        let with_hint =
+            AgentResponse::new("t").section(Section::kv("k", vec![]).total_count(Some(3))).hint("try another id");
         assert_eq!(with_hint.render(OutputFormat::Text), "totalCount: 3\nhelp[1]: try another id");
         assert_eq!(AgentResponse::new("t").kv_items(vec![]).render(OutputFormat::Text), "", "no count, no body");
     }
@@ -817,8 +729,8 @@ mod tests {
     }
 
     // AC-004: render(Json) parses as an object with exactly the 4 named top-level keys plus the envelope keys
-    // (`sections`, `budget`, `provenance`) whose slots were set, for every construction path. A response built only
-    // through the pre-envelope API keeps exactly the four.
+    // (`sections`, `budget`, `provenance`) that were set, for every construction path. `items()` and `kv_items()`
+    // add a section, so they add `sections`; a response with no body at all keeps exactly the four.
     #[test]
     #[cfg(feature = "serde")]
     fn ac004_render_json_top_level_keys_are_the_four_plus_the_envelope_keys_that_were_set() {
@@ -828,8 +740,8 @@ mod tests {
         let base = ["body", "hints", "isError", "recovery"];
         let cases: Vec<(AgentResponse, Vec<&str>)> = vec![
             (AgentResponse::new("t"), vec![]),
-            (AgentResponse::new("t").items(vec![vec![Value::from("x")]], &["a"]), vec![]),
-            (AgentResponse::new("t").kv_items(vec![kv_item()]), vec![]),
+            (AgentResponse::new("t").items(vec![vec![Value::from("x")]], &["a"]), vec!["sections"]),
+            (AgentResponse::new("t").kv_items(vec![kv_item()]), vec!["sections"]),
             (AgentResponse::new("t").section(section()), vec!["sections"]),
             (AgentResponse::new("t").budget(BudgetSummary::new()), vec!["budget"]),
             (AgentResponse::new("t").provenance(ProvenanceBlock::new()), vec!["provenance"]),
@@ -909,23 +821,13 @@ mod tests {
         assert_eq!(parsed["body"].as_str().unwrap(), "k: \"body \\\"quoted\\\" \\\\slash\"");
     }
 
-    // AC-009: render_toon()/render_kv() always run their own named path
-    // regardless of which builder method last set the target.
+    // AC-010: render(Text) for a lone kv_items() section is exactly the kv document.
     #[test]
-    fn ac009_render_toon_and_render_kv_diverge_when_only_items_was_set() {
-        let r = AgentResponse::new("t").items(vec![vec![Value::from("x")]], &["a"]);
-        assert_eq!(r.render_toon(), "t[1]{a}:\n  x");
-        assert_eq!(r.render_kv(), "");
-    }
-
-    // AC-010: render(Text) target-based dispatch agrees with render_kv()
-    // when kv_items() was the last builder call used.
-    #[test]
-    fn ac010_render_text_agrees_with_render_kv_when_kv_items_set() {
+    fn ac010_render_text_for_kv_items_is_the_kv_document() {
         use crate::kv::{KvItem, KvValue};
         let items = vec![KvItem { key: "id".into(), value: KvValue::Int(1) }];
-        let r = AgentResponse::new("t").kv_items(items);
-        assert_eq!(r.render(OutputFormat::Text), r.render_kv());
+        let r = AgentResponse::new("t").kv_items(items.clone());
+        assert_eq!(Ok(r.render(OutputFormat::Text)), crate::kv::render_kv(&items, None, &[]));
     }
 
     // AC-012: Missing rendered via the AgentResponse Json body is the TOON
@@ -1137,7 +1039,7 @@ mod tests {
     #[test]
     fn ac029_truncate_cells_at_bounds_total_cell_length() {
         let r = AgentResponse::new("t").truncate_cells_at(5).items(vec![vec![Value::from("abcdefghij")]], &["name"]);
-        let out = r.render_toon();
+        let out = r.render(OutputFormat::Text);
         let row_line = out.lines().nth(1).expect("row line present");
         // A 5-char cap cannot hold the suffix, so the cell is 4 kept chars and an ellipsis.
         assert_eq!(row_line, "  abcd…");
@@ -1146,12 +1048,12 @@ mod tests {
     #[test]
     fn truncation_hint_passes_through_to_toon_body() {
         let rows = vec![vec![Value::from("a".repeat(500))]];
-        let without = AgentResponse::new("t").items(rows.clone(), &["c"]).render_toon();
+        let without = AgentResponse::new("t").items(rows.clone(), &["c"]).render(OutputFormat::Text);
         let cut = format!("t[1]{{c}}:\n  {}\u{2026}\ntruncated[1]{{row,field,removed}}:\n  0,c,301", "a".repeat(199));
         assert_eq!(without, cut);
         let with = AgentResponse::new("t").truncation_hint("detail=full").items(rows, &["c"]);
         assert_eq!(
-            with.render_toon(),
+            with.render(OutputFormat::Text),
             format!("{cut}\nhelp[1]: Cut cells are listed in the truncated block; use detail=full for the full value")
         );
         assert!(with.render(OutputFormat::Json).contains("use detail=full"));
@@ -1165,31 +1067,22 @@ mod tests {
         let r = AgentResponse::new("t")
             .truncate_cells_at(5)
             .kv_items(vec![KvItem { key: "k".into(), value: KvValue::Text(long_value.clone()) }]);
-        let out = r.render_kv();
+        let out = r.render(OutputFormat::Text);
         assert!(out.contains(&long_value), "value must be untruncated, got: {out}");
     }
 
-    // AC-051: .total_count() is threaded into the KV render path, not
-    // silently dropped.
+    // AC-051/052: a section's total count reaches the text on both the KV and the TOON path, and only when it exceeds
+    // the rows returned.
     #[test]
-    fn ac051_total_count_is_wired_into_kv_render_path() {
+    fn ac051_ac052_section_total_count_is_rendered_on_both_paths_only_when_larger() {
         use crate::kv::{KvItem, KvValue};
-        let r =
-            AgentResponse::new("t").total_count(3).kv_items(vec![KvItem { key: "k".into(), value: KvValue::Int(1) }]);
-        let out = r.render_kv();
-        assert!(out.ends_with("totalCount: 3"), "got: {out}");
-    }
-
-    // AC-052: .total_count() is threaded into the TOON render path via
-    // ToonOptions::total_count(), not silently dropped.
-    #[test]
-    fn ac052_total_count_is_wired_into_toon_render_path() {
-        let r = AgentResponse::new("t").total_count(3).items(vec![vec![Value::from("x")]], &["c"]);
-        let out = r.render_toon();
-        assert!(out.contains('3'), "expected total_count 3 to surface, got: {out}");
-
-        let without_total_count = AgentResponse::new("t").items(vec![vec![Value::from("x")]], &["c"]);
-        assert_ne!(out, without_total_count.render_toon(), "total_count must change the output");
+        let kv = |total| Section::kv("k", vec![KvItem { key: "k".into(), value: KvValue::Int(1) }]).total_count(total);
+        let toon = |total| Section::toon("t", vec!["c".into()], vec![vec![Value::from("x")]]).total_count(total);
+        let text = |s: Section| AgentResponse::new("t").section(s).render(OutputFormat::Text);
+        assert_eq!(text(kv(Some(3))), "k: 1\ntotalCount: 3");
+        assert_eq!(text(toon(Some(3))), "t[1]{c}:\n  x\ntotalCount: 3");
+        assert_eq!(text(kv(Some(1))), "k: 1", "a total equal to the rows adds nothing");
+        assert_eq!(text(toon(None)), "t[1]{c}:\n  x");
     }
 
     // AC-053: .hints() replaces the full hint list rather than appending to
@@ -1226,12 +1119,12 @@ mod tests {
     #[test]
     fn ac050_default_truncate_boundary_holds_without_explicit_call() {
         let untruncated = AgentResponse::new("t").items(vec![vec![Value::from("x".repeat(199))]], &["c"]);
-        let out = untruncated.render_toon();
+        let out = untruncated.render(OutputFormat::Text);
         let cell_line = out.lines().nth(1).expect("row line present");
         assert!(cell_line.contains(&"x".repeat(199)), "199 chars must be untruncated, got: {cell_line:?}");
 
         let truncated = AgentResponse::new("t").items(vec![vec![Value::from("x".repeat(250))]], &["c"]);
-        let out = truncated.render_toon();
+        let out = truncated.render(OutputFormat::Text);
         let cell_line = out.lines().nth(1).expect("row line present");
         let value_part = cell_line.trim_start();
         assert!(

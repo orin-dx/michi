@@ -8,7 +8,7 @@ This is the michi half of a contract written down in three places. monokl's `doc
 
 ## The gap
 
-`AgentResponse` today holds exactly one body. From `crates/michi-core/src/response.rs`:
+Historical: this section describes `AgentResponse` before sections shipped. It held exactly one body. From `crates/michi-core/src/response.rs`:
 
 | Field / type | Line | What it constrains |
 | --- | --- | --- |
@@ -18,9 +18,9 @@ This is the michi half of a contract written down in three places. monokl's `doc
 | `enum RenderTarget { Unset, Toon, Kv }` | 18–22 | The two slots are mutually exclusive |
 | `toon.max_cell_len: usize` | 34 | Per-cell clamp, TOON path only, set by `truncate_cells_at()` (`DEFAULT_TRUNCATE_CELLS = 200`, line 25) |
 
-`items()` (line 59) sets `target = RenderTarget::Toon`; `kv_items()` (line 108) sets `Kv`; `body()` (line 194) dispatches on `target`, so `render()` reads whichever setter ran last. Calling both silently drops one. A ten-operation batch is not expressible: nine sections disappear with no error and no signal that they existed.
+`items()` (line 59) set `target = RenderTarget::Toon`; `kv_items()` (line 108) set `Kv`; `body()` (line 194) dispatched on `target`, so `render()` read whichever setter ran last. Calling both silently dropped one. A ten-operation batch was not expressible: nine sections disappeared with no error and no signal that they existed. Sections fixed that, and the one-section-model change removed the slots, `RenderTarget`, `render_toon()` and `render_kv()` altogether: `items()` and `kv_items()` append sections now.
 
-The truncation model has the same shape problem one level down. `truncate_cells_at` clamps a cell. `michi_core::truncate::Truncated { content, original_chars, removed }` describes a string. `michi_core::truncation::TruncationOutcome` describes one list, and `AgentResponse::truncation()` turns it into the response's `totalCount` and one `help[]` line. None describes a response of several parts. The only envelope-level "there is more" signal is `total_count: Option<usize>` plus free-text hints — a bare integer with no per-section breakdown, no relation to a budget, and no way to say why anything was dropped. monokl's `BudgetReport` would have to be flattened into free-text `hint()` calls to reach the agent at all.
+The truncation model has the same shape problem one level down. `truncate_cells_at` clamps a cell. `michi_core::truncate::Truncated { content, original_chars, removed }` describes a string. `michi_core::truncation::TruncationOutcome` describes one list, and `AgentResponse::truncation()` (now `truncated_section()`) turned it into the response's `totalCount` and one `help[]` line. None describes a response of several parts. The only envelope-level "there is more" signal is `total_count: Option<usize>` plus free-text hints — a bare integer with no per-section breakdown, no relation to a budget, and no way to say why anything was dropped. monokl's `BudgetReport` would have to be flattened into free-text `hint()` calls to reach the agent at all.
 
 ## What gets added
 
@@ -286,7 +286,7 @@ skipped[1]{index,operation,reason}:
 
 Every key in that object is camelCase — `returnedCount`, `totalCount`, `tokensUsed`, `maxTokens`, `isError`. The rendered examples above are the specification of that, not an illustration of it: a third-party harness plugin reading this JSON without linking any Rust is a first-class consumer, and `#[serde(rename_all = "camelCase")]` on every envelope type is what keeps the spelling stable. Labels inside `provenance.entries` are caller-supplied strings and michi does not case-convert them.
 
-`sections`, `budget`, and `provenance` appear only when their slots are set. A response built entirely through today's API still emits exactly `body`, `hints`, `recovery`, `isError` — the four keys AC-004 pins — so that criterion needs its assertion rewritten from "exactly this set" to "exactly this set, plus the envelope keys whose slots were set", not deleted.
+`sections`, `budget`, and `provenance` appear only when set. A response with no body, budget or provenance still emits exactly `body`, `hints`, `recovery`, `isError` — the four keys AC-004 pins. `items()` and `kv_items()` add a section, so a response built with them also carries `sections`; AC-004 asserts "the four, plus the envelope keys that were set".
 
 The schema is published through the existing `schemars` feature: `Section`, `SectionBody`, `BudgetSummary`, `SectionCost`, `ProvenanceBlock`, and `ProvenanceEntry` derive `JsonSchema`, and the server declares the result as its tool's `outputSchema`. MCP makes conformance binding once a schema is declared — servers MUST return conforming structured results, clients SHOULD validate — which is the reason to publish one rather than leave the shape implicit. The token-budget caveat in [06-decisions.md](06-decisions.md) still applies: `outputSchema` enters the context window at `tools/list` time, so declare it on always-loaded tools, not on deferred ones.
 

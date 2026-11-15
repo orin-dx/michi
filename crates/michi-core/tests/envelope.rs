@@ -58,19 +58,19 @@ fn full_envelope_renders_in_the_documented_order() {
 }
 
 #[test]
-fn legacy_slot_comes_first_and_counts_as_a_block_for_the_rollup() {
+fn sugar_and_sections_all_count_as_blocks_for_the_rollup() {
     let budget = || BudgetSummary::new().section(SectionCost::new("a", 1));
-    // One legacy block plus one section is two blocks: roll-up shown.
+    // `items()` is a section: it plus one more is two blocks, in call order, roll-up shown.
     let two = AgentResponse::new("t").items(vec![vec![Value::Int(1)]], &["n"]).section(refs()).budget(budget());
     let out = two.render(OutputFormat::Text);
     assert!(out.starts_with("t[1]{n}:\n  1\nbrief.refs[1]{symbol}:"), "{out}");
     assert!(out.contains("sections[1]{name,returned,total,truncated}:"), "{out}");
-    // A slot with no content does not count: one section, no roll-up.
-    let one = AgentResponse::new("t").kv_items(vec![]).section(refs()).budget(budget());
-    assert!(!one.render(OutputFormat::Text).contains("sections["), "{}", one.render(OutputFormat::Text));
+    // An empty KV section is still a section: two blocks, roll-up shown.
+    let empty_kv = AgentResponse::new("t").kv_items(vec![]).section(refs()).budget(budget());
+    assert!(empty_kv.render(OutputFormat::Text).contains("sections["), "{}", empty_kv.render(OutputFormat::Text));
     let one = AgentResponse::new("t").section(refs()).budget(budget());
     assert!(!one.render(OutputFormat::Text).contains("sections["));
-    // A single legacy block and no section: no roll-up either.
+    // A single `items()` section: no roll-up either.
     let slot_only = AgentResponse::new("t").items(vec![vec![Value::Int(1)]], &["n"]).budget(budget());
     assert!(!slot_only.render(OutputFormat::Text).contains("sections["));
 }
@@ -85,9 +85,10 @@ fn budget_or_provenance_alone_has_no_empty_list_line() {
 }
 
 #[test]
-fn a_response_with_neither_slot_renders_as_before() {
+fn a_response_with_no_section_renders_the_empty_list() {
     assert_eq!(AgentResponse::new("t").render(OutputFormat::Text), "t: []");
-    let r = AgentResponse::new("t").items(vec![vec![Value::Int(1)]], &["n"]).total_count(9);
+    let r = AgentResponse::new("t")
+        .section(Section::toon("t", fields(&["n"]), vec![vec![Value::Int(1)]]).total_count(Some(9)));
     assert_eq!(r.render(OutputFormat::Text), "t[1]{n}:\n  1\ntotalCount: 9");
 }
 
@@ -128,8 +129,7 @@ fn several_cut_sections_share_one_valid_truncated_table() {
 #[test]
 fn several_totals_share_one_valid_table() {
     let r = AgentResponse::new("t")
-        .items(vec![vec![Value::Int(1)]], &["n"])
-        .total_count(5)
+        .section(Section::toon("t", fields(&["n"]), vec![vec![Value::Int(1)]]).total_count(Some(5)))
         .section(symbols())
         .section(refs());
     let out = r.render(OutputFormat::Text);
@@ -168,17 +168,17 @@ fn json_carries_sections_budget_and_provenance_in_camel_case() {
 }
 
 #[test]
-fn old_api_structured_content_has_exactly_the_four_keys() {
+fn structured_content_has_the_four_keys_and_gains_sections_only_with_a_section() {
     let kv = AgentResponse::new("t").kv_items(vec![KvItem::new("k", KvValue::Int(1))]);
-    for r in [
-        AgentResponse::new("t"),
-        AgentResponse::new("t").items(vec![vec![Value::Int(1)]], &["n"]).hint("h").total_count(3),
-        kv,
-    ] {
+    let keys_of = |r: &AgentResponse| {
         let v: serde_json::Value = serde_json::from_str(&r.to_call_tool_result().structured_content).unwrap();
-        let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+        let mut keys: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
         keys.sort_unstable();
-        assert_eq!(keys, ["body", "hints", "isError", "recovery"]);
+        keys
+    };
+    assert_eq!(keys_of(&AgentResponse::new("t")), ["body", "hints", "isError", "recovery"]);
+    for r in [AgentResponse::new("t").items(vec![vec![Value::Int(1)]], &["n"]).hint("h"), kv] {
+        assert_eq!(keys_of(&r), ["body", "hints", "isError", "recovery", "sections"]);
     }
 }
 
@@ -231,7 +231,8 @@ proptest! {
     ) {
         let mut r = AgentResponse::new("root").truncate_cells_at(cap).truncation_hint("full=true");
         if slot {
-            r = r.items(cells.iter().map(|c| vec![Value::from(c.clone())]).collect(), &["c"]).total_count(7);
+            let rows = cells.iter().map(|c| vec![Value::from(c.clone())]).collect();
+            r = r.section(Section::toon("root", fields(&["c"]), rows).total_count(Some(7)));
         }
         let mut budget = BudgetSummary::new().max_tokens(1).truncated(true);
         for (i, name) in names.iter().enumerate() {
@@ -264,7 +265,7 @@ proptest! {
         let text = r.render(OutputFormat::Text);
         prop_assert!(decode(&text).is_ok(), "invalid TOON: {:?}\n{text}", decode(&text).err());
         let v = json(&r);
-        prop_assert_eq!(v["sections"].as_array().map(Vec::len), Some(names.len()));
+        prop_assert_eq!(v["sections"].as_array().map(Vec::len), Some(names.len() + usize::from(slot)));
         prop_assert_eq!(v["body"].as_str().map(|b| text.starts_with(b)), Some(true));
     }
 }
