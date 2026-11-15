@@ -80,16 +80,14 @@ Setters return `void`, not `this`, so call them as sequential statements rather 
 | Method | Signature |
 | --- | --- |
 | `constructor` | `(typeName: string)` |
-| `.items` | `(rows: ToonValue[][], fields: string[]) => void` |
-| `.totalCount` | `(n: number) => void` |
-| `.kvItems` | `(items: KvItem[]) => void` |
+| `.items` | `(rows: ToonValue[][], fields: string[], totalCount?: number \| null) => void` — appends a TOON list section named for the response's type; each call adds one, rendered in call order. `totalCount` is how many rows existed before a cut and renders only when it is larger than the rows passed |
+| `.kvItems` | `(items: KvItem[], totalCount?: number \| null) => void` — appends a key-value section the same way |
 | `.hint` | `(hint: string) => void` |
 | `.recoveryHint` | `(tool: string, reason?: string) => void` |
 | `.truncationHint` | `(hint: string) => void` — the caller's instruction for getting a cut cell in full (same as `ToonOptions.truncationHint`). Cut cells end in `…` and are listed in a `truncated[N]{row,field,removed}:` block; when a cell was cut, the hint adds one `help[]` line after your own hints. Without it the block still reports each cut |
 | `.asError` | `() => void` |
-| `.renderToon` | `() => string` — slot-specific, reads only `items`/`fields` |
-| `.renderKv` | `() => string` — slot-specific, reads only `kvItems` |
-| `.renderJson` | `() => string` — compact JSON: `{"body":...,"hints":[...],"recovery":[...],"isError":bool}` |
+| `.renderText` | `() => string` — the sections in call order, then `help[]` and `recovery[]` |
+| `.renderJson` | `() => string` — compact JSON: `{"body":...,"sections":[...],"hints":[...],"recovery":[...],"isError":bool}` |
 | `.renderHintsOnly` | `() => string` — just the `help[N]: …` line |
 | `.humanContent` | `(text: string) => void` — attach a `user`-audience companion block for `toCallToolResult()` |
 | `.hasHumanContent` | `() => boolean` — whether `.humanContent()` was set |

@@ -14,7 +14,7 @@
 | Retryable status classification | Hardcoded booleans per caller | `resilience::is_retryable_status()` |
 | Error classification shape | Ad hoc per tool | `error::Error`, `error::DomainError`, `error::ErrorCode` |
 | Empty state handling | Ad hoc per tool (often silent) | `empty::empty_state()` |
-| Truncation | Ad hoc per tool, no standard signal | `truncate::truncate()`; for lists, `TruncationOutcome` and `AgentResponse::truncation()` |
+| Truncation | Ad hoc per tool, no standard signal | `truncate::truncate()`; for lists, `TruncationOutcome` and `AgentResponse::truncated_section()` |
 
 ### Genuinely new — no shared primitive existed before this
 

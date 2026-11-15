@@ -220,7 +220,7 @@ pub struct Sensitive<T>(pub T);
 
 ### `AgentResponse` Builder
 
-`AgentResponse` composes lists, key-value single items, hints, and audience routing. It is a **consuming** builder — every setter takes `self` by value and returns `Self`, so calls chain (`AgentResponse::new("t").items(...).hint(...)`), not `&mut self` mutation:
+`AgentResponse` composes an ordered list of sections (TOON lists, key-value blocks, text), hints, recovery hints and audience routing. It is a **consuming** builder — every setter takes `self` by value and returns `Self`, so calls chain (`AgentResponse::new("t").items(...).hint(...)`), not `&mut self` mutation:
 
 ```rust
 /// The default TOON cell cap, in chars (`michi_core::response::DEFAULT_TRUNCATE_CELLS`; not at the root).
@@ -235,31 +235,32 @@ pub struct AgentResponse { ... }
 
 impl AgentResponse {
     pub fn new(type_name: impl Into<String>) -> Self;
+    /// Sugar for `section(Section::toon(type_name, fields, rows))`. Every call appends.
     pub fn items(self, rows: Vec<Vec<Value>>, fields: &[&str]) -> Self;
-    pub fn total_count(self, n: usize) -> Self;
-    /// total_count = outcome.total_before; appends outcome.hint(guidance) only when something was cut.
-    pub fn truncation<T>(self, outcome: &TruncationOutcome<T>, guidance: impl Into<String>) -> Self;
+    /// Sugar for `section(Section::kv(type_name, items))`. Every call appends.
     pub fn kv_items(self, items: Vec<KvItem>) -> Self;
+    /// Appends a section; sections render in call order.
+    pub fn section(self, section: Section) -> Self;
+    /// Appends `section` with its total (`outcome.total_before`) and `truncated` flag taken from `outcome`, and
+    /// `outcome.hint(guidance)` to the hints only when something was cut.
+    pub fn truncated_section<T>(self, section: Section, outcome: &TruncationOutcome<T>, guidance: impl Into<String>) -> Self;
     pub fn hint(self, hint: impl Into<String>) -> Self;
     /// Replaces the full hint list (contrast `hint()`, which appends).
     pub fn hints(self, hints: Vec<Hint>) -> Self;
     pub fn recovery_hint(self, r: RecoveryHint) -> Self;
-    /// Overrides the default TOON cell truncation limit (200 chars, counted before escaping/quoting); TOON path only.
+    /// Overrides the default TOON cell truncation limit (200 chars, counted before escaping/quoting); every `Toon`
+    /// section, never `Kv` or `Text`.
     pub fn truncate_cells_at(self, limit: usize) -> Self;
-    /// Passed through to `ToonOptions::truncation_hint`; unset by default.
+    /// Passed through to `ToonOptions::truncation_hint` for every `Toon` section; unset by default.
     pub fn truncation_hint(self, hint: impl Into<String>) -> Self;
     pub fn as_error(self) -> Self;
     pub fn human_content(self, text: impl Into<String>) -> Self;
 
-    /// Dispatches on which of `.items()`/`.kv_items()` was called last.
+    /// The one render path: every section in call order, then `budget:`, `provenance:`, `help[]`, `recovery[]`.
     pub fn render(&self, format: OutputFormat) -> String;
-    /// Reads the TOON slot unconditionally, regardless of which builder path was last set.
-    pub fn render_toon(&self) -> String;
-    /// Reads the KV slot unconditionally, regardless of which builder path was last set.
-    pub fn render_kv(&self) -> String;
     /// Just the `help[N]: …` document for `.hint()`/`.hints()`.
     pub fn render_hints_only(&self) -> String;
-    /// `as_error()` was called, or the TOON rows / KV items fail validation. Validates without rendering.
+    /// `as_error()` was called, or a section's TOON rows / KV items fail validation. Validates without rendering.
     pub fn is_error(&self) -> bool;
     /// `"user"` falls back to `render(OutputFormat::Text)` when `.human_content()` was never set.
     pub fn render_for(&self, audience: Audience) -> String;
@@ -270,11 +271,11 @@ impl AgentResponse {
 
 `render_json()` is not part of the public API — it's reached only via `render(OutputFormat::Json)`.
 
-The TOON slot is stored as a `ToonOptions` and validated and rendered by reference, so a render never copies the rows. `is_error()` validates without rendering. Hints and recovery are appended to the rendered body in place. `render(OutputFormat::Json)` is `{"body":…,"hints":[…],"recovery":[…],"isError":bool}`, the same object `to_call_tool_result()` puts in `structured_content`.
+A response keeps its body in one place, an ordered `Vec<Section>`. `items()` and `kv_items()` are shorthand that append a section named for the response's type, so calling both, or either twice, renders every body in call order; none is dropped. There is no response-level `total_count`: a total belongs to the section it counts, set with `Section::total_count`. `is_error()` validates without rendering. Hints and recovery are appended to the rendered body in place. `render(OutputFormat::Json)` is `{"body":…,"sections":[…],"hints":[…],"recovery":[…],"isError":bool}`, the same object `to_call_tool_result()` puts in `structured_content`; `sections` appears once the response has a section.
 
-`truncation(&outcome, guidance)` sets the count and the cut hint in one call, so `totalCount` and `help[]` always describe the same cut. It does not touch the rows: `AgentResponse` holds TOON `Value` rows, not the caller's `T`, so pass `outcome.kept` (converted) to `.items(...)`. A later `.total_count()` or `.hints()` still overrides it.
+A response with no section, budget or provenance renders `type_name: []`, the definitive empty list. An empty KV section renders nothing (or `totalCount: n` when a larger total is set).
 
-`total_count` applies to both paths. On the KV path with no items the body is just `totalCount: N` (the free `render_kv` still returns `""` for empty items), so a count the caller set is never dropped; with neither items nor a count the body is empty.
+`truncated_section(section, &outcome, guidance)` sets the section's count and `truncated` flag and the cut hint in one call, so `totalCount` and `help[]` always describe the same cut. It does not set the rows: `Section` holds TOON `Value` rows, not the caller's `T`, so build the section from `outcome.kept` (converted).
 
 ### Budget and provenance types (`budget`, `provenance`)
 
@@ -289,7 +290,7 @@ Attach them with `AgentResponse::budget(BudgetSummary)` and `AgentResponse::prov
 
 ### Sections (`section`)
 
-A response can hold several blocks. `AgentResponse::section(Section)` appends one; sections render in insertion order, after the `items()` / `kv_items()` slot when one was set, and before `help[]` and `recovery[]`. The caller owns the order.
+A response holds its body as sections. `AgentResponse::section(Section)` appends one; sections render in call order, before `budget:`, `provenance:`, `help[]` and `recovery[]`. The caller owns the order. `items()` and `kv_items()` are shorthand for a `Toon` or `Kv` section named for the response's type, so there is one storage model and one render path.
 
 ```rust
 #[non_exhaustive] #[derive(Debug, Clone)]
@@ -312,12 +313,11 @@ impl Section {
 ```
 
 - `Toon` bodies render as a TOON list named `name`, with the response's `truncate_cells_at` cap and `truncation_hint` applied. `Kv` bodies render as `key: value` lines (the name is not printed). `Text` bodies pass through unchanged.
-- `totalCount: n` follows a section only when `total_count` is `Some(n)` with `n` above the section's count. This differs from the response-level `total_count()`, which always prints.
+- `totalCount: n` follows a section only when `total_count` is `Some(n)` with `n` above the section's count: a total equal to the rows returned says nothing new.
 - `returned_count` is derived for `Toon` and `Kv`, so the public field cannot disagree with the body: render never panics and never clamps in debug only. `Text` keeps the declared value.
 - An empty `Toon` section renders `name: []`; an empty `Kv` section renders nothing (or `totalCount: n` when a larger total is set).
-- A section that fails validation renders the same `error:` block as the single-slot path and makes `is_error()` true.
+- A section that fails validation renders an `error:` block (`toon_validation_failed` or `kv_validation_failed`) and makes `is_error()` true.
 - `render(Json)` adds a `sections` array; see [Envelope on `AgentResponse`](#envelope-on-agentresponse). Cut-cell `help[]` lines from every section merge into the one `help` block, once.
-- One section behaves exactly as the matching sugar: `items(rows, fields)` is a `Toon` section named for the response's type, `kv_items(items)` a `Kv` one. `render_toon()` and `render_kv()` still read their named slot only, and ignore sections.
 
 ### Envelope on `AgentResponse`
 
@@ -330,12 +330,12 @@ impl AgentResponse {
 }
 ```
 
-Text order: the `items()` / `kv_items()` content, the sections in insertion order, `budget:`, `provenance:`, `help[]`, `recovery[]`. A response with no section, budget or provenance renders exactly as before (the existing snapshots are the check). With any of them, an untouched `items()` / `kv_items()` slot renders nothing, so `AgentResponse::new("t").budget(b)` is just the `budget:` block, not `t: []` plus it.
+Text order: the sections in call order, `budget:`, `provenance:`, `help[]`, `recovery[]`. A response with no section, budget or provenance renders `type: []`. With a budget or provenance and no section it renders no empty list, so `AgentResponse::new("t").budget(b)` is just the `budget:` block.
 
-- The budget roll-up (`sections[n]{...}`) renders only when the response has two or more blocks: sections, plus the `items()` / `kv_items()` slot when it has content.
-- `truncated` and `totalCount` are root keys, and a TOON object may not repeat a key. When one block has cut cells (or a `totalCount`) it renders exactly as the single-slot form, inline after its list. When two or more do, each becomes one table after the last block, with a leading `section` column: `truncated[N]{section,row,field,removed}:` and `totalCount[N]{section,total}:`. michi's own "Cut cells are listed in the truncated block" help line is added once.
+- The budget roll-up (`sections[n]{...}`) renders only when the response has two or more sections.
+- `truncated` and `totalCount` are root keys, and a TOON object may not repeat a key. When one block has cut cells (or a `totalCount`) it renders inline after its list. When two or more do, each becomes one table after the last block, with a leading `section` column: `truncated[N]{section,row,field,removed}:` and `totalCount[N]{section,total}:`. michi's own "Cut cells are listed in the truncated block" help line is added once.
 - Section names, KV keys and the names `budget`, `provenance` and `sections` are root keys too. Keeping them distinct is the caller's job; michi does not rename them.
-- JSON (`render(Json)` and `structured_content`): `body`, then `sections`, `budget`, `provenance` only when set, then `hints`, `recovery`, `isError`. A section is `{name, kind, ...}` with `kind` `toon` (`fields`, `rows` of typed values), `kv` (`items` of `{key, value}`) or `text` (`text`), then `returnedCount`, `totalCount` when set, and `truncated`. Rows carry the full values; the cell cap shapes only the text render. The `items()` / `kv_items()` slot appears in `body` only. Keys are camelCase and hand-built, so the default build needs no `serde_json`.
+- JSON (`render(Json)` and `structured_content`): `body`, then `sections`, `budget`, `provenance` only when set (`sections` is set by `items()` and `kv_items()` too), then `hints`, `recovery`, `isError`. A section is `{name, kind, ...}` with `kind` `toon` (`fields`, `rows` of typed values), `kv` (`items` of `{key, value}`) or `text` (`text`), then `returnedCount`, `totalCount` when set, and `truncated`. Rows carry the full values; the cell cap shapes only the text render. Keys are camelCase and hand-built, so the default build needs no `serde_json`.
 
 ### Idempotency
 

@@ -72,7 +72,6 @@ fn snapshot_status_mixed_health() {
 fn snapshot_agent_response_full() {
     let out = AgentResponse::new("issue")
         .items(vec![], &[])
-        .total_count(0)
         .hint("Try list_issues with state=open")
         .hint("Try list_issues with a different label")
         .render(OutputFormat::Text);

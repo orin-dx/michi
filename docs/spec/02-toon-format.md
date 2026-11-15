@@ -96,7 +96,7 @@ A dedicated `recovery[N]` table, not folded into `help[]`: hints are strings, re
 
 Every block michi renders for an agent — not only lists — is a TOON 4.4 root object with the default options, so an agent parses one format. Each renderer returns a finished document with no trailing newline; `append_hints` and `append_recovery` join a block onto a document with exactly one LF (none when the buffer is empty or already ends in one). Composition keeps keys unique: a list's type name and a KV key may not be `totalCount`, `help` or `recovery`, and KV keys may not repeat (`ToonError::InvalidTypeName`, `KvError`). Strings and keys are quoted per [Strings](#strings); numbers follow [Numbers, booleans and null](#numbers-booleans-and-null).
 
-**Key-value (`kv::render_kv`, `AgentResponse` KV path)** — one `key: value` field per item (§8), exactly one space after the colon (no column alignment), then `totalCount` and `help`:
+**Key-value (`kv::render_kv`, `AgentResponse` KV sections)** — one `key: value` field per item (§8), exactly one space after the colon (no column alignment), then `totalCount` and `help`:
 
 ```
 id: abc-123
