@@ -94,6 +94,8 @@ pub mod redact;
 pub mod resilience;
 /// `AgentResponse` builder.
 pub mod response;
+/// Repeatable response sections.
+pub mod section;
 /// Health and status response rendering.
 pub mod status;
 /// No-op telemetry provider.
@@ -117,6 +119,7 @@ pub use kv::{render_kv, KvError, KvItem, KvValue};
 pub use mcp::{CallToolResult, ContentBlock, StructuredContentError};
 pub use recovery::{append_recovery, render_recovery, RecoveryHint};
 pub use response::{AgentResponse, OutputFormat};
+pub use section::{Section, SectionBody};
 pub use status::{Health, StatusItem, StatusResponse};
 
 // Explicit lists, not globs: a glob would silently re-export every item later added to these modules at the crate
