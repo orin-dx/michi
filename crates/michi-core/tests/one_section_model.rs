@@ -21,9 +21,19 @@ fn items_and_kv_items_together_render_both_in_call_order() {
 }
 
 #[test]
-fn items_called_twice_keeps_both_lists() {
+fn items_called_twice_is_a_visible_error_not_invalid_toon() {
+    // Both sections would be the root key `t`: the sugar names every section for the response.
     let r = AgentResponse::new("t").items(rows(1), &["a"]).items(rows(2), &["b"]);
-    assert_eq!(r.render(OutputFormat::Text), "t[1]{a}:\n  1\nt[1]{b}:\n  2");
+    assert!(r.is_error());
+    assert!(r.render(OutputFormat::Text).starts_with("error: toon_validation_failed\nmessage: "));
+}
+
+#[test]
+fn several_lists_use_distinct_section_names() {
+    use michi_core::Section;
+    let list = |name: &str, n| Section::toon(name, vec!["a".into()], rows(n));
+    let r = AgentResponse::new("t").section(list("x", 1)).section(list("y", 2));
+    assert_eq!(r.render(OutputFormat::Text), "x[1]{a}:\n  1\ny[1]{a}:\n  2");
 }
 
 #[test]

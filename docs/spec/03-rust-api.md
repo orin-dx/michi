@@ -271,7 +271,7 @@ impl AgentResponse {
 
 `render_json()` is not part of the public API — it's reached only via `render(OutputFormat::Json)`.
 
-A response keeps its body in one place, an ordered `Vec<Section>`. `items()` and `kv_items()` are shorthand that append a section named for the response's type, so calling both, or either twice, renders every body in call order; none is dropped. There is no response-level `total_count`: a total belongs to the section it counts, set with `Section::total_count`. `is_error()` validates without rendering. Hints and recovery are appended to the rendered body in place. `render(OutputFormat::Json)` is `{"body":…,"sections":[…],"hints":[…],"recovery":[…],"isError":bool}`, the same object `to_call_tool_result()` puts in `structured_content`; `sections` appears once the response has a section.
+A response keeps its body in one place, an ordered `Vec<Section>`. `items()` and `kv_items()` are shorthand that append a section named for the response's type, so mixing them renders every body in call order. Because a section is a root key of the document, the shorthand serves one list (and one KV block) per response: a second `items()` call repeats the key and renders the `toon_validation_failed` error, never invalid TOON. For several lists use `section(Section::toon(distinct_name, ..))`. There is no response-level `total_count`: a total belongs to the section it counts, set with `Section::total_count`. `is_error()` validates without rendering. Hints and recovery are appended to the rendered body in place. `render(OutputFormat::Json)` is `{"body":…,"sections":[…],"hints":[…],"recovery":[…],"isError":bool}`, the same object `to_call_tool_result()` puts in `structured_content`; `sections` appears once the response has a section.
 
 A response with no section, budget or provenance renders `type_name: []`, the definitive empty list. An empty KV section renders nothing (or `totalCount: n` when a larger total is set).
 
@@ -312,7 +312,7 @@ impl Section {
 }
 ```
 
-- `Toon` bodies render as a TOON list named `name`, with the response's `truncate_cells_at` cap and `truncation_hint` applied. `Kv` bodies render as `key: value` lines (the name is not printed). `Text` bodies pass through unchanged.
+- `Toon` bodies render as a TOON list named `name`, with the response's `truncate_cells_at` cap and `truncation_hint` applied. `Kv` bodies render as `key: value` lines (the name is not printed). `Text` bodies are one string value, `name: <escaped value>`, escaped like any TOON string and never raw, so prose cannot forge a `help[]` line. A `totalCount` renders for a `Text` section as for the others.
 - `totalCount: n` follows a section only when `total_count` is `Some(n)` with `n` above the section's count: a total equal to the rows returned says nothing new.
 - `returned_count` is derived for `Toon` and `Kv`, so the public field cannot disagree with the body: render never panics and never clamps in debug only. `Text` keeps the declared value.
 - An empty `Toon` section renders `name: []`; an empty `Kv` section renders nothing (or `totalCount: n` when a larger total is set).
@@ -334,8 +334,8 @@ Text order: the sections in call order, `budget:`, `provenance:`, `help[]`, `rec
 
 - The budget roll-up (`sections[n]{...}`) renders only when the response has two or more sections.
 - `truncated` and `totalCount` are root keys, and a TOON object may not repeat a key. When one block has cut cells (or a `totalCount`) it renders inline after its list. When two or more do, each becomes one table after the last block, with a leading `section` column: `truncated[N]{section,row,field,removed}:` and `totalCount[N]{section,total}:`. michi's own "Cut cells are listed in the truncated block" help line is added once.
-- Section names, KV keys and the names `budget`, `provenance` and `sections` are root keys too. Keeping them distinct is the caller's job; michi does not rename them.
-- JSON (`render(Json)` and `structured_content`): `body`, then `sections`, `budget`, `provenance` only when set (`sections` is set by `items()` and `kv_items()` too), then `hints`, `recovery`, `isError`. A section is `{name, kind, ...}` with `kind` `toon` (`fields`, `rows` of typed values), `kv` (`items` of `{key, value}`) or `text` (`text`), then `returnedCount`, `totalCount` when set, and `truncated`. Rows carry the full values; the cell cap shapes only the text render. Keys are camelCase and hand-built, so the default build needs no `serde_json`.
+- Section names, KV keys, and the names michi writes itself (`budget`, `sections`, `provenance`, `truncated`, `totalCount`, `help`, `recovery`) are root keys too, and so are `error` and `message` when a section fails validation. Validity never depends on caller data: when two blocks would write one root key, or two provenance labels match (or a label is `fingerprint` beside a fingerprint), the whole body renders as the `toon_validation_failed` error naming the key, and `is_error()`, the JSON `isError` and MCP `isError` are true. The JSON `sections` still carry the data as given.
+- JSON (`render(Json)` and `structured_content`): `body`, then `sections`, `budget`, `provenance` only when set (`sections` is set by `items()` and `kv_items()` too), then `hints`, `recovery`, `isError`. A section is `{name, kind, ...}` with `kind` `toon` (`fields`, `rows` of typed values), `kv` (`items` of `{key, value}`) or `text` (`text`), then `returnedCount`, `totalCount` when set, and `truncated`. Rows carry the full values: the cell cap (`truncate_cells_at`) shapes only the text render, and `structured_content` is the canonical, uncapped data. Keys are camelCase and hand-built, so the default build needs no `serde_json`.
 
 ### Idempotency
 

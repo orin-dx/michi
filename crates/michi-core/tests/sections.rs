@@ -54,7 +54,8 @@ fn mixed_toon_kv_and_text() {
         .section(refs())
         .section(Section::kv("receipt", vec![kv("id", 7), kv("n", 2)]))
         .section(Section::text("note", "free prose\nsecond line"));
-    assert_eq!(r.render(OutputFormat::Text), format!("{REFS_TEXT}\nid: 7\nn: 2\nfree prose\nsecond line"));
+    // Text is one escaped string value under its name, never raw lines.
+    assert_eq!(r.render(OutputFormat::Text), format!("{REFS_TEXT}\nid: 7\nn: 2\nnote: \"free prose\\nsecond line\""));
 }
 
 #[test]
