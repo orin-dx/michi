@@ -285,7 +285,7 @@ Plain data types for the envelope in [07-wisp-and-monokl-envelope.md](07-wisp-an
 - `ProvenanceBlock`: ordered `entries: Vec<ProvenanceEntry>` and optional `fingerprint`. Builders: `new`, `entry(label, value)`, `fingerprint`.
 - `ProvenanceEntry`: `label`, `value`; `new(label, value)`.
 
-Rendering is crate-private for now and is wired into `AgentResponse` separately. The `budget:` block lists `tokensUsed`, `bytesUsed`, `maxTokens`, `maxBytes`, `maxItems` when set, then `truncated`; the `sections[n]{name,returned,total,truncated}:` roll-up follows only when asked for, and an unknown `total` is a `null` cell. The `provenance:` block lists entries in order, then `fingerprint`. Labels are encoded as TOON keys and values as TOON strings, so newlines and colons in caller text cannot start a line of their own.
+Attach them with `AgentResponse::budget(BudgetSummary)` and `AgentResponse::provenance(ProvenanceBlock)` (see [Envelope on `AgentResponse`](#envelope-on-agentresponse)). The `budget:` block lists `tokensUsed`, `bytesUsed`, `maxTokens`, `maxBytes`, `maxItems` when set, then `truncated`; the `sections[n]{name,returned,total,truncated}:` roll-up follows only when the response renders two or more blocks, and an unknown `total` is a `null` cell. The `provenance:` block lists entries in order, then `fingerprint`. Labels are encoded as TOON keys and values as TOON strings, so newlines and colons in caller text cannot start a line of their own.
 
 ### Sections (`section`)
 
@@ -316,8 +316,26 @@ impl Section {
 - `returned_count` is derived for `Toon` and `Kv`, so the public field cannot disagree with the body: render never panics and never clamps in debug only. `Text` keeps the declared value.
 - An empty `Toon` section renders `name: []`; an empty `Kv` section renders nothing (or `totalCount: n` when a larger total is set).
 - A section that fails validation renders the same `error:` block as the single-slot path and makes `is_error()` true.
-- `render(Json)` keeps its four keys; `body` holds the text render. Cut-cell `help[]` lines from every section merge into the one `help` block. Each `Toon` section emits its own `truncated[N]{...}` block, so two cut sections in one response produce two such blocks.
+- `render(Json)` adds a `sections` array; see [Envelope on `AgentResponse`](#envelope-on-agentresponse). Cut-cell `help[]` lines from every section merge into the one `help` block, once.
 - One section behaves exactly as the matching sugar: `items(rows, fields)` is a `Toon` section named for the response's type, `kv_items(items)` a `Kv` one. `render_toon()` and `render_kv()` still read their named slot only, and ignore sections.
+
+### Envelope on `AgentResponse`
+
+```rust
+impl AgentResponse {
+    /// One per response; a second call replaces the first.
+    #[must_use] pub fn budget(self, b: BudgetSummary) -> Self;
+    /// One per response; a second call replaces the first.
+    #[must_use] pub fn provenance(self, p: ProvenanceBlock) -> Self;
+}
+```
+
+Text order: the `items()` / `kv_items()` content, the sections in insertion order, `budget:`, `provenance:`, `help[]`, `recovery[]`. A response with no section, budget or provenance renders exactly as before (the existing snapshots are the check). With any of them, an untouched `items()` / `kv_items()` slot renders nothing, so `AgentResponse::new("t").budget(b)` is just the `budget:` block, not `t: []` plus it.
+
+- The budget roll-up (`sections[n]{...}`) renders only when the response has two or more blocks: sections, plus the `items()` / `kv_items()` slot when it has content.
+- `truncated` and `totalCount` are root keys, and a TOON object may not repeat a key. When one block has cut cells (or a `totalCount`) it renders exactly as the single-slot form, inline after its list. When two or more do, each becomes one table after the last block, with a leading `section` column: `truncated[N]{section,row,field,removed}:` and `totalCount[N]{section,total}:`. michi's own "Cut cells are listed in the truncated block" help line is added once.
+- Section names, KV keys and the names `budget`, `provenance` and `sections` are root keys too. Keeping them distinct is the caller's job; michi does not rename them.
+- JSON (`render(Json)` and `structured_content`): `body`, then `sections`, `budget`, `provenance` only when set, then `hints`, `recovery`, `isError`. A section is `{name, kind, ...}` with `kind` `toon` (`fields`, `rows` of typed values), `kv` (`items` of `{key, value}`) or `text` (`text`), then `returnedCount`, `totalCount` when set, and `truncated`. Rows carry the full values; the cell cap shapes only the text render. The `items()` / `kv_items()` slot appears in `body` only. Keys are camelCase and hand-built, so the default build needs no `serde_json`.
 
 ### Idempotency
 

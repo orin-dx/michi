@@ -412,7 +412,7 @@ mod proof {
         /// and a cell was cut, michi adds one line to `help[]` pointing at that block and the caller's instruction.
         #[must_use]
         pub fn render(&self) -> String {
-            let (mut out, extra) = self.render_parts();
+            let (mut out, _, extra) = self.render_parts(true);
             let hints = self.opts.hints.iter().map(String::as_str).chain(extra.as_deref());
             let hints: Vec<&str> = hints.collect();
             crate::hints::append_help_block(&mut out, hints.into_iter());
@@ -422,27 +422,39 @@ mod proof {
         /// The document without its `help` block, plus the `help[]` line michi adds when it cut a cell and the
         /// caller set a truncation hint. [`AgentResponse`](crate::AgentResponse) merges that line into its own
         /// hints so a response keeps a single `help` key.
-        pub(crate) fn render_parts(&self) -> (String, Option<String>) {
+        ///
+        /// With `inline` the `truncated` block and `totalCount` line follow the list and the cut list returned is
+        /// empty. Without it the text is the list entry alone and the cuts come back as `(row, field name, chars
+        /// removed)`, so a multi-section response can merge the cuts of every block into one `truncated` table.
+        pub(crate) fn render_parts(&self, inline: bool) -> (String, Vec<(usize, String, usize)>, Option<String>) {
             let opts = self.opts;
             let capacity = 60 + opts.rows.len() * (opts.fields.len() * 12 + 10);
             let mut out = String::with_capacity(capacity);
             let cut = super::push_list(&mut out, opts);
-            super::push_truncated(&mut out, opts, &cut);
-            if let Some(total) = opts.total_count {
-                out.push_str("totalCount: ");
-                out.push_str(&total.to_string());
-                out.push('\n');
-            }
             let extra = match opts.truncation_hint.as_deref() {
                 Some(hint) if !cut.is_empty() && !hint.is_empty() => {
                     Some(format!("Cut cells are listed in the truncated block; use {hint} for the full value"))
                 }
                 _ => None,
             };
+            let mut cuts = Vec::new();
+            if inline {
+                super::push_truncated(&mut out, opts, &cut);
+                if let Some(total) = opts.total_count {
+                    out.push_str("totalCount: ");
+                    out.push_str(&total.to_string());
+                    out.push('\n');
+                }
+            } else {
+                cuts = cut
+                    .into_iter()
+                    .map(|(row, field, removed)| (row, opts.fields.get(field).cloned().unwrap_or_default(), removed))
+                    .collect();
+            }
             if out.ends_with('\n') {
                 out.pop();
             }
-            (out, extra)
+            (out, cuts, extra)
         }
     }
 }

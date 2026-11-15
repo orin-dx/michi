@@ -142,7 +142,6 @@ impl SectionCost {
 /// Render the `budget:` block, with no trailing newline. When `show_rollup` is set and there are sections, the
 /// `sections[n]{name,returned,total,truncated}:` table follows. An unknown `total` is the TOON `null` cell, because a
 /// table row needs a value in every column.
-#[allow(dead_code)] // called by the AgentResponse wiring that lands separately
 pub(crate) fn render_budget_block(b: &BudgetSummary, show_rollup: bool) -> String {
     let mut out = String::with_capacity(160 + b.sections.len() * 48);
     out.push_str("budget:");
@@ -180,7 +179,6 @@ fn numbers(b: &BudgetSummary) -> [(&'static str, Option<u64>); 5] {
 }
 
 /// The budget as a JSON object with camelCase keys. `sections` is always present; absent numbers are omitted.
-#[allow(dead_code)] // called by the AgentResponse wiring that lands separately
 pub(crate) fn budget_json(b: &BudgetSummary) -> String {
     let mut out = String::with_capacity(128 + b.sections.len() * 64);
     out.push('{');

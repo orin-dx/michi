@@ -1,5 +1,7 @@
+use crate::budget::BudgetSummary;
 use crate::hints::Hint;
 use crate::kv::KvItem;
+use crate::provenance::ProvenanceBlock;
 use crate::recovery::RecoveryHint;
 use crate::section::{Section, SectionBody};
 use crate::toon::Value;
@@ -38,6 +40,10 @@ pub struct AgentResponse {
     /// Sections added with [`section`](Self::section), rendered in insertion order after the `items()` / `kv_items()`
     /// slot (when one was set). Empty for every response that predates sections, which renders as it always did.
     sections: Vec<Section>,
+    /// Response-level budget report, set with `budget()`.
+    budget: Option<BudgetSummary>,
+    /// Response-level provenance block, set with `provenance()`.
+    provenance: Option<ProvenanceBlock>,
     hints: Vec<Hint>,
     recovery: Vec<RecoveryHint>,
     is_error: bool,
@@ -52,6 +58,8 @@ impl AgentResponse {
             target: RenderTarget::Unset,
             single_item: Vec::new(),
             sections: Vec::new(),
+            budget: None,
+            provenance: None,
             hints: Vec::new(),
             recovery: Vec::new(),
             is_error: false,
@@ -128,6 +136,27 @@ impl AgentResponse {
         self
     }
 
+    /// Attach the response-level budget report; one per response, a second call replaces the first. It renders as a
+    /// `budget:` block after the last section (see [`BudgetSummary`] for what it carries), and the per-section
+    /// roll-up appears only when the response renders two or more blocks, counting the `items()` / `kv_items()` slot
+    /// as one when it has content. michi renders the report; it never computes it.
+    ///
+    /// A response with a budget or provenance but no `items()` / `kv_items()` call has no body of its own: the empty
+    /// `type: []` line that an untouched response renders is left out, as it is when sections are present.
+    #[must_use]
+    pub fn budget(mut self, budget: BudgetSummary) -> Self {
+        self.budget = Some(budget);
+        self
+    }
+
+    /// Attach the response-level provenance block; one per response, a second call replaces the first. It renders as
+    /// a `provenance:` block after `budget:` (see [`ProvenanceBlock`]).
+    #[must_use]
+    pub fn provenance(mut self, provenance: ProvenanceBlock) -> Self {
+        self.provenance = Some(provenance);
+        self
+    }
+
     /// Append a contextual hint.
     #[must_use]
     pub fn hint(mut self, hint: impl Into<String>) -> Self {
@@ -190,7 +219,7 @@ impl AgentResponse {
     fn toon_body(&self) -> (String, bool, Option<Hint>) {
         match self.toon.validate() {
             Ok(doc) => {
-                let (body, extra) = doc.render_parts();
+                let (body, _, extra) = doc.render_parts(true);
                 (body, false, extra.map(Hint::new))
             }
             Err(e) => (validation_error_body("toon_validation_failed", &e.to_string()), true, None),
@@ -225,28 +254,6 @@ impl AgentResponse {
         opts
     }
 
-    /// One section's text, whether it is a validation-failure error block, and michi's truncation `help[]` line.
-    fn section_body(&self, s: &Section) -> (String, bool, Option<Hint>) {
-        let total = s.shown_total();
-        match &s.body {
-            SectionBody::Toon { fields, rows } => match self.section_options(&s.name, fields, rows, total).validate() {
-                Ok(doc) => {
-                    let (body, extra) = doc.render_parts();
-                    (body, false, extra.map(Hint::new))
-                }
-                Err(e) => (validation_error_body("toon_validation_failed", &e.to_string()), true, None),
-            },
-            SectionBody::Kv(items) if items.is_empty() => {
-                (total.map_or_else(String::new, |n| format!("totalCount: {n}")), false, None)
-            }
-            SectionBody::Kv(items) => match crate::kv::render_kv(items, total, &[]) {
-                Ok(body) => (body, false, None),
-                Err(e) => (validation_error_body("kv_validation_failed", &e.to_string()), true, None),
-            },
-            SectionBody::Text(text) => (text.clone(), false, None),
-        }
-    }
-
     /// The KV body, and whether it is a validation-failure error block instead of the requested items (a duplicate
     /// or reserved key, see [`crate::kv::KvError`]).
     fn kv_body(&self) -> (String, bool) {
@@ -262,9 +269,108 @@ impl AgentResponse {
         }
     }
 
+    /// Whether the response uses any envelope slot (sections, budget or provenance). Without one it renders exactly
+    /// as it did before the envelope existed.
+    fn has_envelope(&self) -> bool {
+        !self.sections.is_empty() || self.budget.is_some() || self.provenance.is_some()
+    }
+
+    /// The `items()` / `kv_items()` slot as an envelope part.
+    fn slot_part(&self) -> (Part<'_>, bool, Option<Hint>) {
+        match self.target {
+            RenderTarget::Toon | RenderTarget::Unset => match self.toon.validate() {
+                Ok(doc) => {
+                    let (text, cuts, extra) = doc.render_parts(false);
+                    let name = self.toon.type_name.as_str();
+                    (Part { name, text, cuts, total: self.toon.total_count }, false, extra.map(Hint::new))
+                }
+                Err(e) => (Part::failed(&self.toon.type_name, "toon_validation_failed", &e.to_string()), true, None),
+            },
+            RenderTarget::Kv => kv_part(&self.toon.type_name, &self.single_item, self.toon.total_count),
+        }
+    }
+
+    /// One section as an envelope part.
+    fn section_part<'a>(&self, s: &'a Section) -> (Part<'a>, bool, Option<Hint>) {
+        let total = s.shown_total();
+        match &s.body {
+            SectionBody::Toon { fields, rows } => match self.section_options(&s.name, fields, rows, total).validate() {
+                Ok(doc) => {
+                    let (text, cuts, extra) = doc.render_parts(false);
+                    (Part { name: &s.name, text, cuts, total }, false, extra.map(Hint::new))
+                }
+                Err(e) => (Part::failed(&s.name, "toon_validation_failed", &e.to_string()), true, None),
+            },
+            SectionBody::Kv(items) => kv_part(&s.name, items, total),
+            SectionBody::Text(text) => {
+                (Part { name: &s.name, text: text.clone(), cuts: Vec::new(), total: None }, false, None)
+            }
+        }
+    }
+
+    /// The body for a response that uses the envelope: slot (if used), sections, `budget:`, `provenance:`.
+    ///
+    /// Blocks are joined with one LF and empty ones are skipped. `truncated` and `totalCount` are root keys, so they
+    /// may appear once: when one block has them they stay inline where the single-slot render puts them; when two or
+    /// more do, each becomes one table with a leading `section` column, after the last block.
+    fn envelope_body<'a>(&'a self) -> (String, bool, Vec<Hint>) {
+        let mut parts: Vec<Part<'a>> = Vec::with_capacity(self.sections.len() + 1);
+        let mut failed = false;
+        let mut extras: Vec<Hint> = Vec::new();
+        let mut note = |(part, part_failed, extra): (Part<'a>, bool, Option<Hint>)| {
+            failed |= part_failed;
+            // One line per cut response is enough: every section's line says the same thing.
+            if let Some(h) = extra {
+                if !extras.contains(&h) {
+                    extras.push(h);
+                }
+            }
+            part
+        };
+        let mut slot_has_content = false;
+        // An untouched `items()` / `kv_items()` slot has no body of its own to put before the envelope.
+        if self.target != RenderTarget::Unset {
+            let part = note(self.slot_part());
+            slot_has_content = !part.text.is_empty() || part.total.is_some();
+            parts.push(part);
+        }
+        for s in &self.sections {
+            parts.push(note(self.section_part(s)));
+        }
+        let cutters = parts.iter().filter(|p| !p.cuts.is_empty()).count();
+        let totals = parts.iter().filter(|p| p.total.is_some()).count();
+        let mut out = String::with_capacity(parts.iter().map(|p| p.text.len() + 24).sum::<usize>() + 256);
+        for p in &parts {
+            join_block(&mut out, &p.text);
+            if cutters == 1 && !p.cuts.is_empty() {
+                join_block(&mut out, &truncated_table(std::slice::from_ref(p)));
+            }
+            if let (1, Some(n)) = (totals, p.total) {
+                join_block(&mut out, &format!("totalCount: {n}"));
+            }
+        }
+        if cutters >= 2 {
+            join_block(&mut out, &truncated_table(&parts));
+        }
+        if totals >= 2 {
+            join_block(&mut out, &total_table(&parts));
+        }
+        if let Some(b) = &self.budget {
+            let blocks = self.sections.len() + usize::from(slot_has_content);
+            join_block(&mut out, &crate::budget::render_budget_block(b, blocks >= 2));
+        }
+        if let Some(p) = &self.provenance {
+            join_block(&mut out, &crate::provenance::render_provenance_block(p));
+        }
+        (out, failed || self.is_error, extras)
+    }
+
     /// The selected body, and whether this response is an error: set by `as_error()` or by a body that failed
     /// validation. Every output surface reads its error flag from here so text, JSON and MCP never disagree.
     fn body(&self) -> (String, bool, Vec<Hint>) {
+        if self.has_envelope() {
+            return self.envelope_body();
+        }
         let (body, failed, extra) = match self.target {
             RenderTarget::Toon | RenderTarget::Unset => self.toon_body(),
             RenderTarget::Kv => {
@@ -272,31 +378,7 @@ impl AgentResponse {
                 (body, failed, None)
             }
         };
-        let mut extras: Vec<Hint> = extra.into_iter().collect();
-        if self.sections.is_empty() {
-            return (body, failed || self.is_error, extras);
-        }
-        // With sections the legacy slot renders only when `items()` / `kv_items()` was called; an untouched response
-        // has no body of its own to put before them. Parts are joined with one LF and empty parts are skipped.
-        let slot_unused = self.target == RenderTarget::Unset;
-        let mut failed = failed && !slot_unused;
-        let mut out = if slot_unused { String::new() } else { body };
-        if slot_unused {
-            extras.clear();
-        }
-        for s in &self.sections {
-            let (part, part_failed, part_extra) = self.section_body(s);
-            failed |= part_failed;
-            extras.extend(part_extra);
-            if part.is_empty() {
-                continue;
-            }
-            if !out.is_empty() {
-                out.push('\n');
-            }
-            out.push_str(&part);
-        }
-        (out, failed || self.is_error, extras)
+        (body, failed || self.is_error, extra.into_iter().collect())
     }
 
     /// Compose the text document: body, help block, recovery block. Each part is a TOON 4.4 document without a
@@ -347,7 +429,7 @@ impl AgentResponse {
             RenderTarget::Toon | RenderTarget::Unset => self.toon.validate().is_err(),
             RenderTarget::Kv => crate::kv::validate_keys(&self.single_item).is_err(),
         };
-        if self.sections.is_empty() {
+        if !self.has_envelope() {
             return self.is_error || slot_failed;
         }
         self.is_error
@@ -409,9 +491,27 @@ impl AgentResponse {
         let hints = self.hints_with(extra);
         let capacity =
             body.len() + hints.iter().map(|h| h.as_str().len() + 16).sum::<usize>() + self.recovery.len() * 64 + 64;
-        let mut out = String::with_capacity(capacity);
+        let mut out = String::with_capacity(capacity + if self.has_envelope() { body.len() + 128 } else { 0 });
         out.push_str("{\"body\":");
         json_string(&mut out, body);
+        if !self.sections.is_empty() {
+            out.push_str(",\"sections\":[");
+            for (i, s) in self.sections.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                push_section_json(&mut out, s);
+            }
+            out.push(']');
+        }
+        if let Some(b) = &self.budget {
+            out.push_str(",\"budget\":");
+            out.push_str(&crate::budget::budget_json(b));
+        }
+        if let Some(p) = &self.provenance {
+            out.push_str(",\"provenance\":");
+            out.push_str(&crate::provenance::provenance_json(p));
+        }
         out.push_str(",\"hints\":[");
         for (i, h) in hints.iter().enumerate() {
             if i > 0 {
@@ -450,6 +550,158 @@ fn validation_error_body(code: &str, message: &str) -> String {
     out.push_str("\nmessage: ");
     out.push_str(&message);
     out
+}
+
+/// One block of an envelope body before the root-level `truncated` and `totalCount` keys are placed.
+struct Part<'a> {
+    /// The block's name, the `section` column when several blocks share a root key.
+    name: &'a str,
+    /// The block's text without its `truncated` block or `totalCount` line.
+    text: String,
+    /// Cut cells as `(row, field name, chars removed)`.
+    cuts: Vec<(usize, String, usize)>,
+    /// The `totalCount` this block reports, when it reports one.
+    total: Option<usize>,
+}
+
+impl<'a> Part<'a> {
+    /// A block that failed validation: the error body replaces its content and it reports no count.
+    fn failed(name: &'a str, code: &str, message: &str) -> Self {
+        Self { name, text: validation_error_body(code, message), cuts: Vec::new(), total: None }
+    }
+}
+
+/// A KV block as a part. No items still reports a count the caller set, as the single-slot render does.
+fn kv_part<'a>(name: &'a str, items: &[KvItem], total: Option<usize>) -> (Part<'a>, bool, Option<Hint>) {
+    if items.is_empty() {
+        return (Part { name, text: String::new(), cuts: Vec::new(), total }, false, None);
+    }
+    match crate::kv::render_kv(items, None, &[]) {
+        Ok(text) => (Part { name, text, cuts: Vec::new(), total }, false, None),
+        Err(e) => (Part::failed(name, "kv_validation_failed", &e.to_string()), true, None),
+    }
+}
+
+/// Append `block` after a LF unless either side is empty.
+fn join_block(out: &mut String, block: &str) {
+    if block.is_empty() {
+        return;
+    }
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    out.push_str(block);
+}
+
+/// The `truncated` block for the cuts of `parts`. A single block uses the shape the single-slot render has
+/// (`{row,field,removed}`); several share one table with a leading `section` column.
+fn truncated_table(parts: &[Part<'_>]) -> String {
+    use std::fmt::Write as _;
+    let n: usize = parts.iter().map(|p| p.cuts.len()).sum();
+    let mut out = String::with_capacity(48 + n * 32);
+    let multi = parts.iter().filter(|p| !p.cuts.is_empty()).count() > 1;
+    let _ = write!(out, "truncated[{n}]{}:", if multi { "{section,row,field,removed}" } else { "{row,field,removed}" });
+    for p in parts {
+        for (row, field, removed) in &p.cuts {
+            out.push_str("\n  ");
+            if multi {
+                out.push_str(&crate::toon::escape_value(p.name));
+                out.push(',');
+            }
+            let _ = write!(out, "{row},{},{removed}", crate::toon::escape_value(field));
+        }
+    }
+    out
+}
+
+/// The merged `totalCount[N]{section,total}:` table, for two or more blocks that report a total.
+fn total_table(parts: &[Part<'_>]) -> String {
+    use std::fmt::Write as _;
+    let n = parts.iter().filter(|p| p.total.is_some()).count();
+    let mut out = String::with_capacity(32 + n * 24);
+    let _ = write!(out, "totalCount[{n}]{{section,total}}:");
+    for p in parts {
+        if let Some(total) = p.total {
+            let _ = write!(out, "\n  {},{total}", crate::toon::escape_value(p.name));
+        }
+    }
+    out
+}
+
+/// A TOON cell value as JSON. Non-finite floats are `null`, as in the text render.
+fn push_value_json(out: &mut String, v: &Value) {
+    use std::fmt::Write as _;
+    match v {
+        Value::Str(s) => json_string(out, s),
+        Value::Int(n) => {
+            let _ = write!(out, "{n}");
+        }
+        Value::UInt(n) => {
+            let _ = write!(out, "{n}");
+        }
+        Value::Float(f) => crate::toon::push_f64(out, *f),
+        Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+        _ => out.push_str("null"),
+    }
+}
+
+/// One section as the JSON object spec 07 section 5 describes. Rows carry the full values: the per-cell cap shapes
+/// the text render, and `structuredContent` is the typed copy of the same data.
+fn push_section_json(out: &mut String, s: &Section) {
+    use std::fmt::Write as _;
+    out.push_str("{\"name\":");
+    json_string(out, &s.name);
+    match &s.body {
+        SectionBody::Toon { fields, rows } => {
+            out.push_str(",\"kind\":\"toon\",\"fields\":[");
+            for (i, f) in fields.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                json_string(out, f);
+            }
+            out.push_str("],\"rows\":[");
+            for (i, row) in rows.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                out.push('[');
+                for (j, cell) in row.iter().enumerate() {
+                    if j > 0 {
+                        out.push(',');
+                    }
+                    push_value_json(out, cell);
+                }
+                out.push(']');
+            }
+            out.push(']');
+        }
+        SectionBody::Kv(items) => {
+            out.push_str(",\"kind\":\"kv\",\"items\":[");
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                out.push_str("{\"key\":");
+                json_string(out, &item.key);
+                out.push_str(",\"value\":");
+                crate::kv::kv_value_to_json(out, &item.value);
+                out.push('}');
+            }
+            out.push(']');
+        }
+        SectionBody::Text(text) => {
+            out.push_str(",\"kind\":\"text\",\"text\":");
+            json_string(out, text);
+        }
+    }
+    let _ = write!(out, ",\"returnedCount\":{}", s.count());
+    if let Some(total) = s.total_count {
+        let _ = write!(out, ",\"totalCount\":{total}");
+    }
+    out.push_str(",\"truncated\":");
+    out.push_str(if s.truncated { "true" } else { "false" });
+    out.push('}');
 }
 
 fn json_string(out: &mut String, s: &str) {
@@ -564,21 +816,42 @@ mod tests {
         assert!(json.contains("\"isError\":true"), "got: {json}");
     }
 
-    // AC-004: render(Json) parses as an object with exactly the 4 named
-    // top-level keys, for all three construction paths (items/kv_items/neither).
+    // AC-004: render(Json) parses as an object with exactly the 4 named top-level keys plus the envelope keys
+    // (`sections`, `budget`, `provenance`) whose slots were set, for every construction path. A response built only
+    // through the pre-envelope API keeps exactly the four.
     #[test]
     #[cfg(feature = "serde")]
-    fn ac004_render_json_top_level_keys_are_exactly_the_specified_set_for_every_target() {
-        let unset = AgentResponse::new("t");
-        let toon = AgentResponse::new("t").items(vec![vec![Value::from("x")]], &["a"]);
-        let kv = AgentResponse::new("t")
-            .kv_items(vec![crate::kv::KvItem { key: "k".into(), value: crate::kv::KvValue::Int(1) }]);
-        for r in [unset, toon, kv] {
-            let parsed: serde_json::Value = serde_json::from_str(&r.render(OutputFormat::Json)).expect("valid JSON");
-            let obj = parsed.as_object().expect("top-level object");
-            let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
-            keys.sort_unstable();
-            assert_eq!(keys, vec!["body", "hints", "isError", "recovery"]);
+    fn ac004_render_json_top_level_keys_are_the_four_plus_the_envelope_keys_that_were_set() {
+        use crate::{BudgetSummary, ProvenanceBlock, Section};
+        let kv_item = || crate::kv::KvItem { key: "k".into(), value: crate::kv::KvValue::Int(1) };
+        let section = || Section::text("note", "x");
+        let base = ["body", "hints", "isError", "recovery"];
+        let cases: Vec<(AgentResponse, Vec<&str>)> = vec![
+            (AgentResponse::new("t"), vec![]),
+            (AgentResponse::new("t").items(vec![vec![Value::from("x")]], &["a"]), vec![]),
+            (AgentResponse::new("t").kv_items(vec![kv_item()]), vec![]),
+            (AgentResponse::new("t").section(section()), vec!["sections"]),
+            (AgentResponse::new("t").budget(BudgetSummary::new()), vec!["budget"]),
+            (AgentResponse::new("t").provenance(ProvenanceBlock::new()), vec!["provenance"]),
+            (
+                AgentResponse::new("t")
+                    .kv_items(vec![kv_item()])
+                    .section(section())
+                    .budget(BudgetSummary::new())
+                    .provenance(ProvenanceBlock::new()),
+                vec!["budget", "provenance", "sections"],
+            ),
+        ];
+        for (r, extra) in cases {
+            let mut want: Vec<&str> = base.iter().copied().chain(extra).collect();
+            want.sort_unstable();
+            for json in [r.render(OutputFormat::Json), r.to_call_tool_result().structured_content] {
+                let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+                let obj = parsed.as_object().expect("top-level object");
+                let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+                keys.sort_unstable();
+                assert_eq!(keys, want, "{json}");
+            }
         }
     }
 
