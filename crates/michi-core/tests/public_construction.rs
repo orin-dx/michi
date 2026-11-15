@@ -6,7 +6,7 @@
 //! module.
 
 use michi_core::pipeline::{Pipeline, PipelineStep, StepStatus};
-use michi_core::{FailedOp, Health, KvItem, KvValue, PartialSuccess, RecoveryHint, StatusItem};
+use michi_core::{FailedOp, Health, KvItem, KvValue, OpRef, PartialSuccess, RecoveryHint, StatusItem};
 
 #[test]
 fn status_item_constructor_builds_it_from_outside_the_crate() {
@@ -28,16 +28,24 @@ fn kv_item_constructor_builds_it_from_outside_the_crate() {
 
 #[test]
 fn failed_op_and_partial_success_constructors_build_them_from_outside_the_crate() {
-    let failed = FailedOp::new("assign_user", "User 'ghost' not found").recovery(RecoveryHint::new("assign_user"));
+    let failed = FailedOp::new(2, "assign_user", "User 'ghost' not found").recovery(RecoveryHint::new("assign_user"));
+    assert_eq!(failed.index, 2);
     assert_eq!(failed.operation, "assign_user");
     assert_eq!(failed.reason, "User 'ghost' not found");
     assert_eq!(failed.recovery, Some(RecoveryHint::new("assign_user")));
-    assert_eq!(FailedOp::new("x", "y").recovery, None);
+    assert_eq!(FailedOp::new(0, "x", "y").recovery, None);
 
-    let ps = PartialSuccess::new(vec!["create_issue".into()], vec![failed], vec!["notify".into()]);
-    assert_eq!(ps.completed, vec!["create_issue".to_string()]);
+    let skipped = OpRef::new(3, "notify").reason("budget_exhausted");
+    assert_eq!(
+        (skipped.index, skipped.operation.as_str(), skipped.reason.as_deref()),
+        (3, "notify", Some("budget_exhausted"))
+    );
+    assert_eq!(OpRef::new(0, "x").reason, None);
+
+    let ps = PartialSuccess::new(vec![OpRef::new(0, "create_issue")], vec![failed], vec![skipped.clone()]);
+    assert_eq!(ps.completed, vec![OpRef::new(0, "create_issue")]);
     assert_eq!(ps.failed.len(), 1);
-    assert_eq!(ps.skipped, vec!["notify".to_string()]);
+    assert_eq!(ps.skipped, vec![skipped]);
     assert_eq!(PartialSuccess::default(), PartialSuccess::new(vec![], vec![], vec![]));
 }
 

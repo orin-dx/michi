@@ -246,7 +246,7 @@ The first published release was 0.3.1 (0.3.0 was never published). The four pack
 
 This is auto-generated, never hand-written — `napi build` regenerates it from the `#[napi]` attributes in `crates/michi-core/src/napi.rs` every time.
 
-- Object types export without a prefix: `ToonValue`, `ToonOptions`, `KvItem`, `RecoveryHint`, `StatusItem`, `FailedOp`, `PipelineStep`, `AlreadyDone`, `ContentBlock`, `Annotations`, `CallToolResult`, `Truncated`. Their Rust structs keep a `Js` prefix (`JsToonValue`, ...) and are renamed with `js_name`.
+- Object types export without a prefix: `ToonValue`, `ToonOptions`, `KvItem`, `RecoveryHint`, `StatusItem`, `FailedOp`, `OpRef`, `PipelineStep`, `AlreadyDone`, `ContentBlock`, `Annotations`, `CallToolResult`, `Truncated`. Their Rust structs keep a `Js` prefix (`JsToonValue`, ...) and are renamed with `js_name`.
 - There's no unprefixed `ToonValue`/`CallToolResult`/etc. in the real output, whatever an older sketch of this section might have suggested.
 
 What's actually in `packages/michi-node/index.d.ts` today (rendering-domain surface; the resilience-, status-, and error-domain functions follow further down):
@@ -461,18 +461,30 @@ export declare function renderStatus(
 
 /** One failed operation for `renderPartialSuccess`. */
 export interface FailedOp {
+  /** Position in the caller's op slice. */
+  index: number;
   operation: string;
   reason: string;
   /** No structured params over this boundary. */
   recovery?: RecoveryHint | null;
 }
 
-/** Render `PartialSuccess`: a quoted summary, `completed[N]: …`, the `failed[N]{operation,reason}:` table,
- * `skipped[N]: …` (empty categories omitted), then one `recovery[N]{tool,params,reason}:` table. */
+/** One completed or skipped operation for `renderPartialSuccess`. */
+export interface OpRef {
+  /** Position in the caller's op slice. */
+  index: number;
+  operation: string;
+  /** A machine token such as `budget_exhausted`. Rendered for skipped ops only (`null` when absent). */
+  reason?: string | null;
+}
+
+/** Render `PartialSuccess`: a quoted summary, then the `completed[N]{index,operation}:`,
+ * `failed[N]{index,operation,reason}:` and `skipped[N]{index,operation,reason}:` tables (empty categories omitted),
+ * then one `recovery[N]{tool,params,reason}:` table. */
 export declare function renderPartialSuccess(
-  completed: Array<string>,
+  completed: Array<OpRef>,
   failed: Array<FailedOp>,
-  skipped: Array<string>,
+  skipped: Array<OpRef>,
 ): string;
 
 /** One step for `renderPipeline`: the labels `StepStatus::label` and `StepStatus::reason` write. */

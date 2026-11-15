@@ -112,7 +112,7 @@ pub use audience::Audience;
 pub use empty::{empty_state, empty_state_with_hints, try_empty_state, try_empty_state_with_hints};
 pub use error::{DomainError, Error, ErrorClass, ErrorCode, Sensitive, MAY_HAVE_TAKEN_EFFECT_HINT};
 pub use hints::{append_hints, render_hints, Hint};
-pub use idempotency::{FailedOp, PartialSuccess};
+pub use idempotency::{FailedOp, OpRef, PartialSuccess};
 pub use kv::{render_kv, KvError, KvItem, KvValue};
 pub use mcp::{CallToolResult, ContentBlock, StructuredContentError};
 pub use recovery::{append_recovery, render_recovery, RecoveryHint};

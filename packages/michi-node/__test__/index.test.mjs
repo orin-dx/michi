@@ -1009,14 +1009,18 @@ void describe('full in-domain regression (SPEC-ARCH-004 AC-021)', () => {
 void describe('renderPartialSuccess', () => {
   void it('renders the same document as the Rust PartialSuccess', () => {
     const out = renderPartialSuccess(
-      ['create_issue', 'add_label'],
-      [{ operation: 'assign_user', reason: "User 'ghost' not found", recovery: { tool: 'assign_user' } }],
-      ['notify_team'],
+      [
+        { index: 0, operation: 'create_issue' },
+        { index: 1, operation: 'add_label' },
+      ],
+      [{ index: 2, operation: 'assign_user', reason: "User 'ghost' not found", recovery: { tool: 'assign_user' } }],
+      [{ index: 3, operation: 'notify_team', reason: 'budget_exhausted' }],
     )
     assert.strictEqual(
       out,
-      'partial_success: "2 completed, 1 failed, 1 skipped"\ncompleted[2]: create_issue,add_label\n' +
-        "failed[1]{operation,reason}:\n  assign_user,User 'ghost' not found\nskipped[1]: notify_team\n" +
+      'partial_success: "2 completed, 1 failed, 1 skipped"\ncompleted[2]{index,operation}:\n  0,create_issue\n  1,add_label\n' +
+        "failed[1]{index,operation,reason}:\n  2,assign_user,User 'ghost' not found\n" +
+        'skipped[1]{index,operation,reason}:\n  3,notify_team,budget_exhausted\n' +
         'recovery[1]{tool,params,reason}:\n  assign_user,"{}",null',
     )
   })
@@ -1024,32 +1028,58 @@ void describe('renderPartialSuccess', () => {
   void it('omits empty categories and a missing recovery hint', () => {
     assert.strictEqual(renderPartialSuccess([], [], []), 'partial_success: "0 completed, 0 failed, 0 skipped"')
     assert.strictEqual(
-      renderPartialSuccess(['a'], [{ operation: 'b', reason: 'c, d' }], []),
-      'partial_success: "1 completed, 1 failed, 0 skipped"\ncompleted[1]: a\nfailed[1]{operation,reason}:\n  b,"c, d"',
+      renderPartialSuccess([{ index: 0, operation: 'a' }], [{ index: 1, operation: 'b', reason: 'c, d' }], []),
+      'partial_success: "1 completed, 1 failed, 0 skipped"\ncompleted[1]{index,operation}:\n  0,a\n' +
+        'failed[1]{index,operation,reason}:\n  1,b,"c, d"',
     )
   })
 
+  void it('keeps caller indexes and order, and renders a missing skip reason as null', () => {
+    assert.strictEqual(
+      renderPartialSuccess(
+        [
+          { index: 7, operation: 'x' },
+          { index: 2, operation: 'y' },
+        ],
+        [],
+        [
+          { index: 9, operation: 'k', reason: null },
+          { index: 4, operation: 'j' },
+        ],
+      ),
+      'partial_success: "2 completed, 0 failed, 2 skipped"\ncompleted[2]{index,operation}:\n  7,x\n  2,y\n' +
+        'skipped[2]{index,operation,reason}:\n  9,k,null\n  4,j,null',
+    )
+  })
+
+  void it('rejects a missing or invalid index', () => {
+    assert.throws(() => renderPartialSuccess([{ operation: 'a' }], [], []), /Missing field `index`/)
+    assert.throws(() => renderPartialSuccess([], [{ operation: 'a', reason: 'r' }], []), /Missing field `index`/)
+    assert.throws(() => renderPartialSuccess([], [], [{ index: -1, operation: 'a' }]), /non-negative integer/)
+    assert.throws(() => renderPartialSuccess([{ index: 1.5, operation: 'a' }], [], []), /non-negative integer/)
+  })
+
   void it('rejects inputs over the caps', () => {
-    const many = Array.from({ length: 10_001 }, (_, i) => `s${i}`)
+    const many = Array.from({ length: 10_001 }, (_, i) => ({ index: i, operation: `s${i}` }))
     assert.throws(() => renderPartialSuccess(many, [], []), /^Error: completed length 10001 exceeds maximum of 10000$/)
     assert.throws(() => renderPartialSuccess([], [], many), /^Error: skipped length 10001 exceeds maximum of 10000$/)
-    const failed = Array.from({ length: 10_001 }, () => ({ operation: 'o', reason: 'r' }))
+    const failed = Array.from({ length: 10_001 }, () => ({ index: 0, operation: 'o', reason: 'r' }))
     assert.throws(() => renderPartialSuccess([], failed, []), /^Error: failed length 10001 exceeds maximum of 10000$/)
     const long = 'x'.repeat(4097)
     assert.throws(
-      () => renderPartialSuccess([], [{ operation: long, reason: 'r' }], []),
+      () => renderPartialSuccess([], [{ index: 0, operation: long, reason: 'r' }], []),
       /^Error: operation byte length \(at least 4097\) exceeds maximum of 4096$/,
     )
     assert.throws(
-      () => renderPartialSuccess([long], [], []),
-      /^Error: completed step byte length \(at least 4097\) exceeds maximum of 4096$/,
+      () => renderPartialSuccess([{ index: 0, operation: long }], [], []),
+      /^Error: operation byte length \(at least 4097\) exceeds maximum of 4096$/,
     )
     assert.throws(
-      () => renderPartialSuccess([], [{ operation: 'o', reason: 'x'.repeat(1_048_577) }], []),
+      () => renderPartialSuccess([], [{ index: 0, operation: 'o', reason: 'x'.repeat(1_048_577) }], []),
       /^Error: reason byte length \(at least 1048577\) exceeds maximum of 1048576$/,
     )
     assert.throws(() => renderPartialSuccess([], 'nope', []), /^Error: failed must be an array$/)
-    assert.throws(() => renderPartialSuccess([], [{ reason: 'r' }], []), /Missing field `operation`/)
+    assert.throws(() => renderPartialSuccess([], [{ index: 0, reason: 'r' }], []), /Missing field `operation`/)
   })
 })
 
