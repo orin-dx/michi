@@ -64,6 +64,8 @@
 
 /// Audience routing (`assistant` vs `user`).
 pub mod audience;
+/// Response-level budget summary.
+pub mod budget;
 /// Definitive empty states.
 pub mod empty;
 /// Unified domain errors.
@@ -86,6 +88,8 @@ pub mod mcp;
 pub mod napi;
 /// Pipeline step definitions and run state.
 pub mod pipeline;
+/// Response-level provenance block.
+pub mod provenance;
 /// Structured recovery hints (`recovery[]`).
 pub mod recovery;
 /// Best-effort redaction of known secrets and URL userinfo.
@@ -94,6 +98,8 @@ pub mod redact;
 pub mod resilience;
 /// `AgentResponse` builder.
 pub mod response;
+/// Repeatable response sections.
+pub mod section;
 /// Health and status response rendering.
 pub mod status;
 /// No-op telemetry provider.
@@ -109,14 +115,17 @@ pub mod truncation;
 pub(crate) mod test_support;
 
 pub use audience::Audience;
+pub use budget::{BudgetSummary, SectionCost};
 pub use empty::{empty_state, empty_state_with_hints, try_empty_state, try_empty_state_with_hints};
 pub use error::{DomainError, Error, ErrorClass, ErrorCode, Sensitive, MAY_HAVE_TAKEN_EFFECT_HINT};
 pub use hints::{append_hints, render_hints, Hint};
 pub use idempotency::{FailedOp, OpRef, PartialSuccess};
 pub use kv::{render_kv, KvError, KvItem, KvValue};
 pub use mcp::{CallToolResult, ContentBlock, StructuredContentError};
+pub use provenance::{ProvenanceBlock, ProvenanceEntry};
 pub use recovery::{append_recovery, render_recovery, RecoveryHint};
 pub use response::{AgentResponse, OutputFormat};
+pub use section::{Section, SectionBody};
 pub use status::{Health, StatusItem, StatusResponse};
 
 // Explicit lists, not globs: a glob would silently re-export every item later added to these modules at the crate

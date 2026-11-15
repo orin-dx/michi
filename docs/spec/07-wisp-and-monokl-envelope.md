@@ -1,26 +1,26 @@
 # The Wisp / monokl Response Envelope
 
-> **Status: Proposed.** This design is not implemented. The inclusion case remains open; see the notes below.
+> **Status: Accepted ([ADR 10](../adr/0010-response-envelope-accepted.md)); partly implemented.** Sections, `BudgetSummary`, `ProvenanceBlock` and the JSON envelope (sections 1, 2, 3 and 5) are built in `michi-core`. Section 4 (the per-op index in `PartialSuccess`) lands in a separate PR. The published `outputSchema` in section 5 is not built. Where this text and the code differ, the code and [03-rust-api.md](03-rust-api.md) are current; the deviations are listed in [06-decisions.md](06-decisions.md) under "Envelope implementation deviations (gate 5)".
 
-This proposal describes how one `AgentResponse` could carry a monokl batch result or Wisp briefing: named sections, budget and provenance summaries, and index-bearing operation outcomes.
+This design describes how one `AgentResponse` carries a monokl batch result or Wisp briefing: named sections, budget and provenance summaries, and index-bearing operation outcomes.
 
 This is the michi half of a contract written down in three places. monokl's `docs/spec/08-library-session-api.md` §7 defines the batch `QueryResponse`; Wisp's `docs/02-architecture-and-contracts.md` §11–§12 defines the MCP surface that renders it; this doc defines what michi must hold for either of them to render through it. Nothing here changes how michi serializes MCP — that part is already right.
 
 ## The gap
 
-`AgentResponse` today holds exactly one body. From `crates/michi-core/src/response.rs`:
+Historical: this section describes `AgentResponse` before sections shipped. It held exactly one body. From `crates/michi-core/src/response.rs`:
 
 | Field / type | Line | What it constrains |
 | --- | --- | --- |
 | `toon: ToonOptions` | 34 | One TOON slot: one `type_name` for the whole response, one `fields`/`rows` table |
 | `single_item: Vec<KvItem>` | 36 | One KV slot |
 | `toon.total_count: Option<usize>` | 34 | One count, for whichever slot renders |
-| `enum RenderTarget { Unset, Toon, Kv }` | 18–22 | The two slots are mutually exclusive |
+| `enum RenderTarget { Unset, Toon, Kv }` (since removed) | 18–22 | The two slots were mutually exclusive |
 | `toon.max_cell_len: usize` | 34 | Per-cell clamp, TOON path only, set by `truncate_cells_at()` (`DEFAULT_TRUNCATE_CELLS = 200`, line 25) |
 
-`items()` (line 59) sets `target = RenderTarget::Toon`; `kv_items()` (line 108) sets `Kv`; `body()` (line 194) dispatches on `target`, so `render()` reads whichever setter ran last. Calling both silently drops one. A ten-operation batch is not expressible: nine sections disappear with no error and no signal that they existed.
+Before this change, `items()` (line 59) set `target = RenderTarget::Toon`; `kv_items()` (line 108) set `Kv`; `body()` (line 194) dispatched on `target`, so `render()` read whichever setter ran last. Calling both silently dropped one. A ten-operation batch was not expressible: nine sections disappeared with no error and no signal that they existed. Sections fixed that, and the one-section-model change removed the slots, `RenderTarget`, `render_toon()` and `render_kv()` altogether: `items()` and `kv_items()` append sections now.
 
-The truncation model has the same shape problem one level down. `truncate_cells_at` clamps a cell. `michi_core::truncate::Truncated { content, original_chars, removed }` describes a string. `michi_core::truncation::TruncationOutcome` describes one list, and `AgentResponse::truncation()` turns it into the response's `totalCount` and one `help[]` line. None describes a response of several parts. The only envelope-level "there is more" signal is `total_count: Option<usize>` plus free-text hints — a bare integer with no per-section breakdown, no relation to a budget, and no way to say why anything was dropped. monokl's `BudgetReport` would have to be flattened into free-text `hint()` calls to reach the agent at all.
+The truncation model has the same shape problem one level down. `truncate_cells_at` clamps a cell. `michi_core::truncate::Truncated { content, original_chars, removed }` describes a string. `michi_core::truncation::TruncationOutcome` describes one list, and `AgentResponse::truncation()` (now `truncated_section()`) turned it into the response's `totalCount` and one `help[]` line. None describes a response of several parts. The only envelope-level "there is more" signal is `total_count: Option<usize>` plus free-text hints — a bare integer with no per-section breakdown, no relation to a budget, and no way to say why anything was dropped. monokl's `BudgetReport` would have to be flattened into free-text `hint()` calls to reach the agent at all.
 
 ## What gets added
 
@@ -52,7 +52,7 @@ pub enum SectionBody {
     Toon { fields: Vec<String>, rows: Vec<Vec<Value>> },
     /// A single receipt or a small set of labelled scalars.
     Kv(Vec<KvItem>),
-    /// Prose or an already-rendered fragment michi passes through unchanged.
+    /// One string value, rendered as `name: <escaped value>`: escaped like any TOON string, never raw.
     Text(String),
 }
 
@@ -73,11 +73,15 @@ impl AgentResponse {
 }
 ```
 
-`items()` and `kv_items()` stay, as one-section sugar over the same storage: `items(rows, fields)` becomes `section(Section::toon(self.toon.type_name.clone(), fields, rows))`, `kv_items(items)` becomes `section(Section::kv(self.toon.type_name.clone(), items))`. `RenderTarget` survives as the record of which sugar was used, because `render_toon()` and `render_kv()` are documented to read their named slot unconditionally regardless of the last setter (AC-009) and that behavior has to hold.
+`items()` and `kv_items()` stay, as one-section sugar over the same storage: `items(rows, fields)` is `section(Section::toon(type_name, fields, rows))`, `kv_items(items)` is `section(Section::kv(type_name, items))`. `RenderTarget`, `render_toon()` and `render_kv()` are gone (see 06-decisions, "One section model").
+
+**Sections are root keys.** A section renders as a root key of the TOON document (a list or text section under its name, a KV section as its item keys), so names must be distinct from each other and from the keys michi writes (`budget`, `sections`, `provenance`, `truncated`, `totalCount`, `help`, `recovery`; `error` and `message` when a section fails validation). The sugar names every section for the response, so it serves one list per response; several lists use `section(Section::toon(distinct_name, ..))`. A collision, or two equal provenance labels, never reaches the output as invalid TOON: the response renders the `toon_validation_failed` error naming the key, with `isError` true on every surface.
+
+**Stability.** The envelope (`Section`, `BudgetSummary`, `ProvenanceBlock`) is unstable until a second independent consumer has used it (ADR 10). Its shape may change before 1.0, and the rustdoc on the three types says so.
 
 Two invariants keep this compatible with what already ships:
 
-- **A response with zero or one section renders byte-for-byte as it does today**, on every one of `render(Text)`, `render(Json)`, `render_toon()`, `render_kv()`, and `render_for()`. The existing `insta` snapshots are the test for this; if any of them moves, the change is wrong. Per the SemVer table in [05-scope-and-quality.md](05-scope-and-quality.md) a rendered-output change is a major bump, and multi-section support does not have to be one.
+- **A response with only `items()` or `kv_items()` renders as before, with the output changes listed in 06-decisions ("Output moves, all deliberate")**: `totalCount` only above the rows returned, and a `sections` array in the JSON. This replaces the original "byte-for-byte" rule, dropped when the one-section model removed the legacy slots (pre-1.0, ADR 9).
 - **`returned_count` is derived, not trusted, for `Toon` and `Kv` bodies.** Render functions always succeed ([`PRINCIPLES.md`](../../PRINCIPLES.md)), so a `returned_count` disagreeing with `rows.len()` / `items.len()` is clamped to the real length with a `debug_assert!` alongside — the assert fires under `cargo nextest`, the clamp runs in release. `Text` bodies keep whatever the caller declared, since michi cannot count items in prose.
 
 Rendered, a two-section response is just the sections in order:
@@ -188,7 +192,7 @@ Rendered as a KV block after `budget:`:
 ```text
 provenance:
   analyzer: rust-analyzer@0.3.2
-  observedAt: 1756950000000
+  observedAt: "1756950000000"
   precision: exact
   fingerprint: b3f1c0d2e4a58691
 ```
@@ -286,7 +290,7 @@ skipped[1]{index,operation,reason}:
 
 Every key in that object is camelCase — `returnedCount`, `totalCount`, `tokensUsed`, `maxTokens`, `isError`. The rendered examples above are the specification of that, not an illustration of it: a third-party harness plugin reading this JSON without linking any Rust is a first-class consumer, and `#[serde(rename_all = "camelCase")]` on every envelope type is what keeps the spelling stable. Labels inside `provenance.entries` are caller-supplied strings and michi does not case-convert them.
 
-`sections`, `budget`, and `provenance` appear only when their slots are set. A response built entirely through today's API still emits exactly `body`, `hints`, `recovery`, `isError` — the four keys AC-004 pins — so that criterion needs its assertion rewritten from "exactly this set" to "exactly this set, plus the envelope keys whose slots were set", not deleted.
+`sections`, `budget`, and `provenance` appear only when set. A response with no body, budget or provenance still emits exactly `body`, `hints`, `recovery`, `isError` — the four keys AC-004 pins. `items()` and `kv_items()` add a section, so a response built with them also carries `sections`; AC-004 asserts "the four, plus the envelope keys that were set".
 
 The schema is published through the existing `schemars` feature: `Section`, `SectionBody`, `BudgetSummary`, `SectionCost`, `ProvenanceBlock`, and `ProvenanceEntry` derive `JsonSchema`, and the server declares the result as its tool's `outputSchema`. MCP makes conformance binding once a schema is declared — servers MUST return conforming structured results, clients SHOULD validate — which is the reason to publish one rather than leave the shape implicit. The token-budget caveat in [06-decisions.md](06-decisions.md) still applies: `outputSchema` enters the context window at `tools/list` time, so declare it on always-loaded tools, not on deferred ones.
 

@@ -410,8 +410,7 @@ fn s12_whitespace_invariants_hold_for_every_document_producer() {
         empty_state_with_hints("x-y", &[Hint::new("a"), Hint::new("")]),
         pipeline.render(),
         AgentResponse::new("t")
-            .items(vec![vec![Value::Int(1)]], &["n"])
-            .total_count(9)
+            .section(michi_core::Section::toon("t", vec!["n".into()], vec![vec![Value::Int(1)]]).total_count(Some(9)))
             .hint("h")
             .render(OutputFormat::Text),
         AgentResponse::new("t").render(OutputFormat::Text),

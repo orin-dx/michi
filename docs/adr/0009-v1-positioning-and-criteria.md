@@ -1,6 +1,6 @@
 # 9. Position michi as a response contract, and earn 1.0 by use
 
-Status: Proposed
+Status: Proposed; the deferred envelope bullet is superseded by ADR 10
 
 ## Context
 
@@ -31,7 +31,7 @@ TOON 4.4 is one encoder for the body, and today the only one. It is the right ch
 - **Automatic format selection by data shape.** It needs measurements of format by shape (nested, sparse, long, mixed) and at least two consumers hand-rolling the same selection logic ([PRINCIPLES.md](../../PRINCIPLES.md) gate 3). Callers choose the body today.
 - **`Untrusted<T>`-style taint types.** Rejected for now in the trust-model decision in [`06-decisions.md`](../spec/06-decisions.md); no second tool has asked for one.
 - **Typed pipeline step outputs** and **scoped or borrowing pipeline steps.** No consumer has run pipelines yet, so the cost of the current shape is unknown.
-- **The Wisp and monokl envelope** ([`07-wisp-and-monokl-envelope.md`](../spec/07-wisp-and-monokl-envelope.md)). It stays a proposal.
+- ~~**The Wisp and monokl envelope** ([`07-wisp-and-monokl-envelope.md`](../spec/07-wisp-and-monokl-envelope.md)). It stays a proposal.~~ Superseded by [ADR 10](0010-response-envelope-accepted.md): the envelope is accepted and built.
 
 ## Alternatives
 

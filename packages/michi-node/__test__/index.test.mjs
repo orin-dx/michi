@@ -164,7 +164,7 @@ void describe('truncation hint', () => {
     const r = new AgentResponse('t')
     r.truncationHint('full=true')
     r.items(longRow, ['a'])
-    assert.strictEqual(r.renderToon(), `${cut}\n${help}`)
+    assert.strictEqual(r.renderText(), `${cut}\n${help}`)
   })
 
   void it('a cell that imitates the old in-band marker is not a truncation signal', () => {
@@ -319,7 +319,7 @@ void describe('AgentResponse', () => {
     const r = new AgentResponse('issues')
     r.items([[{ type: 'int', intVal: 1 }]], ['id'])
     r.hint('do this')
-    const out = r.renderToon()
+    const out = r.renderText()
     assert.ok(out.startsWith('issues[1]{id}:'))
     assert.ok(out.includes('help[1]:'))
   })
@@ -327,7 +327,7 @@ void describe('AgentResponse', () => {
   void it('builds a KV response', () => {
     const r = new AgentResponse('issue')
     r.kvItems([{ key: 'id', value: { type: 'int', intVal: 42 } }])
-    assert.ok(r.renderKv().includes('id:'))
+    assert.ok(r.renderText().includes('id:'))
   })
 
   void it('renderJson reflects asError', () => {
@@ -340,20 +340,40 @@ void describe('AgentResponse', () => {
   void it('mutators keep working after render calls (render takes &self, not &mut self)', () => {
     const r = new AgentResponse('t')
     r.kvItems([])
-    r.renderKv()
+    r.renderText()
     r.hint('still works')
     assert.ok(r.renderHintsOnly().includes('still works'))
   })
 
-  void it('renderToon/renderKv are slot-specific, not last-call-wins', () => {
+  void it('items and kvItems each add a section, rendered in call order', () => {
     const r = new AgentResponse('issues')
     r.items([[{ type: 'int', intVal: 1 }]], ['id'])
     r.kvItems([{ key: 'id', value: { type: 'int', intVal: 99 } }])
-    const toon = r.renderToon()
-    const kv = r.renderKv()
-    assert.ok(toon.startsWith('issues[1]{id}:'), `got: ${toon}`)
-    assert.ok(kv.includes('id: 99'), `got: ${kv}`)
-    assert.notStrictEqual(toon, kv)
+    assert.strictEqual(r.renderText(), 'issues[1]{id}:\n  1\nid: 99')
+    const flipped = new AgentResponse('issues')
+    flipped.kvItems([{ key: 'id', value: { type: 'int', intVal: 99 } }])
+    flipped.items([[{ type: 'int', intVal: 1 }]], ['id'])
+    assert.strictEqual(flipped.renderText(), 'id: 99\nissues[1]{id}:\n  1')
+  })
+
+  void it('totalCount rides on the section and renders only when larger than the rows passed', () => {
+    const r = new AgentResponse('t')
+    r.items([[{ type: 'int', intVal: 1 }]], ['id'], 5)
+    assert.strictEqual(r.renderText(), 't[1]{id}:\n  1\ntotalCount: 5')
+    const same = new AgentResponse('t')
+    same.items([[{ type: 'int', intVal: 1 }]], ['id'], 1)
+    assert.strictEqual(same.renderText(), 't[1]{id}:\n  1')
+    const kv = new AgentResponse('t')
+    kv.kvItems([{ key: 'id', value: { type: 'int', intVal: 1 } }], 3)
+    assert.strictEqual(kv.renderText(), 'id: 1\ntotalCount: 3')
+  })
+
+  void it('structuredContent carries the typed sections next to the body', () => {
+    const r = new AgentResponse('issues')
+    r.items([[{ type: 'int', intVal: 1 }]], ['id'])
+    const json = JSON.parse(r.renderJson())
+    assert.deepStrictEqual(Object.keys(json), ['body', 'sections', 'hints', 'recovery', 'isError'])
+    assert.strictEqual(json.sections[0].name, 'issues')
   })
 })
 
@@ -398,7 +418,7 @@ void describe('renderFor / hasHumanContent', () => {
   void it('assistant matches the agent rendering', () => {
     const r = new AgentResponse('issue')
     r.kvItems([{ key: 'id', value: { type: 'int', intVal: 1 } }])
-    assert.strictEqual(r.renderFor('assistant'), r.renderKv())
+    assert.strictEqual(r.renderFor('assistant'), r.renderText())
   })
 
   void it('user returns humanContent when set', () => {
@@ -413,7 +433,7 @@ void describe('renderFor / hasHumanContent', () => {
     const r = new AgentResponse('t')
     r.kvItems([])
     assert.strictEqual(r.hasHumanContent(), false)
-    assert.strictEqual(r.renderFor('user'), r.renderKv())
+    assert.strictEqual(r.renderFor('user'), r.renderText())
   })
 
   void it('rejects an unknown audience', () => {
@@ -504,7 +524,7 @@ void describe('numeric boundary agreement (SPEC-ARCH-003)', () => {
         (err) => err.message.includes('expected a non-negative integer no greater than 9007199254740991') && err.message.includes(substring)
       )
       assert.throws(
-        () => new AgentResponse('t').totalCount(bad),
+        () => new AgentResponse('t').items([], ['a'], bad),
         (err) => err.message.includes('expected a non-negative integer no greater than 9007199254740991') && err.message.includes(substring)
       )
     }
@@ -519,10 +539,10 @@ void describe('numeric boundary agreement (SPEC-ARCH-003)', () => {
       assert.ok(kvOut.includes(`totalCount: ${good}`), `renderKv disagreed for ${good}: ${kvOut}`)
 
       const r = new AgentResponse('t')
-      r.items([[{ type: 'int', intVal: 1 }]], ['a'])
-      r.totalCount(good)
-      const agentOut = r.renderToon()
-      assert.ok(agentOut.includes(`totalCount: ${good}`), `AgentResponse.totalCount disagreed for ${good}: ${agentOut}`)
+      r.items([[{ type: 'int', intVal: 1 }]], ['a'], good)
+      const agentOut = r.renderText()
+      // A total at or below the rows passed (one row here) adds nothing, so 0 and 1 render no line.
+      assert.strictEqual(agentOut.includes(`totalCount: ${good}`), good > 1, `AgentResponse.items disagreed for ${good}: ${agentOut}`)
     }
   })
 })
@@ -597,7 +617,7 @@ void describe('AgentResponse cumulative byte budget', () => {
       (err) => err.message === `cumulative byte total ${1 + 64 * 1_048_576} exceeds maximum of 67108864`
     )
     assert.strictEqual(accepted, 63, '"t" takes one byte, so the 64th full hint passes 64 MiB')
-    assert.ok(r.renderToon().length < 67_108_864)
+    assert.ok(r.renderText().length < 67_108_864)
   })
 
   void it('charges recovery hints, items and kvItems to the same total', () => {
@@ -605,9 +625,10 @@ void describe('AgentResponse cumulative byte budget', () => {
     for (let i = 0; i < 40; i++) r.recoveryHint('retry', mib)
     const rows = Array.from({ length: 30 }, () => [{ type: 'str', strVal: mib }])
     assert.throws(() => r.items(rows, ['v']), /^Error: cumulative byte total \d+ exceeds maximum of 67108864$/)
-    assert.ok(r.renderToon().startsWith('t: []'), 'the builder is unchanged on error')
+    assert.ok(r.renderText().startsWith('t: []'), 'the builder is unchanged on error')
     r.items(rows.slice(0, 20), ['v'])
-    r.items(rows.slice(0, 20), ['v']) // replacing the list gives its bytes back
+    // Every items call adds a section, so a second 20 MiB list adds to the first: 40 + 20 + 20 passes 64 MiB.
+    assert.throws(() => r.items(rows.slice(0, 20), ['v']), /cumulative byte total/)
     const kv = Array.from({ length: 5 }, (_, i) => ({ key: `k${i}`, value: { type: 'str', strVal: mib } }))
     assert.throws(() => r.kvItems(kv), /cumulative byte total/, '40 + 20 + 5 MiB passes 64 MiB')
     r.kvItems(kv.slice(0, 3))
@@ -638,7 +659,7 @@ void describe('index.d.ts keeps plain number types (SPEC-ARCH-003 AC-012)', () =
       'totalCount?: number',
       'totalCount: number | undefined | null',
       'maxChars: number',
-      'totalCount(n: number): void',
+      'totalCount?: number | null',
     ]) {
       assert.ok(dts.includes(expected), `index.d.ts missing declaration: ${expected}`)
     }
@@ -906,7 +927,7 @@ void describe('input limits bound the work (capacity limits)', () => {
     const r = new AgentResponse('t')
     r.items([[{ type: 'int', intVal: 1 }]], ['id'])
     assert.throws(() => r.items(rows, fields), /^Error: input byte total \d+ exceeds maximum of 67108864$/)
-    assert.strictEqual(r.renderToon(), 't[1]{id}:\n  1', 'a rejected items() call leaves the builder unchanged')
+    assert.strictEqual(r.renderText(), 't[1]{id}:\n  1', 'a rejected items() call leaves the builder unchanged')
 
     const hint = 'h'.repeat(1_000_000)
     assert.throws(

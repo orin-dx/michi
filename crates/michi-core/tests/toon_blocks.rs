@@ -354,12 +354,14 @@ fn partial_success_operation_names_are_quoted_in_table_cells() {
 #[test]
 fn agent_response_kv_body_composes_with_help_and_recovery() {
     let r = AgentResponse::new("t")
-        .kv_items(vec![kv("k", KvValue::Missing), kv("n", KvValue::Float(1.0, 3))])
-        .total_count(2)
+        .section(
+            michi_core::Section::kv("t", vec![kv("k", KvValue::Missing), kv("n", KvValue::Float(1.0, 3))])
+                .total_count(Some(3)),
+        )
         .hint("h")
         .recovery_hint(RecoveryHint::new("r").reason("why"));
     let out = r.render(OutputFormat::Text);
-    assert_eq!(out, "k: null\nn: 1\ntotalCount: 2\nhelp[1]: h\nrecovery[1]{tool,params,reason}:\n  r,\"{}\",why");
+    assert_eq!(out, "k: null\nn: 1\ntotalCount: 3\nhelp[1]: h\nrecovery[1]{tool,params,reason}:\n  r,\"{}\",why");
     conformant(&out);
 }
 

@@ -60,6 +60,9 @@ pub enum Node {
     Table { fields: Vec<String>, rows: Vec<Vec<Prim>> },
     /// `key[N]:` followed by N bare `-` items: an array of empty objects (§9.4, §10).
     EmptyObjects(usize),
+    /// `key:` followed by depth-1 `k: v` primitive entries: a nested object (§8), as in the `budget:` and
+    /// `provenance:` blocks. Nesting deeper than that is outside michi's subset.
+    Object(Vec<(String, Prim)>),
 }
 
 /// A decoded root object, in document order.
@@ -174,7 +177,7 @@ pub fn decode(input: &str) -> Result<Doc, String> {
         if indent.len() % 2 != 0 {
             return Err(format!("§12: indentation not a multiple of 2 on line {i}"));
         }
-        if line.trim_start().starts_with('#') {
+        if line.trim_start_matches([' ', '\t']).starts_with('#') {
             return Err(format!("§5.1: encoders MUST NOT emit comment lines (line {i})"));
         }
     }
@@ -257,6 +260,26 @@ pub fn decode(input: &str) -> Result<Doc, String> {
             } else {
                 Node::Prim(parse_prim(value)?)
             }
+        } else if rest == ":" {
+            let mut fields: Vec<(String, Prim)> = Vec::new();
+            while let Some(child) = lines.get(i).and_then(|l| l.strip_prefix("  ")) {
+                if child.starts_with(' ') {
+                    return Err(format!("nesting deeper than one level is outside michi's subset: {child:?}"));
+                }
+                let (child_key, child_rest) = take_key(child)?;
+                let value = child_rest
+                    .strip_prefix(": ")
+                    .ok_or_else(|| format!("nested entries must be `key: value`: {child:?}"))?;
+                if value.starts_with(' ') {
+                    return Err(format!("§12: exactly one space after ':' required: {child:?}"));
+                }
+                if fields.iter().any(|(k, _)| *k == child_key) {
+                    return Err(format!("§14.3: duplicate key {child_key:?} inside {key:?}"));
+                }
+                fields.push((child_key, parse_prim(value)?));
+                i += 1;
+            }
+            Node::Object(fields)
         } else {
             return Err(format!("only key-value and array-header lines are in michi's subset: {line:?}"));
         };

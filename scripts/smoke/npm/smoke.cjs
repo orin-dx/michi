@@ -63,7 +63,7 @@ response.items(
   ['id', 'name'],
 )
 response.hint('Run `next`')
-assert.equal(response.renderToon(), 'issues[1]{id,name}:\n  1,one\nhelp[1]: Run `next`')
+assert.equal(response.renderText(), 'issues[1]{id,name}:\n  1,one\nhelp[1]: Run `next`')
 const result = response.toCallToolResult()
 assert.equal(result.isError, false)
 assert.ok(result.content.length >= 1)

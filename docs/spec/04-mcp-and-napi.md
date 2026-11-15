@@ -1,6 +1,6 @@
 # MCP and the NAPI/npm Boundary
 
-> Targets MCP spec version **2025-11-25** (the current stable release). A release candidate for **2026-07-28** exists — described by its own announcement as "the largest revision since launch" — but hasn't shipped yet. Nothing in this doc should be read as covering the RC; revisit this note once it's finalized.
+> Written against MCP spec revision **2025-11-25**, and the conformance test still checks against that revision (the pinned SDK, `@modelcontextprotocol/sdk` 1.32.2). Revision **2026-07-28** has since shipped and is now the current one on modelcontextprotocol.io; it replaces the `initialize` handshake with per-request version negotiation and `server/discover`. This doc has not been reviewed against it. `CallToolResult` itself is built the same way; check it against the new revision before claiming conformance with it.
 
 ## `mcp` module
 
@@ -43,13 +43,13 @@ The wire rules, for output and input:
 
 `AgentResponse::to_call_tool_result()` (see [03-rust-api.md](03-rust-api.md)) is the only intended constructor. It builds:
 
-- the primary `assistant`-audience block from whichever of `render_toon()`/`render_kv()` is active
+- the primary `assistant`-audience block: the response's text render (`render(OutputFormat::Text)`)
 - an optional second `user`-audience block from `human_content()`, if the caller set one
 - `structured_content` from `render(OutputFormat::Json)`
 
 ### Conformance check
 
-`packages/michi-node/__test__/mcp-conformance.test.mjs` checks every `toCallToolResult()` shape against the official MCP TypeScript SDK's own schema (`CallToolResultSchema` from `@modelcontextprotocol/sdk` 1.32.1, which implements MCP spec revision 2025-11-25). It runs in `pnpm test` and CI. The SDK is a dev dependency of the npm package only; no Rust crate depends on it.
+`packages/michi-node/__test__/mcp-conformance.test.mjs` checks every `toCallToolResult()` shape against the official MCP TypeScript SDK's own schema (`CallToolResultSchema` from `@modelcontextprotocol/sdk` 1.32.2, which implements MCP spec revision 2025-11-25). It runs in `pnpm test` and CI. The SDK is a dev dependency of the npm package only; no Rust crate depends on it.
 
 What that does and does not establish:
 
@@ -129,10 +129,10 @@ impl JsAgentResponse {
     }
 
     #[napi(catch_unwind)]
-    pub fn render_toon(&self) -> napi::Result<String> {
+    pub fn render_text(&self) -> napi::Result<String> {
         self.inner.as_ref()
             .ok_or_else(|| napi::Error::from_reason("AgentResponse already consumed"))
-            .map(|b| b.render_toon())
+            .map(|b| b.render(OutputFormat::Text))
     }
 }
 ```
@@ -153,7 +153,7 @@ TypeScript callers use sequential statements, not method chaining:
 const r = new AgentResponse("issues");
 r.items(rows, ["number", "title"]); // returns undefined, not r
 r.hint("Try a broader filter"); // ditto
-const out = r.renderToon();
+const out = r.renderText();
 ```
 
 not:
@@ -163,7 +163,7 @@ not:
 const out = new AgentResponse("issues")
   .items(rows, ["number", "title"])
   .hint("Try a broader filter")
-  .renderToon();
+  .renderText();
 ```
 
 (Async `&mut self` is unsound in napi-rs — it can't enforce exclusivity across the event loop, and would require an `unsafe` marker. michi's setters are all synchronous, so this never comes up.)
@@ -188,7 +188,7 @@ Any `#[napi]` function returning `napi::Result<T>` throws a JS `Error` on `Err`.
 - Errors keep the usual wording: `rows length 100001 exceeds maximum of 100000`, `cell count 1000100 exceeds maximum of 1000000`, `input byte total 67202037 exceeds maximum of 67108864`, `strVal byte length 1200000 exceeds maximum of 1048576`. A string whose UTF-16 length already exceeds the cap is rejected without scanning it, reported as `byte length (at least N)`.
 - Only the payload a cell's `type` names is read (`strVal` for `"str"`, `floatVal` and `decimalsVal` for `"float"`, …). As before, an object field set to `null` is a wrong-typed value, not an absent one.
 - The single-string `AgentResponse` members (the constructor's `typeName`, `hint`, `recoveryHint`, `truncationHint`, `humanContent`) and `emptyState` keep plain `string` parameters, since napi copies their one argument exactly once; they reject a value over the caps after the copy: 4 KiB for `typeName`, a recovery `tool` and `truncationHint`, 1 MiB for a hint, a recovery `reason` and `humanContent`. `AgentResponse.hint`/`recoveryHint` also keep their cumulative 10,000-call caps.
-- **Cumulative budget per `AgentResponse`:** one object holds at most **64 MiB** of caller strings across all its calls: the type name, `items` fields and cells, `kvItems` keys and values, hints, recovery tools and reasons, the truncation hint and `humanContent`. `hint` and `recoveryHint` add to the total; `items`, `kvItems`, `truncationHint` and `humanContent` replace their slot, so the old value's bytes come back first. A call that would pass the total throws `cumulative byte total 67108865 exceeds maximum of 67108864` and leaves the builder unchanged. Before, each call had its own budget, so 65 separate 1 MiB hints were accepted and rendered 68 MB synchronously.
+- **Cumulative budget per `AgentResponse`:** one object holds at most **64 MiB** of caller strings across all its calls: the type name, `items` fields and cells, `kvItems` keys and values, hints, recovery tools and reasons, the truncation hint and `humanContent`. `items`, `kvItems`, `hint` and `recoveryHint` each add a block, so their bytes add to the total; `truncationHint` and `humanContent` replace their slot, so the old value's bytes come back first. A call that would pass the total throws `cumulative byte total 67108865 exceeds maximum of 67108864` and leaves the builder unchanged. Before, each call had its own budget, so 65 separate 1 MiB hints were accepted and rendered 68 MB synchronously.
 - michi-core's own shape caps (1,000 fields, 1,000,000 cells, a 256-char truncation hint; see [02 — Size limits](02-toon-format.md#size-limits)) still apply after conversion and surface as `toon_validation_failed: …`.
 
 The typed Rust functions (`render_toon(JsToonOptions)`, `JsAgentResponse::items(Vec<Vec<JsToonValue>>, Vec<String>)`, …) keep their names and signatures for Rust callers and unit tests; the JS exports are separate Rust functions (`render_toon_js`, `items_js`, …) with `js_name` and `ts_args_type`, so `index.d.ts` still declares the same plain types.
@@ -197,7 +197,7 @@ The typed Rust functions (`render_toon(JsToonOptions)`, `JsAgentResponse::items(
 
 Every JavaScript number that crosses into a rendering or resilience call is validated at the boundary through a newtype in `crates/michi-core/src/napi/num.rs` before any michi code runs; an out-of-domain value throws a JS `Error` instead of being narrowed. `napi_get_value_double` (a non-coercing read) is used for every converted position, so `napi_get_value_int32`'s `ToInt32` wraparound is never in the path.
 
-- `totalCount` (`JsToonOptions.totalCount`, `renderKv`'s `totalCount` parameter, and `AgentResponse.totalCount`) is rejected unless it is a finite, non-negative integer no greater than `Number.MAX_SAFE_INTEGER` (2^53 - 1).
+- `totalCount` (`JsToonOptions.totalCount`, `renderKv`'s `totalCount` parameter, and the optional `totalCount` argument of `AgentResponse.items` and `kvItems`) is rejected unless it is a finite, non-negative integer no greater than `Number.MAX_SAFE_INTEGER` (2^53 - 1).
 - `decimalsVal` is rejected unless it is a finite integer in `[0, 20]`. When it is absent, a KV or status float keeps every digit it needs (the rule `RecoveryHint` deserialization uses), so `1e-7` renders `1e-7` and `5e-324` renders `5e-324`. When it is given, the float rounds to that many places, as asked: `1e-7` with `decimalsVal: 2` renders `0`.
 - `maxChars` (`truncate`'s parameter) is rejected unless it is a finite, non-negative integer no greater than `Number.MAX_SAFE_INTEGER`.
 - `intVal` is rejected unless it is a finite integer in `[-9007199254740991, 9007199254740991]` — the range over which a JS number and an `i64` agree exactly.
@@ -355,9 +355,11 @@ export interface KvItem {
  * sequential statements, not method chaining. */
 export declare class AgentResponse {
   constructor(typeName: string);
-  items(rows: Array<Array<ToonValue>>, fields: Array<string>): void;
-  totalCount(n: number): void;
-  kvItems(items: Array<KvItem>): void;
+  /** Appends a TOON list section named for the type; each call adds one, rendered in call order. `totalCount`
+   * renders only when larger than the rows passed. */
+  items(rows: Array<Array<ToonValue>>, fields: Array<string>, totalCount?: number | null): void;
+  /** Appends a key-value section the same way. */
+  kvItems(items: Array<KvItem>, totalCount?: number | null): void;
   hint(hint: string): void;
   recoveryHint(tool: string, reason?: string): void;
   /** The caller's instruction for getting a cut TOON cell in full; added to `help[]` when a cell was cut. Not called:
@@ -374,11 +376,9 @@ export declare class AgentResponse {
   renderFor(audience: string): string;
   /** Whether `.humanContent()` was set on this builder. */
   hasHumanContent(): boolean;
-  /** Reads the TOON slot unconditionally — see 03-rust-api.md. */
-  renderToon(): string;
-  /** Reads the KV slot unconditionally — see 03-rust-api.md. */
-  renderKv(): string;
-  /** Returns a JSON *string* — `{"body":...,"hints":[...],"recovery":[...],"isError":bool}`
+  /** The sections in call order, then `help[]` and `recovery[]` — see 03-rust-api.md. */
+  renderText(): string;
+  /** Returns a JSON *string* — `{"body":...,"sections":[...],"hints":[...],"recovery":[...],"isError":bool}`
    * — not a parsed value; kept as hand-built text for consistency with the Rust side's
    * `render(OutputFormat::Json)`, which stays `serde_json`-free (see the `mcp` module
    * section above for where this crate *does* use `serde_json`, and why). */
