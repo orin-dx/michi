@@ -1,4 +1,4 @@
-//! Repeatable response sections: several named blocks in one [`AgentResponse`](crate::AgentResponse).
+//! Repeatable response sections: several named blocks in one [`crate::AgentResponse`].
 
 use crate::kv::KvItem;
 use crate::toon::Value;
