@@ -3,8 +3,11 @@ pnpm = "11"
 rust = "1"
 moon = "2"
 
-[plugins]
-moon = "source:https://raw.githubusercontent.com/moonrepo/moon/master/proto-plugin.toml"
+# No [plugins] entry for moon on purpose. proto ships moon as a built-in registry plugin
+# (registry://ghcr.io/moonrepo/moon_tool, checksum-verified release installs) and ignores a `moon` override here.
+# The old source:...moonrepo/moon/.../proto-plugin.toml URL is dead: moon deleted that file in commit a1651aa, so
+# master and every later ref return 404, and proto fell back to the built-in anyway (checked with proto 0.62.3). The
+# plugin version therefore follows the proto version that setup-toolchain installs.
 
 [settings]
 auto-install = true
