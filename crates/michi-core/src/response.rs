@@ -1,10 +1,14 @@
 use crate::budget::BudgetSummary;
+use crate::error::DomainError;
 use crate::hints::Hint;
+use crate::idempotency::PartialSuccess;
 use crate::json;
 use crate::kv::KvItem;
+use crate::pipeline::Pipeline;
 use crate::provenance::ProvenanceBlock;
 use crate::recovery::RecoveryHint;
 use crate::section::{Section, SectionBody};
+use crate::status::StatusResponse;
 use crate::toon::{ListRef, ToonDocument, Value};
 
 /// The serialisation format for `AgentResponse::render`.
@@ -21,8 +25,15 @@ pub enum OutputFormat {
 /// Default per-cell truncation limit used by [`AgentResponse::new`].
 pub const DEFAULT_TRUNCATE_CELLS: usize = 200;
 
-/// Builder for an agent-facing response: an ordered list of [`Section`]s, an optional budget report and provenance
-/// block, hints and recovery hints.
+/// Builder for an agent-facing response: an ordered list of [`Section`]s, an optional error, budget report and
+/// provenance block, hints and recovery hints.
+///
+/// It is the one composer and the one writer. Every outcome michi renders is a part of it: a [`DomainError`] is its
+/// error block ([`error`](Self::error)), and a [`PartialSuccess`], [`StatusResponse`], [`Pipeline`] or already-done
+/// report becomes sections ([`partial_success`](Self::partial_success), [`status`](Self::status),
+/// [`pipeline`](Self::pipeline), [`already_done`](Self::already_done)). Their hints and recovery hints join the
+/// response's one `help` and one `recovery` block, so a batch with results, per-op outcomes and an error is one valid
+/// document on every surface. Each type's own `render` is this writer too.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct AgentResponse {
@@ -39,6 +50,9 @@ pub struct AgentResponse {
     budget: Option<BudgetSummary>,
     /// Response-level provenance block, set with `provenance()`.
     provenance: Option<ProvenanceBlock>,
+    /// The error this response reports, set with `error()`: rendered first, as the root `error`, `message`, `causes`
+    /// and `exit_code` keys.
+    error: Option<DomainError>,
     hints: Vec<Hint>,
     recovery: Vec<RecoveryHint>,
     is_error: bool,
@@ -57,6 +71,7 @@ impl AgentResponse {
             sections: Vec::new(),
             budget: None,
             provenance: None,
+            error: None,
             hints: Vec::new(),
             recovery: Vec::new(),
             is_error: false,
@@ -163,6 +178,87 @@ impl AgentResponse {
         self
     }
 
+    /// Report `error` as this response's error; one per response, a second call replaces the first. It renders
+    /// first, before every section, as the root keys `error: <code>`, `message: …`, `causes[N]: …` (when there are
+    /// causes) and `exit_code: 1`, the same lines [`DomainError::render`] writes. Its hints lead the response's one
+    /// `help` block and its recovery hint leads the one `recovery` table. The response is an error on every surface.
+    ///
+    /// In JSON the error is one object, `"error": {"code", "message", "causes", "retryable"}`, next to the response's
+    /// `hints` and `recovery` arrays: the only error shape michi writes. A section that fails validation writes an
+    /// `error` key too, so a response holding both renders the `toon_validation_failed` error for the repeated key.
+    ///
+    /// ```
+    /// use michi_core::{AgentResponse, DomainError, ErrorCode, OutputFormat};
+    ///
+    /// let e = DomainError::new(ErrorCode::NotFound, "no issue 7").hint("list issues first");
+    /// let r = AgentResponse::new("issue").error(e.clone());
+    /// assert_eq!(r.render(OutputFormat::Text), e.render(OutputFormat::Text));
+    /// assert_eq!(
+    ///     r.render(OutputFormat::Text),
+    ///     "error: not_found\nmessage: no issue 7\nexit_code: 1\nhelp[1]: list issues first"
+    /// );
+    /// assert!(r.is_error());
+    /// ```
+    #[must_use]
+    pub fn error(mut self, error: DomainError) -> Self {
+        self.error = Some(error);
+        self
+    }
+
+    /// Append a batch's per-operation outcomes as a TOON list section named `name`: one row per operation, sorted by
+    /// index, `{index,operation,status,reason}` with `status` `completed`, `failed` or `skipped` and `reason` the
+    /// failure reason, the skip token or `null`. The failed operations' recovery hints are appended to the response's
+    /// recovery hints (in index order), so the document keeps one `recovery` table. A partial batch does not make the
+    /// response an error; call [`error`](Self::error) or [`as_error`](Self::as_error) when the call failed as a whole.
+    ///
+    /// ```
+    /// use michi_core::{AgentResponse, CompletedOp, FailedOp, OutputFormat, PartialSuccess, SkippedOp};
+    ///
+    /// let ops = PartialSuccess::try_new(
+    ///     vec![CompletedOp::new(0, "symbols")],
+    ///     vec![FailedOp::new(1, "refs", "not indexed")],
+    ///     vec![SkippedOp::new(2, "search").reason("budget_exhausted")],
+    /// )?;
+    /// assert_eq!(
+    ///     AgentResponse::new("batch").partial_success("ops", ops).render(OutputFormat::Text),
+    ///     "ops[3]{index,operation,status,reason}:\n  0,symbols,completed,null\n  1,refs,failed,not indexed\n  \
+    ///      2,search,skipped,budget_exhausted"
+    /// );
+    /// # Ok::<(), michi_core::DuplicateOpIndex>(())
+    /// ```
+    #[must_use]
+    pub fn partial_success(mut self, name: impl Into<String>, outcome: PartialSuccess) -> Self {
+        self.recovery.extend(outcome.recovery_hints());
+        let fields = crate::idempotency::FIELDS.map(String::from).to_vec();
+        self.section(Section::toon(name, fields, outcome.rows()))
+    }
+
+    /// Append a status report as two sections: `tool` and `description` as a KV section named `status`, then the
+    /// `items[N]{key,value,health,reason}:` list. Its hints are appended to the response's hints.
+    #[must_use]
+    pub fn status(mut self, status: StatusResponse) -> Self {
+        let [head, items] = status.sections();
+        self.hints.extend(status.hints);
+        self.section(head).section(items)
+    }
+
+    /// Append a pipeline's state as a TOON list section named `name`: `{id,name,status,reason}`, one row per step in
+    /// declaration order, `status` the [`StepStatus::label`](crate::pipeline::StepStatus::label) and `reason` its
+    /// reason or `null`. A `michi-pipeline` run record composes through its `to_pipeline()`.
+    #[must_use]
+    pub fn pipeline(self, name: impl Into<String>, pipeline: Pipeline) -> Self {
+        let fields = crate::pipeline::FIELDS.map(String::from).to_vec();
+        self.section(Section::toon(name, fields, pipeline.rows()))
+    }
+
+    /// Append an already-done report as a KV section named `already_done`: `operation: …`, `status: already_done`,
+    /// `summary: …`. Use it when an idempotency check ([`crate::resilience::already_done`]) found the operation
+    /// completed in an earlier call.
+    #[must_use]
+    pub fn already_done(self, operation: impl Into<String>, summary: impl Into<String>) -> Self {
+        self.section(crate::resilience::already_done_section(operation.into(), summary.into()))
+    }
+
     /// Append a contextual hint.
     #[must_use]
     pub fn hint(mut self, hint: impl Into<String>) -> Self {
@@ -209,7 +305,8 @@ impl AgentResponse {
         self
     }
 
-    /// Mark this response as an error state.
+    /// Mark this response as an error state. To report a typed error, use [`error`](Self::error), which also renders
+    /// its code, message and causes.
     #[must_use]
     pub fn as_error(mut self) -> Self {
         self.is_error = true;
@@ -223,15 +320,31 @@ impl AgentResponse {
         self
     }
 
-    /// The caller's hints, then michi's own truncation line when there is one: a single `help` block.
+    /// The error's hints, the caller's hints, then michi's own truncation line when there is one: a single `help`
+    /// block.
     fn hints_with<'a>(&'a self, extra: &[Hint]) -> std::borrow::Cow<'a, [Hint]> {
-        if extra.is_empty() {
+        let first = self.error.as_ref().map_or(&[][..], DomainError::hints);
+        if extra.is_empty() && first.is_empty() {
             std::borrow::Cow::Borrowed(&self.hints)
         } else {
-            let mut all = Vec::with_capacity(self.hints.len() + extra.len());
+            let mut all = Vec::with_capacity(first.len() + self.hints.len() + extra.len());
+            all.extend(first.iter().cloned());
             all.extend(self.hints.iter().cloned());
             all.extend(extra.iter().cloned());
             std::borrow::Cow::Owned(all)
+        }
+    }
+
+    /// The error's recovery hint, then the response's own: a single `recovery` block.
+    fn recovery_list(&self) -> std::borrow::Cow<'_, [RecoveryHint]> {
+        match self.error.as_ref().and_then(DomainError::get_recovery) {
+            None => std::borrow::Cow::Borrowed(&self.recovery),
+            Some(first) => {
+                let mut all = Vec::with_capacity(1 + self.recovery.len());
+                all.push(first.clone());
+                all.extend(self.recovery.iter().cloned());
+                std::borrow::Cow::Owned(all)
+            }
         }
     }
 
@@ -248,9 +361,9 @@ impl AgentResponse {
     }
 
     /// The blocks to render: the sections, or, for a response with nothing at all, the one empty list that names
-    /// its type. A budget or provenance block stands alone, with no empty list before it.
+    /// its type. An error, budget or provenance block stands alone, with no empty list before it.
     fn blocks(&self) -> std::borrow::Cow<'_, [Section]> {
-        if self.sections.is_empty() && self.budget.is_none() && self.provenance.is_none() {
+        if self.sections.is_empty() && self.budget.is_none() && self.provenance.is_none() && self.error.is_none() {
             std::borrow::Cow::Owned(vec![Section::toon(self.name.as_str(), Vec::new(), Vec::new())])
         } else {
             std::borrow::Cow::Borrowed(&self.sections)
@@ -315,12 +428,12 @@ impl AgentResponse {
     /// document's keys). The reserved names are claimed whether or not michi writes that block here, so validity
     /// never depends on the caller's data, and a success response cannot carry `error:` or `message:` lines.
     /// `failed[i]` says whether block `i` failed validation: its `error` and `message` lines are michi's own, so a
-    /// second failed block is a collision on `error`. Provenance labels sit one level down (see
-    /// [`crate::provenance::label_collision`]).
+    /// second error block (another failed block, or the response's [`DomainError`]) is a collision on `error`.
+    /// Provenance labels sit one level down (see [`crate::provenance::label_collision`]).
     fn root_collision(&self, failed: &[bool]) -> Option<String> {
         let blocks = self.blocks();
         let mut seen: std::collections::HashSet<&str> = crate::toon::RESERVED_ROOT_KEYS.into_iter().collect();
-        let mut error_block = false;
+        let mut error_block = self.error.is_some();
         for (s, failed) in blocks.iter().zip(failed) {
             if *failed {
                 if error_block {
@@ -343,7 +456,7 @@ impl AgentResponse {
         crate::provenance::label_collision(p).map(str::to_string)
     }
 
-    /// The body: sections, `budget:`, `provenance:`.
+    /// The body: the error block, sections, `budget:`, `provenance:`.
     ///
     /// Blocks are joined with one LF and empty ones are skipped. `truncated` and `totalCount` are root keys, so they
     /// may appear once: when one block has them they stay inline after its list; when two or more do, each becomes
@@ -377,6 +490,9 @@ impl AgentResponse {
         let cutters = parts.iter().filter(|p| !p.cuts.is_empty()).count();
         let totals = parts.iter().filter(|p| p.total.is_some()).count();
         let mut out = String::with_capacity(parts.iter().map(|p| p.text.len() + 24).sum::<usize>() + 256);
+        if let Some(e) = &self.error {
+            crate::error::push_error_fields(&mut out, e);
+        }
         for p in &parts {
             join_block(&mut out, &p.text);
             if cutters == 1 {
@@ -405,7 +521,7 @@ impl AgentResponse {
         if let Some(p) = &self.provenance {
             join_block(&mut out, &crate::provenance::render_provenance_block(p));
         }
-        (out, failed || self.is_error, extras)
+        (out, failed || self.is_error || self.error.is_some(), extras)
     }
 
     /// Compose the text document: body, help block, recovery block. Each part is a TOON 4.4 document without a
@@ -413,11 +529,12 @@ impl AgentResponse {
     /// are unique (the body cannot use `totalCount`, `help`, `recovery` or `truncated`). Appends to `body` in place.
     fn finish_text(&self, mut body: String, extra: &[Hint]) -> String {
         let hints = self.hints_with(extra);
-        if !hints.is_empty() || !self.recovery.is_empty() {
-            body.reserve(1 + hints.len() * 60 + self.recovery.len() * 80);
+        let recovery = self.recovery_list();
+        if !hints.is_empty() || !recovery.is_empty() {
+            body.reserve(1 + hints.len() * 60 + recovery.len() * 80);
         }
         crate::hints::append_hints(&mut body, &hints);
-        crate::recovery::append_recovery(&mut body, &self.recovery);
+        crate::recovery::append_recovery(&mut body, &recovery);
         body
     }
 
@@ -435,22 +552,22 @@ impl AgentResponse {
         self.finish_text(body, &extra)
     }
 
-    /// Whether this response is an error: `as_error()` was called, or a section's TOON rows or KV items failed
-    /// validation and its block is a `toon_validation_failed` or `kv_validation_failed` error block. Validates
+    /// Whether this response is an error: `as_error()` or `error()` was called, or a section's TOON rows or KV items
+    /// failed validation and its block is a `toon_validation_failed` or `kv_validation_failed` error block. Validates
     /// without rendering.
     #[must_use]
     pub fn is_error(&self) -> bool {
-        if self.is_error {
+        if self.is_error || self.error.is_some() {
             return true;
         }
         let failed = self.failed_flags();
         failed.contains(&true) || self.root_collision(&failed).is_some()
     }
 
-    /// Render just the `help[N]:` block for `self.hints`.
+    /// Render just the `help[N]:` block: the error's hints, then the response's own.
     #[must_use]
     pub fn render_hints_only(&self) -> String {
-        crate::hints::render_hints(&self.hints)
+        crate::hints::render_hints(&self.hints_with(&[]))
     }
 
     /// Render for the given audience.
@@ -497,11 +614,16 @@ impl AgentResponse {
 
     fn json_from_body(&self, body: &str, is_error: bool, extra: &[Hint]) -> String {
         let hints = self.hints_with(extra);
+        let recovery = self.recovery_list();
         let capacity =
-            body.len() + hints.iter().map(|h| h.as_str().len() + 16).sum::<usize>() + self.recovery.len() * 64 + 64;
+            body.len() + hints.iter().map(|h| h.as_str().len() + 16).sum::<usize>() + recovery.len() * 64 + 64;
         let mut out = String::with_capacity(capacity + 128);
         out.push_str("{\"body\":");
         json::push_str(&mut out, body);
+        if let Some(e) = &self.error {
+            out.push_str(",\"error\":");
+            crate::error::push_error_json(&mut out, e);
+        }
         if !self.sections.is_empty() {
             out.push_str(",\"sections\":");
             json::push_array(&mut out, &self.sections, push_section_json);
@@ -517,7 +639,7 @@ impl AgentResponse {
         out.push_str(",\"hints\":");
         json::push_str_array(&mut out, hints.iter().map(Hint::as_str));
         out.push_str(",\"recovery\":");
-        json::push_array(&mut out, &self.recovery, json::push_recovery);
+        json::push_array(&mut out, recovery.iter(), json::push_recovery);
         out.push_str(",\"isError\":");
         json::push_bool(&mut out, is_error);
         out.push('}');

@@ -158,6 +158,16 @@ fn status_document(
     items: Vec<JsStatusItem>,
     hints: Vec<String>,
 ) -> napi::Result<String> {
+    let hints: Vec<crate::hints::Hint> = hints.into_iter().map(Into::into).collect();
+    Ok(build_status(tool_name, description, items)?.hints(hints).render())
+}
+
+/// A `StatusResponse` without hints, each item's `health` parsed. Shared by `renderStatus` and `AgentResponse.status`.
+pub(super) fn build_status(
+    tool_name: String,
+    description: String,
+    items: Vec<JsStatusItem>,
+) -> napi::Result<crate::status::StatusResponse> {
     let status_items = items
         .into_iter()
         .map(|i| {
@@ -165,8 +175,7 @@ fn status_document(
             Ok(crate::status::StatusItem::new(i.key, i.value.into_cell()?.into()).health(health))
         })
         .collect::<napi::Result<Vec<_>>>()?;
-    let hints: Vec<crate::hints::Hint> = hints.into_iter().map(Into::into).collect();
-    Ok(crate::status::StatusResponse::new(tool_name, description, status_items).hints(hints).render())
+    Ok(crate::status::StatusResponse::new(tool_name, description, status_items))
 }
 
 #[cfg(test)]

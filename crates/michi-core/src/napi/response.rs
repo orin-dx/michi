@@ -3,8 +3,10 @@
 use napi::bindgen_prelude::Unknown;
 use napi_derive::napi;
 
-use super::input::{self, Budget, List, MAX_FIELDS, MAX_HINTS, MAX_NAME_BYTES, MAX_ROWS, MAX_STRING_BYTES};
+use super::input::{self, Budget, List, MAX_FIELDS, MAX_HINTS, MAX_NAME_BYTES, MAX_ROWS, MAX_STEPS, MAX_STRING_BYTES};
 use super::num::JsCount;
+use super::outcome::{JsCompletedOp, JsFailedOp, JsPipelineStep, JsSkippedOp};
+use super::toon::JsStatusItem;
 use super::value::{cell_cost, JsKvItem, JsToonValue};
 
 /// MCP content-block annotations (JavaScript-friendly). Currently carries
@@ -49,9 +51,13 @@ pub struct JsCallToolResult {
 /// Bytes charged to a response's total for each section beyond its strings: roughly the size of the `Section` itself.
 const SECTION_OVERHEAD: usize = 64;
 
+/// Bytes charged for an error beyond its message and causes: the code, the struct, and the verify-first hint a
+/// timeout carries.
+const ERROR_OVERHEAD: usize = 256;
+
 /// String bytes one [`JsAgentResponse`] holds, per slot. A slot that a call replaces (`truncationHint`,
-/// `humanContent`) gives its old bytes back; `items`, `kvItems`, `hint` and `recoveryHint` each add a block, so they
-/// only add.
+/// `humanContent`, `error`) gives its old bytes back; `items`, `kvItems`, `hint`, `recoveryHint` and the outcome
+/// sections (`partialSuccess`, `pipeline`, `status`, `alreadyDone`) each add a block, so they only add.
 #[derive(Debug, Default)]
 struct HeldBytes {
     type_name: usize,
@@ -61,13 +67,25 @@ struct HeldBytes {
     recovery: usize,
     truncation_hint: usize,
     human_content: usize,
+    error: usize,
+    outcomes: usize,
 }
 
 impl HeldBytes {
     fn total(&self) -> usize {
-        [self.type_name, self.items, self.kv_items, self.hints, self.recovery, self.truncation_hint, self.human_content]
-            .iter()
-            .fold(0, |acc, n| acc.saturating_add(*n))
+        [
+            self.type_name,
+            self.items,
+            self.kv_items,
+            self.hints,
+            self.recovery,
+            self.truncation_hint,
+            self.human_content,
+            self.error,
+            self.outcomes,
+        ]
+        .iter()
+        .fold(0, |acc, n| acc.saturating_add(*n))
     }
 
     /// An error if replacing a slot holding `old` bytes with `new` would take the total past
@@ -91,6 +109,19 @@ const ROW_OVERHEAD: usize = std::mem::size_of::<Vec<crate::toon::Value>>();
 /// What one field name costs: its string and the `String` that holds it.
 fn field_cost(f: &str) -> usize {
     std::mem::size_of::<String>().saturating_add(f.len())
+}
+
+/// What one row of a four-column outcome table (`partialSuccess`, `pipeline`, `status`) keeps beyond its strings.
+const OUTCOME_ROW: usize = ROW_OVERHEAD + 4 * std::mem::size_of::<crate::toon::Value>();
+
+/// What a named outcome section costs before its rows: its name and the section itself.
+fn outcome_section_cost(name: &str) -> usize {
+    field_cost(name).saturating_add(SECTION_OVERHEAD)
+}
+
+/// The sum of `costs`, saturating.
+fn sum(costs: impl IntoIterator<Item = usize>) -> usize {
+    costs.into_iter().fold(0, usize::saturating_add)
 }
 
 /// NAPI wrapper around [`crate::response::AgentResponse`].
@@ -183,6 +214,88 @@ impl JsAgentResponse {
         self.held.kv_items = self.held.kv_items.saturating_add(bytes);
         Ok(())
     }
+
+    /// Charge `bytes` to the outcome slot, then apply `add` to the builder. The builder is unchanged on error.
+    fn add_outcome(
+        &mut self,
+        bytes: usize,
+        add: impl FnOnce(crate::response::AgentResponse) -> crate::response::AgentResponse,
+    ) -> napi::Result<()> {
+        self.held.check_replace(0, bytes)?;
+        let b = self.take()?;
+        self.inner = Some(add(b));
+        self.held.outcomes = self.held.outcomes.saturating_add(bytes);
+        Ok(())
+    }
+
+    /// Set the error block; see [`Self::error`].
+    fn set_error(
+        &mut self,
+        code: &str,
+        message: String,
+        causes: Vec<String>,
+        retryable: Option<bool>,
+    ) -> napi::Result<()> {
+        let bytes = sum(causes.iter().map(|c| field_cost(c)).chain([message.len(), ERROR_OVERHEAD]));
+        self.held.check_replace(self.held.error, bytes)?;
+        let mut err = super::outcome::build_domain_error(code, message, causes)?;
+        if let Some(retryable) = retryable {
+            err = err.retryable(retryable);
+        }
+        let b = self.take()?;
+        self.inner = Some(b.error(err));
+        self.held.error = bytes;
+        Ok(())
+    }
+
+    /// Append the per-operation outcomes table; see [`Self::partial_success`].
+    fn add_partial_success(
+        &mut self,
+        name: String,
+        completed: Vec<JsCompletedOp>,
+        failed: Vec<JsFailedOp>,
+        skipped: Vec<JsSkippedOp>,
+    ) -> napi::Result<()> {
+        let rows = completed.len() + failed.len() + skipped.len();
+        let strings = sum(completed
+            .iter()
+            .map(|o| o.operation.len())
+            .chain(failed.iter().map(|o| {
+                let recovery = o
+                    .recovery
+                    .as_ref()
+                    .map_or(0, |r| SECTION_OVERHEAD + r.tool.len() + r.reason.as_ref().map_or(0, String::len));
+                o.operation.len() + o.reason.len() + recovery
+            }))
+            .chain(skipped.iter().map(|o| o.operation.len() + o.reason.as_ref().map_or(0, String::len))));
+        let bytes = sum([outcome_section_cost(&name), strings, rows.saturating_mul(OUTCOME_ROW)]);
+        let outcome = super::outcome::build_partial_success(completed, failed, skipped)?;
+        self.add_outcome(bytes, |b| b.partial_success(name, outcome))
+    }
+
+    /// Append the pipeline table; see [`Self::pipeline`].
+    fn add_pipeline(&mut self, name: String, steps: Vec<JsPipelineStep>) -> napi::Result<()> {
+        let strings = sum(steps.iter().map(|s| s.id.len() + s.name.len()));
+        let bytes = sum([outcome_section_cost(&name), strings, steps.len().saturating_mul(OUTCOME_ROW)]);
+        let pipeline = super::outcome::build_pipeline(steps)?;
+        self.add_outcome(bytes, |b| b.pipeline(name, pipeline))
+    }
+
+    /// Append the status sections; see [`Self::status`].
+    fn add_status(&mut self, tool_name: String, description: String, items: Vec<JsStatusItem>) -> napi::Result<()> {
+        let strings =
+            sum(items.iter().map(|i| i.key.len() + cell_cost(&i.value) + i.health.as_ref().map_or(0, String::len)));
+        let head = sum([tool_name.len(), description.len(), 2 * SECTION_OVERHEAD]);
+        let bytes = sum([head, strings, items.len().saturating_mul(OUTCOME_ROW)]);
+        let status = super::toon::build_status(tool_name, description, items)?;
+        self.add_outcome(bytes, |b| b.status(status))
+    }
+
+    /// Append the already-done section; see [`Self::already_done`].
+    fn add_already_done(&mut self, operation: String, summary: String) -> napi::Result<()> {
+        let bytes = sum([operation.len(), summary.len(), outcome_section_cost("already_done"), 3 * OUTCOME_ROW]);
+        self.add_outcome(bytes, |b| b.already_done(operation, summary))
+    }
 }
 
 fn consumed() -> napi::Error {
@@ -244,6 +357,131 @@ impl JsAgentResponse {
         let items = List::new(items, "items")?;
         let items = budget.kv_items(&items, MAX_FIELDS)?;
         self.add_kv_items(items, total_count)
+    }
+
+    /// Report a classified error: it renders first, as `error: <code>`, `message`, `causes[N]` and `exit_code: 1`, and
+    /// the response is an error on every surface. In `renderJson()` and `structuredContent` it is the object
+    /// `error: {code, message, causes, retryable}`, beside the response's `hints` and `recovery` arrays (add those
+    /// with `hint()` and `recoveryHint()`). `retryable` defaults to the code's (true for `rate_limited` and
+    /// `unavailable`); a `timeout` that is not retryable gets michi's verify-first hint. One per response: a second
+    /// call replaces it.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an unknown `code`, a `code` over 4 KiB, a `message` or cause over 1 MiB, more than 10,000 causes, more
+    /// than 16 MiB of strings in the call, or an error that would take the response past its 16 MiB total. The
+    /// builder is unchanged on error.
+    #[napi(
+        catch_unwind,
+        ts_args_type = "code: 'invalid_input' | 'not_found' | 'unauthorized' | 'forbidden' | 'conflict' | 'rate_limited' \
+                        | 'unavailable' | 'timeout' | 'external_failure', message: string, \
+                        causes?: Array<string> | undefined | null, retryable?: boolean | undefined | null"
+    )]
+    pub fn error(
+        &mut self,
+        code: Unknown<'_>,
+        message: Unknown<'_>,
+        causes: Option<Unknown<'_>>,
+        retryable: Option<bool>,
+    ) -> napi::Result<()> {
+        let mut budget = Budget::new();
+        let causes = List::optional(causes, "causes")?;
+        if let Some(causes) = &causes {
+            input::check_len("causes", causes.len(), MAX_HINTS)?;
+        }
+        let code = budget.string(code, "code", MAX_NAME_BYTES)?;
+        let message = budget.string(message, "message", MAX_STRING_BYTES)?;
+        let causes = match &causes {
+            Some(causes) => budget.strings(causes, "causes", MAX_HINTS, "cause", MAX_STRING_BYTES)?,
+            None => Vec::new(),
+        };
+        self.set_error(&code, message, causes, retryable)
+    }
+
+    /// Append a batch's per-operation outcomes as the list section `name`: `name[N]{index,operation,status,reason}:`,
+    /// a row per operation sorted by `index`. The failed operations' recovery hints join the response's `recovery`.
+    /// A partial batch is not an error: call `error()` or `asError()` when the call failed as a whole.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an `index` that appears more than once across the three lists, a completed operation with a `reason`,
+    /// more than 10,000 entries in a list, a `name`, `operation`, skipped `reason` or recovery `tool` over 4 KiB, a
+    /// failed `reason` over 1 MiB, an `index` that is not an integer in `0..=2^53-1`, more than 16 MiB of strings in
+    /// the call, or entries that would take the response past its 16 MiB total. The builder is unchanged on error.
+    #[napi(
+        catch_unwind,
+        ts_args_type = "name: string, completed: Array<CompletedOp>, failed: Array<FailedOp>, skipped: Array<SkippedOp>"
+    )]
+    pub fn partial_success(
+        &mut self,
+        name: Unknown<'_>,
+        completed: Unknown<'_>,
+        failed: Unknown<'_>,
+        skipped: Unknown<'_>,
+    ) -> napi::Result<()> {
+        let mut budget = Budget::new();
+        let completed = List::new(completed, "completed")?;
+        let failed = List::new(failed, "failed")?;
+        let skipped = List::new(skipped, "skipped")?;
+        input::check_len("completed", completed.len(), MAX_STEPS)?;
+        input::check_len("failed", failed.len(), MAX_STEPS)?;
+        input::check_len("skipped", skipped.len(), MAX_STEPS)?;
+        let name = budget.string(name, "name", MAX_NAME_BYTES)?;
+        let completed = budget.completed_ops(&completed, MAX_STEPS)?;
+        let failed = budget.failed_ops(&failed, MAX_STEPS)?;
+        let skipped = budget.skipped_ops(&skipped, MAX_STEPS)?;
+        self.add_partial_success(name, completed, failed, skipped)
+    }
+
+    /// Append pipeline state as the list section `name`: `name[N]{id,name,status,reason}:`, a row per step.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an unknown `status`, a missing or unknown `reason` for `outcome_unknown`, `skipped` or `not_run`, a
+    /// `reason` on any other status, more than 10,000 steps, a `name`, `id`, `status` or `reason` over 4 KiB, a step
+    /// `name` over 1 MiB, more than 16 MiB of strings in the call, or steps that would take the response past its
+    /// 16 MiB total. The builder is unchanged on error.
+    #[napi(catch_unwind, ts_args_type = "name: string, steps: Array<PipelineStep>")]
+    pub fn pipeline(&mut self, name: Unknown<'_>, steps: Unknown<'_>) -> napi::Result<()> {
+        let mut budget = Budget::new();
+        let steps = List::new(steps, "steps")?;
+        input::check_len("steps", steps.len(), MAX_STEPS)?;
+        let name = budget.string(name, "name", MAX_NAME_BYTES)?;
+        let steps = budget.pipeline_steps(&steps, MAX_STEPS)?;
+        self.add_pipeline(name, steps)
+    }
+
+    /// Append a status report: `tool` and `description` lines, then `items[N]{key,value,health,reason}:`. An item
+    /// without `health` renders `ok`. Add hints with `hint()`.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an unknown `health`, more than 1,000 items, a `toolName` or key over 4 KiB, a `description`, value or
+    /// `health` over 1 MiB, more than 16 MiB of strings in the call, or items that would take the response past its
+    /// 16 MiB total. The builder is unchanged on error.
+    #[napi(catch_unwind, ts_args_type = "toolName: string, description: string, items: Array<StatusItem>")]
+    pub fn status(&mut self, tool_name: Unknown<'_>, description: Unknown<'_>, items: Unknown<'_>) -> napi::Result<()> {
+        let mut budget = Budget::new();
+        let items = List::new(items, "items")?;
+        input::check_len("items", items.len(), MAX_FIELDS)?;
+        let tool_name = budget.string(tool_name, "toolName", MAX_NAME_BYTES)?;
+        let description = budget.string(description, "description", MAX_STRING_BYTES)?;
+        let items = budget.status_items(&items, MAX_FIELDS)?;
+        self.add_status(tool_name, description, items)
+    }
+
+    /// Append an already-done report: `operation`, `status: already_done` and `summary` lines.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an `operation` over 4 KiB, a `summary` over 1 MiB, or text that would take the response past its
+    /// 16 MiB total. The builder is unchanged on error.
+    #[napi(catch_unwind, ts_args_type = "operation: string, summary: string")]
+    pub fn already_done(&mut self, operation: Unknown<'_>, summary: Unknown<'_>) -> napi::Result<()> {
+        let mut budget = Budget::new();
+        let operation = budget.string(operation, "operation", MAX_NAME_BYTES)?;
+        let summary = budget.string(summary, "summary", MAX_STRING_BYTES)?;
+        self.add_already_done(operation, summary)
     }
 
     /// Append a contextual hint.
@@ -346,8 +584,8 @@ impl JsAgentResponse {
         Ok(())
     }
 
-    /// Render the response as text: its sections in call order, then `help[]` and `recovery[]`. The one text render;
-    /// see [`crate::response::AgentResponse::render`].
+    /// Render the response as text: the error block, its sections in call order, then `help[]` and `recovery[]`. The
+    /// one text render; see [`crate::response::AgentResponse::render`].
     ///
     /// # Errors
     ///
@@ -357,7 +595,8 @@ impl JsAgentResponse {
         Ok(self.built()?.render(crate::response::OutputFormat::Text))
     }
 
-    /// Render as a compact JSON string (`{"body":...,"hints":[...],"recovery":[...],"isError":bool}`).
+    /// Render as a compact JSON string: `{"body":...,"error":{...},"sections":[...],"hints":[...],"recovery":[...],
+    /// "isError":bool}`, with `error` and `sections` only when set.
     ///
     /// # Errors
     ///
@@ -966,6 +1205,91 @@ mod tests {
         assert!(result_items.structured_content.is_object(), "got: {:?}", result_items.structured_content);
     }
 
+    // --- Outcomes compose into the builder ---
+
+    fn count(n: u32) -> JsCount {
+        JsCount::try_from(f64::from(n)).expect("a valid count")
+    }
+
+    #[test]
+    fn every_outcome_composes_into_one_response() {
+        let mut r = new_response("batch");
+        r.set_error("timeout", "POST /charge timed out".into(), vec!["socket closed".into()], Some(true))
+            .expect("valid");
+        let completed = vec![JsCompletedOp { index: count(0), operation: "symbols".into() }];
+        let failed = vec![JsFailedOp {
+            index: count(1),
+            operation: "refs".into(),
+            reason: "not indexed".into(),
+            recovery: Some(super::super::hints::JsRecoveryHint { tool: "index".into(), reason: None }),
+        }];
+        r.add_partial_success("ops".into(), completed, failed, vec![]).expect("valid");
+        let step = JsPipelineStep { id: "a".into(), name: "A".into(), status: "completed".into(), reason: None };
+        r.add_pipeline("step".into(), vec![step]).expect("valid");
+        r.add_status("tool-x".into(), "does x".into(), vec![]).expect("valid");
+        r.add_already_done("delete".into(), "done".into()).expect("valid");
+        assert_eq!(
+            r.render_text().expect("renders"),
+            "error: timeout\nmessage: POST /charge timed out\ncauses[1]: socket closed\nexit_code: 1\n\
+             ops[2]{index,operation,status,reason}:\n  0,symbols,completed,null\n  1,refs,failed,not indexed\n\
+             step[1]{id,name,status,reason}:\n  a,A,completed,null\n\
+             tool: tool-x\ndescription: does x\nitems: []\ntotalCount: 0\n\
+             operation: delete\nstatus: already_done\nsummary: done\n\
+             recovery[1]{tool,params,reason}:\n  index,\"{}\",null"
+        );
+        let json: serde_json::Value = serde_json::from_str(&r.render_json().expect("renders")).expect("JSON");
+        assert_eq!(
+            json["error"],
+            serde_json::json!({
+                "code": "timeout",
+                "message": "POST /charge timed out",
+                "causes": ["socket closed"],
+                "retryable": true
+            })
+        );
+        let tool = r.to_call_tool_result().expect("builds");
+        assert!(tool.is_error);
+        assert_eq!(tool.structured_content, json);
+    }
+
+    #[test]
+    fn outcome_inputs_are_checked_and_leave_the_builder_unchanged() {
+        let mut r = new_response("t");
+        let before = r.render_text().expect("renders");
+        let err = r.set_error("bogus", "m".into(), vec![], None).expect_err("unknown code");
+        assert!(err.reason.starts_with("unknown error code \"bogus\""), "{}", err.reason);
+        let twice = vec![JsCompletedOp { index: count(0), operation: "a".into() }];
+        let failed = vec![JsFailedOp { index: count(0), operation: "a".into(), reason: "x".into(), recovery: None }];
+        let err = r.add_partial_success("ops".into(), twice, failed, vec![]).expect_err("index 0 twice");
+        assert_eq!(err.reason, "operation index 0 has more than one outcome");
+        let bad = JsPipelineStep { id: "a".into(), name: "A".into(), status: "skipped".into(), reason: None };
+        r.add_pipeline("step".into(), vec![bad]).expect_err("skipped needs a reason");
+        assert_eq!(r.render_text().expect("renders"), before);
+        assert_eq!(r.held.total(), "t".len(), "nothing was charged");
+    }
+
+    #[test]
+    fn a_second_error_gives_back_the_first_errors_bytes() {
+        let mut r = new_response("t");
+        r.set_error("not_found", "x".repeat(1000), vec![], None).expect("fits");
+        let first = r.held.total();
+        r.set_error("not_found", "x".repeat(1000), vec![], None).expect("fits");
+        assert_eq!(r.held.total(), first, "replacing the error does not add up");
+        r.add_already_done("op".into(), "s".into()).expect("fits");
+        assert!(r.held.total() > first, "an outcome section adds");
+    }
+
+    // The TypeScript type of `error`'s `code` lists every ErrorCode label (napi-derive cannot read it from the enum).
+    #[test]
+    fn error_code_union_names_every_error_code() {
+        let src = include_str!("response.rs");
+        let start = src.find("pub fn error(").expect("the method is declared");
+        let declaration = &src[src[..start].rfind("#[napi(").expect("attribute")..start];
+        for code in crate::ErrorCode::ALL {
+            assert!(declaration.contains(&format!("'{}'", code.label())), "missing {} in {declaration}", code.label());
+        }
+    }
+
     // --- Output bound: a render is at most MAX_OUTPUT_FACTOR times the string bytes held, for every ASCII byte. ---
 
     /// The three outputs a response can produce, as the byte counts JS receives: the text, the JSON string, and
@@ -996,7 +1320,25 @@ mod tests {
                 r.add_items(vec![vec![cell]], vec!["f".into()], None).expect("fits");
                 r
             };
-            for r in [kv("t"), table("t")] {
+            let outcomes = || {
+                let mut r = new_response("t");
+                r.set_error("not_found", text.clone(), vec![text.clone()], None).expect("fits");
+                let failed =
+                    JsFailedOp { index: count(0), operation: text.clone(), reason: text.clone(), recovery: None };
+                r.add_partial_success("ops".into(), vec![], vec![failed], vec![]).expect("fits");
+                let step =
+                    JsPipelineStep { id: text.clone(), name: text.clone(), status: "completed".into(), reason: None };
+                r.add_pipeline("step".into(), vec![step]).expect("fits");
+                let item = JsStatusItem {
+                    key: "k".into(),
+                    value: JsToonValue { str_val: Some(text.clone()), ..value("str") },
+                    health: None,
+                };
+                r.add_status(text.clone(), text.clone(), vec![item]).expect("fits");
+                r.add_already_done(text.clone(), text.clone()).expect("fits");
+                r
+            };
+            for r in [kv("t"), table("t"), outcomes()] {
                 let held = r.held.total();
                 for out in output_sizes(&r) {
                     assert!(

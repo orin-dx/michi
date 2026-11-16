@@ -86,6 +86,21 @@ pub(crate) fn push_kv_value(out: &mut String, value: &KvValue) {
     }
 }
 
+/// A KV value as a TOON table cell that renders the same token: a float is rounded to its decimals first, a duration
+/// is the `1.5s` string, `Missing` is `null`. Used where a block of KV values becomes a table column (the status
+/// items).
+pub(crate) fn to_cell(value: &KvValue) -> crate::toon::Value {
+    use crate::toon::Value;
+    match value {
+        KvValue::Text(s) => Value::from(s.as_str()),
+        KvValue::Int(n) => Value::Int(*n),
+        KvValue::Float(f, decimals) => Value::Float(round_to_decimals(*f, *decimals)),
+        KvValue::Bool(b) => Value::Bool(*b),
+        KvValue::Duration(d) => Value::from(format!("{:.1}s", d.as_secs_f64())),
+        KvValue::Missing => Value::Null,
+    }
+}
+
 /// The decimal places `KvValue::Float` needs to reproduce `f` exactly: the fractional digits of its shortest exact
 /// representation (Rust's `Display` for f64, which never uses an exponent), so `1e-7` needs 7 and `2.0` needs 0.
 /// Non-finite values need 0. A value needing more than 254 places gets [`KvValue::FULL_PRECISION`], which never

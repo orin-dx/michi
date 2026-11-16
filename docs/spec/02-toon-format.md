@@ -120,7 +120,7 @@ recovery[2]{tool,params,reason}:
   reload_cache,"{}",null
 ```
 
-**Errors (`DomainError::render`, `Error::render`)**:
+**Errors (`DomainError::render`, `AgentResponse::error`)**:
 
 ```
 error: not_found
@@ -132,7 +132,7 @@ recovery[1]{tool,params,reason}:
   list_issues,"{\"state\":\"open\"}",null
 ```
 
-`causes[N]` is an inline array of strings (§9.1), present only when the error has causes: why it happened, outermost first. `help[N]` is what to do next. Keeping them under separate keys lets an agent tell diagnosis from guidance. `Error::InvalidInput(m)` and `Error::NotFound(m)` render the same shape with `error: invalid_input` / `error: not_found` and `message: m`. `AgentResponse`'s validation failures are `error: toon_validation_failed` / `error: kv_validation_failed` plus a quoted `message`.
+`causes[N]` is an inline array of strings (§9.1), present only when the error has causes: why it happened, outermost first. `help[N]` is what to do next. Keeping them under separate keys lets an agent tell diagnosis from guidance. In a response with sections the error lines come first, then the sections, then the one `help` and `recovery` block (see "One response" below). `AgentResponse`'s validation failures are `error: toon_validation_failed` / `error: kv_validation_failed` plus a quoted `message`.
 
 **Status (`StatusResponse::render`)** — item keys are cells of a table, not root keys, so any key is valid; `health` is `ok`, `degraded`, `error`, or `null` for no signal, and `reason` is `null` unless degraded or error:
 
@@ -146,7 +146,7 @@ items[3]{key,value,health,reason}:
 help[1]: Call get_status for detail
 ```
 
-With no items the table is `items: []`.
+With no items the table is `items: []` and `totalCount: 0`, the definitive empty list.
 
 **Already done (`resilience::render_already_done`)**:
 
@@ -157,19 +157,35 @@ summary: item 42 was deleted in run abc
 help[1]: Call get_item with id=42 to confirm
 ```
 
-**Partial success (`PartialSuccess::render`)** — the summary is a quoted string, and `completed`, `failed` and `skipped` are tables (§9.3) whose first column is the op's `index` in the caller's batch; empty categories are omitted. A skipped op's `reason` column is `null` when it has none:
+**Partial success (`PartialSuccess::render`, `AgentResponse::partial_success`)** — one table (§9.3), a row per op sorted by its `index` in the caller's batch. `status` is `completed`, `failed` or `skipped`; `reason` is the failure reason, the skip token, or `null`. The failed ops' recovery hints are the document's one `recovery` table. No ops render `partial_success: []` and `totalCount: 0`:
 
 ```
-partial_success: "2 completed, 1 failed, 1 skipped"
-completed[2]{index,operation}:
-  0,create_issue
-  1,add_label
-failed[1]{index,operation,reason}:
-  2,assign_user,User 'ghost' not found
-skipped[1]{index,operation,reason}:
-  3,notify_team,budget_exhausted
+partial_success[4]{index,operation,status,reason}:
+  0,create_issue,completed,null
+  1,add_label,completed,null
+  2,assign_user,failed,User 'ghost' not found
+  3,notify_team,skipped,budget_exhausted
 recovery[1]{tool,params,reason}:
   assign_user,"{\"user\":\"alice\"}",null
+```
+
+**Pipeline (`Pipeline::render`, `AgentResponse::pipeline`)** — `step[N]{id,name,status,reason}:`, a row per step; `step: []` and `totalCount: 0` with no steps.
+
+**One response.** Each block above is also a part of an `AgentResponse`, rendered by the same writer, so a batch with results, per-op outcomes and an error is one document with one `help` and one `recovery` key. The error leads; the sections follow in call order:
+
+```
+error: external_failure
+message: refs is not indexed
+exit_code: 1
+symbols[1]{name,kind}:
+  RetryPolicy,struct
+ops[3]{index,operation,status,reason}:
+  0,symbols,completed,null
+  1,refs,failed,not indexed
+  2,search,skipped,budget_exhausted
+help[1]: run index_workspace first
+recovery[1]{tool,params,reason}:
+  index_workspace,"{}",null
 ```
 
 `crates/michi-core/tests/toon_blocks.rs` pins each form and checks every block with the strict validator in `tests/support/toon_parser.rs`. Why each form was chosen: [06-decisions.md](06-decisions.md) ("Every agent-facing block is TOON 4.4").

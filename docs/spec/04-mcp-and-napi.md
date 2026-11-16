@@ -191,7 +191,7 @@ Any `#[napi]` function returning `napi::Result<T>` throws a JS `Error` on `Err`.
 
 `catch_unwind` does not stop a single call from blocking Node's event loop with a huge allocation, so every export that takes caller collections bounds the work before doing it. napi-derive converts a typed parameter such as `Vec<Vec<JsToonValue>>` or `String` in full before the export's body runs; a check in the body comes too late (a rejected 100,001 × 100 `rows` array cost 3.4 s and 2.6 GiB that way, and 10k × 10 cells sharing one 100 KB JS string were copied out once per cell, ~10 GB). These exports therefore take untyped napi values and convert them incrementally (`crates/michi-core/src/napi/input.rs`):
 
-- `renderToon`, `renderHints`, `appendHints`, `renderRecovery`, `renderKv`, `renderAlreadyDone`, `renderDomainError`, `renderStatus`, `renderPartialSuccess`, `renderPipeline`, `alreadyDone`, and `AgentResponse.items` / `AgentResponse.kvItems`.
+- `renderToon`, `renderHints`, `appendHints`, `renderRecovery`, `renderKv`, `renderAlreadyDone`, `renderDomainError`, `renderStatus`, `renderPartialSuccess`, `renderPipeline`, `alreadyDone`, and `AgentResponse.items` / `kvItems` / `error` / `partialSuccess` / `pipeline` / `status` / `alreadyDone`, which take the same limits as the standalone function for the same input.
 - Array lengths are checked first: at most 100,000 rows, 1,000 fields, values per row, KV items or status items, 10,000 hints, 10,000 `renderDomainError` causes, and 10,000 entries in each of `renderPartialSuccess`' `completed`, `failed` and `skipped` and `renderPipeline`'s `steps`. For rows, every row's length is read and summed before any cell is converted.
 - Then each value is converted against a per-call budget: at most **1,000,000 cells** and **16 MiB of string data** in all (see "Output size" below). A string's UTF-8 length is read, and charged, before it is copied, so a JS string referenced many times is counted every time it is used.
 - Per-string caps: **1 MiB** for a cell value (`strVal`), hint, `renderDomainError` cause, recovery or failed-op `reason`, status `description`/`health`, error `message`, `summary` or pipeline step `name`; **4 KiB** for `typeName`, a field name, a KV or status key, `truncationHint`, a recovery `tool`, `toolName`, an error `code`, `operation`, a completed or skipped step id, and a pipeline step's `id`, `status` and `reason`. `appendHints`' `body` and `alreadyDone`'s `stored` count toward the 16 MiB budget only.
@@ -367,6 +367,38 @@ export declare class AgentResponse {
   truncationHint(hint: string): void;
   /** Marks this response as an error state, reflected in `renderJson()`'s `isError` field. */
   asError(): void;
+  /** Reports a classified error. It renders first (`error`, `message`, `causes[N]`, `exit_code: 1`) and is the JSON
+   * object `error: {code, message, causes, retryable}` beside `hints` and `recovery`; `isError` is true everywhere.
+   * `retryable` defaults to the code's. A second call replaces the first. */
+  error(
+    code:
+      | "invalid_input"
+      | "not_found"
+      | "unauthorized"
+      | "forbidden"
+      | "conflict"
+      | "rate_limited"
+      | "unavailable"
+      | "timeout"
+      | "external_failure",
+    message: string,
+    causes?: Array<string> | undefined | null,
+    retryable?: boolean | undefined | null,
+  ): void;
+  /** Appends a batch's outcomes as the list section `name[N]{index,operation,status,reason}:`, rows sorted by
+   * `index`; the failed operations' recovery hints join `recovery`. Throws when an index has two outcomes. */
+  partialSuccess(
+    name: string,
+    completed: Array<CompletedOp>,
+    failed: Array<FailedOp>,
+    skipped: Array<SkippedOp>,
+  ): void;
+  /** Appends pipeline state as the list section `name[N]{id,name,status,reason}:`. */
+  pipeline(name: string, steps: Array<PipelineStep>): void;
+  /** Appends `tool`, `description` and `items[N]{key,value,health,reason}:`. Hints go through `hint()`. */
+  status(toolName: string, description: string, items: Array<StatusItem>): void;
+  /** Appends `operation`, `status: already_done` and `summary`. */
+  alreadyDone(operation: string, summary: string): void;
   /** Attaches a `user`-audience companion block, included by `toCallToolResult()`
    * and readable via `renderFor("user")`. */
   humanContent(text: string): void;
@@ -376,9 +408,10 @@ export declare class AgentResponse {
   renderFor(audience: string): string;
   /** Whether `.humanContent()` was set on this builder. */
   hasHumanContent(): boolean;
-  /** The sections in call order, then `help[]` and `recovery[]` — see 03-rust-api.md. */
+  /** The error block, the sections in call order, then `help[]` and `recovery[]` — see 03-rust-api.md. */
   renderText(): string;
-  /** Returns a JSON *string* — `{"body":...,"sections":[...],"hints":[...],"recovery":[...],"isError":bool}`
+  /** Returns a JSON *string* — `{"body":...,"error":{...},"sections":[...],"hints":[...],"recovery":[...],"isError":bool}`
+   * (`error` and `sections` only when set)
    * — not a parsed value; kept as hand-built text for consistency with the Rust side's
    * `render(OutputFormat::Json)`, which stays `serde_json`-free (see the `mcp` module
    * section above for where this crate *does* use `serde_json`, and why). */
@@ -432,7 +465,8 @@ export declare function renderAlreadyDone(
 
 /** Render a classified `DomainError` as a TOON 4.4 document (`error`, `message`, `causes`, `exit_code`, `help`), or
  * a GitHub Actions annotation (message only) when `githubAnnotation` is true. `causes` are why it happened, outermost
- * first, rendered as their own `causes[N]: …` key; `hints` are what to do next. */
+ * first, rendered as their own `causes[N]: …` key; `hints` are what to do next. For the JSON or an MCP result, use
+ * `AgentResponse.error()`, which renders the same text. */
 export declare function renderDomainError(
   code: string,
   message: string,
@@ -485,9 +519,9 @@ export interface SkippedOp {
   reason?: string | null;
 }
 
-/** Render `PartialSuccess`: a quoted summary, then the `completed[N]{index,operation}:`,
- * `failed[N]{index,operation,reason}:` and `skipped[N]{index,operation,reason}:` tables (empty categories omitted),
- * then one `recovery[N]{tool,params,reason}:` table. Throws when one `index` appears twice across the three lists. */
+/** Render `PartialSuccess`: one `partial_success[N]{index,operation,status,reason}:` table, a row per operation
+ * sorted by `index`, then one `recovery[N]{tool,params,reason}:` table (`partial_success: []` and `totalCount: 0` with
+ * no operations). Throws when one `index` appears twice across the three lists. */
 export declare function renderPartialSuccess(
   completed: Array<CompletedOp>,
   failed: Array<FailedOp>,
@@ -522,7 +556,7 @@ export interface PipelineStep {
     | null;
 }
 
-/** Render pipeline state as `step[N]{id,name,status,reason}:`, or `step: []` with no steps. */
+/** Render pipeline state as `step[N]{id,name,status,reason}:`, or `step: []` and `totalCount: 0` with no steps. */
 export declare function renderPipeline(steps: Array<PipelineStep>): string;
 
 export interface AlreadyDone {

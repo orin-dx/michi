@@ -217,18 +217,38 @@ pub struct FailedOp {
 }
 ```
 
-The index becomes a rendered column, so the correspondence survives into what the agent reads:
+The index becomes a rendered column, so the correspondence survives into what the agent reads. (As shipped, `OpRef` is `CompletedOp` and `SkippedOp`, and the three lists render as one table sorted by index; see below.)
+
+**Shipped form: the outcomes are a section of the batch response.** The three-table document above wrote its own root `recovery` table, a key `AgentResponse` writes too, so the batch could not be one valid document: as a `Section::text` it was one escaped string, and two documents joined repeated `recovery`. `AgentResponse::partial_success(name, ps)` adds the outcomes as a `Toon` section, one row per op sorted by index, and moves the failed ops' recovery hints into the response's one `recovery` table ("Outcomes compose into one response" in [06](06-decisions.md)). The monokl batch is then one document, one JSON object and one MCP result:
 
 ```text
-partial_success: "2 completed, 1 failed, 1 skipped"
-completed[2]{index,operation}:
-  0,symbols
-  1,dependents
-failed[1]{index,operation,reason}:
-  2,refs,"symbol not found: RetryPolicy"
-skipped[1]{index,operation,reason}:
-  3,search,budget_exhausted
+symbols[1]{name,kind}:
+  RetryPolicy,struct
+dependents[1]{name}:
+  Client
+totalCount: 3
+ops[4]{index,operation,status,reason}:
+  0,symbols,completed,null
+  1,dependents,completed,null
+  2,refs,failed,"symbol not found: RetryPolicy"
+  3,search,skipped,budget_exhausted
+budget:
+  tokensUsed: 812
+  maxTokens: 1000
+  truncated: true
+sections[3]{name,returned,total,truncated}:
+  symbols,1,null,false
+  dependents,1,3,true
+  ops,4,null,false
+provenance:
+  analyzer: rust-analyzer
+  fingerprint: abc123
+help[1]: narrow the search query
+recovery[1]{tool,params,reason}:
+  search,"{\"query\":\"RetryPolicy\"}",null
 ```
+
+In JSON the outcomes are the `ops` entry of `sections` (`fields` `["index","operation","status","reason"]`, typed rows), and the recovery hint is in the response's `recovery` array. `crates/michi-core/tests/compose_outcomes.rs` renders exactly this document and checks it with the strict decoder; a property test mixes every outcome type with hostile text. A failed call adds its `DomainError` with `error(e)`, which leads the document.
 
 **This one is a major bump.** Today's `completed[2]: a,b` inline array becomes `completed[2]{index,operation}:`, so existing rendered output differs — the SemVer table calls that major, and the exact-output tests in `idempotency.rs` (AC-032, AC-033) and the `snapshot_partial_success_full` insta snapshot change with it. There is no external consumer to break yet, which is the cheapest moment this change will ever have.
 
@@ -284,6 +304,7 @@ flowchart TB
     B["BudgetSummary"]
     P["ProvenanceBlock"]
     HR["hints / recovery"]
+    E["DomainError — the error block"]
 
     S1 --> AR
     S2 --> AR
@@ -291,11 +312,12 @@ flowchart TB
     B --> AR
     P --> AR
     HR --> AR
+    E --> AR
 
     AR["AgentResponse — N sections"]
 
-    AR -->|"render_text()"| text["sections in order, then budget:, provenance:, help[], recovery[]"]
-    AR -->|"render(OutputFormat::Json)"| json["sections[], budget, provenance, hints, recovery, isError"]
+    AR -->|"render_text()"| text["error, sections in order, then budget:, provenance:, help[], recovery[]"]
+    AR -->|"render(OutputFormat::Json)"| json["error, sections[], budget, provenance, hints, recovery, isError"]
 
     text --> block["ContentBlock { audience: [assistant] }"]
     human["human_content()"] --> ublock["ContentBlock { audience: [user] }"]
