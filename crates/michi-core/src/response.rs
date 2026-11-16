@@ -445,20 +445,14 @@ impl AgentResponse {
     /// ([`crate::toon::RESERVED_ROOT_KEYS`]: the envelope blocks, the keys that follow a body, and the error
     /// document's keys). The reserved names are claimed whether or not michi writes that block here, so validity
     /// never depends on the caller's data, and a success response cannot carry `error:` or `message:` lines.
-    /// `failed[i]` says whether block `i` failed validation: its `error` and `message` lines are michi's own, so a
-    /// second failed block is a collision on `error`. The response's [`DomainError`] is not a block here: a failure
-    /// joins its causes instead of writing lines of its own (see [`body`](Self::body)).
+    /// `failed[i]` says whether block `i` failed validation: it writes no keys here, because its failure joins the
+    /// one `error` object as a cause (see [`body`](Self::body)), so any number of failed blocks is no collision.
     /// Provenance labels sit one level down (see [`crate::provenance::label_collision`]).
     fn root_collision(&self, failed: &[bool]) -> Option<String> {
         let blocks = self.blocks();
         let mut seen: std::collections::HashSet<&str> = crate::toon::RESERVED_ROOT_KEYS.into_iter().collect();
-        let mut error_block = false;
         for (s, failed) in blocks.iter().zip(failed) {
             if *failed {
-                if error_block {
-                    return Some("error".to_string());
-                }
-                error_block = true;
                 continue;
             }
             let keys: Vec<&str> = match s.body() {
@@ -481,11 +475,12 @@ impl AgentResponse {
     /// may appear once: when one block has them they stay inline after its list; when two or more do, each becomes
     /// one table with a leading `section` column, after the last block.
     ///
-    /// A validation failure of the response's own shape (a block that failed, or two blocks writing one root key) never
-    /// hides the caller's [`DomainError`]: when both exist the error block is the caller's, with the failure added as
-    /// its last cause (`toon_validation_failed: …`), and a failed block writes no lines of its own. Without a caller's
-    /// error the failure is the error block, as before. Either way [`Body::failure`] carries it to the JSON `error`
-    /// object, so text and JSON report the same error.
+    /// Validation failures of the response's own shape (every block that failed, and the first root key two blocks
+    /// write) never hide the caller's [`DomainError`] and never hide each other: there is one error block. When the
+    /// caller set an error it is the error block, with every failure added after its own causes
+    /// (`toon_validation_failed: …`), and a failed block writes no lines of its own. Without a caller's error the
+    /// first failure is the error block and the others are its causes. Either way [`Body::failures`] carries them to
+    /// the JSON `error` object, so text and JSON report the same error.
     ///
     /// The flag is whether this response is an error: `as_error()`, `error()` or a validation failure. Every output
     /// surface reads its error flag from here so text, JSON and MCP never disagree.
@@ -507,32 +502,38 @@ impl AgentResponse {
         }
         // Two blocks writing one root key would be invalid TOON. Like any other bad input the whole body becomes the
         // visible validation error, so the caller sees it instead of a document a decoder rejects.
+        let mut failures: Vec<Failure> = parts.iter().filter_map(|p| p.failure.clone()).collect();
         if let Some(key) = self.root_collision(&flags) {
-            let failure = Failure::collision(&key);
-            let error = self.error_block(Some(&failure));
+            failures.push(Failure::collision(&key));
+            let error = self.error_block(&failures);
             let text = match &error {
                 Some(e) => {
                     let mut out = String::new();
                     crate::error::push_error_fields(&mut out, e);
                     out
                 }
-                None => failure.body(),
+                None => failures[0].body(&failures[1..]),
             };
-            return Body { text, is_error: true, extra: Vec::new(), error, failure: Some(failure) };
+            return Body { text, is_error: true, extra: Vec::new(), error, failures };
         }
-        let failure = parts.iter().find_map(|p| p.failure.clone());
-        let error = self.error_block(failure.as_ref());
+        let error = self.error_block(&failures);
         let cutters = parts.iter().filter(|p| !p.cuts.is_empty()).count();
         let totals = parts.iter().filter(|p| p.total.is_some()).count();
         let mut out = String::with_capacity(parts.iter().map(|p| p.text.len() + 24).sum::<usize>() + 256);
         if let Some(e) = &error {
             crate::error::push_error_fields(&mut out, e);
         }
+        let mut lead_written = false;
         for p in &parts {
-            // With the caller's error leading, a failed block's failure is a cause of it: its own `error` lines would
-            // repeat the key.
-            if !(p.failure.is_some() && error.is_some()) {
-                join_block(&mut out, &p.text);
+            // One `error` object per document: with the caller's error leading, every failed block is a cause of it,
+            // and without one the first failed block writes the lines, the others being its causes.
+            match &p.failure {
+                None => join_block(&mut out, &p.text),
+                Some(f) if error.is_none() && !lead_written => {
+                    lead_written = true;
+                    join_block(&mut out, &f.body(&failures[1..]));
+                }
+                Some(_) => {}
             }
             if cutters == 1 {
                 crate::toon::table::push_truncated(&mut out, &p.cuts, false);
@@ -560,17 +561,18 @@ impl AgentResponse {
         if let Some(p) = &self.provenance {
             join_block(&mut out, &crate::provenance::render_provenance_block(p));
         }
-        let is_error = failure.is_some() || self.is_error || error.is_some();
-        Body { text: out, is_error, extra: extras, error, failure }
+        let is_error = !failures.is_empty() || self.is_error || error.is_some();
+        Body { text: out, is_error, extra: extras, error, failures }
     }
 
-    /// The error block the response renders: the caller's error, with `failure` added as its last cause when the
-    /// response's shape also failed validation, so neither hides the other. `None` without a caller's error.
-    fn error_block(&self, failure: Option<&Failure>) -> Option<std::borrow::Cow<'_, DomainError>> {
+    /// The error block the response renders: the caller's error, with every failure added as a cause after its own
+    /// when the response's shape also failed validation, so none hides another. `None` without a caller's error.
+    fn error_block(&self, failures: &[Failure]) -> Option<std::borrow::Cow<'_, DomainError>> {
         let e = self.error.as_ref()?;
-        Some(match failure {
-            Some(f) => std::borrow::Cow::Owned(e.clone().cause(f.cause())),
-            None => std::borrow::Cow::Borrowed(e),
+        Some(if failures.is_empty() {
+            std::borrow::Cow::Borrowed(e)
+        } else {
+            std::borrow::Cow::Owned(failures.iter().fold(e.clone(), |e, f| e.cause(f.cause())))
         })
     }
 
@@ -663,7 +665,7 @@ impl AgentResponse {
     }
 
     /// The JSON object. Its `error` is the error block the text leads with: the caller's error (with a validation
-    /// failure among its causes), or the validation failure alone, with the same four keys.
+    /// failures among its causes), or the first validation failure with the others as causes, with the same four keys.
     fn json_from_body(&self, body: &Body<'_>) -> String {
         let hints = self.hints_with(&body.extra);
         let recovery = self.recovery_list();
@@ -672,14 +674,14 @@ impl AgentResponse {
         let mut out = String::with_capacity(capacity + 128);
         out.push_str("{\"body\":");
         json::push_str(&mut out, &body.text);
-        match (&body.error, &body.failure) {
+        match (&body.error, body.failures.split_first()) {
             (Some(e), _) => {
                 out.push_str(",\"error\":");
                 crate::error::push_error_json(&mut out, e);
             }
-            (None, Some(f)) => {
+            (None, Some((lead, causes))) => {
                 out.push_str(",\"error\":");
-                f.push_json(&mut out);
+                lead.push_json(&mut out, causes);
             }
             (None, None) => {}
         }
@@ -714,10 +716,11 @@ struct Body<'a> {
     is_error: bool,
     /// michi's own help line for cut cells, after the response's hints.
     extra: Vec<Hint>,
-    /// The error block the text leads with: the caller's error, a validation failure among its causes.
+    /// The error block the text leads with: the caller's error, the validation failures among its causes.
     error: Option<std::borrow::Cow<'a, DomainError>>,
-    /// The response's validation failure, if its shape is invalid.
-    failure: Option<Failure>,
+    /// The response's validation failures, in block order and the first root key collision last; empty when its
+    /// shape is valid.
+    failures: Vec<Failure>,
 }
 
 /// What is wrong with a response's own shape: michi's validation code and message.
@@ -738,15 +741,17 @@ impl Failure {
         }
     }
 
-    /// The error lines that replace rows or items that cannot form a valid document: `error: <code>` and the quoted
-    /// message.
-    fn body(&self) -> String {
+    /// The error lines that replace rows or items that cannot form a valid document: `error: <code>`, the quoted
+    /// message and, when other failures follow, `causes[N]: …` with each as `<code>: <message>`.
+    fn body(&self, causes: &[Failure]) -> String {
         let message = crate::toon::escape_value(&self.message);
         let mut out = String::with_capacity(17 + self.code.len() + message.len());
         out.push_str("error: ");
         out.push_str(self.code);
         out.push_str("\nmessage: ");
         out.push_str(&message);
+        let causes: Vec<String> = causes.iter().map(Failure::cause).collect();
+        crate::hints::append_inline_strings(&mut out, "causes", causes.iter().map(String::as_str));
         out
     }
 
@@ -759,14 +764,17 @@ impl Failure {
         out
     }
 
-    /// The JSON `error` object, with the keys a [`DomainError`] writes: michi's code and message, no causes, and
-    /// `retryable: false`, since the same input fails the same way.
-    fn push_json(&self, out: &mut String) {
+    /// The JSON `error` object, with the keys a [`DomainError`] writes: michi's code and message, the other failures
+    /// as causes, and `retryable: false`, since the same input fails the same way.
+    fn push_json(&self, out: &mut String, causes: &[Failure]) {
         out.push_str("{\"code\":");
         json::push_str(out, self.code);
         out.push_str(",\"message\":");
         json::push_str(out, &self.message);
-        out.push_str(",\"causes\":[],\"retryable\":false}");
+        out.push_str(",\"causes\":");
+        let causes: Vec<String> = causes.iter().map(Failure::cause).collect();
+        json::push_str_array(out, causes.iter().map(String::as_str));
+        out.push_str(",\"retryable\":false}");
     }
 }
 
@@ -793,7 +801,7 @@ impl<'a> Part<'a> {
     /// A block that failed validation: the error lines replace its content and it reports no count.
     fn failed(name: &'a str, code: &'static str, message: String) -> Self {
         let failure = Failure { code, message };
-        Self { name, text: failure.body(), cuts: Vec::new(), total: None, failure: Some(failure) }
+        Self { name, text: failure.body(&[]), cuts: Vec::new(), total: None, failure: Some(failure) }
     }
 }
 

@@ -47,6 +47,67 @@ fn assert_same_on_every_surface(r: &AgentResponse) -> (String, serde_json::Value
     (text, v)
 }
 
+fn bad_list_named(name: &str) -> Section {
+    Section::toon(name, fields(&["a"]), vec![vec![Value::Int(1), Value::Int(2)]])
+}
+
+const BAD_MESSAGE: &str = "row 0 has 2 values but 1 fields declared";
+
+// ---- Two failed sections follow the same rule as every other collision ----
+
+#[test]
+fn two_failed_sections_are_one_error_object_with_the_second_failure_as_its_cause() {
+    let r = AgentResponse::new("t").section(bad_list_named("one")).section(ok_list()).section(bad_list_named("two"));
+    let (text, v) = assert_same_on_every_surface(&r);
+    assert_eq!(text.matches("error:").count(), 1, "{text}");
+    assert_eq!(
+        v["error"],
+        serde_json::json!({
+            "code": "toon_validation_failed",
+            "message": BAD_MESSAGE,
+            "causes": [format!("toon_validation_failed: {BAD_MESSAGE}")],
+            "retryable": false,
+        })
+    );
+    assert!(text.starts_with("error: toon_validation_failed\nmessage: "), "{text}");
+    assert!(text.contains("causes[1]: "), "{text}");
+    // The valid section still renders.
+    assert!(text.contains("good[1]{a}:"), "{text}");
+}
+
+#[test]
+fn many_failed_sections_and_an_error_leave_the_callers_error_first_and_every_failure_a_cause() {
+    let e = DomainError::new(ErrorCode::ExternalFailure, "upload failed").cause("timeout");
+    let r = AgentResponse::new("t")
+        .section(bad_list_named("one"))
+        .section(bad_list_named("two"))
+        .section(bad_list_named("three"))
+        .error(e);
+    let (text, v) = assert_same_on_every_surface(&r);
+    assert_eq!(text.matches("error:").count(), 1, "{text}");
+    assert_eq!(v["error"]["code"], "external_failure");
+    assert_eq!(v["error"]["message"], "upload failed");
+    let failure = format!("toon_validation_failed: {BAD_MESSAGE}");
+    assert_eq!(v["error"]["causes"], serde_json::json!(["timeout", failure, failure, failure]));
+}
+
+#[test]
+fn a_failed_section_and_a_root_key_collision_both_appear_among_the_causes() {
+    let r = AgentResponse::new("t")
+        .section(bad_list_named("one"))
+        .section(Section::text("a", "x"))
+        .section(Section::text("a", "y"));
+    let (text, v) = assert_same_on_every_surface(&r);
+    assert_eq!(text.matches("error:").count(), 1, "{text}");
+    assert_eq!(v["error"]["message"], BAD_MESSAGE);
+    assert_eq!(
+        v["error"]["causes"],
+        serde_json::json!([
+            "toon_validation_failed: duplicate root key 'a': give every section and KV key a distinct name"
+        ])
+    );
+}
+
 // ---- Finding 1: the caller's error is never hidden ----
 
 #[test]
