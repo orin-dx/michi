@@ -1,0 +1,15 @@
+{
+  "tool_use_id": "toolu_01SFAqQHqa6cvzJ9NtUzLXtC",
+  "agent_id": "a627cadf125ea5f6b",
+  "subagent_type": "general-purpose",
+  "task_description": "Audit: duplication and refactoring",
+  "token_usage": {
+    "input_tokens": 132,
+    "cache_creation_tokens": 160716,
+    "cache_read_tokens": 7409579,
+    "output_tokens": 45423,
+    "api_call_count": 66
+  },
+  "started_at": "2026-11-15T22:28:36.622881-08:00",
+  "completed_at": "2026-11-15T22:35:47.206506-08:00"
+}

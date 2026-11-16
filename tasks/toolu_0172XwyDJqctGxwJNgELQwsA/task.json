@@ -1,0 +1,15 @@
+{
+  "tool_use_id": "toolu_0172XwyDJqctGxwJNgELQwsA",
+  "agent_id": "aa280a6e40847a70a",
+  "subagent_type": "general-purpose",
+  "task_description": "Envelope slice C: PartialSuccess",
+  "token_usage": {
+    "input_tokens": 92,
+    "cache_creation_tokens": 126127,
+    "cache_read_tokens": 5048329,
+    "output_tokens": 35953,
+    "api_call_count": 46
+  },
+  "started_at": "2026-11-14T18:04:38.633345-08:00",
+  "completed_at": "2026-11-14T18:14:13.429824-08:00"
+}

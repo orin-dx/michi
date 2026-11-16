@@ -1,0 +1,22 @@
+{
+  "tool_use_id": "toolu_01DDyt1DESNSWAdXPECwC2Sh",
+  "agent_id": "aa32c8660126634f4",
+  "subagent_type": "general-purpose",
+  "task_description": "Envelope integration and docs",
+  "files": [
+    ".git-tmp-edit.py",
+    "pr_body.txt",
+    "tmp_doc2.py",
+    "tmp_edit.py",
+    "tmp_mut.sh"
+  ],
+  "token_usage": {
+    "input_tokens": 224,
+    "cache_creation_tokens": 202803,
+    "cache_read_tokens": 16919086,
+    "output_tokens": 70164,
+    "api_call_count": 111
+  },
+  "started_at": "2026-11-14T18:11:26.607224-08:00",
+  "completed_at": "2026-11-14T18:26:07.929974-08:00"
+}

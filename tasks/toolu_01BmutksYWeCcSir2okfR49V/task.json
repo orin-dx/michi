@@ -1,0 +1,15 @@
+{
+  "tool_use_id": "toolu_01BmutksYWeCcSir2okfR49V",
+  "agent_id": "ae6f32d2f23ed20d9",
+  "subagent_type": "general-purpose",
+  "task_description": "Audit: architecture and semantic models",
+  "token_usage": {
+    "input_tokens": 110,
+    "cache_creation_tokens": 184847,
+    "cache_read_tokens": 6577688,
+    "output_tokens": 35886,
+    "api_call_count": 55
+  },
+  "started_at": "2026-11-15T22:28:36.470912-08:00",
+  "completed_at": "2026-11-15T22:36:38.423151-08:00"
+}

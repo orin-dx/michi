@@ -1,0 +1,15 @@
+{
+  "tool_use_id": "toolu_01MouMRCsNggegQrCmnSduwB",
+  "agent_id": "ae2f4397a4549a855",
+  "subagent_type": "general-purpose",
+  "task_description": "Fix review findings on envelope stack",
+  "token_usage": {
+    "input_tokens": 116,
+    "cache_creation_tokens": 146722,
+    "cache_read_tokens": 6943637,
+    "output_tokens": 39729,
+    "api_call_count": 58
+  },
+  "started_at": "2026-11-14T18:56:22.295395-08:00",
+  "completed_at": "2026-11-14T19:03:42.461577-08:00"
+}

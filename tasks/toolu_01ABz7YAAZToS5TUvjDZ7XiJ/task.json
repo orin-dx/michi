@@ -1,0 +1,15 @@
+{
+  "tool_use_id": "toolu_01ABz7YAAZToS5TUvjDZ7XiJ",
+  "agent_id": "aabf67f4c1508b8e4",
+  "subagent_type": "general-purpose",
+  "task_description": "Audit: Rust idioms and performance",
+  "token_usage": {
+    "input_tokens": 122,
+    "cache_creation_tokens": 174040,
+    "cache_read_tokens": 7587457,
+    "output_tokens": 35227,
+    "api_call_count": 61
+  },
+  "started_at": "2026-11-15T22:28:36.441849-08:00",
+  "completed_at": "2026-11-15T22:38:27.039016-08:00"
+}

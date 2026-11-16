@@ -1,0 +1,15 @@
+{
+  "tool_use_id": "toolu_01CLn7c7HGBPnj4MzR8xW6rM",
+  "agent_id": "ae172a32cc3cd762f",
+  "subagent_type": "general-purpose",
+  "task_description": "Unify response storage, drop legacy",
+  "token_usage": {
+    "input_tokens": 218,
+    "cache_creation_tokens": 256805,
+    "cache_read_tokens": 21129707,
+    "output_tokens": 85298,
+    "api_call_count": 109
+  },
+  "started_at": "2026-11-14T18:26:37.42717-08:00",
+  "completed_at": "2026-11-14T18:48:39.308458-08:00"
+}
