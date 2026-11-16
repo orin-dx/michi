@@ -1,6 +1,6 @@
 # Dependency graphs (`michi-graph`)
 
-`michi-graph` validates and orders dependency graphs: steps in a pipeline, operations in a release, packages in a workspace, tasks in an agent's plan. It is MIT-licensed, has no dependencies (it is `no_std` with `alloc`, and needs pointer-sized atomics, which every mainstream target has; CI builds it for `thumbv7em-none-eabihf`), and depends on nothing else in michi, so permissive crates such as `callisto-model` can use it. `michi-pipeline` builds its `Plan` on it.
+`michi-graph` validates and orders dependency graphs: steps in a pipeline, operations in a release, packages in a workspace, tasks in an agent's plan. It is MIT-licensed, has no dependencies (it is `no_std` with `alloc`, and needs pointer-sized atomics, which every mainstream target has; CI builds it for `thumbv7em-none-eabihf`, and targets without compare-and-swap such as `thumbv6m-none-eabi` are not supported), and depends on nothing else in michi, so permissive crates such as `callisto-model` can use it. `michi-pipeline` builds its `Plan` on it.
 
 It is a small, deterministic graph model, not a general graph library. There are no node payloads, no edge data beyond a kind, no mutation after a graph is built, no path finding and no execution policy. The reasons for each choice are in [06-decisions.md](06-decisions.md), "michi-graph: an MIT leaf crate".
 
