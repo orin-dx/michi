@@ -169,6 +169,15 @@ A dependency stays a _feature_, not a crate, when it's low-consequence even if u
 
 None of this is scaffolded ahead of time. A crate gets created in the same work that writes its first real implementation, not before — an empty crate sitting in the workspace is the identical ambiguity problem the deleted `pipeline`/`sink`/`resilience` stub files caused, just moved up one level of granularity.
 
+### Durable starts run off the scheduler task
+
+`DurableObserver::record_start` used to run inline in the scheduler's dispatch loop, so N parallel steps started one save after another. Measured (`crates/michi-pipeline/tests/durable_latency.rs`): 8 parallel steps, a 100 ms blocking save each, current-thread runtime: 830 ms before, 114 ms after. On a current-thread runtime the inline save also froze every other step's timers and cancellation for its whole duration.
+
+- **Change:** the save runs in `spawn_blocking`, awaited at the top of the step's own task (after the cancelled check, before the breaker and the first attempt). The guarantee is unchanged: a step's effect runs only after its own `record_start` returned `Ok`; `Err` or a panic ends it `NotRun(StartNotRecorded)` (not invoked, no start time), and a panic still counts in `observer_panics`.
+- **Trade-offs:** `record_start` is now called concurrently, from blocking-pool threads, in no fixed order across steps that start together (a step's start still precedes its finish, and a dependent's start still follows its prerequisite's finish). A step now takes its concurrency slot and counts toward the parallelism cap while its save is in flight. If the run is dropped mid-save, the save still completes; the marker then shows the step `Running` on resume, which is held, never re-run unverified.
+- **Re-check after the save:** the run can change while a save is in flight, so the step checks its cancellation token again once the save returns `Ok`, before admission, and ends `Skipped(Cancelled)` exactly as a pre-start cancel does (otherwise the attempt would start, be interrupted after the grace period, and a non-idempotent step would end `OutcomeUnknown` and be held on resume). A deadline group's window opens at dispatch, before the save, so save time counts against the window (it used to open after the first step's save). Opening it after the save would need the task to report back to the scheduler, and steps dispatched in the meantime would have no end to honour; instead a step whose window ended during its save ends `Failed` with `DeadlinePassed` without being invoked, the same as a step dispatched into a closed window. Pinned by `crates/michi-pipeline/tests/durable_start_races.rs`.
+- **Not changed:** `on_step_started` (non-durable) and `on_step_finished` still run inline and are documented as "keep it quick": they cannot gate a step, and the finish event must be delivered in completion order. Moving them off-task would reorder the log callers rebuild records from.
+
 ---
 
 ## Implementation notes

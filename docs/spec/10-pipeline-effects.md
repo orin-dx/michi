@@ -109,7 +109,7 @@ pub trait DurableObserver: StepObserver {
 ```
 
 - Without durable starts nothing changes: `on_step_started` is called, a panic is caught and counted, and the step is dispatched.
-- With it, the scheduler calls `record_start` before dispatching. `Ok` dispatches the step. `Err(reason)` or a panic does not: the step ends `NotRun(NotRunReason::StartNotRecorded)` with the reason, its dependents are skipped, and other branches carry on. Nothing was invoked, so resume runs it again.
+- With it, `record_start` runs on a blocking thread owned by the step's task, before its first attempt, so a slow save delays only that step (08 and `06-decisions.md` have the details). `Ok` runs the step. `Err(reason)` or a panic does not: the step ends `NotRun(NotRunReason::StartNotRecorded)` with the reason, its dependents are skipped, and other branches carry on. Nothing was invoked, so resume runs it again.
 - This closes the crash gap: a step can only run once its in-flight marker is saved, so a rebuilt record never shows a step that ran as `Pending`. It is Callisto's rule ("`Attempting` only after a proof") applied to michi's records.
 
 ## Resume, restated
