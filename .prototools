@@ -4,7 +4,9 @@ rust = "1"
 moon = "2"
 
 [plugins]
-moon = "source:https://raw.githubusercontent.com/moonrepo/moon/master/proto-plugin.toml"
+# Pinned to the last commit that changed the plugin file (content equals master on 2026-11-16): a moving branch
+# would run in the release jobs that hold registry tokens.
+moon = "source:https://raw.githubusercontent.com/moonrepo/moon/a1651aa544ad5db598817dad13f42569849ef6cc/proto-plugin.toml"
 
 [settings]
 auto-install = true

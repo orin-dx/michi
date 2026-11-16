@@ -252,10 +252,18 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      # napi's --cross-compile links non-native Linux targets with cargo-zigbuild.
+      # napi's --cross-compile links non-native Linux targets with cargo-zigbuild. This job holds id-token and
+      # attestations: write, so the linker is pinned by version and wheel hash (x86_64 and aarch64 Linux runners).
+      # Bump both together from the ziglang release page on PyPI.
       - name: Install zig
         if: matrix.useCross
-        run: pip install ziglang
+        run: |
+          set -euo pipefail
+          pip install --require-hashes --only-binary=:all: -r /dev/stdin <<'REQS'
+          ziglang==0.17.1 \
+            --hash=sha256:ea6cc5d87b033cf0aedfbc8f9549a908cae6c50ac31f1698188fa48a74524b54 \
+            --hash=sha256:b7c5f02fccd40f89b999ee16a1f5ddced56e6182370f8affe494bcf8a28cf07e
+          REQS
 
       - uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2
         if: matrix.useCross
@@ -271,11 +279,15 @@ jobs:
           if [[ "$USE_CROSS" == true ]]; then args+=(--cross-compile); fi
           pnpm build "${args[@]}"
 
-      # Sign the exact bytes that get published; the execute job verifies this before it holds any registry credential.
-      - name: Attest the napi addon
+      # Sign the bytes that get published (the addon and the JS loader that requires it); the execute job verifies
+      # them before it holds any registry credential.
+      - name: Attest the napi addon and JS binding
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: ${{ runner.temp }}/napi-out/*.node
+          subject-path: |
+            ${{ runner.temp }}/napi-out/*.node
+            ${{ runner.temp }}/napi-out/index.js
+            ${{ runner.temp }}/napi-out/index.d.ts
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -375,6 +387,25 @@ jobs:
               --signer-digest "$GITHUB_SHA" --source-digest "$GITHUB_SHA" --deny-self-hosted-runners
           done
 
+      # Same check for the JS loader every consumer runs first. Each matrix leg attested its own copy, so verify all.
+      - name: Verify the JS binding attestations
+        if: needs.plan.outputs.has_napi == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=("$RUNNER_TEMP"/napi-bindings/*/index.js "$RUNNER_TEMP"/napi-bindings/*/index.d.ts)
+          if [[ "${#files[@]}" -eq 0 ]]; then
+            echo "::error::no JS bindings to verify"
+            exit 1
+          fi
+          for file in "${files[@]}"; do
+            gh attestation verify "$file" --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/callisto-release.yml" \
+              --signer-digest "$GITHUB_SHA" --source-digest "$GITHUB_SHA" --deny-self-hosted-runners
+          done
+
       # Everything placed here is gitignored, so the checkout stays clean:
       # the .node files go into the committed npm/<platform> package dirs.
       - name: Place the napi artifacts
@@ -403,6 +434,8 @@ jobs:
             exit 1
           fi
 
+      # CARGO_REGISTRY_TOKEN and NPM_TOKEN are long-lived secrets because Callisto has no OIDC trusted publishing yet,
+      # so they cannot be dropped here. Revisit when it does (the job already holds id-token: write).
       - name: Execute the release
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
