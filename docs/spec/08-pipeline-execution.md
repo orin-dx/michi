@@ -357,7 +357,7 @@ pub trait DurableObserver: StepObserver {
 
 - Without durable starts nothing changes: `on_step_started` is called, a panic is caught and counted, and the step is dispatched.
 - `durable_starts(observer)` takes the observer itself, so durable starts cannot be turned on without one that records starts: a closure observer (finish events only) is not a `DurableObserver` and does not compile there. A later `observer(..)` replaces it and turns durable starts off.
-- With it, the scheduler calls `record_start` instead of `on_step_started`, before dispatching. `Ok` dispatches the step. `Err(reason)` or a panic does not: the step ends `NotRun(StartNotRecorded)` with the reason, its dependents are skipped, other branches carry on (fail-fast stops the run, as for any failure), and a panic is counted in `observer_panics()`. Nothing was invoked, so resume runs it again.
+- With it, `record_start` is called instead of `on_step_started`, before the step's first attempt, on a blocking thread (`spawn_blocking`) owned by that step's task. Steps that start together save their markers concurrently and in no fixed order, so `record_start` must be safe to call concurrently; a slow save delays only its own step (see "Durable starts run off the scheduler task" in `06-decisions.md`). `Ok` runs the step. `Err(reason)` or a panic does not: the step ends `NotRun(StartNotRecorded)` with the reason, its dependents are skipped, other branches carry on (fail-fast stops the run, as for any failure), and a panic is counted in `observer_panics()`. Nothing was invoked, so resume runs it again.
 
 A step can then only run once its marker is saved, so a rebuilt record never shows a step that ran as `Pending`.
 
