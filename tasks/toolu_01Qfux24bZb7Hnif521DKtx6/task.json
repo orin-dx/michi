@@ -1,0 +1,15 @@
+{
+  "tool_use_id": "toolu_01Qfux24bZb7Hnif521DKtx6",
+  "agent_id": "a437e0a5dfbdef6ea",
+  "subagent_type": "general-purpose",
+  "task_description": "Integrate T1, T2, T4 into one base",
+  "token_usage": {
+    "input_tokens": 52,
+    "cache_creation_tokens": 81258,
+    "cache_read_tokens": 1717196,
+    "output_tokens": 6325,
+    "api_call_count": 26
+  },
+  "started_at": "2026-11-16T09:04:07.590697-08:00",
+  "completed_at": "2026-11-16T09:06:37.179046-08:00"
+}

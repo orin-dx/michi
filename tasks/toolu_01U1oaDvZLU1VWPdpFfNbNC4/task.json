@@ -1,0 +1,15 @@
+{
+  "tool_use_id": "toolu_01U1oaDvZLU1VWPdpFfNbNC4",
+  "agent_id": "a5b309590634a81d0",
+  "subagent_type": "general-purpose",
+  "task_description": "W3 compose outcomes with AgentResponse",
+  "token_usage": {
+    "input_tokens": 330,
+    "cache_creation_tokens": 429234,
+    "cache_read_tokens": 46726637,
+    "output_tokens": 159154,
+    "api_call_count": 165
+  },
+  "started_at": "2026-11-16T09:36:24.513929-08:00",
+  "completed_at": "2026-11-16T10:09:26.656198-08:00"
+}

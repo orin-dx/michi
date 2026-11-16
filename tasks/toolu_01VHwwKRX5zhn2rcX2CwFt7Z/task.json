@@ -1,0 +1,18 @@
+{
+  "tool_use_id": "toolu_01VHwwKRX5zhn2rcX2CwFt7Z",
+  "agent_id": "a6ee63beceda8d37a",
+  "subagent_type": "general-purpose",
+  "task_description": "Review pipeline concurrency and signing",
+  "files": [
+    "crates/michi-pipeline/tests/zz_adversarial.rs"
+  ],
+  "token_usage": {
+    "input_tokens": 52,
+    "cache_creation_tokens": 102767,
+    "cache_read_tokens": 2421470,
+    "output_tokens": 18406,
+    "api_call_count": 26
+  },
+  "started_at": "2026-11-16T10:09:55.188179-08:00",
+  "completed_at": "2026-11-16T10:14:03.392918-08:00"
+}

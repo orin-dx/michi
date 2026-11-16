@@ -1,0 +1,15 @@
+{
+  "tool_use_id": "toolu_01EMij1nYXWJ7neLBwJGuBWP",
+  "agent_id": "a9041d694c2866d96",
+  "subagent_type": "general-purpose",
+  "task_description": "Pin zig in ci.yml",
+  "token_usage": {
+    "input_tokens": 32,
+    "cache_creation_tokens": 43867,
+    "cache_read_tokens": 895484,
+    "output_tokens": 4418,
+    "api_call_count": 16
+  },
+  "started_at": "2026-11-16T09:04:16.650487-08:00",
+  "completed_at": "2026-11-16T09:05:43.651225-08:00"
+}
