@@ -149,7 +149,7 @@ jobs:
           toolchain: ${{ steps.msrv.outputs.version }}
           cache-key: msrv
       # `+version` because rust-toolchain.toml (stable) would otherwise win over the default toolchain.
-      - run: cargo "+$MSRV" check --workspace --all-features --locked
+      - run: cargo "+$MSRV" check --workspace --all-features --all-targets --locked
         env:
           MSRV: ${{ steps.msrv.outputs.version }}
 
@@ -202,7 +202,7 @@ jobs:
           targets: thumbv7em-none-eabihf
           cache-key: graph-no-std
       # A bare-metal target with no std: proves the crate is no_std + alloc. It needs pointer-sized atomics (Arc and
-      # the builder id), which thumbv7em has; targets without compare-and-swap (thumbv6m) are not supported.
+      # the builder id), which thumbv7em has; targets without compare-and-swap (thumbv6m) are not supported, because the builder id is an `AtomicUsize::fetch_add`.
       - run: cargo build -p michi-graph --target thumbv7em-none-eabihf
 
   version-sync:
