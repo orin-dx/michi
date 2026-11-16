@@ -32,7 +32,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [toon_render, truncate, resilience, mcp_wire, graph, plan]
+        target: [toon_render, truncate, resilience, mcp_wire, graph, plan, redact, error_text]
     env:
       # 5 minutes per target on the weekly schedule; the dispatch input (default 60s) otherwise.
       SECONDS_PER_TARGET: ${{ github.event.inputs.seconds || '300' }}

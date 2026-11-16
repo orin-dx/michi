@@ -275,7 +275,7 @@ fn from_error_with_causes_renders_the_chain_as_causes_not_hints() {
     assert_eq!(
         e.render(),
         "error: external_failure\nmessage: sync failed\n\
-         causes[1]: \"GET https://api.example.com/v1/items?token=sk-live-123 returned 401 for /home/ci/.netrc\"\n\
+         causes[1]: \"GET https://api.example.com/v1/items?token=[REDACTED] returned 401 for /home/ci/.netrc\"\n\
          exit_code: 1"
     );
     assert!(e.hints.is_empty());
