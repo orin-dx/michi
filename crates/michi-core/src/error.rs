@@ -95,6 +95,21 @@ impl ErrorCode {
         }
     }
 
+    /// Every code, in declaration order. `FromStr` searches this list, so a label is parsed by the same table that
+    /// [`label`](Self::label) writes; a unit test names every variant without a wildcard, so a new one fails to
+    /// compile there until it is listed here.
+    pub const ALL: [Self; 9] = [
+        Self::InvalidInput,
+        Self::NotFound,
+        Self::Unauthorized,
+        Self::Forbidden,
+        Self::Conflict,
+        Self::RateLimited,
+        Self::Unavailable,
+        Self::Timeout,
+        Self::ExternalFailure,
+    ];
+
     /// Whether a fresh [`DomainError`] with this code is retryable: `RateLimited` and `Unavailable` only, which mean
     /// the request was not processed. `Timeout` and `ExternalFailure` are not: the request may have taken effect
     /// (RFC 9110 §15.6), so retrying is safe only for an idempotent operation, and the caller says so with
@@ -126,6 +141,32 @@ impl ErrorCode {
             Self::RateLimited | Self::Unavailable | Self::ExternalFailure => ErrorClass::Internal,
             Self::Timeout => ErrorClass::Ambiguous,
         }
+    }
+}
+
+/// A string that is not an [`ErrorCode`] label.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownErrorCode(pub String);
+
+impl std::fmt::Display for UnknownErrorCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "unknown error code {:?}; expected one of: ", self.0)?;
+        for (i, code) in ErrorCode::ALL.iter().enumerate() {
+            f.write_str(if i == 0 { "" } else { ", " })?;
+            f.write_str(code.label())?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for UnknownErrorCode {}
+
+impl std::str::FromStr for ErrorCode {
+    type Err = UnknownErrorCode;
+
+    /// The code whose [`label`](ErrorCode::label) is `s`.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::ALL.into_iter().find(|code| code.label() == s).ok_or_else(|| UnknownErrorCode(s.to_string()))
     }
 }
 
@@ -855,6 +896,33 @@ mod tests {
         assert_eq!(Unavailable.label(), "unavailable");
         assert_eq!(Timeout.label(), "timeout");
         assert_eq!(ExternalFailure.label(), "external_failure");
+    }
+
+    // No wildcard arm: a new `ErrorCode` variant fails to compile here until it is placed in `ErrorCode::ALL`.
+    #[test]
+    fn error_code_all_lists_every_variant_once_and_from_str_inverts_label() {
+        use ErrorCode::*;
+        for (i, code) in ErrorCode::ALL.into_iter().enumerate() {
+            let index = match code {
+                InvalidInput => 0,
+                NotFound => 1,
+                Unauthorized => 2,
+                Forbidden => 3,
+                Conflict => 4,
+                RateLimited => 5,
+                Unavailable => 6,
+                Timeout => 7,
+                ExternalFailure => 8,
+            };
+            assert_eq!(index, i, "{code:?} is out of place in ErrorCode::ALL");
+            assert_eq!(code.label().parse::<ErrorCode>(), Ok(code));
+        }
+        let err = "bogus_code".parse::<ErrorCode>().expect_err("not a label");
+        assert_eq!(
+            err.to_string(),
+            "unknown error code \"bogus_code\"; expected one of: invalid_input, not_found, unauthorized, forbidden, \
+             conflict, rate_limited, unavailable, timeout, external_failure"
+        );
     }
 
     #[test]
