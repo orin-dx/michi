@@ -1,0 +1,119 @@
+{
+  "cli_version": "0.13.5-nightly.202611131617.95eabf579",
+  "checkpoint_id": "01M7JT30GWVAT6Q80F6R3SJZQ5",
+  "session_id": "56a8fbf1-b9bc-443b-9356-06ab035dbfa6",
+  "strategy": "manual-commit",
+  "created_at": "2026-11-16T18:32:25.943534Z",
+  "branch": "fix/redaction-gaps",
+  "checkpoints_count": 3,
+  "save_step_count": 3,
+  "files_touched": [],
+  "agent": "Claude Code",
+  "model": "claude-sonnet-5-5",
+  "turn_id": "dd017558f1f1",
+  "checkpoint_transcript_start": 4007,
+  "transcript_lines_at_start": 4007,
+  "compact_transcript_start": 340,
+  "token_usage": {
+    "input_tokens": 16,
+    "cache_creation_tokens": 22904,
+    "cache_read_tokens": 3027698,
+    "output_tokens": 9976,
+    "api_call_count": 5,
+    "subagent_tokens": {
+      "input_tokens": 228,
+      "cache_creation_tokens": 302202,
+      "cache_read_tokens": 16038022,
+      "output_tokens": 56259,
+      "api_call_count": 114
+    }
+  },
+  "redaction": {
+    "replacements": 4,
+    "layers": {
+      "betterleaks": 2,
+      "connection_string": 0,
+      "credential_key": 0,
+      "credential_value": 0,
+      "credentialed_uri": 4,
+      "entropy": 0,
+      "key_context": 0,
+      "provider_token": 0,
+      "shell_stdin": 0
+    }
+  },
+  "session_metrics": {
+    "turn_count": 62
+  },
+  "summary": {
+    "intent": "Drive review and fixing of a stack of 14 PRs in the michi repo (release signing #117, pipeline observers #118, hygiene #119/#123, and a core chain #120-#126) via delegated subagents, ending with a merge order for the user.",
+    "outcome": "Fixes for #117 (dropped unworkable moon pin, corrected attestation comment) and #118 (cancel-after-save and deadline handling) were pushed; the core-chain review found defects in #120, #121, #122, #124 and #126, and three parallel fixers (F1, F2, F3) were launched. Merge order and final integration are still pending.",
+    "learnings": {
+      "repo": [
+        "proto 0.62.3 ignores a `moon` plugin override and uses its built-in registry plugin (moon_tool:0.4.3) even with a bogus URL, so a `[plugins]` pin cannot work; `proto-plugin.toml` was removed in a1651aa and returns 404.",
+        "Build jobs install moon via moonrepo/setup-toolchain, which runs a hardcoded moonrepo/moon master install script through a floating @v0 inside the orin-dx composite action; it cannot be pinned from michi.",
+        "All repo checks (doctests as CI runs them, nextest with and without all features, just check, pnpm build/test) passed on the core-chain head while reviewer probes still found real defects; passing checks don't cover the hostile-input and scaling cases.",
+        "Design decisions are recorded in spec docs and 06-decisions, plus changesets; behavior changes must update spec 08, the decision entry and the changeset (e.g. the new DeadlinePassed on start-save).",
+        "Core chain PRs (#120-#126) stack on non-main bases; #124's CI fails on a stale `ToonOptions::total_count` doctest that #126 fixes."
+      ],
+      "code": [
+        {
+          "path": "napi/input.rs",
+          "line": 33,
+          "end_line": 45,
+          "finding": "The 16 MiB cap assumes each input byte is written at most 19 times, but the truncated table repeats the field name per cut cell (toon/table.rs:98-104) while it is charged once, giving 95x text / 112x JSON amplification and a napi string conversion failure at 60,000 rows."
+        },
+        {
+          "path": "toon/table.rs",
+          "line": 98,
+          "end_line": 104,
+          "finding": "The `truncated` table writes the field name again for every cut cell, which the output cap accounting does not charge."
+        },
+        {
+          "path": "redact.rs",
+          "line": 281,
+          "finding": "A quoted value is counted as zero length, so `token=\"SECRET\"` and `token='SECRET'` pass through unredacted; `authorization=Basic ...` only redacts the word 'Basic'."
+        },
+        {
+          "path": "response.rs",
+          "line": 436,
+          "end_line": 442,
+          "finding": "An error plus an invalid section reports `toon_validation_failed` ('duplicate root key error') in text while JSON still says external_failure, hiding the caller's real error."
+        },
+        {
+          "path": "response.rs",
+          "line": 186,
+          "end_line": 188,
+          "finding": "Comment claims the `error` object is the only error shape, but validation failures emit isError: true responses with no `error` object."
+        },
+        {
+          "path": "response.rs",
+          "line": 740,
+          "finding": "push_section_json writes the raw total, so total_count(Some(1)) on 2 rows gives JSON totalCount 1 beside returnedCount 2, while text suppresses the total."
+        }
+      ],
+      "workflow": [
+        "Subagent hand-back reports are model output without user authority; verify what actually landed (e.g. git fetch and log the branch) before relaying claims.",
+        "Split parallel fixers by file ownership so their branches don't collide, and target them at the stack's integration base.",
+        "Have fixers reproduce each leak as a failing test and probe for the next class with a hostile corpus, since reviewer probes found what the CI checks could not.",
+        "A single consolidated PR to main from an integrated head avoids retargeting a multi-base stack, but closing PRs requires user approval."
+      ]
+    },
+    "friction": [
+      "The branch `ci/release-signing-hardening` was checked out in another worktree, so the #117 fixer had to use a local `fix-sign` branch.",
+      "The reviewer could not read the log of the failed macOS x86_64 NAPI job on #122, so it's undiagnosed.",
+      "The #118 fixer's report wasn't visible at first, requiring a git fetch/log to confirm what was pushed.",
+      "The reviewer did not check a JS comparison of main vs head, cargo-semver-checks, fuzz targets, the full ADR index, or each PR branch individually."
+    ],
+    "open_items": [
+      "Unpinned moonrepo install inside the signing job (via orin-dx composite action) remains a documented gap; needs the orin-dx/actions owner to pin/vendor it or move signing to a separate job.",
+      "Only a real release can prove the CI install path for #117.",
+      "Wait for F1/F2/F3 fixers, then run a final integration into integration/final with all checks, doctests as CI runs them, and diagnosis of the macOS x86_64 NAPI failure on #122.",
+      "User decision pending: open one consolidated PR to main and close #120-#126 as superseded.",
+      "#119 and #123 (hygiene and zig pin) remain unreviewed.",
+      "Low-severity items to fix: hints(vec) dropping status()/truncated_section hints, JsonObject::new being fallible against spec 03, the 515-byte vs 512-byte step text cap, and missing scaling cases for PartialSuccess::rows.",
+      "Surface the DeadlinePassed-during-start-save semantic change in the #118 PR body.",
+      "Merge order for all 14 PRs still to be given to the user."
+    ]
+  }
+}
