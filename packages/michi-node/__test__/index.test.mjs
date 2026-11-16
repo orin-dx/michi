@@ -603,7 +603,8 @@ void describe('AgentResponse cumulative byte budget', () => {
           accepted++
         }
       },
-      (err) => err.message === `cumulative byte total ${1 + 16 * 1_048_576} exceeds maximum of 16777216`
+      // Each hint is charged its bytes and one more for the quotes and separator it is written with.
+      (err) => err.message === `cumulative byte total ${1 + 16 * (1_048_576 + 1)} exceeds maximum of 16777216`
     )
     assert.strictEqual(accepted, 15, '"t" takes one byte, so the 16th full hint passes 16 MiB')
     assert.ok(r.renderText().length < 16_777_216 + 4096)
@@ -1305,6 +1306,92 @@ void describe('output size at the byte cap', () => {
     const hints = Array.from({ length: 17 }, () => 'h'.repeat(mib))
     assert.throws(() => renderHints(hints), /^Error: input byte total \d+ exceeds maximum of 16777216$/)
   })
+
+  // A `truncated` row writes the field name, and, beside another cut section, the section name, again for every cut
+  // cell, so those names are charged for every cell longer than 200 chars. A 4 KiB control-character field name with
+  // 1,000 rows of one 201-char cell used to hold 261 KB and render to 95 times that in text and 112 times in JSON; at
+  // 60,000 rows the input was under the cap and `renderText()` failed to hand V8 a string it could not hold.
+  const longName = '\u0001'.repeat(4096)
+  const cut = (n) => Array.from({ length: n }, () => [{ type: 'str', strVal: 'a'.repeat(201) }])
+  const cutSteps = (n) =>
+    Array.from({ length: n }, () => ({ id: 'a'.repeat(201), name: 'n', status: 'completed' }))
+
+  // The most of `n` that `accepts` takes: `accepts(n)` is true for the result and false for one more.
+  const largest = (accepts, hi) => {
+    let lo = 0
+    while (lo < hi) {
+      const mid = Math.ceil((lo + hi) / 2)
+      if (accepts(mid)) lo = mid
+      else hi = mid - 1
+    }
+    return lo
+  }
+  const accepts = (build) => (n) => {
+    try {
+      build(n)
+      return true
+    } catch (err) {
+      assert.match(err.message, /^(cumulative|input) byte total \d+ exceeds maximum of 16777216$/)
+      return false
+    }
+  }
+
+  void it('rejects the 60,000-row table whose field name a truncated row would write 60,000 times', () => {
+    const r = new AgentResponse('t')
+    assert.throws(
+      () => r.items(cut(60_000), [longName]),
+      /^Error: cumulative byte total \d+ exceeds maximum of 16777216$/
+    )
+    assert.throws(
+      () => renderToon({ typeName: 't', fields: [longName], rows: cut(60_000) }),
+      /^Error: input byte total \d+ exceeds maximum of 16777216$/
+    )
+  })
+
+  void it('renders the largest long-field-name table it accepts, in every format', () => {
+    const build = (n) => {
+      const r = new AgentResponse('t')
+      r.items(cut(n), [longName])
+      return r
+    }
+    const n = largest(accepts(build), 5000)
+    // About 16 MiB / (4 KiB name + the cell) rows: far fewer than the 60,000 that used to be accepted.
+    assert.ok(n > 3000 && n < 4500, `${n} rows accepted`)
+    const r = build(n)
+    const text = r.renderText()
+    const json = r.renderJson()
+    const result = r.toCallToolResult()
+    // The name and the cell are held at least once per row, so the output stays under 19 times that.
+    const held = n * (4096 + 201)
+    assert.ok(text.length + json.length <= 19 * held, `${text.length + json.length} chars for ${held} held`)
+    assert.ok(Math.max(text.length, json.length) < V8_MAX_STRING)
+    assert.strictEqual(result.content[0].text, text)
+
+    const toon = (rows) => renderToon({ typeName: 't', fields: [longName], rows: cut(rows) })
+    const m = largest(accepts(toon), 5000)
+    assert.ok(m > 3000 && m < 4500, `${m} rows accepted`)
+    const out = toon(m)
+    assert.ok(out.length <= 19 * m * (4096 + 201), `${out.length} chars for ${m} rows`)
+    assert.ok(out.length < V8_MAX_STRING)
+  })
+
+  void it('renders the largest table it accepts beside another cut section with a long name', () => {
+    const build = (n) => {
+      const r = new AgentResponse('t'.repeat(4096))
+      r.items(cut(1), ['f'])
+      r.pipeline(longName, cutSteps(n))
+      return r
+    }
+    const n = largest(accepts(build), 5000)
+    assert.ok(n > 3000 && n < 4500, `${n} steps accepted`)
+    const r = build(n)
+    const text = r.renderText()
+    const json = r.renderJson()
+    const held = n * (4096 + 201)
+    assert.ok(text.length + json.length <= 19 * held, `${text.length + json.length} chars for ${held} held`)
+    assert.ok(Math.max(text.length, json.length) < V8_MAX_STRING)
+    assert.strictEqual(r.toCallToolResult().content[0].text, text)
+  })
 })
 
 void describe('outcomes compose into one AgentResponse', () => {
@@ -1356,6 +1443,34 @@ void describe('outcomes compose into one AgentResponse', () => {
     retryable.error('timeout', 'GET timed out', null, true)
     assert.strictEqual(JSON.parse(retryable.renderJson()).error.retryable, true)
     assert.throws(() => retryable.error('bogus', 'm'), /^Error: unknown error code "bogus"/)
+  })
+
+  void it('keeps the caller error and adds a validation failure as its cause, on every surface', () => {
+    const step = [{ id: 'fetch', name: 'Fetch', status: 'completed' }]
+    const failure = "toon_validation_failed: duplicate root key 'step': give every section and KV key a distinct name"
+    const r = new AgentResponse('run')
+    r.pipeline('step', step)
+    r.pipeline('step', step)
+    r.error('not_found', 'gone')
+    const text = r.renderText()
+    assert.strictEqual(text, `error: not_found\nmessage: gone\ncauses[1]: "${failure}"\nexit_code: 1`)
+    const result = r.toCallToolResult()
+    assert.strictEqual(result.content[0].text, text)
+    assert.strictEqual(result.isError, true)
+    const want = { code: 'not_found', message: 'gone', causes: [failure], retryable: false }
+    assert.deepStrictEqual(result.structuredContent.error, want)
+    assert.deepStrictEqual(JSON.parse(r.renderJson()).error, want)
+
+    // Without a caller error the failure is the error object, with the same keys.
+    const alone = new AgentResponse('run')
+    alone.pipeline('step', step)
+    alone.pipeline('step', step)
+    assert.deepStrictEqual(JSON.parse(alone.renderJson()).error, {
+      code: 'toon_validation_failed',
+      message: "duplicate root key 'step': give every section and KV key a distinct name",
+      causes: [],
+      retryable: false,
+    })
   })
 
   void it('composes a pipeline, a status report and an already-done report', () => {

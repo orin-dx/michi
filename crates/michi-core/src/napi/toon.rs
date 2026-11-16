@@ -3,6 +3,7 @@
 use napi::bindgen_prelude::Unknown;
 use napi_derive::napi;
 
+use super::cost;
 use super::input::{self, Budget, List, MAX_FIELDS, MAX_HINTS, MAX_NAME_BYTES, MAX_ROWS, MAX_STRING_BYTES};
 use super::value::{JsKvItem, JsToonValue};
 
@@ -54,6 +55,8 @@ pub fn render_toon(opts: Unknown<'_>) -> napi::Result<String> {
         fields: budget.strings(&fields, "fields", MAX_FIELDS, "field name", MAX_NAME_BYTES)?,
         rows: budget.rows(&rows, MAX_ROWS, MAX_FIELDS, "maximum fields per row")?,
     };
+    // The `truncated` block writes a field name again for every cut cell of its column.
+    budget.charge_bytes(cost::table_repeats(&opts.rows, &opts.fields, 0))?;
     toon_document(opts)
 }
 

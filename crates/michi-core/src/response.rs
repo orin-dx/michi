@@ -53,10 +53,22 @@ pub struct AgentResponse {
     /// The error this response reports, set with `error()`: rendered first, as the root `error`, `message`, `causes`
     /// and `exit_code` keys.
     error: Option<DomainError>,
-    hints: Vec<Hint>,
+    /// Every hint in call order, each with who added it: the caller ([`hint`](Self::hint), [`hints`](Self::hints)) or
+    /// a part ([`status`](Self::status), [`truncated_section`](Self::truncated_section)). `hints()` replaces only the
+    /// caller's own, so no hint source drops another's.
+    hints: Vec<(Hint, HintSource)>,
     recovery: Vec<RecoveryHint>,
     is_error: bool,
     human_content: Option<String>,
+}
+
+/// Who added a hint: the caller, whose hints [`AgentResponse::hints`] replaces, or a part, whose hints stay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HintSource {
+    /// [`AgentResponse::hint`] or [`AgentResponse::hints`].
+    Caller,
+    /// A status report's hints or a cut section's `showing N of M` line.
+    Part,
 }
 
 impl AgentResponse {
@@ -130,7 +142,7 @@ impl AgentResponse {
     ) -> Self {
         let rows = outcome.kept.iter().map(row).collect();
         if let Some(hint) = outcome.hint(guidance) {
-            self.hints.push(hint);
+            self.hints.push((hint, HintSource::Part));
         }
         self.section(Section::toon(name, fields, rows).total_count(Some(outcome.total_before)))
     }
@@ -184,8 +196,10 @@ impl AgentResponse {
     /// `help` block and its recovery hint leads the one `recovery` table. The response is an error on every surface.
     ///
     /// In JSON the error is one object, `"error": {"code", "message", "causes", "retryable"}`, next to the response's
-    /// `hints` and `recovery` arrays: the only error shape michi writes. A section that fails validation writes an
-    /// `error` key too, so a response holding both renders the `toon_validation_failed` error for the repeated key.
+    /// `hints` and `recovery` arrays: the only error shape michi writes. A response that fails validation (an invalid
+    /// section, two blocks writing one root key) writes the same object, with code `toon_validation_failed` or
+    /// `kv_validation_failed`. When it also holds this error, this error stays the error on every surface and the
+    /// failure becomes its last cause (`toon_validation_failed: …`), so neither hides the other.
     ///
     /// ```
     /// use michi_core::{AgentResponse, DomainError, ErrorCode, OutputFormat};
@@ -234,11 +248,12 @@ impl AgentResponse {
     }
 
     /// Append a status report as two sections: `tool` and `description` as a KV section named `status`, then the
-    /// `items[N]{key,value,health,reason}:` list. Its hints are appended to the response's hints.
+    /// `items[N]{key,value,health,reason}:` list. Its hints are appended to the response's hints, and a later
+    /// [`hints`](Self::hints) call keeps them.
     #[must_use]
     pub fn status(mut self, status: StatusResponse) -> Self {
         let [head, items] = status.sections();
-        self.hints.extend(status.hints);
+        self.hints.extend(status.hints.into_iter().map(|h| (h, HintSource::Part)));
         self.section(head).section(items)
     }
 
@@ -262,14 +277,25 @@ impl AgentResponse {
     /// Append a contextual hint.
     #[must_use]
     pub fn hint(mut self, hint: impl Into<String>) -> Self {
-        self.hints.push(Hint::new(hint));
+        self.hints.push((Hint::new(hint), HintSource::Caller));
         self
     }
 
-    /// Replace all contextual hints.
+    /// Replace the hints added with [`hint`](Self::hint) and `hints`. The hints a part brought keep their place: a
+    /// [`status`](Self::status) report's hints, the `showing N of M` line of a
+    /// [`truncated_section`](Self::truncated_section), and the error's hints. The new hints follow them.
+    ///
+    /// ```
+    /// use michi_core::{AgentResponse, Hint, StatusResponse};
+    ///
+    /// let status = StatusResponse::new("tool", "desc", vec![]).hints(vec![Hint::new("from the status")]);
+    /// let r = AgentResponse::new("t").hint("replaced").status(status).hints(vec![Hint::new("mine")]);
+    /// assert_eq!(r.render_hints_only(), "help[2]: from the status,mine");
+    /// ```
     #[must_use]
     pub fn hints(mut self, hints: Vec<Hint>) -> Self {
-        self.hints = hints;
+        self.hints.retain(|(_, source)| *source == HintSource::Part);
+        self.hints.extend(hints.into_iter().map(|h| (h, HintSource::Caller)));
         self
     }
 
@@ -320,19 +346,15 @@ impl AgentResponse {
         self
     }
 
-    /// The error's hints, the caller's hints, then michi's own truncation line when there is one: a single `help`
-    /// block.
-    fn hints_with<'a>(&'a self, extra: &[Hint]) -> std::borrow::Cow<'a, [Hint]> {
+    /// The error's hints, the response's hints in call order, then michi's own truncation line when there is one: a
+    /// single `help` block.
+    fn hints_with(&self, extra: &[Hint]) -> Vec<Hint> {
         let first = self.error.as_ref().map_or(&[][..], DomainError::hints);
-        if extra.is_empty() && first.is_empty() {
-            std::borrow::Cow::Borrowed(&self.hints)
-        } else {
-            let mut all = Vec::with_capacity(first.len() + self.hints.len() + extra.len());
-            all.extend(first.iter().cloned());
-            all.extend(self.hints.iter().cloned());
-            all.extend(extra.iter().cloned());
-            std::borrow::Cow::Owned(all)
-        }
+        let mut all = Vec::with_capacity(first.len() + self.hints.len() + extra.len());
+        all.extend(first.iter().cloned());
+        all.extend(self.hints.iter().map(|(h, _)| h.clone()));
+        all.extend(extra.iter().cloned());
+        all
     }
 
     /// The error's recovery hint, then the response's own: a single `recovery` block.
@@ -370,18 +392,14 @@ impl AgentResponse {
         }
     }
 
-    /// One section as an envelope part.
-    fn section_part<'a>(&self, s: &'a Section) -> (Part<'a>, bool, Option<Hint>) {
-        let total = s.shown_total();
+    /// One section as an envelope part, and michi's own cut-cell help line when it has one.
+    fn section_part<'a>(&self, s: &'a Section) -> (Part<'a>, Option<Hint>) {
+        let total = s.reported_total();
         let name = s.name();
         match s.body() {
             SectionBody::Toon { fields, rows } => {
                 match ToonDocument::validate_list(self.list_ref(name, fields, rows)) {
                     Ok(doc) => {
-                        // An empty list is the definitive empty state: `name: []` and `totalCount: 0`, so a reader sees
-                        // "zero results" and not a list that might have been dropped. A larger total the caller set
-                        // (everything was cut) stays as it is.
-                        let total = total.or_else(|| rows.is_empty().then_some(0));
                         let list = doc.render_list();
                         let cuts = list
                             .cuts
@@ -393,17 +411,17 @@ impl AgentResponse {
                                 removed,
                             })
                             .collect();
-                        (Part { name, text: list.text, cuts, total }, false, list.extra_hint.map(Hint::new))
+                        (Part::ok(name, list.text, cuts, total), list.extra_hint.map(Hint::new))
                     }
-                    Err(e) => (Part::failed(name, "toon_validation_failed", &e.to_string()), true, None),
+                    Err(e) => (Part::failed(name, "toon_validation_failed", e.to_string()), None),
                 }
             }
-            SectionBody::Kv(items) => kv_part(name, items, total),
+            SectionBody::Kv(items) => (kv_part(name, items, total), None),
             // One string value under the section's name, escaped like any other value: prose cannot start a line
             // of its own, so it cannot forge a `help[]` line or break the document.
             SectionBody::Text { text, .. } => {
                 let line = format!("{}: {}", crate::toon::escape_key(name), crate::toon::escape_value(text));
-                (Part { name, text: line, cuts: Vec::new(), total }, false, None)
+                (Part::ok(name, line, Vec::new(), total), None)
             }
         }
     }
@@ -428,12 +446,13 @@ impl AgentResponse {
     /// document's keys). The reserved names are claimed whether or not michi writes that block here, so validity
     /// never depends on the caller's data, and a success response cannot carry `error:` or `message:` lines.
     /// `failed[i]` says whether block `i` failed validation: its `error` and `message` lines are michi's own, so a
-    /// second error block (another failed block, or the response's [`DomainError`]) is a collision on `error`.
+    /// second failed block is a collision on `error`. The response's [`DomainError`] is not a block here: a failure
+    /// joins its causes instead of writing lines of its own (see [`body`](Self::body)).
     /// Provenance labels sit one level down (see [`crate::provenance::label_collision`]).
     fn root_collision(&self, failed: &[bool]) -> Option<String> {
         let blocks = self.blocks();
         let mut seen: std::collections::HashSet<&str> = crate::toon::RESERVED_ROOT_KEYS.into_iter().collect();
-        let mut error_block = self.error.is_some();
+        let mut error_block = false;
         for (s, failed) in blocks.iter().zip(failed) {
             if *failed {
                 if error_block {
@@ -462,18 +481,22 @@ impl AgentResponse {
     /// may appear once: when one block has them they stay inline after its list; when two or more do, each becomes
     /// one table with a leading `section` column, after the last block.
     ///
-    /// The flag is whether this response is an error: set by `as_error()` or by a block that failed validation.
-    /// Every output surface reads its error flag from here so text, JSON and MCP never disagree.
-    fn body(&self) -> (String, bool, Vec<Hint>) {
+    /// A validation failure of the response's own shape (a block that failed, or two blocks writing one root key) never
+    /// hides the caller's [`DomainError`]: when both exist the error block is the caller's, with the failure added as
+    /// its last cause (`toon_validation_failed: …`), and a failed block writes no lines of its own. Without a caller's
+    /// error the failure is the error block, as before. Either way [`Body::failure`] carries it to the JSON `error`
+    /// object, so text and JSON report the same error.
+    ///
+    /// The flag is whether this response is an error: `as_error()`, `error()` or a validation failure. Every output
+    /// surface reads its error flag from here so text, JSON and MCP never disagree.
+    fn body(&self) -> Body<'_> {
         let blocks = self.blocks();
         let mut parts: Vec<Part<'_>> = Vec::with_capacity(blocks.len());
-        let mut failed = false;
         let mut flags: Vec<bool> = Vec::with_capacity(blocks.len());
         let mut extras: Vec<Hint> = Vec::new();
         for s in blocks.iter() {
-            let (part, part_failed, extra) = self.section_part(s);
-            failed |= part_failed;
-            flags.push(part_failed);
+            let (part, extra) = self.section_part(s);
+            flags.push(part.failure.is_some());
             // One line per cut response is enough: every section's line says the same thing.
             if let Some(h) = extra {
                 if !extras.contains(&h) {
@@ -485,16 +508,32 @@ impl AgentResponse {
         // Two blocks writing one root key would be invalid TOON. Like any other bad input the whole body becomes the
         // visible validation error, so the caller sees it instead of a document a decoder rejects.
         if let Some(key) = self.root_collision(&flags) {
-            return (collision_body(&key), true, Vec::new());
+            let failure = Failure::collision(&key);
+            let error = self.error_block(Some(&failure));
+            let text = match &error {
+                Some(e) => {
+                    let mut out = String::new();
+                    crate::error::push_error_fields(&mut out, e);
+                    out
+                }
+                None => failure.body(),
+            };
+            return Body { text, is_error: true, extra: Vec::new(), error, failure: Some(failure) };
         }
+        let failure = parts.iter().find_map(|p| p.failure.clone());
+        let error = self.error_block(failure.as_ref());
         let cutters = parts.iter().filter(|p| !p.cuts.is_empty()).count();
         let totals = parts.iter().filter(|p| p.total.is_some()).count();
         let mut out = String::with_capacity(parts.iter().map(|p| p.text.len() + 24).sum::<usize>() + 256);
-        if let Some(e) = &self.error {
+        if let Some(e) = &error {
             crate::error::push_error_fields(&mut out, e);
         }
         for p in &parts {
-            join_block(&mut out, &p.text);
+            // With the caller's error leading, a failed block's failure is a cause of it: its own `error` lines would
+            // repeat the key.
+            if !(p.failure.is_some() && error.is_some()) {
+                join_block(&mut out, &p.text);
+            }
             if cutters == 1 {
                 crate::toon::table::push_truncated(&mut out, &p.cuts, false);
             }
@@ -521,7 +560,18 @@ impl AgentResponse {
         if let Some(p) = &self.provenance {
             join_block(&mut out, &crate::provenance::render_provenance_block(p));
         }
-        (out, failed || self.is_error || self.error.is_some(), extras)
+        let is_error = failure.is_some() || self.is_error || error.is_some();
+        Body { text: out, is_error, extra: extras, error, failure }
+    }
+
+    /// The error block the response renders: the caller's error, with `failure` added as its last cause when the
+    /// response's shape also failed validation, so neither hides the other. `None` without a caller's error.
+    fn error_block(&self, failure: Option<&Failure>) -> Option<std::borrow::Cow<'_, DomainError>> {
+        let e = self.error.as_ref()?;
+        Some(match failure {
+            Some(f) => std::borrow::Cow::Owned(e.clone().cause(f.cause())),
+            None => std::borrow::Cow::Borrowed(e),
+        })
     }
 
     /// Compose the text document: body, help block, recovery block. Each part is a TOON 4.4 document without a
@@ -548,13 +598,13 @@ impl AgentResponse {
     }
 
     fn render_text(&self) -> String {
-        let (body, _, extra) = self.body();
-        self.finish_text(body, &extra)
+        let body = self.body();
+        self.finish_text(body.text, &body.extra)
     }
 
-    /// Whether this response is an error: `as_error()` or `error()` was called, or a section's TOON rows or KV items
-    /// failed validation and its block is a `toon_validation_failed` or `kv_validation_failed` error block. Validates
-    /// without rendering.
+    /// Whether this response is an error: `as_error()` or `error()` was called, or the response failed validation (a
+    /// section's TOON rows or KV items, or two blocks writing one root key), which renders the
+    /// `toon_validation_failed` or `kv_validation_failed` error. Validates without rendering.
     #[must_use]
     pub fn is_error(&self) -> bool {
         if self.is_error || self.error.is_some() {
@@ -588,10 +638,11 @@ impl AgentResponse {
     /// Build the MCP `CallToolResult` for this response.
     #[must_use]
     pub fn to_call_tool_result(&self) -> crate::mcp::CallToolResult {
-        let (body, is_error, extra) = self.body();
-        let structured_content = self.json_from_body(&body, is_error, &extra);
+        let body = self.body();
+        let structured_content = self.json_from_body(&body);
+        let is_error = body.is_error;
         let mut content = vec![crate::mcp::ContentBlock {
-            text: self.finish_text(body, &extra),
+            text: self.finish_text(body.text, &body.extra),
             audience: vec![crate::audience::Audience::Assistant],
         }];
         if let Some(human) = &self.human_content {
@@ -608,21 +659,29 @@ impl AgentResponse {
     }
 
     fn render_json(&self) -> String {
-        let (body, is_error, extra) = self.body();
-        self.json_from_body(&body, is_error, &extra)
+        self.json_from_body(&self.body())
     }
 
-    fn json_from_body(&self, body: &str, is_error: bool, extra: &[Hint]) -> String {
-        let hints = self.hints_with(extra);
+    /// The JSON object. Its `error` is the error block the text leads with: the caller's error (with a validation
+    /// failure among its causes), or the validation failure alone, with the same four keys.
+    fn json_from_body(&self, body: &Body<'_>) -> String {
+        let hints = self.hints_with(&body.extra);
         let recovery = self.recovery_list();
         let capacity =
-            body.len() + hints.iter().map(|h| h.as_str().len() + 16).sum::<usize>() + recovery.len() * 64 + 64;
+            body.text.len() + hints.iter().map(|h| h.as_str().len() + 16).sum::<usize>() + recovery.len() * 64 + 64;
         let mut out = String::with_capacity(capacity + 128);
         out.push_str("{\"body\":");
-        json::push_str(&mut out, body);
-        if let Some(e) = &self.error {
-            out.push_str(",\"error\":");
-            crate::error::push_error_json(&mut out, e);
+        json::push_str(&mut out, &body.text);
+        match (&body.error, &body.failure) {
+            (Some(e), _) => {
+                out.push_str(",\"error\":");
+                crate::error::push_error_json(&mut out, e);
+            }
+            (None, Some(f)) => {
+                out.push_str(",\"error\":");
+                f.push_json(&mut out);
+            }
+            (None, None) => {}
         }
         if !self.sections.is_empty() {
             out.push_str(",\"sections\":");
@@ -641,29 +700,74 @@ impl AgentResponse {
         out.push_str(",\"recovery\":");
         json::push_array(&mut out, recovery.iter(), json::push_recovery);
         out.push_str(",\"isError\":");
-        json::push_bool(&mut out, is_error);
+        json::push_bool(&mut out, body.is_error);
         out.push('}');
         out
     }
 }
 
-/// The body that replaces rows or items that cannot form a valid document: `error: <code>` and the quoted message.
-fn validation_error_body(code: &str, message: &str) -> String {
-    let message = crate::toon::escape_value(message);
-    let mut out = String::with_capacity(17 + code.len() + message.len());
-    out.push_str("error: ");
-    out.push_str(code);
-    out.push_str("\nmessage: ");
-    out.push_str(&message);
-    out
+/// A rendered body and what every surface reads from it.
+struct Body<'a> {
+    /// The document before `help` and `recovery`.
+    text: String,
+    /// Whether the response is an error, on every surface.
+    is_error: bool,
+    /// michi's own help line for cut cells, after the response's hints.
+    extra: Vec<Hint>,
+    /// The error block the text leads with: the caller's error, a validation failure among its causes.
+    error: Option<std::borrow::Cow<'a, DomainError>>,
+    /// The response's validation failure, if its shape is invalid.
+    failure: Option<Failure>,
 }
 
-/// The body for two blocks that would write the same root key.
-fn collision_body(key: &str) -> String {
-    validation_error_body(
-        "toon_validation_failed",
-        &format!("duplicate root key '{key}': give every section and KV key a distinct name"),
-    )
+/// What is wrong with a response's own shape: michi's validation code and message.
+#[derive(Debug, Clone)]
+struct Failure {
+    /// `toon_validation_failed` or `kv_validation_failed`.
+    code: &'static str,
+    /// What failed, as the validator says it.
+    message: String,
+}
+
+impl Failure {
+    /// Two blocks that would write the same root key.
+    fn collision(key: &str) -> Self {
+        Self {
+            code: "toon_validation_failed",
+            message: format!("duplicate root key '{key}': give every section and KV key a distinct name"),
+        }
+    }
+
+    /// The error lines that replace rows or items that cannot form a valid document: `error: <code>` and the quoted
+    /// message.
+    fn body(&self) -> String {
+        let message = crate::toon::escape_value(&self.message);
+        let mut out = String::with_capacity(17 + self.code.len() + message.len());
+        out.push_str("error: ");
+        out.push_str(self.code);
+        out.push_str("\nmessage: ");
+        out.push_str(&message);
+        out
+    }
+
+    /// The cause it adds to the caller's error: `<code>: <message>`, the form the NAPI exports throw.
+    fn cause(&self) -> String {
+        let mut out = String::with_capacity(self.code.len() + 2 + self.message.len());
+        out.push_str(self.code);
+        out.push_str(": ");
+        out.push_str(&self.message);
+        out
+    }
+
+    /// The JSON `error` object, with the keys a [`DomainError`] writes: michi's code and message, no causes, and
+    /// `retryable: false`, since the same input fails the same way.
+    fn push_json(&self, out: &mut String) {
+        out.push_str("{\"code\":");
+        json::push_str(out, self.code);
+        out.push_str(",\"message\":");
+        json::push_str(out, &self.message);
+        out.push_str(",\"causes\":[],\"retryable\":false}");
+    }
 }
 
 /// One block of an envelope body before the root-level `truncated` and `totalCount` keys are placed.
@@ -676,23 +780,31 @@ struct Part<'a> {
     cuts: Vec<crate::toon::table::Cut<'a>>,
     /// The `totalCount` this block reports, when it reports one.
     total: Option<usize>,
+    /// Why the block failed validation; its `text` is then the error lines.
+    failure: Option<Failure>,
 }
 
 impl<'a> Part<'a> {
-    /// A block that failed validation: the error body replaces its content and it reports no count.
-    fn failed(name: &'a str, code: &str, message: &str) -> Self {
-        Self { name, text: validation_error_body(code, message), cuts: Vec::new(), total: None }
+    /// A block that rendered.
+    fn ok(name: &'a str, text: String, cuts: Vec<crate::toon::table::Cut<'a>>, total: Option<usize>) -> Self {
+        Self { name, text, cuts, total, failure: None }
+    }
+
+    /// A block that failed validation: the error lines replace its content and it reports no count.
+    fn failed(name: &'a str, code: &'static str, message: String) -> Self {
+        let failure = Failure { code, message };
+        Self { name, text: failure.body(), cuts: Vec::new(), total: None, failure: Some(failure) }
     }
 }
 
 /// A KV block as a part. No items still reports a larger total the caller set.
-fn kv_part<'a>(name: &'a str, items: &[KvItem], total: Option<usize>) -> (Part<'a>, bool, Option<Hint>) {
+fn kv_part<'a>(name: &'a str, items: &[KvItem], total: Option<usize>) -> Part<'a> {
     if items.is_empty() {
-        return (Part { name, text: String::new(), cuts: Vec::new(), total }, false, None);
+        return Part::ok(name, String::new(), Vec::new(), total);
     }
     match crate::kv::render_kv(items) {
-        Ok(text) => (Part { name, text, cuts: Vec::new(), total }, false, None),
-        Err(e) => (Part::failed(name, "kv_validation_failed", &e.to_string()), true, None),
+        Ok(text) => Part::ok(name, text, Vec::new(), total),
+        Err(e) => Part::failed(name, "kv_validation_failed", e.to_string()),
     }
 }
 
@@ -708,8 +820,8 @@ fn join_block(out: &mut String, block: &str) {
 }
 
 /// One section as the JSON object spec 07 section 5 describes. Rows carry the full values: the per-cell cap shapes
-/// the text render, and `structuredContent` is the typed copy of the same data. `returnedCount` and `truncated` are
-/// the section's own derived facts, the ones the text render uses.
+/// the text render, and `structuredContent` is the typed copy of the same data. `returnedCount`, `totalCount` and
+/// `truncated` are the section's own derived facts, the ones the text render uses.
 fn push_section_json(out: &mut String, s: &Section) {
     out.push_str("{\"name\":");
     json::push_str(out, s.name());
@@ -737,7 +849,7 @@ fn push_section_json(out: &mut String, s: &Section) {
     }
     out.push_str(",\"returnedCount\":");
     json::push_uint(out, s.count() as u64);
-    if let Some(total) = s.total() {
+    if let Some(total) = s.reported_total() {
         out.push_str(",\"totalCount\":");
         json::push_uint(out, total as u64);
     }

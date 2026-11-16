@@ -3,6 +3,7 @@
 use napi::bindgen_prelude::Unknown;
 use napi_derive::napi;
 
+use super::cost;
 use super::input::{self, Budget, List, MAX_FIELDS, MAX_HINTS, MAX_NAME_BYTES, MAX_ROWS, MAX_STEPS, MAX_STRING_BYTES};
 use super::num::JsCount;
 use super::outcome::{JsCompletedOp, JsFailedOp, JsPipelineStep, JsSkippedOp};
@@ -114,9 +115,10 @@ fn field_cost(f: &str) -> usize {
 /// What one row of a four-column outcome table (`partialSuccess`, `pipeline`, `status`) keeps beyond its strings.
 const OUTCOME_ROW: usize = ROW_OVERHEAD + 4 * std::mem::size_of::<crate::toon::Value>();
 
-/// What a named outcome section costs before its rows: its name and the section itself.
+/// What a named outcome section costs before its rows: its name, which is written in its header and again in the
+/// `totalCount` table, and the section itself.
 fn outcome_section_cost(name: &str) -> usize {
-    field_cost(name).saturating_add(SECTION_OVERHEAD)
+    field_cost(name).saturating_add(name.len()).saturating_add(SECTION_OVERHEAD)
 }
 
 /// The sum of `costs`, saturating.
@@ -133,9 +135,13 @@ fn sum(costs: impl IntoIterator<Item = usize>) -> usize {
 /// bytes back first. Every `items` and `kvItems` call adds a section, so their bytes add up; each section is also
 /// charged the type name's bytes plus 64, so empty calls are not free.
 ///
-/// The total bounds the output too: a render is at most 19 times the bytes held (control characters, which escape to
-/// six bytes in the text and again in the JSON, are the worst case), under V8's string limit; see
-/// [`input::MAX_INPUT_BYTES`].
+/// The total bounds the output too: a render is at most 19 times the bytes held, plus 4 KiB, on every surface (text,
+/// JSON, `toCallToolResult`), under V8's string limit; see [`input::MAX_INPUT_BYTES`]. Control characters, which
+/// escape to six bytes in the text and again in the JSON, are the worst case for a string. A name can be written
+/// more often than a string, so each is charged for every place it can be written: a field name, and the type name
+/// or an outcome section's name, once for every cell of the table that is longer than 200 chars (a `truncated` row
+/// repeats them for every cut cell), a section's name twice (its header and the `totalCount` table), and each hint
+/// and recovery hint a few bytes for the row or object that holds it.
 ///
 /// Both methods name their section for the type name, and a section is a root key in the rendered document. Two
 /// `items` calls, or a `kvItems` key equal to the type name, therefore render the `toon_validation_failed` error
@@ -158,6 +164,12 @@ impl JsAgentResponse {
     /// What every section costs before its own strings: a copy of the type name, which names it, plus a fixed
     /// allowance for the section itself. Without it an empty `items` or `kvItems` call would be free, and a loop of
     /// them would grow the response past the cap.
+    ///
+    /// A list writes its name in its header and again in the `totalCount` table, a KV section only in the table, and
+    /// each also writes it once in the JSON `sections`. That is two writes of the name per section, and the name is
+    /// charged twice: here, and once when the response is built (`HeldBytes::type_name`). Only one list can carry the
+    /// type name, since a second is a root-key collision that replaces the body with a short error, and every KV
+    /// section writes it at most once in the body.
     fn section_cost(&self) -> usize {
         self.name.len().saturating_add(SECTION_OVERHEAD)
     }
@@ -182,6 +194,7 @@ impl JsAgentResponse {
             .iter()
             .map(|f| field_cost(f.as_str()))
             .chain(rows.iter().map(|row| row.iter().map(cell_cost).fold(ROW_OVERHEAD, usize::saturating_add)))
+            .chain([cost::table_repeats(&rows, &fields, self.name.len())])
             .fold(self.section_cost(), usize::saturating_add);
         self.held.check_replace(0, bytes)?;
         let converted: Vec<Vec<crate::toon::Value>> = rows
@@ -268,7 +281,15 @@ impl JsAgentResponse {
                 o.operation.len() + o.reason.len() + recovery
             }))
             .chain(skipped.iter().map(|o| o.operation.len() + o.reason.as_ref().map_or(0, String::len))));
-        let bytes = sum([outcome_section_cost(&name), strings, rows.saturating_mul(OUTCOME_ROW)]);
+        let cut = cost::cut_count(
+            completed
+                .iter()
+                .map(|o| o.operation.as_str())
+                .chain(failed.iter().flat_map(|o| [o.operation.as_str(), o.reason.as_str()]))
+                .chain(skipped.iter().flat_map(|o| [o.operation.as_str(), o.reason.as_deref().unwrap_or("")])),
+        );
+        let repeats = cost::fixed_table_repeats(cut, name.len());
+        let bytes = sum([outcome_section_cost(&name), strings, rows.saturating_mul(OUTCOME_ROW), repeats]);
         let outcome = super::outcome::build_partial_success(completed, failed, skipped)?;
         self.add_outcome(bytes, |b| b.partial_success(name, outcome))
     }
@@ -276,7 +297,9 @@ impl JsAgentResponse {
     /// Append the pipeline table; see [`Self::pipeline`].
     fn add_pipeline(&mut self, name: String, steps: Vec<JsPipelineStep>) -> napi::Result<()> {
         let strings = sum(steps.iter().map(|s| s.id.len() + s.name.len()));
-        let bytes = sum([outcome_section_cost(&name), strings, steps.len().saturating_mul(OUTCOME_ROW)]);
+        let cut = cost::cut_count(steps.iter().flat_map(|s| [s.id.as_str(), s.name.as_str()]));
+        let repeats = cost::fixed_table_repeats(cut, name.len());
+        let bytes = sum([outcome_section_cost(&name), strings, steps.len().saturating_mul(OUTCOME_ROW), repeats]);
         let pipeline = super::outcome::build_pipeline(steps)?;
         self.add_outcome(bytes, |b| b.pipeline(name, pipeline))
     }
@@ -286,7 +309,11 @@ impl JsAgentResponse {
         let strings =
             sum(items.iter().map(|i| i.key.len() + cell_cost(&i.value) + i.health.as_ref().map_or(0, String::len)));
         let head = sum([tool_name.len(), description.len(), 2 * SECTION_OVERHEAD]);
-        let bytes = sum([head, strings, items.len().saturating_mul(OUTCOME_ROW)]);
+        let cut = cost::cut_count(items.iter().flat_map(|i| {
+            [i.key.as_str(), i.value.str_val.as_deref().unwrap_or(""), i.health.as_deref().unwrap_or("")]
+        }));
+        let repeats = cost::fixed_table_repeats(cut, "items".len());
+        let bytes = sum([head, strings, items.len().saturating_mul(OUTCOME_ROW), repeats]);
         let status = super::toon::build_status(tool_name, description, items)?;
         self.add_outcome(bytes, |b| b.status(status))
     }
@@ -496,7 +523,7 @@ impl JsAgentResponse {
             return Err(napi::Error::from_reason(format!("cumulative hint count exceeds maximum of {MAX_HINTS}")));
         }
         input::check_bytes("hint", &hint, MAX_STRING_BYTES)?;
-        let bytes = hint.len();
+        let bytes = hint.len().saturating_add(cost::HINT_OVERHEAD);
         self.held.check_replace(0, bytes)?;
         let b = self.take()?;
         self.inner = Some(b.hint(hint));
@@ -522,7 +549,7 @@ impl JsAgentResponse {
         if let Some(reason) = &reason {
             input::check_bytes("reason", reason, MAX_STRING_BYTES)?;
         }
-        let bytes = tool.len().saturating_add(reason.as_ref().map_or(0, String::len));
+        let bytes = sum([tool.len(), reason.as_ref().map_or(0, String::len), cost::RECOVERY_OVERHEAD]);
         self.held.check_replace(0, bytes)?;
         let b = self.take()?;
         let mut hint = crate::recovery::RecoveryHint::new(tool);
@@ -1358,3 +1385,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod output_bound;
