@@ -20,7 +20,7 @@ struct Input {
 
 /// Wraps `secret` in one of the shapes `redact_common_shapes` covers.
 fn plant(shape: u8, secret: &str, pre: &str, post: &str) -> String {
-    match shape % 8 {
+    match shape % 14 {
         0 => format!("{pre}https://bot:{secret}@host/p{post}"),
         1 => format!(r"{pre}https:\/\/bot:{secret}@host\/p{post}"),
         2 => format!("{pre}https%3A%2F%2Fbot%3A{secret}%40host{post}"),
@@ -28,6 +28,13 @@ fn plant(shape: u8, secret: &str, pre: &str, post: &str) -> String {
         4 => format!("{pre}postgres://u:\"{secret}@host/db{post}"),
         5 => format!("{pre}ghp_{secret}{post}"),
         6 => format!("{pre}Bearer {secret}{post}"),
+        7 => format!("{pre}authorization=Basic {secret}{post}"),
+        8 => format!("{pre}Authorization: Bearer {secret}{post}"),
+        9 => format!("{pre}token=\"{secret}\"{post}"),
+        10 => format!("{pre}{{\"password\": \"{secret}\"}}{post}"),
+        11 => format!("{pre}a=1&token='{secret}'{post}"),
+        12 => format!("{pre}Cookie: sid={secret}; a=b{post}"),
+        13 => format!("{pre}X-Api-Key: {secret}{post}"),
         _ => format!("{pre}?api_key={secret}{post}"),
     }
 }
@@ -39,16 +46,17 @@ fuzz_target!(|input: Input| {
     let once = redact_url_userinfo(&input.text);
     assert_eq!(redact_url_userinfo(&once), once, "userinfo not idempotent for {:?}", input.text);
 
-    // Known secrets. A secret that occurs inside the marker (`RED`, `[`, `D]`) matches the marker on a second pass, so
-    // such secrets are not used, and idempotence is only claimed for secrets with no bracket (one could straddle the
-    // marker). Alphanumeric secrets cannot straddle the brackets, so for those "never survives" is exact.
-    let secrets: Vec<&str> = input.secrets.iter().map(String::as_str).filter(|s| !REDACTED.contains(s)).collect();
+    // Known secrets. The marker in the text is copied through, so idempotence holds for every secret without a
+    // bracket (one starting with `[` could match across a marker's edge). A secret that occurs inside the marker
+    // (`RED`, `D]`) is legitimately left alone where it sits in the marker, so "never survives" is only claimed
+    // for alphanumeric secrets that are not part of the marker.
+    let secrets: Vec<&str> = input.secrets.iter().map(String::as_str).collect();
     let once = redact_secrets(&input.text, &secrets);
-    if secrets.iter().all(|s| !s.contains(['[', ']'])) {
+    if secrets.iter().all(|s| !s.contains('[')) {
         assert_eq!(redact_secrets(&once, &secrets), once, "redact_secrets not idempotent");
     }
     for s in &secrets {
-        if s.chars().all(|c| c.is_ascii_alphanumeric()) {
+        if s.chars().all(|c| c.is_ascii_alphanumeric()) && !REDACTED.contains(s) {
             assert!(!once.contains(s), "known secret {s:?} survived in {once:?}");
         }
     }

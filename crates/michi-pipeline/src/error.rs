@@ -285,7 +285,7 @@ pub(crate) fn millis(d: Duration) -> u64 {
 const MAX_DETAIL_BYTES: usize = 512;
 
 /// Step-supplied text (an HTTP body, a `failed()` message, a panic payload) made fit for a `DomainError` cause:
-/// redacted with [`michi_core::redact::redact_common_shapes`], then cut to [`MAX_DETAIL_BYTES`] on a char boundary.
+/// redacted with [`michi_core::redact::redact_common_shapes`], then cut on a char boundary so the result, the `…` marker included, is at most [`MAX_DETAIL_BYTES`] bytes.
 /// Redaction comes first so a cut cannot leave half a secret that no longer matches a shape. `None` for blank text.
 fn detail(raw: &str) -> Option<String> {
     let mut text = michi_core::redact::redact_common_shapes(raw);
@@ -293,7 +293,8 @@ fn detail(raw: &str) -> Option<String> {
         return None;
     }
     if text.len() > MAX_DETAIL_BYTES {
-        text.truncate(text.floor_char_boundary(MAX_DETAIL_BYTES));
+        // The marker counts against the cap, so the result is at most `MAX_DETAIL_BYTES` bytes in all.
+        text.truncate(text.floor_char_boundary(MAX_DETAIL_BYTES - '…'.len_utf8()));
         text.push('…');
     }
     Some(text)
@@ -679,10 +680,24 @@ mod tests {
         for err in every_step_text_variant(&long) {
             let d: michi_core::DomainError = err.into();
             let cause = d.causes().first().expect("a long text still leaves a cause");
-            assert!(cause.len() <= MAX_DETAIL_BYTES + '…'.len_utf8(), "{} bytes", cause.len());
+            assert!(cause.len() <= MAX_DETAIL_BYTES, "{} bytes", cause.len());
             assert!(cause.ends_with('…'));
             assert!(d.message().len() < 200, "the message stays short: {}", d.message().len());
         }
+    }
+
+    #[test]
+    fn the_cap_is_exact_and_counts_the_marker() {
+        // ASCII fills the cap to the byte; two-byte chars leave at most a byte spare (a char never splits).
+        for (text, min) in [("a".repeat(2_000), MAX_DETAIL_BYTES), ("é".repeat(2_000), MAX_DETAIL_BYTES - 1)] {
+            let cause = detail(&text).expect("text");
+            assert!((min..=MAX_DETAIL_BYTES).contains(&cause.len()), "{} bytes", cause.len());
+        }
+        // At the cap exactly, nothing is cut and no marker is added.
+        let fits = "a".repeat(MAX_DETAIL_BYTES);
+        assert_eq!(detail(&fits).as_deref(), Some(fits.as_str()));
+        let over = "a".repeat(MAX_DETAIL_BYTES + 1);
+        assert_eq!(detail(&over).expect("text").len(), MAX_DETAIL_BYTES);
     }
 
     #[test]

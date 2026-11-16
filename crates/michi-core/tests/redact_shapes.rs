@@ -85,10 +85,84 @@ fn from_error_redacts_a_query_token_in_the_top_level_display() {
     );
 }
 
+/// Shapes that leaked in review or that a hostile corpus produced: each carries `SECRETVALUE` and none may keep it.
+const HOSTILE: &[&str] = &[
+    // Scheme words: the credential after the scheme is the secret.
+    "authorization=Basic SECRETVALUE",
+    "Authorization: Basic SECRETVALUE",
+    "authorization: bearer SECRETVALUE",
+    "Proxy-Authorization: Token SECRETVALUE",
+    "auth=Digest SECRETVALUE",
+    "Authorization:   Basic   SECRETVALUE and more",
+    // Quoted values, escaped quotes inside.
+    "token=\"SECRETVALUE\"",
+    "token='SECRETVALUE'",
+    "password=\"SEC\\\"RETVALUE\"",
+    "api_key = \"SECRETVALUE\" next",
+    // JSON, plain and escaped.
+    r#"{"password": "SECRETVALUE"}"#,
+    r#"{"a":1,"client_secret":"SECRETVALUE","b":2}"#,
+    r#"{\"token\":\"SECRETVALUE\"}"#,
+    r#"{"token":SECRETVALUE}"#,
+    // Form bodies and query strings.
+    "a=1&token=SECRETVALUE&b=2",
+    "a=1&TOKEN=SECRETVALUE",
+    "x=1&Access-Token=SECRETVALUE",
+    // Headers.
+    "Cookie: sid=SECRETVALUE; theme=dark",
+    "Set-Cookie: session=SECRETVALUE; Path=/; HttpOnly",
+    "X-Api-Key: SECRETVALUE",
+    "x-api-key:SECRETVALUE",
+    "GET / HTTP/1.1\nHost: h\nAuthorization: Bearer SECRETVALUE\nAccept: */*",
+    // URLs inside quotes.
+    r#"{"url":"https://bot:SECRETVALUE@host/x"}"#,
+    "see 'postgres://u:SECRETVALUE@db/x' now",
+    // Unicode lookalike separators.
+    "token\u{FF1D}SECRETVALUE",
+    "password\u{FF1A} SECRETVALUE",
+    // Very long neighbours.
+    "{LONG}token=SECRETVALUE{LONG}",
+];
+
+#[test]
+fn the_hostile_corpus_does_not_leak_and_is_stable() {
+    let long = "a=b&".repeat(5_000);
+    for case in HOSTILE {
+        let text = case.replace("{LONG}", &long);
+        let out = redact_common_shapes(&text);
+        assert!(!out.contains("SECRETVALUE"), "leaked: {case:?} -> {out:?}");
+        assert_eq!(redact_common_shapes(&out), out, "not stable: {case:?}");
+    }
+}
+
+#[test]
+fn a_scheme_word_is_kept_and_its_credential_is_redacted() {
+    assert_eq!(
+        redact_common_shapes("authorization=Basic dXNlcjpwYXNz failed"),
+        format!("authorization=Basic {REDACTED} failed")
+    );
+    assert_eq!(redact_common_shapes("Authorization: Bearer abc"), format!("Authorization: Bearer {REDACTED}"));
+}
+
+#[test]
+fn a_quoted_value_keeps_its_quotes() {
+    assert_eq!(redact_common_shapes("token=\"abc\" x"), format!("token=\"{REDACTED}\" x"));
+    assert_eq!(redact_common_shapes("token='abc'"), format!("token='{REDACTED}'"));
+    assert_eq!(redact_common_shapes("token=\"\""), "token=\"\"");
+}
+
+#[test]
+fn unrelated_colons_and_pairs_are_kept() {
+    for s in ["error: not found at 10:30", "status: 500", "https://host:8080/p", "name=\"bob\" id: 7", "monkey: banana"]
+    {
+        assert_eq!(redact_common_shapes(s), s);
+    }
+}
+
 proptest! {
     /// Redacting twice equals redacting once, for any text and for texts built from the leaky shapes.
     #[test]
-    fn redaction_is_idempotent(text in "(\\PC|https?://|:\\\\/\\\\/|%3A%2F%2F|%40|@|\"|\\?|&|token=|sig=|Bearer |ghp_|[a-zA-Z0-9]{0,24}){0,12}") {
+    fn redaction_is_idempotent(text in "(\\PC|https?://|:\\\\/\\\\/|%3A%2F%2F|%40|@|\"|\\?|&|token=|sig=|Bearer |Basic |authorization: |Cookie: |password\":\"|token=\"|'|\\\\|:|=|ghp_|[a-zA-Z0-9]{0,24}){0,12}") {
         let once = redact_common_shapes(&text);
         prop_assert_eq!(redact_common_shapes(&once), once);
     }

@@ -8,14 +8,18 @@
 //!   text, including JSON-escaped (`https:\/\/`) and percent-encoded (`https%3A%2F%2F`) URLs.
 //! - [`redact_common_shapes`](crate::redact::redact_common_shapes) is the safety net
 //!   [`DomainError::from_error`](crate::DomainError::from_error) applies: URL userinfo, the values of query-string and
-//!   `key=value` pairs whose key names a secret (`token`, `api_key`, `password`, ...), and a few well-known token
-//!   shapes (`ghp_`, `github_pat_`, `npm_`, `pypi-`, `Bearer`).
+//!   `key=value` pairs and `Key: value` headers whose key names a secret (`token`, `api_key`, `password`,
+//!   `Authorization`, `Cookie`, ...), quoted or not, and a few well-known token shapes (`ghp_`, `github_pat_`, `npm_`,
+//!   `pypi-`, `Bearer`).
 //!
-//! **What this does not cover.** A secret that is not a known value, not in a URL, not in a `key=value` pair with a
-//! telling key and not one of the listed token shapes passes through: a JSON field such as `"password": "x"`, a
-//! password in a connection string without `://`, a cloud key with another prefix, an encoded or split value. These
-//! helpers are a second line of defense after keeping secrets out of messages in the first place. "Redacted" here
-//! means "we looked for these shapes", never "safe to show".
+//! **What this does not cover.** A secret that is not a known value, not in a URL, not in a pair or header with a
+//! telling key and not one of the listed token shapes passes through. Known gaps: a secret with a space in it
+//! (`token=a b` loses only `a`), a value on the line after its key (YAML `password:` then an indented value), a
+//! command-line flag (`--password hunter2`), an encoded separator (`token%3Dvalue`), a key spelled with lookalike
+//! letters or zero-width characters, a bare JWT, cloud key (`AKIA...`) or PEM private key block, a connection string
+//! without `://`, a session id under a key that does not say so, and an encoded or split value. These helpers are a
+//! second line of defense after keeping secrets out of messages in the first place. "Redacted" here means "we looked
+//! for these shapes", never "safe to show".
 
 /// What a redacted value is replaced with.
 pub const REDACTED: &str = "[REDACTED]";
@@ -23,8 +27,9 @@ pub const REDACTED: &str = "[REDACTED]";
 /// Replaces every occurrence of each secret in `text` with [`REDACTED`].
 ///
 /// Empty secrets are ignored. When one secret contains another, the longer one wins, so no part of it is left behind.
-/// The text is scanned once, so the marker itself is never searched again and the result is stable if you redact it a
-/// second time, unless a secret can match part of the marker (`RED`, `[`): then the second pass redacts the marker.
+/// The text is scanned once and a [`REDACTED`] already in it is copied through, so no secret is ever matched inside
+/// the marker (`RED` does not turn `[REDACTED]` into `[[REDACTED]ACTED]`). Redacting the result a second time therefore
+/// changes nothing, provided no secret contains `[`: a secret that starts with `[` could match across a marker's edge.
 ///
 /// ```
 /// use michi_core::redact::redact_secrets;
@@ -41,7 +46,10 @@ pub fn redact_secrets(text: &str, secrets: &[&str]) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(c) = rest.chars().next() {
-        if let Some(s) = secrets.iter().find(|s| rest.starts_with(**s)) {
+        if rest.starts_with(REDACTED) {
+            out.push_str(REDACTED);
+            rest = &rest[REDACTED.len()..];
+        } else if let Some(s) = secrets.iter().find(|s| rest.starts_with(**s)) {
             out.push_str(REDACTED);
             rest = &rest[s.len()..];
         } else {
@@ -165,10 +173,17 @@ fn is_url_end(c: char) -> bool {
 /// Covered:
 ///
 /// - Everything [`redact_url_userinfo`] covers.
-/// - A value after `key=` (query string, form body, log line) when the key, lowercased with `-` read as `_`, is `key`,
-///   `sig`, `auth`, `pwd`, ends in `_key`, `_sig` or `_auth`, starts with `auth_`, or contains `token`, `secret`,
-///   `passw`, `signature`, `apikey`, `api_key`, `credential` or `authoriz`. The value runs to whitespace, `&`, a
-///   quote, a backtick, `)`, `<` or `>`. Other keys (`page`, `status_code`, `monkey`) are kept.
+/// - A value after `key=` or `key:` (query string, form body, log line, HTTP header, JSON or Python-repr field; also
+///   the fullwidth `＝` and `：`, blanks around the separator, and a quoted or JSON-escaped key) when the key,
+///   lowercased with `-` read as `_`, is `key`, `sig`, `auth`, `pwd`, ends in `_key`, `_sig` or `_auth`, starts with
+///   `auth_`, or contains `token`, `secret`, `passw`, `signature`, `apikey`, `api_key`, `credential`, `authoriz` or
+///   `cookie`. Other keys (`page`, `status_code`, `monkey`) are kept.
+/// - How far that value runs. A quoted value (`"`, `'` or the JSON-escaped `\"`) runs to its closing quote, honoring
+///   `\` escapes and stopping at a newline if unclosed; the quotes stay. After a scheme word (`Basic`, `Bearer`,
+///   `Token`, `Negotiate`, `NTLM`, `Bot`, `Digest`, either case) the credential is redacted and the word kept
+///   (`Authorization: Basic [REDACTED]`); `Digest` takes the rest of the line, and so does a cookie key. Otherwise the
+///   value runs to whitespace, `&`, a quote, a backtick, `)`, `<` or `>`. `scheme://` after a `:` is a URL, not a
+///   value.
 /// - `ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`, `github_pat_`, `npm_` and `pypi-` followed by at least 16 token
 ///   characters, and `Bearer ` (either case) followed by at least 16. A short lookalike (`pypi-mirror`) is kept.
 ///
@@ -253,8 +268,8 @@ fn is_value_end(c: char) -> bool {
 
 fn is_secret_key(key: &str) -> bool {
     let key = key.to_ascii_lowercase().replace('-', "_");
-    const CONTAINS: [&str; 8] =
-        ["token", "secret", "passw", "signature", "apikey", "api_key", "credential", "authoriz"];
+    const CONTAINS: [&str; 9] =
+        ["token", "secret", "passw", "signature", "apikey", "api_key", "credential", "authoriz", "cookie"];
     CONTAINS.iter().any(|w| key.contains(w))
         || matches!(key.as_str(), "key" | "sig" | "auth" | "pwd")
         || key.ends_with("_key")
@@ -263,28 +278,109 @@ fn is_secret_key(key: &str) -> bool {
         || key.starts_with("auth_")
 }
 
+/// Separators between a key and its value: `=`, `:` (headers, JSON) and the fullwidth forms of both.
+const PAIR_SEPARATORS: [char; 4] = ['=', ':', '\u{FF1D}', '\u{FF1A}'];
+
+/// Authentication scheme words: the credential after one is the secret, the word is kept.
+/// `digest` carries several comma-separated parameters, so its credential is the rest of the line.
+const AUTH_SCHEMES: [&str; 7] = ["basic", "bearer", "token", "negotiate", "ntlm", "bot", "digest"];
+
+/// Offsets (relative to `rest`, the text after a separator and its blanks) of the part of a value to replace, or `None`
+/// when there is nothing to replace. Text before the start (an opening quote, a scheme word) and after the end (a
+/// closing quote) is kept. `line_value` takes the rest of the line (a cookie, whose value holds `;` and spaces).
+fn value_span(rest: &str, line_value: bool) -> Option<(usize, usize)> {
+    // Each scan below stops at the value's own end (or a newline) and the caller resumes after it, so a long text of
+    // `key="` pairs costs one pass, not one pass per pair.
+    let is_eol = |c: char| matches!(c, '\n' | '\r');
+    // An escaped quote (`\"`, JSON inside a JSON string) closes at the next `\"`; a newline ends an unclosed one.
+    if let Some(inner) = rest.strip_prefix("\\\"") {
+        let mut end = inner.len();
+        let mut prev_backslash = false;
+        for (i, c) in inner.char_indices() {
+            if is_eol(c) {
+                end = i;
+                break;
+            }
+            if prev_backslash && c == '"' {
+                end = i - 1;
+                break;
+            }
+            prev_backslash = c == '\\';
+        }
+        return (end > 0).then_some((2, 2 + end));
+    }
+    if let Some(q) = rest.chars().next().filter(|c| matches!(c, '"' | '\'')) {
+        let inner = &rest[1..];
+        let mut end = inner.len();
+        let mut chars = inner.char_indices();
+        while let Some((i, c)) = chars.next() {
+            if is_eol(c) || c == q {
+                end = i;
+                break;
+            }
+            if c == '\\' {
+                chars.next();
+            }
+        }
+        return (end > 0).then_some((1, 1 + end));
+    }
+    if line_value {
+        let eol = rest.find(is_eol).unwrap_or(rest.len());
+        return (eol > 0).then_some((0, eol));
+    }
+    for scheme in AUTH_SCHEMES {
+        let Some(head) = rest.get(..scheme.len()).filter(|h| h.eq_ignore_ascii_case(scheme)) else { continue };
+        let after = &rest[head.len()..];
+        let blanks = after.len() - after.trim_start_matches([' ', '\t']).len();
+        let credential = &after[blanks..];
+        let len = if scheme == "digest" {
+            credential.find(['\n', '\r']).unwrap_or(credential.len())
+        } else {
+            credential.find(is_value_end).unwrap_or(credential.len())
+        };
+        if blanks > 0 && len > 0 {
+            let start = head.len() + blanks;
+            return Some((start, start + len));
+        }
+    }
+    let len = rest.find(is_value_end).unwrap_or(rest.len());
+    (len > 0).then_some((0, len))
+}
+
 fn redact_secret_pairs(text: &str) -> String {
     let bytes = text.as_bytes();
     let mut out = String::with_capacity(text.len());
     let mut pos = 0;
     let mut search = 0;
-    while let Some(i) = text[search..].find('=').map(|i| search + i) {
-        search = i + 1;
-        let mut key_start = i;
+    while let Some((i, sep)) =
+        text[search..].char_indices().find(|(_, c)| PAIR_SEPARATORS.contains(c)).map(|(i, c)| (search + i, c))
+    {
+        search = i + sep.len_utf8();
+        // The key may be quoted (`"token":` or, JSON-escaped, `\"token\":`): look before the closing quote.
+        let before = text[..i].trim_end_matches([' ', '\t']);
+        let key_end =
+            before.len() - if before.ends_with("\\\"") { 2 } else { usize::from(before.ends_with(['"', '\''])) };
+        if key_end < pos {
+            continue;
+        }
+        let mut key_start = key_end;
         while key_start > pos && is_key_char(bytes[key_start - 1]) {
             key_start -= 1;
         }
-        if key_start == i || !is_secret_key(&text[key_start..i]) {
+        if key_start == key_end || !is_secret_key(&text[key_start..key_end]) {
             continue;
         }
-        let value = &text[i + 1..];
-        let len = value.find(is_value_end).unwrap_or(value.len());
-        if len == 0 {
+        let after = &text[search..];
+        // `scheme://` is a URL, not a header: the URL pass owns it.
+        if sep == ':' && (after.starts_with("//") || after.starts_with("\\/")) {
             continue;
         }
-        out.push_str(&text[pos..=i]);
+        let blanks = after.len() - after.trim_start_matches([' ', '\t']).len();
+        let line_value = text[key_start..key_end].to_ascii_lowercase().contains("cookie");
+        let Some((from, to)) = value_span(&after[blanks..], line_value) else { continue };
+        out.push_str(&text[pos..search + blanks + from]);
         out.push_str(REDACTED);
-        pos = i + 1 + len;
+        pos = search + blanks + to;
         search = pos;
     }
     out.push_str(&text[pos..]);

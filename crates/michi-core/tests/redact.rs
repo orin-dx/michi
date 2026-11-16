@@ -117,3 +117,13 @@ fn from_error_with_causes_redacts_url_userinfo_in_every_cause() {
     let e = DomainError::from_error_with_causes(ErrorCode::ExternalFailure, &Outer(Inner("boom".into())));
     assert_eq!(e.causes(), [format!("fetch https://{REDACTED}@h/x: boom")]);
 }
+
+#[test]
+fn redacting_again_is_a_no_op_even_when_a_secret_matches_part_of_the_marker() {
+    for secrets in [&["RED"][..], &["ACTED"], &["D"], &["x", "RED"]] {
+        let once = redact_secrets("a x RED b", secrets);
+        assert_eq!(redact_secrets(&once, secrets), once, "{secrets:?}");
+    }
+    // The marker already in the text is kept, not re-redacted.
+    assert_eq!(redact_secrets("[REDACTED] RED", &["RED", "ED"]), "[REDACTED] [REDACTED]");
+}
