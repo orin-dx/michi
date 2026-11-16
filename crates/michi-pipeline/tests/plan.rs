@@ -27,8 +27,8 @@ fn every_violation_is_reported_at_once() {
     let text = err.to_string();
     assert!(text.starts_with("invalid plan: duplicate step id a; "), "{text}");
     let domain: michi_core::DomainError = err.into();
-    assert_eq!(domain.code, michi_core::ErrorCode::InvalidInput);
-    assert!(!domain.retryable);
+    assert_eq!(domain.code(), michi_core::ErrorCode::InvalidInput);
+    assert!(!domain.is_retryable());
 }
 
 #[test]

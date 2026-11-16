@@ -483,7 +483,11 @@ impl AgentResponse {
                 audience: vec![crate::audience::Audience::User],
             });
         }
-        crate::mcp::CallToolResult { content, is_error, structured_content }
+        crate::mcp::CallToolResult::new(
+            content,
+            is_error,
+            Some(crate::mcp::JsonObject::from_trusted(structured_content)),
+        )
     }
 
     fn render_json(&self) -> String {
@@ -643,7 +647,10 @@ mod tests {
             let result = r.to_call_tool_result();
             assert!(result.is_error, "{message}");
             assert_eq!(result.content[0].text, text);
-            assert!(result.structured_content.contains("\"isError\":true"), "{message}");
+            assert!(
+                result.structured_content.map(String::from).unwrap_or_default().contains("\"isError\":true"),
+                "{message}"
+            );
         }
     }
 
@@ -758,7 +765,10 @@ mod tests {
         for (r, extra) in cases {
             let mut want: Vec<&str> = base.iter().copied().chain(extra).collect();
             want.sort_unstable();
-            for json in [r.render(OutputFormat::Json), r.to_call_tool_result().structured_content] {
+            for json in [
+                r.render(OutputFormat::Json),
+                r.to_call_tool_result().structured_content.map(String::from).unwrap_or_default(),
+            ] {
                 let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
                 let obj = parsed.as_object().expect("top-level object");
                 let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
@@ -903,7 +913,10 @@ mod tests {
         let result = r.to_call_tool_result();
         assert!(result.is_error);
         assert!(!result.content.is_empty(), "content must not be empty");
-        assert!(result.structured_content.starts_with('{'), "structured_content must be JSON object");
+        assert!(
+            result.structured_content.map(String::from).unwrap_or_default().starts_with('{'),
+            "structured_content must be JSON object"
+        );
     }
 
     // AC-023: the test above only checks !content.is_empty(), which would
@@ -944,12 +957,12 @@ mod tests {
     fn ac026_call_tool_result_structured_content_and_is_error_match_exactly() {
         let r = AgentResponse::new("items").items(vec![vec![Value::from("ok")]], &["name"]);
         let result = r.to_call_tool_result();
-        assert_eq!(result.structured_content, r.render(OutputFormat::Json));
+        assert_eq!(result.structured_content.map(String::from).unwrap_or_default(), r.render(OutputFormat::Json));
         assert!(!result.is_error);
 
         let err = r.as_error();
         let err_result = err.to_call_tool_result();
-        assert_eq!(err_result.structured_content, err.render(OutputFormat::Json));
+        assert_eq!(err_result.structured_content.map(String::from).unwrap_or_default(), err.render(OutputFormat::Json));
         assert!(err_result.is_error);
     }
 

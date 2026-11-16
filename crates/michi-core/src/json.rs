@@ -1,6 +1,6 @@
 //! The hand-built JSON writers behind every structured companion (`AgentResponse`'s JSON and `structuredContent`,
-//! `DomainError::render_json`, the `params` cell of a recovery table). One copy of each writer, so a shape fixed here
-//! is fixed everywhere. Hand-built so the default build needs no `serde_json`; the `serde` feature's derives are
+//! `DomainError`'s `render(OutputFormat::Json)`, the `params` cell of a recovery table). One copy of each writer, so a
+//! shape fixed here is fixed everywhere. Hand-built so the default build needs no `serde_json`; the `serde` feature's derives are
 //! checked against these writers in tests.
 
 use std::fmt::Write as _;

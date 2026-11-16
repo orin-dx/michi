@@ -113,7 +113,7 @@ Until 1.0, any public item or rendered string can change in a minor release, and
 | Item | Why it may change |
 | --- | --- |
 | `status` (`StatusResponse`, `StatusItem`, `Health`) | No consumer has used it |
-| `PartialSuccess`, `FailedOp`, `OpRef` | Widened with the op index per [Spec 07](07-wisp-and-monokl-envelope.md) §4; still no consumer |
+| `PartialSuccess`, `FailedOp`, `CompletedOp`, `SkippedOp` | Widened with the op index per [Spec 07](07-wisp-and-monokl-envelope.md) §4; still no consumer |
 | `AlreadyDone`, `already_done()` (Node `alreadyDone`) | The check half of the idempotency design; no caller yet |
 | `Sensitive<T>` | A redaction wrapper no renderer takes yet |
 | `telemetry::NoopProvider` | A placeholder for an observability seam |
@@ -121,7 +121,7 @@ Until 1.0, any public item or rendered string can change in a minor release, and
 | The `schemars` feature | JSON Schemas for MCP `outputSchema`; no consumer yet |
 | `michi-pipeline`: `ExecutionError` variants, `StepObserver`, `DurableObserver`, `ExecOptions` defaults | Nothing runs pipelines yet |
 | `michi-pipeline` `serde` shape of `RunRecord` | Callers persist it, so any change is called out in the changeset and old records are reported, never misread |
-| `mcp::CallToolResult.structured_content` as a JSON string, `RecoveryHint.params` as a list of pairs | Representation choices that may become typed |
+| `RecoveryHint.params` as a list of pairs | A representation choice that may become typed (`structured_content` became `Option<JsonObject>`) |
 | The rendered `exit_code: 1` line in error blocks | Constant today; kept as the CLI-facing seam |
 
 **What we try to hold still** (an intention, not a promise until 1.0): the TOON structure of each block (entry names, key order, quoting per TOON 4.4), the `ErrorCode` labels, and the reserved list type names (`totalCount`, `help`, `recovery`, `truncated`).

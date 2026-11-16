@@ -65,10 +65,10 @@ fuzz_target!(|input: Input| {
 
     // The normalizing constructor always yields an in-range config.
     let cfg = RetryConfig::new(input.max_retries, base, max, jitter);
-    assert!(cfg.max_delay >= Duration::from_millis(1));
-    assert!(cfg.base_delay <= cfg.max_delay);
-    assert!((0.0..=1.0).contains(&cfg.jitter_factor), "jitter {}", cfg.jitter_factor);
-    assert_eq!(cfg.max_retries, input.max_retries);
+    assert!(cfg.max_delay() >= Duration::from_millis(1));
+    assert!(cfg.base_delay() <= cfg.max_delay());
+    assert!((0.0..=1.0).contains(&cfg.jitter_factor()), "jitter {}", cfg.jitter_factor());
+    assert_eq!(cfg.max_retries(), input.max_retries);
 
     // The strict one accepts exactly the in-range inputs, and then agrees with the normalizing one.
     match RetryConfig::try_new(input.max_retries, base, max, jitter) {
@@ -80,7 +80,7 @@ fuzz_target!(|input: Input| {
             }
             // The strict config's delays obey the same bound (checked below through `cfg`; here, its own).
             let d = next_retry_delay(&strict, 0, 0.5, None);
-            assert!(d.is_none_or(|d| d <= strict.max_delay));
+            assert!(d.is_none_or(|d| d <= strict.max_delay()));
         }
         Err(RetryConfigError::MaxDelayIsZero) => assert!(max.is_zero()),
         Err(RetryConfigError::BaseDelayExceedsMaxDelay { .. }) => assert!(base > max),
@@ -92,15 +92,15 @@ fuzz_target!(|input: Input| {
     // (capped) or the server's hint (capped).
     let ra = input.retry_after.as_ref().map(Dur::get);
     let delay = next_retry_delay(&cfg, input.attempt, seed, ra);
-    assert_eq!(delay.is_none(), input.attempt >= cfg.max_retries);
+    assert_eq!(delay.is_none(), input.attempt >= cfg.max_retries());
     if let Some(d) = delay {
-        assert!(d <= cfg.max_delay, "{d:?} > {:?}", cfg.max_delay);
+        assert!(d <= cfg.max_delay(), "{d:?} > {:?}", cfg.max_delay());
         // Delays are computed in u64 milliseconds, so a base or hint past ~584 million years saturates there; that
         // is far outside any real clock and not worth a finding. Below it, a delay is never shorter than either.
         let sat = Duration::from_millis(u64::MAX);
-        assert!(d >= cfg.base_delay.min(sat), "{d:?} < base {:?}", cfg.base_delay);
+        assert!(d >= cfg.base_delay().min(sat), "{d:?} < base {:?}", cfg.base_delay());
         if let Some(ra) = ra {
-            assert!(d >= ra.min(cfg.max_delay).min(sat), "{d:?} shortens retry-after {ra:?}");
+            assert!(d >= ra.min(cfg.max_delay()).min(sat), "{d:?} shortens retry-after {ra:?}");
         }
         assert_eq!(Some(d), next_retry_delay(&cfg, input.attempt, seed, ra), "not deterministic");
     }

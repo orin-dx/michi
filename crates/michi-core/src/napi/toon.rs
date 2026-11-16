@@ -166,7 +166,7 @@ fn status_document(
         })
         .collect::<napi::Result<Vec<_>>>()?;
     let hints: Vec<crate::hints::Hint> = hints.into_iter().map(Into::into).collect();
-    Ok(crate::status::StatusResponse::new(tool_name, description, status_items).with_hints(hints).render())
+    Ok(crate::status::StatusResponse::new(tool_name, description, status_items).hints(hints).render())
 }
 
 #[cfg(test)]

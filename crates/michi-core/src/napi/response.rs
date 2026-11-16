@@ -425,8 +425,9 @@ impl JsAgentResponse {
     #[napi(catch_unwind)]
     pub fn to_call_tool_result(&self) -> napi::Result<JsCallToolResult> {
         let result = self.built()?.to_call_tool_result();
-        let structured_content = serde_json::from_str(&result.structured_content)
-            .map_err(|e| napi::Error::from_reason(format!("structured_content was not valid JSON: {e}")))?;
+        let structured_content =
+            serde_json::from_str(result.structured_content.as_ref().map_or("null", |j| j.as_str()))
+                .map_err(|e| napi::Error::from_reason(format!("structured_content was not valid JSON: {e}")))?;
         Ok(JsCallToolResult {
             content: result
                 .content

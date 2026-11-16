@@ -2,7 +2,8 @@
 // Each has a public constructor instead (see tests/public_construction.rs).
 fn main() {
     let _ = michi_core::FailedOp { index: 0, operation: "op".to_string(), reason: "r".to_string(), recovery: None };
-    let _ = michi_core::OpRef { index: 0, operation: "op".to_string(), reason: None };
+    let _ = michi_core::CompletedOp { index: 0, operation: "op".to_string() };
+    let _ = michi_core::SkippedOp { index: 0, operation: "op".to_string(), reason: None };
     let _ = michi_core::PartialSuccess { completed: vec![], failed: vec![], skipped: vec![] };
     let _ = michi_core::KvItem { key: "k".to_string(), value: michi_core::KvValue::Int(1) };
     let _ = michi_core::StatusItem { key: "k".to_string(), value: michi_core::KvValue::Int(1), health: None };
@@ -12,5 +13,5 @@ fn main() {
         name: "n".to_string(),
         status: michi_core::pipeline::StepStatus::Pending,
     };
-    let _ = michi_core::pipeline::Pipeline { id: "p".to_string(), steps: vec![] };
+    let _ = michi_core::pipeline::Pipeline { steps: vec![] };
 }

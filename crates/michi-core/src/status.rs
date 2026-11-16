@@ -62,9 +62,9 @@ impl StatusResponse {
         Self { tool_name: tool_name.into(), description: description.into(), items, hints: Vec::new() }
     }
 
-    /// Attach contextual hints.
+    /// Replace the contextual hints with `hints`.
     #[must_use]
-    pub fn with_hints(mut self, hints: Vec<Hint>) -> Self {
+    pub fn hints(mut self, hints: Vec<Hint>) -> Self {
         self.hints = hints;
         self
     }
@@ -198,12 +198,12 @@ mod tests {
     }
 
     #[test]
-    fn ac021_new_defaults_hints_empty_and_with_hints_is_a_consuming_builder() {
+    fn ac021_new_defaults_hints_empty_and_hints_is_a_consuming_builder() {
         let resp = StatusResponse::new("tool", "desc", vec![]);
         assert!(resp.hints.is_empty());
 
         let hints = vec![Hint::new("a hint")];
-        let with = resp.with_hints(hints.clone());
+        let with = resp.hints(hints.clone());
         assert_eq!(with.hints, hints);
         assert_eq!(with.tool_name, "tool");
         assert_eq!(with.description, "desc");
@@ -227,10 +227,10 @@ mod tests {
     }
 
     #[test]
-    fn ac023a_with_hints_appends_the_help_block_on_its_own_line() {
+    fn ac023a_hints_appends_the_help_block_on_its_own_line() {
         let items = || vec![StatusItem { key: "k".into(), value: KvValue::Int(1), health: None }];
         let hints = vec![Hint::new("h1"), Hint::new("h2")];
-        let out = StatusResponse::new("tool", "desc", items()).with_hints(hints.clone()).render();
+        let out = StatusResponse::new("tool", "desc", items()).hints(hints.clone()).render();
         let no_hints = StatusResponse::new("tool", "desc", items()).render();
         assert_eq!(out, format!("{no_hints}\n{}", crate::hints::render_hints(&hints)));
     }

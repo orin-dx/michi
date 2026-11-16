@@ -7,7 +7,7 @@ use michi_core::pipeline::{Pipeline, PipelineStep, StepStatus};
 use crate::{Effect, ExecutionError, Plan, PlanFingerprint, Replay, ReplayClass, ResumeError, RunId, StepId};
 
 /// One attempt of one step.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct AttemptRecord {
     pub(crate) attempt: u32,
@@ -504,11 +504,11 @@ impl RunRecord {
         })
     }
 
-    /// The michi-core [`Pipeline`] view: the run id and each step's id, name and status.
+    /// The michi-core [`Pipeline`] view: each step's id, name and status. The run id is not part of it; read it with
+    /// [`RunRecord::run_id`].
     #[must_use]
     pub fn to_pipeline(&self) -> Pipeline {
         Pipeline::new(
-            self.run_id.to_string(),
             self.steps.iter().map(|s| PipelineStep::new(s.step_id.to_string(), s.name.clone(), s.status)).collect(),
         )
     }
@@ -517,5 +517,17 @@ impl RunRecord {
     #[must_use]
     pub fn render(&self) -> String {
         self.to_pipeline().render()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Every field compares exactly (no float), so attempts compare with `Eq` and can be deduplicated or used as keys.
+    #[test]
+    fn attempt_record_is_eq() {
+        fn assert_eq_bound<T: Eq>() {}
+        assert_eq_bound::<AttemptRecord>();
     }
 }

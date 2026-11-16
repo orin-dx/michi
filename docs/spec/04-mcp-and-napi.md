@@ -17,9 +17,19 @@ pub struct ContentBlock {
 pub struct CallToolResult {
     pub content: Vec<ContentBlock>,
     pub is_error: bool,
-    pub structured_content: String,   // JSON text; see field doc for what's actually structured
+    pub structured_content: Option<JsonObject>,   // None = no structuredContent
+}
+
+/// The text of one JSON object, checked when built (in every build, no serde needed).
+pub struct JsonObject(/* private */);
+impl JsonObject {
+    pub fn new(text: impl Into<String>) -> Result<Self, StructuredContentError>; // also FromStr
+    pub fn as_str(&self) -> &str;
+    pub fn into_string(self) -> String;
 }
 ```
+
+`structured_content` used to be a `String` where empty meant none, so a default-feature caller could build a result that could not serialize (validity was checked only by `try_new` or at serialization, both behind `serde`). A `JsonObject` is checked when it is made: michi's own renderers make it from their JSON writers, anything else goes through `JsonObject::new`, a strict RFC 8259 checker written in `mcp.rs` with `serde_json`'s limits (at most 127 levels of nesting, no lone surrogate escapes, every number finite as an f64), so the default build needs no JSON dependency and a checked object always serializes. A property test checks the checker against `serde_json`. The wire shape is unchanged.
 
 `audience` is a `Vec`, not a scalar.
 
@@ -38,8 +48,8 @@ Under the `serde` feature, `ContentBlock`/`CallToolResult` don't derive `Seriali
 
 The wire rules, for output and input:
 
-- **Output:** `structuredContent` is the parsed JSON object and is omitted when `structured_content` is empty. MCP requires an object there, so serializing a `CallToolResult` whose `structured_content` is neither empty nor the text of a JSON object fails with a serde error (no `null`, array or double-encoded string is ever emitted). `CallToolResult::try_new` runs the same check up front and returns `StructuredContentError::InvalidJson` or `NotAnObject`.
-- **Input is tolerant where MCP is:** only `content` is required. `isError` defaults to `false`; an absent or `null` `structuredContent` becomes the empty string; `annotations` and `annotations.audience` are optional and default to no audience; other annotation fields (such as `priority`) are ignored. Still rejected: a `structuredContent` that is not an object, and a content block whose `type` is not `"text"`.
+- **Output:** `structuredContent` is the parsed JSON object and is omitted when `structured_content` is `None` (no `null`, array or double-encoded string is ever emitted). A non-object cannot get that far: `JsonObject::new` returns `StructuredContentError::InvalidJson` or `NotAnObject`.
+- **Input is tolerant where MCP is:** only `content` is required. `isError` defaults to `false`; an absent or `null` `structuredContent` becomes `None`; `annotations` and `annotations.audience` are optional and default to no audience; other annotation fields (such as `priority`) are ignored. Still rejected: a `structuredContent` that is not an object, and a content block whose `type` is not `"text"`.
 
 `AgentResponse::to_call_tool_result()` (see [03-rust-api.md](03-rust-api.md)) is the only intended constructor. It builds:
 
@@ -247,7 +257,7 @@ The first published release was 0.3.1 (0.3.0 was never published). The four pack
 
 This is auto-generated, never hand-written — `napi build` regenerates it from the `#[napi]` attributes in `crates/michi-core/src/napi.rs` every time.
 
-- Object types export without a prefix: `ToonValue`, `ToonOptions`, `KvItem`, `RecoveryHint`, `StatusItem`, `FailedOp`, `OpRef`, `PipelineStep`, `AlreadyDone`, `ContentBlock`, `Annotations`, `CallToolResult`, `Truncated`. Their Rust structs keep a `Js` prefix (`JsToonValue`, ...) and are renamed with `js_name`.
+- Object types export without a prefix: `ToonValue`, `ToonOptions`, `KvItem`, `RecoveryHint`, `StatusItem`, `FailedOp`, `CompletedOp`, `SkippedOp`, `PipelineStep`, `AlreadyDone`, `ContentBlock`, `Annotations`, `CallToolResult`, `Truncated`. Their Rust structs keep a `Js` prefix (`JsToonValue`, ...) and are renamed with `js_name`.
 - There's no unprefixed `ToonValue`/`CallToolResult`/etc. in the real output, whatever an older sketch of this section might have suggested.
 
 What's actually in `packages/michi-node/index.d.ts` today (rendering-domain surface; the resilience-, status-, and error-domain functions follow further down):
@@ -459,22 +469,29 @@ export interface FailedOp {
   recovery?: RecoveryHint | null;
 }
 
-/** One completed or skipped operation for `renderPartialSuccess`. */
-export interface OpRef {
+/** One completed operation for `renderPartialSuccess`. A non-null `reason` on it is rejected. */
+export interface CompletedOp {
   /** Position in the caller's op slice. */
   index: number;
   operation: string;
-  /** A machine token such as `budget_exhausted`. Rendered for skipped ops only (`null` when absent). */
+}
+
+/** One skipped operation for `renderPartialSuccess`. */
+export interface SkippedOp {
+  /** Position in the caller's op slice. */
+  index: number;
+  operation: string;
+  /** A machine token such as `budget_exhausted`; `null` when absent. */
   reason?: string | null;
 }
 
 /** Render `PartialSuccess`: a quoted summary, then the `completed[N]{index,operation}:`,
  * `failed[N]{index,operation,reason}:` and `skipped[N]{index,operation,reason}:` tables (empty categories omitted),
- * then one `recovery[N]{tool,params,reason}:` table. */
+ * then one `recovery[N]{tool,params,reason}:` table. Throws when one `index` appears twice across the three lists. */
 export declare function renderPartialSuccess(
-  completed: Array<OpRef>,
+  completed: Array<CompletedOp>,
   failed: Array<FailedOp>,
-  skipped: Array<OpRef>,
+  skipped: Array<SkippedOp>,
 ): string;
 
 /** One step for `renderPipeline`: the labels `StepStatus::label` and `StepStatus::reason` write. */

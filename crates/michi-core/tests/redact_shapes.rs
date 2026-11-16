@@ -78,7 +78,11 @@ fn from_error_redacts_a_query_token_in_the_top_level_display() {
     struct Req;
 
     let e = DomainError::from_error(ErrorCode::ExternalFailure, &Req);
-    assert!(!e.render().contains("ghp_SECRET"), "{}", e.render());
+    assert!(
+        !e.render(michi_core::OutputFormat::Text).contains("ghp_SECRET"),
+        "{}",
+        e.render(michi_core::OutputFormat::Text)
+    );
 }
 
 proptest! {

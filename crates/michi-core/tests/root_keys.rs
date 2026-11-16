@@ -33,7 +33,7 @@ fn assert_collision(r: &AgentResponse, key: &str) {
     let result = r.to_call_tool_result();
     assert!(result.is_error, "mcp for {key}");
     assert_eq!(result.content[0].text, text);
-    assert!(result.structured_content.contains("\"isError\":true"));
+    assert!(result.structured_content.as_ref().unwrap().as_str().contains("\"isError\":true"));
     assert_eq!(r.render_for(michi_core::Audience::Assistant), text);
 }
 

@@ -361,7 +361,7 @@ fn s9_1_empty_list_is_key_colon_brackets() {
         AgentResponse::new("issue").hint("Try x").render(OutputFormat::Text),
         "issue: []\ntotalCount: 0\nhelp[1]: Try x"
     );
-    let empty_pipeline = Pipeline::new("p", vec![]);
+    let empty_pipeline = Pipeline::new(vec![]);
     assert_eq!(empty_pipeline.render(), "step: []");
 }
 
@@ -412,7 +412,7 @@ fn s12_whitespace_invariants_hold_for_every_document_producer() {
     let full = AgentResponse::new("t")
         .section(Section::toon("t", vec!["a".into()], vec![vec![Value::from(" x ")]]).total_count(Some(2)))
         .hint("h ");
-    let pipeline = Pipeline::new("p", vec![PipelineStep::new("fetch", "Fetch, then parse", StepStatus::Failed)]);
+    let pipeline = Pipeline::new(vec![PipelineStep::new("fetch", "Fetch, then parse", StepStatus::Failed)]);
     for out in [
         full.render(OutputFormat::Text),
         render_toon(&ToonOptions::default()).unwrap(),

@@ -18,5 +18,9 @@ CallToolResult {
         },
     ],
     is_error: false,
-    structured_content: "{\"body\":\"id: abc-123\\nstate: open\",\"sections\":[{\"name\":\"issue\",\"kind\":\"kv\",\"items\":[{\"key\":\"id\",\"value\":\"abc-123\"},{\"key\":\"state\",\"value\":\"open\"}],\"returnedCount\":2,\"truncated\":false}],\"hints\":[],\"recovery\":[],\"isError\":false}",
+    structured_content: Some(
+        JsonObject(
+            "{\"body\":\"id: abc-123\\nstate: open\",\"sections\":[{\"name\":\"issue\",\"kind\":\"kv\",\"items\":[{\"key\":\"id\",\"value\":\"abc-123\"},{\"key\":\"state\",\"value\":\"open\"}],\"returnedCount\":2,\"truncated\":false}],\"hints\":[],\"recovery\":[],\"isError\":false}",
+        ),
+    ),
 }

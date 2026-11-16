@@ -11,7 +11,7 @@ use napi::{JsString, JsValue as _, ValueType};
 
 use super::hints::JsRecoveryHint;
 use super::num::JsCount;
-use super::outcome::{JsFailedOp, JsOpRef, JsPipelineStep};
+use super::outcome::{JsCompletedOp, JsFailedOp, JsPipelineStep, JsSkippedOp};
 use super::toon::JsStatusItem;
 use super::value::{JsKvItem, JsToonValue};
 
@@ -331,16 +331,35 @@ impl Budget {
         Ok(out)
     }
 
-    /// `JsOpRef[]`, at most `max` items. `reason` may be absent, `undefined` or `null`.
-    pub(crate) fn op_refs(&mut self, ops: &List<'_>, what: &str, max: usize) -> napi::Result<Vec<JsOpRef>> {
-        check_len(what, ops.len(), max)?;
+    /// `JsCompletedOp[]`, at most `max` items. A `reason` that is not absent, `undefined` or `null` is rejected: a
+    /// completed operation renders none, so it used to be dropped without a word.
+    pub(crate) fn completed_ops(&mut self, ops: &List<'_>, max: usize) -> napi::Result<Vec<JsCompletedOp>> {
+        check_len("completed", ops.len(), max)?;
         let mut out = Vec::with_capacity(ops.len());
         for i in 0..ops.len {
-            let obj = object(ops.get(i)?, "OpRef")?;
+            let obj = object(ops.get(i)?, "CompletedOp")?;
+            let index = typed_prop::<JsCount>(&obj, "index")?.ok_or_else(|| missing("index"))?;
+            let operation = self.string_prop(&obj, "operation", "operation", MAX_NAME_BYTES)?;
+            if let Some(reason) = prop(&obj, "reason")? {
+                if !is_nullish(reason)? {
+                    return Err(napi::Error::from_reason("a completed operation takes no `reason`"));
+                }
+            }
+            out.push(JsCompletedOp { index, operation });
+        }
+        Ok(out)
+    }
+
+    /// `JsSkippedOp[]`, at most `max` items. `reason` may be absent, `undefined` or `null`.
+    pub(crate) fn skipped_ops(&mut self, ops: &List<'_>, max: usize) -> napi::Result<Vec<JsSkippedOp>> {
+        check_len("skipped", ops.len(), max)?;
+        let mut out = Vec::with_capacity(ops.len());
+        for i in 0..ops.len {
+            let obj = object(ops.get(i)?, "SkippedOp")?;
             let index = typed_prop::<JsCount>(&obj, "index")?.ok_or_else(|| missing("index"))?;
             let operation = self.string_prop(&obj, "operation", "operation", MAX_NAME_BYTES)?;
             let reason = self.nullable_string_prop(&obj, "reason", MAX_NAME_BYTES)?;
-            out.push(JsOpRef { index, operation, reason });
+            out.push(JsSkippedOp { index, operation, reason });
         }
         Ok(out)
     }

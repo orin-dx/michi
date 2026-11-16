@@ -163,7 +163,8 @@ fn json_carries_sections_budget_and_provenance_in_camel_case() {
     assert_eq!(v["budget"], serde_json::json!({"maxTokens": 8, "truncated": true}));
     assert_eq!(v["provenance"]["entries"][0], serde_json::json!({"label": "analyzer", "value": "ra"}));
     assert_eq!(v["provenance"]["fingerprint"], "fp");
-    let structured: serde_json::Value = serde_json::from_str(&r.to_call_tool_result().structured_content).unwrap();
+    let structured: serde_json::Value =
+        serde_json::from_str(r.to_call_tool_result().structured_content.unwrap().as_str()).unwrap();
     assert_eq!(structured, v);
 }
 
@@ -171,7 +172,8 @@ fn json_carries_sections_budget_and_provenance_in_camel_case() {
 fn structured_content_has_the_four_keys_and_gains_sections_only_with_a_section() {
     let kv = AgentResponse::new("t").kv_items(vec![KvItem::new("k", KvValue::Int(1))]);
     let keys_of = |r: &AgentResponse| {
-        let v: serde_json::Value = serde_json::from_str(&r.to_call_tool_result().structured_content).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(r.to_call_tool_result().structured_content.unwrap().as_str()).unwrap();
         let mut keys: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
         keys.sort_unstable();
         keys
