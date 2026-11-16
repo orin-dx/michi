@@ -20,9 +20,10 @@
 //! ## Quick start
 //!
 //! ```
-//! use michi_core::toon::{render_toon, ToonOptions, Value};
+//! use michi_core::toon::Value;
+//! use michi_core::{AgentResponse, OutputFormat, Section};
 //!
-//! let opts = ToonOptions::new(
+//! let issues = Section::toon(
 //!     "issues",
 //!     vec!["number".to_string(), "title".to_string(), "state".to_string()],
 //!     vec![
@@ -33,11 +34,10 @@
 //! .total_count(Some(8771));
 //!
 //! assert_eq!(
-//!     render_toon(&opts)?,
+//!     AgentResponse::new("issues").section(issues).render(OutputFormat::Text),
 //!     "issues[2]{number,title,state}:\n  51815,\"[Bug]: Telegram plugin\",open\n  51812,dark mode request,open\n\
 //!      totalCount: 8771"
 //! );
-//! # Ok::<(), michi_core::toon::ToonError>(())
 //! ```
 //!
 //! ## Where to start
