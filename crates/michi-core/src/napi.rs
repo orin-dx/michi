@@ -157,7 +157,7 @@ fn js_value_to_rust(v: JsToonValue) -> napi::Result<crate::toon::Value> {
 /// `truncationHint`) are counted as they are read. Also
 /// returns an error if `ToonOptions::validate()` rejects the input — a row
 /// whose value count differs from `fields.len()`, a field name repeated in
-/// `fields`, a reserved `type_name` (`totalCount`, `help`, `recovery` or `truncated`), or a
+/// `fields`, a reserved `type_name` (a root key michi writes itself, such as `help` or `error`), or a
 /// document over michi-core's shape caps. Any other type
 /// or field name is valid and is quoted when TOON 4.4 §7.3 requires.
 /// The error `reason` is `toon_validation_failed: ` followed by the `ToonError` Display text.
@@ -231,7 +231,7 @@ pub fn render_toon(opts: JsToonOptions) -> napi::Result<String> {
 ///
 /// # Errors
 ///
-/// Returns an error if `type_name` is a reserved root key (`totalCount`, `help`, `recovery` or `truncated`). The reason is
+/// Returns an error if `type_name` is a reserved root key (one michi writes itself, such as `help`). The reason is
 /// `toon_validation_failed: ` followed by the `ToonError` text, as `renderToon` reports it. Also rejects a `typeName`
 /// over 4 KiB, as `emptyStateWithHints` does.
 #[napi(catch_unwind)]
@@ -417,7 +417,7 @@ fn js_kv_value_to_rust(v: JsToonValue) -> napi::Result<crate::kv::KvValue> {
 ///
 /// # Errors
 ///
-/// Rejects a duplicate key or the reserved keys `totalCount`, `help` and `recovery` (`kv_validation_failed: …`),
+/// Rejects a duplicate key or a reserved root key such as `help` or `message` (`kv_validation_failed: …`),
 /// and inputs over the caps: 1,000 items, 10,000 hints, 4 KiB per key, 1 MiB per value or hint, 64 MiB of strings
 /// per call.
 #[napi(
@@ -1236,7 +1236,7 @@ const MAX_STEPS: usize = 10_000;
 ///
 /// # Errors
 ///
-/// Returns an error if `type_name` is a reserved root key (`totalCount`, `help`, `recovery` or `truncated`), with the reason
+/// Returns an error if `type_name` is a reserved root key (one michi writes itself, such as `help`), with the reason
 /// `toon_validation_failed: ` followed by the `ToonError` text, as `emptyState` reports it. Also rejects more than
 /// 10,000 hints, a `typeName` over 4 KiB, a hint over 1 MiB, and more than 64 MiB of strings per call.
 #[napi(catch_unwind, js_name = "emptyStateWithHints", ts_args_type = "typeName: string, hints: Array<string>")]
@@ -1675,7 +1675,8 @@ mod tests {
         let err = render_toon(opts).expect_err("reserved type_name must be rejected");
         assert_eq!(
             err.reason,
-            "toon_validation_failed: type_name \"help\" is a reserved document key (totalCount, help, recovery, truncated)"
+            "toon_validation_failed: type_name \"help\" is a reserved document key (totalCount, help, recovery, \
+             truncated, budget, sections, provenance, error, message, causes, exit_code)"
         );
     }
 
@@ -2455,7 +2456,8 @@ mod tests {
         let err = render_kv(vec![kv_item("help")], None, vec![]).expect_err("reserved key");
         assert_eq!(
             err.reason,
-            "kv_validation_failed: key \"help\" is a reserved document key (totalCount, help, recovery)"
+            "kv_validation_failed: key \"help\" is a reserved document key (totalCount, help, recovery, truncated, \
+             budget, sections, provenance, error, message, causes, exit_code)"
         );
     }
 

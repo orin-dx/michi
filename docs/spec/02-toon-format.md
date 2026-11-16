@@ -39,7 +39,7 @@ escape       ::= '\\' | '\"' | '\n' | '\r' | '\t' | '\u00' hex hex   (lowercase 
 number       ::= canonical decimal, or exponent form outside 1e-6 <= |n| < 1e21   (§2)
 ```
 
-The type name is the list's key; `totalCount`, `help`, `recovery` and `truncated` are the keys michi composes next to it (`AgentResponse` appends `recovery`), so they are reserved and rejected as type names (`ToonError::InvalidTypeName`). A repeated field name is rejected too (`ToonError::InvalidFieldName`). Any other name is valid: names outside `^[A-Za-z_][A-Za-z0-9_.]*$` — including the empty name, non-ASCII names and names with spaces or punctuation — are quoted.
+The type name is the list's key; the root keys michi writes itself (`totalCount`, `help`, `recovery`, `truncated`, `budget`, `sections`, `provenance`, `error`, `message`, `causes`, `exit_code`; see the trust model below) are reserved and rejected as type names (`ToonError::InvalidTypeName`). A repeated field name is rejected too (`ToonError::InvalidFieldName`). Any other name is valid: names outside `^[A-Za-z_][A-Za-z0-9_.]*$` — including the empty name, non-ASCII names and names with spaces or punctuation — are quoted.
 
 ## Examples
 
@@ -191,6 +191,8 @@ michi guarantees a syntactic property and nothing more.
 
 **What michi guarantees.** One value cannot create extra lines, fields or cells. A line break, tab or any other C0 control in a value is escaped (`\n`, `\t`, `\u00xx`), and a comma, colon, quote, bracket or leading `-` forces quotes, so a cell stays one cell of one row. Text inside a cell therefore cannot produce michi's own lines either: `truncated[…]`, `totalCount`, `help[…]`, `recovery[…]`, `causes[…]` and `error:` are written by michi, from structure the caller supplied, and a cell that spells one of them stays a quoted cell.
 
+No caller name can take one of those keys either. The root keys michi writes itself — `totalCount`, `help`, `recovery`, `truncated`, `budget`, `sections`, `provenance`, and the error document's `error`, `message`, `causes` and `exit_code` — are one reserved list, checked for type names, KV keys and section names alike, so a success response can never render an `error:`/`message:` document while `isError` is false. A provenance label may not be `fingerprint`, set or not.
+
 **What michi does not do.**
 
 - It cannot stop prompt injection. A cell is still text the agent reads; "ignore previous instructions" inside a cell is rendered faithfully, as data.
@@ -199,7 +201,7 @@ michi guarantees a syntactic property and nothing more.
 - Truncation cuts on `char` boundaries, not grapheme clusters, so it can split a multi-part emoji or a flag pair. The output is valid UTF-8 and cannot panic, but the cut character may render oddly.
 - `human_content` is the caller's text for the user. It is not escaped or validated.
 
-**The rule for callers.** Hints, recovery hints, error messages and causes, type names, field names and the truncation hint come from the tool author, written in the tool's code, never from data. Cells are data. Do not build a hint or an error message out of a file, web page, issue body or any other value an outside party controls; if a hint must point at a value, use a placeholder such as `<id>`. The same goes for secrets: `DomainError::from_error` keeps only the top-level message and leaves the `source()` chain out unless you call `from_error_with_causes`, because a cause often holds a URL with a token or an internal path.
+**The rule for callers.** Hints, recovery hints, error messages and causes, type names, section names, KV keys, provenance labels, field names and the truncation hint come from the tool author, written in the tool's code, never from data. Cells are data. Do not build a hint or an error message out of a file, web page, issue body or any other value an outside party controls; if a hint must point at a value, use a placeholder such as `<id>`. The same goes for secrets: `DomainError::from_error` keeps only the top-level message and leaves the `source()` chain out unless you call `from_error_with_causes`, because a cause often holds a URL with a token or an internal path.
 
 ## Truncation
 

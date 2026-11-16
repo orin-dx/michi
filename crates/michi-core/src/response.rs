@@ -1,5 +1,6 @@
 use crate::budget::BudgetSummary;
 use crate::hints::Hint;
+use crate::json;
 use crate::kv::KvItem;
 use crate::provenance::ProvenanceBlock;
 use crate::recovery::RecoveryHint;
@@ -78,22 +79,24 @@ impl AgentResponse {
         self.section(Section::toon(name, fields.iter().map(|s| (*s).to_string()).collect(), rows))
     }
 
-    /// Append a section for a cut list, in one call: `section` gets `totalCount` (`outcome.total_before`) and its
-    /// `truncated` flag from `outcome`, and, only when something was cut, [`TruncationOutcome::hint`](crate::truncation::TruncationOutcome::hint) is appended to
-    /// the hints. The count and the `help[]` line therefore always describe the same cut.
+    /// Append a TOON list section for a cut list, in one call. The rows are `outcome.kept`, each turned into a row by
+    /// `row`; the section's total is `outcome.total_before`; and, only when something was cut,
+    /// [`TruncationOutcome::hint`](crate::truncation::TruncationOutcome::hint) (`showing {kept} of {total}; {guidance}`)
+    /// is appended to the hints. michi builds the rows from the outcome itself, so the list's `[N]`, its `totalCount`
+    /// and the `help[]` line all describe the same cut.
     ///
-    /// The response holds TOON [`Value`] rows, not the caller's `T`, so build `section` from `outcome.kept`
-    /// (converted to rows). `totalCount` renders only when `total_before` exceeds the section's rows.
+    /// `totalCount` renders only when `total_before` exceeds the rows kept.
     ///
     /// ```
     /// use michi_core::toon::Value;
-    /// use michi_core::{truncate_by_count, AgentResponse, OutputFormat, Section};
+    /// use michi_core::{truncate_by_count, AgentResponse, OutputFormat};
     ///
     /// let outcome = truncate_by_count(vec![1, 2, 3, 4], 2);
-    /// let rows = outcome.kept.iter().map(|n| vec![Value::Int(*n)]).collect();
     /// let r = AgentResponse::new("issues").truncated_section(
-    ///     Section::toon("issues", vec!["n".into()], rows),
+    ///     "issues",
+    ///     vec!["n".into()],
     ///     &outcome,
+    ///     |n| vec![Value::Int(*n)],
     ///     "pass --limit 4",
     /// );
     /// assert_eq!(
@@ -104,14 +107,17 @@ impl AgentResponse {
     #[must_use]
     pub fn truncated_section<T>(
         mut self,
-        section: Section,
+        name: impl Into<String>,
+        fields: Vec<String>,
         outcome: &crate::truncation::TruncationOutcome<T>,
+        row: impl FnMut(&T) -> Vec<Value>,
         guidance: impl Into<String>,
     ) -> Self {
+        let rows = outcome.kept.iter().map(row).collect();
         if let Some(hint) = outcome.hint(guidance) {
             self.hints.push(hint);
         }
-        self.section(section.total_count(Some(outcome.total_before)).truncated(outcome.truncated()))
+        self.section(Section::toon(name, fields, rows).total_count(Some(outcome.total_before)))
     }
 
     /// Append a KV section named for the response's type: shorthand for `section(Section::kv(name, items))`. The name
@@ -257,20 +263,31 @@ impl AgentResponse {
     /// One section as an envelope part.
     fn section_part<'a>(&self, s: &'a Section) -> (Part<'a>, bool, Option<Hint>) {
         let total = s.shown_total();
-        match &s.body {
-            SectionBody::Toon { fields, rows } => match self.section_options(&s.name, fields, rows, total).validate() {
+        let name = s.name();
+        match s.body() {
+            SectionBody::Toon { fields, rows } => match self.section_options(name, fields, rows, total).validate() {
                 Ok(doc) => {
-                    let (text, cuts, extra) = doc.render_parts(false);
-                    (Part { name: &s.name, text, cuts, total }, false, extra.map(Hint::new))
+                    let list = doc.render_list();
+                    let cuts = list
+                        .cuts
+                        .iter()
+                        .map(|&(row, field, removed)| crate::toon::table::Cut {
+                            section: name,
+                            row,
+                            field: fields.get(field).map_or("", String::as_str),
+                            removed,
+                        })
+                        .collect();
+                    (Part { name, text: list.text, cuts, total }, false, list.extra_hint.map(Hint::new))
                 }
-                Err(e) => (Part::failed(&s.name, "toon_validation_failed", &e.to_string()), true, None),
+                Err(e) => (Part::failed(name, "toon_validation_failed", &e.to_string()), true, None),
             },
-            SectionBody::Kv(items) => kv_part(&s.name, items, total),
+            SectionBody::Kv(items) => kv_part(name, items, total),
             // One string value under the section's name, escaped like any other value: prose cannot start a line
             // of its own, so it cannot forge a `help[]` line or break the document.
-            SectionBody::Text(text) => {
-                let line = format!("{}: {}", crate::toon::escape_key(&s.name), crate::toon::escape_value(text));
-                (Part { name: &s.name, text: line, cuts: Vec::new(), total }, false, None)
+            SectionBody::Text { text, .. } => {
+                let line = format!("{}: {}", crate::toon::escape_key(name), crate::toon::escape_value(text));
+                (Part { name, text: line, cuts: Vec::new(), total }, false, None)
             }
         }
     }
@@ -279,37 +296,38 @@ impl AgentResponse {
     fn failed_flags(&self) -> Vec<bool> {
         self.blocks()
             .iter()
-            .map(|s| match &s.body {
+            .map(|s| match s.body() {
                 SectionBody::Toon { fields, rows } => {
-                    self.section_options(&s.name, fields, rows, s.shown_total()).validate().is_err()
+                    self.section_options(s.name(), fields, rows, s.shown_total()).validate().is_err()
                 }
                 SectionBody::Kv(items) => crate::kv::validate_keys(items).is_err(),
-                SectionBody::Text(_) => false,
+                SectionBody::Text { .. } => false,
             })
             .collect()
     }
 
-    /// The first root key two blocks of the body would both write, or `None`. Sections render as root keys (a TOON
-    /// list or text section under its name, a KV section as its item keys), beside the keys michi writes itself:
-    /// `budget`, its `sections` table, `provenance`, `truncated`, `totalCount`, `help`, `recovery`, and, for a block
-    /// that failed validation, `error` and `message`. `failed[i]` says whether block `i` failed. The reserved names
-    /// are claimed whether or not that block is present, so validity never depends on the caller's data. Provenance
-    /// labels sit one level down and collide only with each other and the `fingerprint` line.
+    /// The first key the body cannot render, or `None`. Sections render as root keys (a TOON list or text section
+    /// under its name, a KV section as its item keys), beside the keys michi writes itself
+    /// ([`crate::toon::RESERVED_ROOT_KEYS`]: the envelope blocks, the keys that follow a body, and the error
+    /// document's keys). The reserved names are claimed whether or not michi writes that block here, so validity
+    /// never depends on the caller's data, and a success response cannot carry `error:` or `message:` lines.
+    /// `failed[i]` says whether block `i` failed validation: its `error` and `message` lines are michi's own, so a
+    /// second failed block is a collision on `error`. Provenance labels sit one level down (see
+    /// [`crate::provenance::label_collision`]).
     fn root_collision(&self, failed: &[bool]) -> Option<String> {
-        const RESERVED: [&str; 7] = ["budget", "sections", "provenance", "truncated", "totalCount", "help", "recovery"];
         let blocks = self.blocks();
-        let mut seen: std::collections::HashSet<&str> = RESERVED.into_iter().collect();
+        let mut seen: std::collections::HashSet<&str> = crate::toon::RESERVED_ROOT_KEYS.into_iter().collect();
+        let mut error_block = false;
         for (s, failed) in blocks.iter().zip(failed) {
             if *failed {
-                for key in ["error", "message"] {
-                    if !seen.insert(key) {
-                        return Some(key.to_string());
-                    }
+                if error_block {
+                    return Some("error".to_string());
                 }
+                error_block = true;
                 continue;
             }
-            let keys: Vec<&str> = match &s.body {
-                SectionBody::Toon { .. } | SectionBody::Text(_) => vec![s.name.as_str()],
+            let keys: Vec<&str> = match s.body() {
+                SectionBody::Toon { .. } | SectionBody::Text { .. } => vec![s.name()],
                 SectionBody::Kv(items) => items.iter().map(|i| i.key.as_str()).collect(),
             };
             for key in keys {
@@ -319,11 +337,7 @@ impl AgentResponse {
             }
         }
         let p = self.provenance.as_ref()?;
-        let mut labels: std::collections::HashSet<&str> = std::collections::HashSet::new();
-        if p.fingerprint.is_some() {
-            labels.insert("fingerprint");
-        }
-        p.entries.iter().find(|e| !labels.insert(e.label.as_str())).map(|e| e.label.clone())
+        crate::provenance::label_collision(p).map(str::to_string)
     }
 
     /// The body: sections, `budget:`, `provenance:`.
@@ -362,21 +376,28 @@ impl AgentResponse {
         let mut out = String::with_capacity(parts.iter().map(|p| p.text.len() + 24).sum::<usize>() + 256);
         for p in &parts {
             join_block(&mut out, &p.text);
-            if cutters == 1 && !p.cuts.is_empty() {
-                join_block(&mut out, &truncated_table(std::slice::from_ref(p)));
+            if cutters == 1 {
+                crate::toon::table::push_truncated(&mut out, &p.cuts, false);
             }
             if let (1, Some(n)) = (totals, p.total) {
                 join_block(&mut out, &format!("totalCount: {n}"));
             }
         }
         if cutters >= 2 {
-            join_block(&mut out, &truncated_table(&parts));
+            let cuts: Vec<crate::toon::table::Cut<'_>> = parts.iter().flat_map(|p| p.cuts.iter().cloned()).collect();
+            crate::toon::table::push_truncated(&mut out, &cuts, true);
         }
         if totals >= 2 {
-            join_block(&mut out, &total_table(&parts));
+            use crate::toon::table::{self, Cell};
+            table::push_header(&mut out, "totalCount", totals, ["section", "total"]);
+            for p in &parts {
+                if let Some(total) = p.total {
+                    table::push_row(&mut out, &[Cell::Str(p.name), Cell::count(total)]);
+                }
+            }
         }
         if let Some(b) = &self.budget {
-            join_block(&mut out, &crate::budget::render_budget_block(b, self.sections.len() >= 2));
+            join_block(&mut out, &crate::budget::render_budget_block(b, &self.sections));
         }
         if let Some(p) = &self.provenance {
             join_block(&mut out, &crate::provenance::render_provenance_block(p));
@@ -471,51 +492,27 @@ impl AgentResponse {
         let hints = self.hints_with(extra);
         let capacity =
             body.len() + hints.iter().map(|h| h.as_str().len() + 16).sum::<usize>() + self.recovery.len() * 64 + 64;
-        let mut out = String::with_capacity(capacity + body.len() + 128);
+        let mut out = String::with_capacity(capacity + 128);
         out.push_str("{\"body\":");
-        json_string(&mut out, body);
+        json::push_str(&mut out, body);
         if !self.sections.is_empty() {
-            out.push_str(",\"sections\":[");
-            for (i, s) in self.sections.iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
-                push_section_json(&mut out, s);
-            }
-            out.push(']');
+            out.push_str(",\"sections\":");
+            json::push_array(&mut out, &self.sections, push_section_json);
         }
         if let Some(b) = &self.budget {
             out.push_str(",\"budget\":");
-            out.push_str(&crate::budget::budget_json(b));
+            crate::budget::push_budget_json(&mut out, b, &self.sections);
         }
         if let Some(p) = &self.provenance {
             out.push_str(",\"provenance\":");
-            out.push_str(&crate::provenance::provenance_json(p));
+            crate::provenance::push_provenance_json(&mut out, p);
         }
-        out.push_str(",\"hints\":[");
-        for (i, h) in hints.iter().enumerate() {
-            if i > 0 {
-                out.push(',');
-            }
-            json_string(&mut out, h.as_str());
-        }
-        out.push_str("],\"recovery\":[");
-        for (i, r) in self.recovery.iter().enumerate() {
-            if i > 0 {
-                out.push(',');
-            }
-            out.push_str("{\"tool\":");
-            json_string(&mut out, &r.tool);
-            out.push_str(",\"params\":");
-            crate::recovery::push_params_json(&mut out, &r.params);
-            if let Some(reason) = &r.reason {
-                out.push_str(",\"reason\":");
-                json_string(&mut out, reason);
-            }
-            out.push('}');
-        }
-        out.push_str("],\"isError\":");
-        out.push_str(if is_error { "true" } else { "false" });
+        out.push_str(",\"hints\":");
+        json::push_str_array(&mut out, hints.iter().map(Hint::as_str));
+        out.push_str(",\"recovery\":");
+        json::push_array(&mut out, &self.recovery, json::push_recovery);
+        out.push_str(",\"isError\":");
+        json::push_bool(&mut out, is_error);
         out.push('}');
         out
     }
@@ -546,8 +543,8 @@ struct Part<'a> {
     name: &'a str,
     /// The block's text without its `truncated` block or `totalCount` line.
     text: String,
-    /// Cut cells as `(row, field name, chars removed)`.
-    cuts: Vec<(usize, String, usize)>,
+    /// Cut cells, for the `truncated` block.
+    cuts: Vec<crate::toon::table::Cut<'a>>,
     /// The `totalCount` this block reports, when it reports one.
     total: Option<usize>,
 }
@@ -581,119 +578,43 @@ fn join_block(out: &mut String, block: &str) {
     out.push_str(block);
 }
 
-/// The `truncated` block for the cuts of `parts`. A single block uses the inline shape
-/// (`{row,field,removed}`); several share one table with a leading `section` column.
-fn truncated_table(parts: &[Part<'_>]) -> String {
-    use std::fmt::Write as _;
-    let n: usize = parts.iter().map(|p| p.cuts.len()).sum();
-    let mut out = String::with_capacity(48 + n * 32);
-    let multi = parts.iter().filter(|p| !p.cuts.is_empty()).count() > 1;
-    let _ = write!(out, "truncated[{n}]{}:", if multi { "{section,row,field,removed}" } else { "{row,field,removed}" });
-    for p in parts {
-        for (row, field, removed) in &p.cuts {
-            out.push_str("\n  ");
-            if multi {
-                out.push_str(&crate::toon::escape_value(p.name));
-                out.push(',');
-            }
-            let _ = write!(out, "{row},{},{removed}", crate::toon::escape_value(field));
-        }
-    }
-    out
-}
-
-/// The merged `totalCount[N]{section,total}:` table, for two or more blocks that report a total.
-fn total_table(parts: &[Part<'_>]) -> String {
-    use std::fmt::Write as _;
-    let n = parts.iter().filter(|p| p.total.is_some()).count();
-    let mut out = String::with_capacity(32 + n * 24);
-    let _ = write!(out, "totalCount[{n}]{{section,total}}:");
-    for p in parts {
-        if let Some(total) = p.total {
-            let _ = write!(out, "\n  {},{total}", crate::toon::escape_value(p.name));
-        }
-    }
-    out
-}
-
-/// A TOON cell value as JSON. Non-finite floats are `null`, as in the text render.
-fn push_value_json(out: &mut String, v: &Value) {
-    use std::fmt::Write as _;
-    match v {
-        Value::Str(s) => json_string(out, s),
-        Value::Int(n) => {
-            let _ = write!(out, "{n}");
-        }
-        Value::UInt(n) => {
-            let _ = write!(out, "{n}");
-        }
-        Value::Float(f) => crate::toon::push_f64(out, *f),
-        Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-        _ => out.push_str("null"),
-    }
-}
-
 /// One section as the JSON object spec 07 section 5 describes. Rows carry the full values: the per-cell cap shapes
-/// the text render, and `structuredContent` is the typed copy of the same data.
+/// the text render, and `structuredContent` is the typed copy of the same data. `returnedCount` and `truncated` are
+/// the section's own derived facts, the ones the text render uses.
 fn push_section_json(out: &mut String, s: &Section) {
-    use std::fmt::Write as _;
     out.push_str("{\"name\":");
-    json_string(out, &s.name);
-    match &s.body {
+    json::push_str(out, s.name());
+    match s.body() {
         SectionBody::Toon { fields, rows } => {
-            out.push_str(",\"kind\":\"toon\",\"fields\":[");
-            for (i, f) in fields.iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
-                json_string(out, f);
-            }
-            out.push_str("],\"rows\":[");
-            for (i, row) in rows.iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
-                out.push('[');
-                for (j, cell) in row.iter().enumerate() {
-                    if j > 0 {
-                        out.push(',');
-                    }
-                    push_value_json(out, cell);
-                }
-                out.push(']');
-            }
-            out.push(']');
+            out.push_str(",\"kind\":\"toon\",\"fields\":");
+            json::push_str_array(out, fields.iter().map(String::as_str));
+            out.push_str(",\"rows\":");
+            json::push_array(out, rows, |out, row| json::push_array(out, row, json::push_value));
         }
         SectionBody::Kv(items) => {
-            out.push_str(",\"kind\":\"kv\",\"items\":[");
-            for (i, item) in items.iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
+            out.push_str(",\"kind\":\"kv\",\"items\":");
+            json::push_array(out, items, |out, item| {
                 out.push_str("{\"key\":");
-                json_string(out, &item.key);
+                json::push_str(out, &item.key);
                 out.push_str(",\"value\":");
-                crate::kv::kv_value_to_json(out, &item.value);
+                json::push_kv_value(out, &item.value);
                 out.push('}');
-            }
-            out.push(']');
+            });
         }
-        SectionBody::Text(text) => {
+        SectionBody::Text { text, .. } => {
             out.push_str(",\"kind\":\"text\",\"text\":");
-            json_string(out, text);
+            json::push_str(out, text);
         }
     }
-    let _ = write!(out, ",\"returnedCount\":{}", s.count());
-    if let Some(total) = s.total_count {
-        let _ = write!(out, ",\"totalCount\":{total}");
+    out.push_str(",\"returnedCount\":");
+    json::push_uint(out, s.count() as u64);
+    if let Some(total) = s.total() {
+        out.push_str(",\"totalCount\":");
+        json::push_uint(out, total as u64);
     }
     out.push_str(",\"truncated\":");
-    out.push_str(if s.truncated { "true" } else { "false" });
+    json::push_bool(out, s.truncated());
     out.push('}');
-}
-
-fn json_string(out: &mut String, s: &str) {
-    crate::kv::json_escape_str(out, s);
 }
 
 #[cfg(test)]

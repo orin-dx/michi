@@ -349,39 +349,19 @@ impl DomainError {
         });
         let mut out = String::with_capacity(140 + self.message.len() + causes_est + hints_est + recovery_est);
         out.push_str("{\"isError\":true,\"error\":");
-        crate::kv::json_escape_str(&mut out, self.code.label());
+        crate::json::push_str(&mut out, self.code.label());
         out.push_str(",\"message\":");
-        crate::kv::json_escape_str(&mut out, &self.message);
-        out.push_str(",\"causes\":[");
-        for (i, c) in self.causes.iter().enumerate() {
-            if i > 0 {
-                out.push(',');
-            }
-            crate::kv::json_escape_str(&mut out, c);
-        }
-        out.push_str("],\"retryable\":");
-        out.push_str(if self.retryable { "true" } else { "false" });
-        out.push_str(",\"hints\":[");
-        for (i, h) in self.hints.iter().enumerate() {
-            if i > 0 {
-                out.push(',');
-            }
-            crate::kv::json_escape_str(&mut out, h.as_str());
-        }
-        out.push_str("],\"recovery\":");
+        crate::json::push_str(&mut out, &self.message);
+        out.push_str(",\"causes\":");
+        crate::json::push_str_array(&mut out, self.causes.iter().map(String::as_str));
+        out.push_str(",\"retryable\":");
+        crate::json::push_bool(&mut out, self.retryable);
+        out.push_str(",\"hints\":");
+        crate::json::push_str_array(&mut out, self.hints.iter().map(Hint::as_str));
+        out.push_str(",\"recovery\":");
         match &self.recovery {
             None => out.push_str("null"),
-            Some(r) => {
-                out.push_str("{\"tool\":");
-                crate::kv::json_escape_str(&mut out, &r.tool);
-                out.push_str(",\"params\":");
-                crate::recovery::push_params_json(&mut out, &r.params);
-                if let Some(reason) = &r.reason {
-                    out.push_str(",\"reason\":");
-                    crate::kv::json_escape_str(&mut out, reason);
-                }
-                out.push('}');
-            }
+            Some(r) => crate::json::push_recovery(&mut out, r),
         }
         out.push('}');
         out

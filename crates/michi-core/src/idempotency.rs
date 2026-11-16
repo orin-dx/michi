@@ -1,3 +1,7 @@
+use std::fmt::Write as _;
+
+use crate::toon::table::{self, Cell};
+
 /// One operation's identity within a batch: where it sat in the caller's op slice, what it was called, and (for
 /// skipped operations) why it did not run.
 ///
@@ -122,42 +126,33 @@ impl PartialSuccess {
                     .map(|s| s.operation.len() + s.reason.as_ref().map_or(4, String::len) + 24)
                     .sum::<usize>(),
         );
-        out.push_str("partial_success: \"");
-        out.push_str(&self.completed.len().to_string());
-        out.push_str(" completed, ");
-        out.push_str(&self.failed.len().to_string());
-        out.push_str(" failed, ");
-        out.push_str(&self.skipped.len().to_string());
-        out.push_str(" skipped\"");
+        let _ = write!(
+            out,
+            "partial_success: \"{} completed, {} failed, {} skipped\"",
+            self.completed.len(),
+            self.failed.len(),
+            self.skipped.len()
+        );
 
         if !self.completed.is_empty() {
-            push_table_header(&mut out, "completed", self.completed.len(), "index,operation");
+            table::push_header(&mut out, "completed", self.completed.len(), ["index", "operation"]);
             for c in &self.completed {
-                push_row_start(&mut out, c.index);
-                out.push_str(&crate::toon::escape_value(&c.operation));
+                table::push_row(&mut out, &[Cell::count(c.index), Cell::Str(&c.operation)]);
             }
         }
 
         if !self.failed.is_empty() {
-            push_table_header(&mut out, "failed", self.failed.len(), "index,operation,reason");
+            table::push_header(&mut out, "failed", self.failed.len(), ["index", "operation", "reason"]);
             for f in &self.failed {
-                push_row_start(&mut out, f.index);
-                out.push_str(&crate::toon::escape_value(&f.operation));
-                out.push(',');
-                out.push_str(&crate::toon::escape_value(&f.reason));
+                table::push_row(&mut out, &[Cell::count(f.index), Cell::Str(&f.operation), Cell::Str(&f.reason)]);
             }
         }
 
         if !self.skipped.is_empty() {
-            push_table_header(&mut out, "skipped", self.skipped.len(), "index,operation,reason");
+            table::push_header(&mut out, "skipped", self.skipped.len(), ["index", "operation", "reason"]);
             for s in &self.skipped {
-                push_row_start(&mut out, s.index);
-                out.push_str(&crate::toon::escape_value(&s.operation));
-                out.push(',');
-                match &s.reason {
-                    Some(r) => out.push_str(&crate::toon::escape_value(r)),
-                    None => out.push_str("null"),
-                }
+                let cells = [Cell::count(s.index), Cell::Str(&s.operation), Cell::opt_str(s.reason.as_deref())];
+                table::push_row(&mut out, &cells);
             }
         }
 
@@ -173,24 +168,6 @@ impl PartialSuccess {
     pub fn exit_code(&self) -> i32 {
         i32::from(!self.failed.is_empty())
     }
-}
-
-/// Append `\n{key}[N]{columns}:`, the header of a TOON 4.4 tabular array (§9.3).
-fn push_table_header(out: &mut String, key: &str, len: usize, columns: &str) {
-    out.push('\n');
-    out.push_str(key);
-    out.push('[');
-    out.push_str(&len.to_string());
-    out.push_str("]{");
-    out.push_str(columns);
-    out.push_str("}:");
-}
-
-/// Append `\n  {index},`, the start of a table row.
-fn push_row_start(out: &mut String, index: usize) {
-    out.push_str("\n  ");
-    out.push_str(&index.to_string());
-    out.push(',');
 }
 
 #[cfg(test)]

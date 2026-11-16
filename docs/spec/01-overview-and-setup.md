@@ -178,7 +178,7 @@ michi/                           (workspace root — virtual manifest, no packag
       src/
         lib.rs                   # module declarations, explicit root re-exports (incl. resilience and truncate items), Result<T>
         audience.rs              # Audience — always compiled
-        budget.rs                # BudgetSummary, SectionCost and their render/JSON
+        budget.rs                # BudgetSummary and its render/JSON (roll-up derived from the sections)
         empty.rs                 # empty_state(), empty_state_with_hints() and their try_ forms
         error.rs                 # Error, ErrorCode, DomainError, ErrorClass, Sensitive<T>,
                                   # MAY_HAVE_TAKEN_EFFECT_HINT
@@ -188,6 +188,7 @@ michi/                           (workspace root — virtual manifest, no packag
                                   # (that's resilience::AlreadyDone/already_done(); the
                                   # module name is a known, tracked naming staleness)
         int_schema.rs            # integer JSON Schemas (schemars feature, private)
+        json.rs                  # the hand-built JSON writers every structured companion shares (private)
         kv/mod.rs                # render_kv(), KvItem, KvValue, KvError
         mcp.rs                   # ContentBlock, CallToolResult, StructuredContentError — always compiled
         napi.rs                  # #[napi] exports (napi feature only)
@@ -208,6 +209,7 @@ michi/                           (workspace root — virtual manifest, no packag
           mod.rs                 # ToonOptions, ToonError, render_toon(), list() (serde feature), size limits
           escape.rs              # escape_value(), escape_value_quoted(), escape_key(); canonical numbers
           render.rs              # Value, ToonDocument; string assembly with pre-allocated capacity
+          table.rs               # the one writer for michi's own tabular blocks (truncated, totalCount, roll-up, …)
         truncate.rs              # Truncated, truncate()
         truncation.rs            # TruncationOutcome, truncate_by_count(), truncate_by_size()
       benches/

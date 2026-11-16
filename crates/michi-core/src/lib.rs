@@ -78,6 +78,7 @@ pub mod hints;
 pub mod idempotency;
 #[cfg(feature = "schemars")]
 mod int_schema;
+mod json;
 /// Key-value single-item rendering (`key: value`).
 pub mod kv;
 /// MCP `CallToolResult` mapping.
@@ -115,7 +116,7 @@ pub mod truncation;
 pub(crate) mod test_support;
 
 pub use audience::Audience;
-pub use budget::{BudgetSummary, SectionCost};
+pub use budget::BudgetSummary;
 pub use empty::{empty_state, empty_state_with_hints, try_empty_state, try_empty_state_with_hints};
 pub use error::{DomainError, Error, ErrorClass, ErrorCode, Sensitive, MAY_HAVE_TAKEN_EFFECT_HINT};
 pub use hints::{append_hints, render_hints, Hint};

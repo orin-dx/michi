@@ -114,24 +114,21 @@ fn truncate_by_size_is_linear_in_items() {
 
 #[test]
 fn envelope_render_is_linear_in_section_count() {
-    use michi_core::{AgentResponse, BudgetSummary, OutputFormat, Section, SectionCost};
+    use michi_core::{AgentResponse, BudgetSummary, OutputFormat, Section};
     // Every section carries a cut cell and a total, so the merged `truncated` and `totalCount` tables, the budget
-    // roll-up and the JSON `sections` array all grow with the section count.
+    // roll-up (derived from the sections) and the JSON `sections` array all grow with the section count.
     for format in [OutputFormat::Text, OutputFormat::Json] {
         assert_linear(
             "AgentResponse sections",
             300,
             |n| {
                 let mut r = AgentResponse::new("t").truncate_cells_at(8).truncation_hint("full=true");
-                let mut budget = BudgetSummary::new();
                 for i in 0..n {
                     let name = format!("section.{i}");
                     let rows = vec![vec![Value::from(format!("a long cell value {i}")), Value::Int(i as i64)]];
-                    let section = Section::toon(name.clone(), vec!["a".into(), "b".into()], rows).total_count(Some(n));
-                    r = r.section(section);
-                    budget = budget.section(SectionCost::new(name, 1).total(n as u64));
+                    r = r.section(Section::toon(name, vec!["a".into(), "b".into()], rows).total_count(Some(n)));
                 }
-                r.budget(budget)
+                r.budget(BudgetSummary::new().tokens_used(1))
             },
             |r| {
                 black_box(r.render(format));

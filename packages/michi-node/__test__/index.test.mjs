@@ -484,7 +484,9 @@ void describe('render_toon validate() surfacing (SPEC-NAPI-POINTFIX-001)', () =>
   void it('AC-009b rejects a reserved type_name', () => {
     assert.throws(
       () => renderToon({ typeName: 'help', fields: ['x'], rows: [[{ type: 'str', strVal: 'v' }]], hints: [] }),
-      (err) => err.message === 'toon_validation_failed: type_name "help" is a reserved document key (totalCount, help, recovery, truncated)'
+      (err) =>
+        err.message ===
+        'toon_validation_failed: type_name "help" is a reserved document key (totalCount, help, recovery, truncated, budget, sections, provenance, error, message, causes, exit_code)'
     )
   })
   void it('AC-010 quotes a field name containing a structural character (TOON 4.4 §7.3)', () => {

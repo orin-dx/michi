@@ -1,14 +1,19 @@
-//! Response-level budget report: what ceilings a caller worked under, what the response cost, and what each section
-//! cost. michi renders a budget; it never computes one. See `docs/spec/07-wisp-and-monokl-envelope.md` §2.
+//! Response-level budget report: what ceilings a caller worked under and what the response cost. michi renders a
+//! budget; it never computes one. See `docs/spec/07-wisp-and-monokl-envelope.md` §2.
 
 use std::fmt::Write as _;
 
-/// What a budget block renders: the ceilings a caller was working under, what the response cost against them, and
-/// what that cost each section.
+use crate::section::Section;
+use crate::toon::table::{self, Cell};
+
+/// What a budget block renders: the ceilings a caller was working under and what the response cost against them.
 ///
 /// Every number is optional, so a caller who measured only tokens sets two fields and leaves the rest empty. Absent
 /// fields are omitted from the rendered block, never written as `null`. `u64` rather than `usize` because these
 /// values reach JSON, where a platform-dependent width means nothing.
+///
+/// The per-section roll-up is not part of this type: michi derives it from the response's own sections when it
+/// renders, so the roll-up can only name sections the response holds, with the counts they render.
 ///
 /// `#[non_exhaustive]`: start from [`BudgetSummary::new`] or `Default` and use the builder methods.
 ///
@@ -38,14 +43,13 @@ pub struct BudgetSummary {
     /// Bytes the response cost, as the caller measured it.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub bytes_used: Option<u64>,
-    /// Whether the budget forced anything out of the response.
+    /// Whether the budget dropped something the sections cannot show, such as a whole section left out. The rendered
+    /// `truncated` is also true whenever a section of the response was cut.
     pub truncated: bool,
-    /// Per-section accounting, rendered in the order given.
-    pub sections: Vec<SectionCost>,
 }
 
 impl BudgetSummary {
-    /// An empty summary: no ceilings, no measurements, not truncated, no sections.
+    /// An empty summary: no ceilings, no measurements, not truncated.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -86,57 +90,8 @@ impl BudgetSummary {
         self
     }
 
-    /// Set whether the budget forced anything out of the response.
-    #[must_use]
-    pub fn truncated(mut self, truncated: bool) -> Self {
-        self.truncated = truncated;
-        self
-    }
-
-    /// Append one section's accounting line. Lines render in the order added.
-    #[must_use]
-    pub fn section(mut self, cost: SectionCost) -> Self {
-        self.sections.push(cost);
-        self
-    }
-}
-
-/// One section's line in the budget roll-up.
-///
-/// `#[non_exhaustive]`: build it with [`SectionCost::new`] and the builder methods.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
-#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
-#[cfg_attr(feature = "schemars", schemars(rename_all = "camelCase"))]
-#[non_exhaustive]
-pub struct SectionCost {
-    /// The section's name.
-    pub name: String,
-    /// How many items the section returned.
-    pub returned: u64,
-    /// How many existed before truncation, when the caller knows.
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
-    pub total: Option<u64>,
-    /// Whether this section was cut.
-    pub truncated: bool,
-}
-
-impl SectionCost {
-    /// A section line with no known total, not truncated.
-    #[must_use]
-    pub fn new(name: impl Into<String>, returned: u64) -> Self {
-        Self { name: name.into(), returned, total: None, truncated: false }
-    }
-
-    /// Set how many items existed before truncation.
-    #[must_use]
-    pub fn total(mut self, total: u64) -> Self {
-        self.total = Some(total);
-        self
-    }
-
-    /// Set whether this section was cut.
+    /// Set whether the budget dropped something the sections cannot show (a section left out entirely). A cut a
+    /// section reports through its own total needs no call: it makes the rendered `truncated` true by itself.
     #[must_use]
     pub fn truncated(mut self, truncated: bool) -> Self {
         self.truncated = truncated;
@@ -144,29 +99,29 @@ impl SectionCost {
     }
 }
 
-/// Render the `budget:` block, with no trailing newline. When `show_rollup` is set and there are sections, the
-/// `sections[n]{name,returned,total,truncated}:` table follows. An unknown `total` is the TOON `null` cell, because a
-/// table row needs a value in every column.
-pub(crate) fn render_budget_block(b: &BudgetSummary, show_rollup: bool) -> String {
-    let mut out = String::with_capacity(160 + b.sections.len() * 48);
+/// The `truncated` value a budget renders: the caller's flag, or any section that was cut.
+fn rendered_truncated(b: &BudgetSummary, sections: &[Section]) -> bool {
+    b.truncated || sections.iter().any(Section::truncated)
+}
+
+/// Render the `budget:` block, with no trailing newline. With two or more `sections`, the
+/// `sections[n]{name,returned,total,truncated}:` roll-up of those sections follows. An unknown `total` is the TOON
+/// `null` cell, because a table row needs a value in every column.
+pub(crate) fn render_budget_block(b: &BudgetSummary, sections: &[Section]) -> String {
+    let mut out = String::with_capacity(160 + sections.len() * 48);
     out.push_str("budget:");
     for (key, value) in numbers(b) {
         if let Some(n) = value {
             let _ = write!(out, "\n  {key}: {n}");
         }
     }
-    let _ = write!(out, "\n  truncated: {}", b.truncated);
-    if show_rollup && !b.sections.is_empty() {
-        let _ = write!(out, "\nsections[{}]{{name,returned,total,truncated}}:", b.sections.len());
-        for s in &b.sections {
-            let _ = write!(out, "\n  {},{},", crate::toon::escape_value(&s.name), s.returned);
-            match s.total {
-                Some(t) => {
-                    let _ = write!(out, "{t}");
-                }
-                None => out.push_str("null"),
-            }
-            let _ = write!(out, ",{}", s.truncated);
+    let _ = write!(out, "\n  truncated: {}", rendered_truncated(b, sections));
+    if sections.len() >= 2 {
+        table::push_header(&mut out, "sections", sections.len(), ["name", "returned", "total", "truncated"]);
+        for s in sections {
+            let cells =
+                [Cell::Str(s.name()), Cell::count(s.count()), Cell::opt_count(s.total()), Cell::Bool(s.truncated())];
+            table::push_row(&mut out, &cells);
         }
     }
     out
@@ -183,45 +138,42 @@ fn numbers(b: &BudgetSummary) -> [(&'static str, Option<u64>); 5] {
     ]
 }
 
-/// The budget as a JSON object with camelCase keys. `sections` is always present; absent numbers are omitted.
-pub(crate) fn budget_json(b: &BudgetSummary) -> String {
-    let mut out = String::with_capacity(128 + b.sections.len() * 64);
+/// Append the budget as a JSON object with camelCase keys; absent numbers are omitted. There is no per-section list:
+/// the response's own `sections` array carries each section's counts.
+pub(crate) fn push_budget_json(out: &mut String, b: &BudgetSummary, sections: &[Section]) {
     out.push('{');
     for (key, value) in numbers(b) {
         if let Some(n) = value {
             let _ = write!(out, "\"{key}\":{n},");
         }
     }
-    let _ = write!(out, "\"truncated\":{},\"sections\":[", b.truncated);
-    for (i, s) in b.sections.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        out.push_str("{\"name\":");
-        crate::kv::json_escape_str(&mut out, &s.name);
-        let _ = write!(out, ",\"returned\":{}", s.returned);
-        if let Some(t) = s.total {
-            let _ = write!(out, ",\"total\":{t}");
-        }
-        let _ = write!(out, ",\"truncated\":{}}}", s.truncated);
-    }
-    out.push_str("]}");
-    out
+    out.push_str("\"truncated\":");
+    crate::json::push_bool(out, rendered_truncated(b, sections));
+    out.push('}');
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::toon::Value;
 
     fn spec_example() -> BudgetSummary {
-        BudgetSummary::new()
-            .tokens_used(7412)
-            .bytes_used(31208)
-            .max_tokens(8000)
-            .max_bytes(2_097_152)
-            .truncated(true)
-            .section(SectionCost::new("brief.symbols", 12).total(40).truncated(true))
-            .section(SectionCost::new("brief.refs", 5).total(5))
+        BudgetSummary::new().tokens_used(7412).bytes_used(31208).max_tokens(8000).max_bytes(2_097_152)
+    }
+
+    /// The two sections of spec 07's example: 12 of 40 symbols, all 5 refs.
+    fn spec_sections() -> Vec<Section> {
+        let rows = |n| vec![vec![Value::Int(1)]; n];
+        vec![
+            Section::toon("brief.symbols", vec!["n".into()], rows(12)).total_count(Some(40)),
+            Section::toon("brief.refs", vec!["n".into()], rows(5)).total_count(Some(5)),
+        ]
+    }
+
+    fn json(b: &BudgetSummary, sections: &[Section]) -> String {
+        let mut out = String::new();
+        push_budget_json(&mut out, b, sections);
+        out
     }
 
     const SPEC_BLOCK: &str =
@@ -231,59 +183,51 @@ mod tests {
 
     #[test]
     fn spec_example_renders_exactly_with_rollup() {
-        assert_eq!(render_budget_block(&spec_example(), true), format!("{SPEC_BLOCK}{SPEC_ROLLUP}"));
+        assert_eq!(render_budget_block(&spec_example(), &spec_sections()), format!("{SPEC_BLOCK}{SPEC_ROLLUP}"));
     }
 
     #[test]
-    fn rollup_only_when_requested() {
-        assert_eq!(render_budget_block(&spec_example(), false), SPEC_BLOCK);
+    fn rollup_only_with_two_or_more_sections() {
+        assert_eq!(render_budget_block(&spec_example(), &spec_sections()[..1]), SPEC_BLOCK);
     }
 
     #[test]
     fn absent_fields_are_omitted_not_null() {
         let b = BudgetSummary::new().tokens_used(10).max_items(3);
-        let out = render_budget_block(&b, true);
+        let out = render_budget_block(&b, &[]);
         assert_eq!(out, "budget:\n  tokensUsed: 10\n  maxItems: 3\n  truncated: false");
         assert!(!out.contains("null"));
-        assert_eq!(render_budget_block(&BudgetSummary::new(), true), "budget:\n  truncated: false");
+        assert_eq!(render_budget_block(&BudgetSummary::new(), &[]), "budget:\n  truncated: false");
     }
 
     #[test]
     fn unknown_total_is_a_null_cell_and_hostile_names_are_quoted() {
-        let b = BudgetSummary::new().section(SectionCost::new("a,b\nbudget: x", 1));
-        let out = render_budget_block(&b, true);
+        let sections = [Section::kv("a,b\nbudget: x", vec![]), Section::text("n", "x")];
+        let out = render_budget_block(&BudgetSummary::new(), &sections);
         assert_eq!(
             out,
-            "budget:\n  truncated: false\nsections[1]{name,returned,total,truncated}:\n  \"a,b\\nbudget: x\",1,null,false"
+            "budget:\n  truncated: false\nsections[2]{name,returned,total,truncated}:\n  \"a,b\\nbudget: x\",0,null,false\n  \
+             n,1,null,false"
         );
-        assert_eq!(out.lines().count(), 4, "no fake lines");
+        assert_eq!(out.lines().count(), 5, "no fake lines");
     }
 
     #[test]
     fn json_matches_spec_shape() {
         assert_eq!(
-            budget_json(&spec_example()),
-            "{\"tokensUsed\":7412,\"bytesUsed\":31208,\"maxTokens\":8000,\"maxBytes\":2097152,\"truncated\":true,\
-             \"sections\":[{\"name\":\"brief.symbols\",\"returned\":12,\"total\":40,\"truncated\":true},\
-             {\"name\":\"brief.refs\",\"returned\":5,\"total\":5,\"truncated\":false}]}"
+            json(&spec_example(), &spec_sections()),
+            "{\"tokensUsed\":7412,\"bytesUsed\":31208,\"maxTokens\":8000,\"maxBytes\":2097152,\"truncated\":true}"
         );
-        assert_eq!(budget_json(&BudgetSummary::new()), "{\"truncated\":false,\"sections\":[]}");
-        let b = BudgetSummary::new().section(SectionCost::new("x", 1));
-        assert_eq!(
-            budget_json(&b),
-            "{\"truncated\":false,\"sections\":[{\"name\":\"x\",\"returned\":1,\"truncated\":false}]}"
-        );
+        assert_eq!(json(&BudgetSummary::new(), &[]), "{\"truncated\":false}");
+        assert_eq!(json(&BudgetSummary::new().truncated(true), &[]), "{\"truncated\":true}");
     }
 
     #[cfg(feature = "serde")]
     #[test]
     fn hand_built_json_parses_and_matches_serde() {
-        let hostile = BudgetSummary::new()
-            .max_tokens(1)
-            .section(SectionCost::new("q\"uote\\\n\u{1}", 2).total(3))
-            .section(SectionCost::new("plain", 0));
-        for b in [spec_example(), hostile, BudgetSummary::new()] {
-            let hand: serde_json::Value = serde_json::from_str(&budget_json(&b)).expect("valid json");
+        // Without sections the rendered `truncated` is the caller's flag, which is what serde writes.
+        for b in [spec_example(), BudgetSummary::new().max_tokens(1).truncated(true), BudgetSummary::new()] {
+            let hand: serde_json::Value = serde_json::from_str(&json(&b, &[])).expect("valid json");
             let derived = serde_json::to_value(&b).expect("serializes");
             assert_eq!(hand, derived);
         }
@@ -293,7 +237,7 @@ mod tests {
     #[test]
     fn schema_uses_camel_case() {
         let schema = serde_json::to_string(&schemars::schema_for!(BudgetSummary)).expect("schema");
-        for key in ["maxTokens", "tokensUsed", "bytesUsed", "maxItems", "returned"] {
+        for key in ["maxTokens", "tokensUsed", "bytesUsed", "maxItems"] {
             assert!(schema.contains(key), "{key} missing from {schema}");
         }
         assert!(!schema.contains("tokens_used"));

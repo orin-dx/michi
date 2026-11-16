@@ -13,10 +13,44 @@
 
 mod escape;
 pub(crate) mod render;
+pub(crate) mod table;
 
 pub(crate) use escape::push_f64;
 pub use escape::{escape_key, escape_value, escape_value_quoted};
 pub use render::{ToonDocument, Value};
+
+/// Every root key michi writes itself, the one list each writer and the response's collision check share. No caller
+/// name may take one: not a TOON type name, not a KV key, not a section name. `truncated`, `totalCount`, `help` and
+/// `recovery` follow a body; `budget`, `sections` and `provenance` are the envelope blocks; `error`, `message`,
+/// `causes` and `exit_code` are the error document's keys, reserved even on success so caller data can never render
+/// something that reads as an error while `isError` is false.
+pub(crate) const RESERVED_ROOT_KEYS: [&str; 11] = [
+    "totalCount",
+    "help",
+    "recovery",
+    "truncated",
+    "budget",
+    "sections",
+    "provenance",
+    "error",
+    "message",
+    "causes",
+    "exit_code",
+];
+
+/// Whether `key` is one of [`RESERVED_ROOT_KEYS`].
+pub(crate) fn is_reserved_root_key(key: &str) -> bool {
+    RESERVED_ROOT_KEYS.contains(&key)
+}
+
+/// [`RESERVED_ROOT_KEYS`] as the comma-separated list error messages print.
+pub(crate) struct ReservedRootKeys;
+
+impl std::fmt::Display for ReservedRootKeys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&RESERVED_ROOT_KEYS.join(", "))
+    }
+}
 
 /// Most header fields one TOON list may declare. [`ToonOptions::validate()`] returns [`ToonError::TooManyFields`] past
 /// it, and `list()` checks it against the union of item keys before building any row.
@@ -41,8 +75,10 @@ pub const MAX_TRUNCATION_HINT_CHARS: usize = 256;
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum ToonError {
-    /// `type_name` is a root key michi composes next to a list (`totalCount`, `help`, `recovery` or `truncated`); using it would
-    /// emit a duplicate key, which TOON 4.4 §14.3 forbids. Any other name is valid and is quoted when §7.3 requires.
+    /// `type_name` is a root key michi writes itself (`totalCount`, `help`, `recovery`, `truncated`, `budget`,
+    /// `sections`, `provenance`, `error`, `message`, `causes` or `exit_code`). Using it could repeat a key, which TOON
+    /// 4.4 §14.3 forbids, or pass caller data off as one of michi's own blocks. Any other name is valid and is quoted
+    /// when §7.3 requires.
     InvalidTypeName {
         /// The offending name.
         name: String,
@@ -101,7 +137,7 @@ impl std::fmt::Display for ToonError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InvalidTypeName { name } => {
-                write!(f, "type_name {name:?} is a reserved document key (totalCount, help, recovery, truncated)")
+                write!(f, "type_name {name:?} is a reserved document key ({ReservedRootKeys})")
             }
             Self::InvalidFieldName { name } => {
                 write!(f, "field {name:?} appears more than once")
@@ -131,7 +167,8 @@ impl std::error::Error for ToonError {}
 #[non_exhaustive]
 pub struct ToonOptions {
     /// Snake_case type name, e.g. `"issue"`, `"component"`: the key of the list entry. Names outside TOON's
-    /// unquoted-key pattern are quoted (§7.3); `totalCount`, `help`, `recovery` and `truncated` are reserved.
+    /// unquoted-key pattern are quoted (§7.3); the root keys michi writes itself are reserved (see
+    /// [`ToonError::InvalidTypeName`]).
     pub type_name: String,
     /// Ordered, distinct field names for the header, e.g. `["number", "title", "state"]`, quoted when §7.3 requires.
     /// Not emitted when `rows` is empty (an empty list renders as `type: []`).
@@ -213,7 +250,7 @@ impl ToonOptions {
     /// # Errors
     ///
     /// Returns [`ToonError::InvalidTypeName`] if `type_name` is a reserved
-    /// root key (`totalCount`, `help`, `recovery` or `truncated`), [`ToonError::TooManyFields`] past [`MAX_FIELDS`] fields,
+    /// root key (see the variant), [`ToonError::TooManyFields`] past [`MAX_FIELDS`] fields,
     /// [`ToonError::InvalidFieldName`] if a field name appears more than once, [`ToonError::TooManyCells`] if
     /// `rows × fields` is past [`MAX_CELLS`], [`ToonError::TruncationHintTooLong`] if the truncation hint is past
     /// [`MAX_TRUNCATION_HINT_CHARS`] chars, or [`ToonError::RowLengthMismatch`]
@@ -293,7 +330,7 @@ fn json_value_to_toon_value(v: Option<&serde_json::Value>) -> Value {
 /// Returns [`ToonError::InvalidItem`] if an item fails to serialize or does
 /// not produce a JSON object (struct or map required). Returns
 /// [`ToonError::InvalidTypeName`] if `type_name` is a reserved root key
-/// (`totalCount`, `help`, `recovery` or `truncated`). Returns [`ToonError::TooManyFields`] if the items' keys add up to more than
+/// (see the variant). Returns [`ToonError::TooManyFields`] if the items' keys add up to more than
 /// [`MAX_FIELDS`] distinct names, or [`ToonError::TooManyCells`] if `items.len()` times that header width is past
 /// [`MAX_CELLS`]; both are checked before any row is built.
 #[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
@@ -328,7 +365,7 @@ pub fn list<T: serde::Serialize>(type_name: impl Into<String>, items: &[T]) -> R
     }
     // Check the shape before building rows: a sparse item set whose key union is wide would otherwise expand into
     // rows × fields cells here, before validate() could reject it.
-    if !render::RESERVED_TYPE_NAMES.contains(&type_name.as_str()) {
+    if !is_reserved_root_key(&type_name) {
         if fields.len() > MAX_FIELDS {
             return Err(ToonError::TooManyFields { count: fields.len(), max: MAX_FIELDS });
         }
@@ -357,21 +394,14 @@ mod ac032_public_surface_tests {
         let _list: fn(&str, &[serde_json::Value]) -> Result<String, ToonError> = |t, items| crate::toon::list(t, items);
     }
 
+    // The api_surface signatures, checked by the compiler rather than by reading source text: `render_toon` is pinned
+    // as a fallible fn pointer by the `const _` beside it, `#[must_use]` on `ToonOptions::new` by
+    // `tests/ui-fail/toon_options_new_must_use.rs`, and `list` taking `impl Into<String>` by the two calls below.
+    #[cfg(feature = "serde")]
     #[test]
-    fn must_use_and_list_signature_match_the_spec() {
-        let src = include_str!("mod.rs");
-        assert!(
-            src.contains("#[must_use]\n    pub fn new("),
-            "ToonOptions::new must carry #[must_use] per api_surface"
-        );
-        assert!(
-            src.contains("pub fn render_toon(opts: &ToonOptions) -> Result<String, ToonError>"),
-            "render_toon must be the fallible signature per api_surface, with no #[must_use] (Result is already must_use)"
-        );
-        assert!(
-            src.contains("pub fn list<T: serde::Serialize>(type_name: impl Into<String>, items: &[T])"),
-            "list's first parameter must be impl Into<String>, not &str, per api_surface"
-        );
+    fn list_takes_any_string_type_name() {
+        let items = [serde_json::json!({"a": 1})];
+        assert_eq!(crate::toon::list("t", &items), crate::toon::list(String::from("t"), &items));
     }
 }
 
@@ -419,7 +449,7 @@ mod validate_tests {
 
     #[test]
     fn validate_rejects_reserved_type_names() {
-        for name in ["totalCount", "help"] {
+        for name in RESERVED_ROOT_KEYS {
             assert!(matches!(opts(name, &[], vec![]).validate(), Err(ToonError::InvalidTypeName { .. })), "{name}");
         }
     }
@@ -477,7 +507,8 @@ mod validate_tests {
     fn error_display_names_the_rule() {
         assert_eq!(
             ToonError::InvalidTypeName { name: "help".into() }.to_string(),
-            "type_name \"help\" is a reserved document key (totalCount, help, recovery, truncated)"
+            "type_name \"help\" is a reserved document key (totalCount, help, recovery, truncated, budget, sections, \
+             provenance, error, message, causes, exit_code)"
         );
         assert_eq!(ToonError::InvalidFieldName { name: "a".into() }.to_string(), "field \"a\" appears more than once");
     }
@@ -836,22 +867,5 @@ mod list_tests {
     fn nested_values_become_quoted_json_text() {
         let result = list("t", &[serde_json::json!({"o": {"x": 1}, "a": [1, 2]})]);
         assert_eq!(result, Ok("t[1]{o,a}:\n  \"{\\\"x\\\":1}\",\"[1,2]\"".to_string()));
-    }
-}
-
-#[cfg(test)]
-mod ac013_docs_guard_tests {
-    use crate::toon::render::test_scan::strip_test_modules;
-
-    #[test]
-    fn validate_docs_do_not_claim_opt_in() {
-        let non_test = strip_test_modules(include_str!("mod.rs"));
-        let opt_in_needle = ["Caller", "opt-in"].join(" ");
-        assert!(!non_test.contains(&opt_in_needle), "validate's rustdoc must not describe validation as opt-in");
-        let principles_needle = ["PRINCIPLES.md", "§1"].join(" ");
-        assert!(
-            !non_test.contains(&principles_needle),
-            "validate's rustdoc must not reference the nonexistent PRINCIPLES.md §1"
-        );
     }
 }

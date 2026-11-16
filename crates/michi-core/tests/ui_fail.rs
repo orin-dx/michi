@@ -14,6 +14,8 @@
 //! 0.4 API hygiene: `FailedOp`, `PartialSuccess`, `KvItem`, `StatusItem`, `RecoveryHint`, `PipelineStep` and
 //! `Pipeline` reject struct literals (E0639), and `toon::Value`, `KvValue` and `RetryConfigError` reject a match
 //! without a wildcard arm (E0004).
+//! Envelope integrity: `Section` has no assignable count, total or cut flag and no `truncated(bool)` setter, and
+//! `BudgetSummary` has no hand-typed per-section roll-up (`SectionCost` is gone).
 
 #[test]
 fn non_exhaustive_and_no_serde_types_reject_the_forbidden_construction() {
@@ -29,6 +31,7 @@ fn non_exhaustive_and_no_serde_types_reject_the_forbidden_construction() {
     t.compile_fail("tests/ui-fail/step_status_exhaustive_match.rs");
     t.compile_fail("tests/ui-fail/api_hygiene_struct_literals.rs");
     t.compile_fail("tests/ui-fail/api_hygiene_exhaustive_match.rs");
+    t.compile_fail("tests/ui-fail/section_facts_are_derived.rs");
     #[cfg(feature = "schemars")]
     t.compile_fail("tests/ui-fail/unserialized_types_no_schema.rs");
 }

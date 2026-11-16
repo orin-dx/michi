@@ -172,7 +172,7 @@ const out = new AgentResponse("issues")
 
 Any `#[napi]` function returning `napi::Result<T>` throws a JS `Error` on `Err`. Two practices apply here:
 
-- Wrap fallible conversions (row shape mismatches, oversized inputs) in `Result` and surface them as `napi::Error::from_reason(...)`. Inputs that cannot form a valid TOON document throw with a prefixed message: `toon_validation_failed: …` from `renderToon`, `emptyState` and `emptyStateWithHints` (a reserved `typeName`), `kv_validation_failed: …` from `renderKv` (a duplicate key, or a reserved `totalCount`/`help`/`recovery` key). `renderPipeline` throws for a status or reason that does not name a `StepStatus` (`unknown step status "done": expected one of pending, …`, `step status "skipped" needs a reason: prerequisite_failed or cancelled`, `step status "completed" takes no reason, got "timeout"`).
+- Wrap fallible conversions (row shape mismatches, oversized inputs) in `Result` and surface them as `napi::Error::from_reason(...)`. Inputs that cannot form a valid TOON document throw with a prefixed message: `toon_validation_failed: …` from `renderToon`, `emptyState` and `emptyStateWithHints` (a reserved `typeName`), `kv_validation_failed: …` from `renderKv` (a duplicate key, or a reserved root key such as `help` or `message`; the list is in [02](02-toon-format.md#trust-model)). `renderPipeline` throws for a status or reason that does not name a `StepStatus` (`unknown step status "done": expected one of pending, …`, `step status "skipped" needs a reason: prerequisite_failed or cancelled`, `step status "completed" takes no reason, got "timeout"`).
 - Annotate exports that call into non-trivial rendering with `#[napi(catch_unwind)]`.
   - Without it: **a Rust panic crashes the entire Node process** — there's no isolation boundary.
   - With it: a panic becomes a thrown JS `Error` (or a rejected `Promise` for async) instead of process death.
@@ -286,7 +286,7 @@ export interface ToonOptions {
 export declare function renderToon(opts: ToonOptions): string;
 
 /** Render a definitive empty-state TOON response: `typeName: []\ntotalCount: 0` (no trailing newline).
- * Throws `toon_validation_failed: …` for a reserved `typeName` (`totalCount`, `help`, `recovery`, `truncated`), like `renderToon`. */
+ * Throws `toon_validation_failed: …` for a reserved `typeName` (a root key michi writes itself, such as `help` or `error`), like `renderToon`. */
 export declare function emptyState(typeName: string): string;
 
 /** `emptyState` plus a `help[N]: …` block; the same `toon_validation_failed` error for a reserved `typeName`. */

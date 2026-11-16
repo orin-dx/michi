@@ -4,7 +4,7 @@ use crate::toon::ToonError;
 /// Render a definitive empty state response: the TOON 4.4 document `type_name: []` followed by `totalCount: 0`, with
 /// no trailing newline. `type_name` is quoted when TOON's key rules (§7.3) require it.
 ///
-/// A reserved root key (`totalCount`, `help` or `recovery`) as `type_name` would repeat that key in the document,
+/// A reserved root key (one michi writes itself, such as `totalCount` or `help`) as `type_name` could repeat that key,
 /// which TOON 4.4 §14.3 forbids. This function returns a `String`, so for those names it renders the
 /// `toon_validation_failed` error block that `AgentResponse` uses (`error: toon_validation_failed` plus a `message`)
 /// instead of invalid TOON. Call [`try_empty_state`] to get the [`ToonError`] instead.
@@ -18,9 +18,9 @@ pub fn empty_state(type_name: &str) -> String {
 ///
 /// # Errors
 ///
-/// [`ToonError::InvalidTypeName`] when `type_name` is `totalCount`, `help` or `recovery`.
+/// [`ToonError::InvalidTypeName`] when `type_name` is a reserved root key, as for [`crate::toon::render_toon`].
 pub fn try_empty_state(type_name: &str) -> Result<String, ToonError> {
-    if crate::kv::RESERVED_ROOT_KEYS.contains(&type_name) {
+    if crate::toon::is_reserved_root_key(type_name) {
         return Err(ToonError::InvalidTypeName { name: type_name.to_string() });
     }
     let key = crate::toon::escape_key(type_name);
@@ -46,7 +46,7 @@ pub fn empty_state_with_hints(type_name: &str, hints: &[Hint]) -> String {
 ///
 /// # Errors
 ///
-/// [`ToonError::InvalidTypeName`] when `type_name` is `totalCount`, `help` or `recovery`.
+/// [`ToonError::InvalidTypeName`] when `type_name` is a reserved root key, as for [`crate::toon::render_toon`].
 pub fn try_empty_state_with_hints(type_name: &str, hints: &[Hint]) -> Result<String, ToonError> {
     let mut out = try_empty_state(type_name)?;
     crate::hints::append_hints(&mut out, hints);
@@ -116,7 +116,7 @@ mod tests {
     // functions reject it with the same error `render_toon` uses.
     #[test]
     fn try_empty_state_rejects_reserved_type_names() {
-        for name in ["totalCount", "help", "recovery"] {
+        for name in crate::toon::RESERVED_ROOT_KEYS {
             assert_eq!(try_empty_state(name), Err(ToonError::InvalidTypeName { name: name.to_string() }));
             assert_eq!(
                 try_empty_state_with_hints(name, &[Hint::new("x")]),
@@ -136,7 +136,9 @@ mod tests {
     fn empty_state_renders_an_error_block_for_reserved_type_names() {
         for name in ["totalCount", "help", "recovery"] {
             let expected = format!(
-                "error: toon_validation_failed\nmessage: \"type_name \\\"{name}\\\" is a reserved document key (totalCount, help, recovery, truncated)\""
+                "error: toon_validation_failed\nmessage: \"type_name \\\"{name}\\\" is a reserved document key \
+                 (totalCount, help, recovery, truncated, budget, sections, provenance, error, message, causes, \
+                 exit_code)\""
             );
             assert_eq!(empty_state(name), expected, "{name}");
             assert_eq!(empty_state_with_hints(name, &[Hint::new("x")]), expected, "{name}");

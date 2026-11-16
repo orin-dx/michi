@@ -55,11 +55,11 @@ Every string these functions return for an agent is a TOON 4.4 document with no 
 | --- | --- |
 | `renderToon` | `(opts: ToonOptions) => string` — TOON list rendering |
 | `emptyState` | `(typeName: string) => string` — definitive empty-state block |
-| `emptyStateWithHints` | `(typeName: string, hints: string[]) => string` — the empty-state block plus `help[N]: …`; like `emptyState`, throws `toon_validation_failed: …` for a `totalCount`/`help`/`recovery` type name |
+| `emptyStateWithHints` | `(typeName: string, hints: string[]) => string` — the empty-state block plus `help[N]: …`; like `emptyState`, throws `toon_validation_failed: …` for a reserved type name (a root key michi writes, such as `help` or `error`) |
 | `renderHints` | `(hints: string[]) => string` — the inline array `help[N]: h1,h2` |
 | `appendHints` | `(body: string, hints: string[]) => string` — append `help[N]: …` to a document, on its own line |
 | `renderRecovery` | `(hints: RecoveryHint[]) => string` — the table `recovery[N]{tool,params,reason}:` (`params` is `"{}"` here; an absent reason is `null`) |
-| `renderKv` | `(items: KvItem[], totalCount?: number, hints: string[]) => string` — `key: value` lines; throws `kv_validation_failed: …` for a repeated key or a `totalCount`/`help`/`recovery` key |
+| `renderKv` | `(items: KvItem[], totalCount?: number, hints: string[]) => string` — `key: value` lines; throws `kv_validation_failed: …` for a repeated key or a reserved key (a root key michi writes, such as `help` or `message`) |
 | `renderDomainError` | `(code, message, hints, githubAnnotation?, causes?) => string` — `error`, `message`, `causes`, `exit_code`, `help` |
 | `renderStatus` | `(toolName, description, items, hints?) => string` — `tool`, `description`, the table `items[N]{key,value,health,reason}:`, `help` |
 | `renderAlreadyDone` | `(operation, summary, hints) => string` — `operation`, `status: already_done`, `summary`, `help` |

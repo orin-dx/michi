@@ -20,10 +20,12 @@ fn kv(key: &str) -> KvItem {
     KvItem::new(key, KvValue::Int(1))
 }
 
-/// Every surface agrees: error flag set, the visible error body names `key`, and the text is valid TOON.
+/// Every surface agrees: error flag set, the visible error body names `key`, and the text is valid TOON. A KV key
+/// michi reserves is caught by KV validation itself, so its body is `kv_validation_failed`.
 fn assert_collision(r: &AgentResponse, key: &str) {
     let text = r.render(OutputFormat::Text);
-    assert!(text.starts_with("error: toon_validation_failed\nmessage: "), "{text}");
+    let code = text.strip_prefix("error: ").and_then(|t| t.split_once("\nmessage: ")).map(|(code, _)| code);
+    assert!(matches!(code, Some("toon_validation_failed" | "kv_validation_failed")), "{text}");
     assert!(text.contains(key), "error must name {key}: {text}");
     decode(&text).unwrap_or_else(|e| panic!("invalid TOON ({e}): {text}"));
     assert!(r.is_error(), "is_error for {key}");
@@ -60,17 +62,24 @@ fn distinct_names_and_keys_stay_valid() {
 
 #[test]
 fn reserved_root_names_collide() {
-    for name in ["budget", "provenance", "sections", "help", "recovery", "truncated", "totalCount"] {
-        let r = AgentResponse::new("t").section(list(name));
-        assert_collision(&r, name);
-        let k = AgentResponse::new("t").section(Section::kv("k", vec![kv(name)]));
-        if ["totalCount", "help", "recovery"].contains(&name) {
-            // KV validation already rejects these three on its own.
-            assert!(k.is_error(), "{name}");
-            decode(&k.render(OutputFormat::Text)).expect("valid");
-        } else {
-            assert_collision(&k, name);
-        }
+    // One list for every surface: list names, KV keys and text names alike.
+    let reserved = [
+        "budget",
+        "provenance",
+        "sections",
+        "help",
+        "recovery",
+        "truncated",
+        "totalCount",
+        "error",
+        "message",
+        "causes",
+        "exit_code",
+    ];
+    for name in reserved {
+        assert_collision(&AgentResponse::new("t").section(list(name)), name);
+        assert_collision(&AgentResponse::new("t").section(Section::kv("k", vec![kv(name)])), name);
+        assert_collision(&AgentResponse::new("t").section(Section::text(name, "x")), name);
     }
 }
 
@@ -104,9 +113,9 @@ fn provenance_label_fingerprint_collides_with_the_fingerprint() {
         .section(list("a"))
         .provenance(ProvenanceBlock::new().entry("fingerprint", "1").fingerprint("2"));
     assert_collision(&r, "fingerprint");
-    // Without the fingerprint field the label is fine.
-    let ok = AgentResponse::new("t").section(list("a")).provenance(ProvenanceBlock::new().entry("fingerprint", "1"));
-    assert!(!ok.is_error());
+    // Without the fingerprint field the label is still reserved: it would read exactly like the real fingerprint.
+    let alone = AgentResponse::new("t").section(list("a")).provenance(ProvenanceBlock::new().entry("fingerprint", "1"));
+    assert_collision(&alone, "fingerprint");
 }
 
 #[test]
@@ -118,12 +127,13 @@ fn two_failing_sections_do_not_emit_two_error_keys() {
 }
 
 #[test]
-fn a_failing_section_beside_a_kv_error_key_collides() {
+fn a_failing_section_beside_a_kv_error_key_is_two_failures() {
+    // `message` is reserved on its own now, so the KV block fails too: two error blocks would repeat `error`.
     let wide: Vec<String> = (0..=michi_core::toon::MAX_FIELDS).map(|i| format!("f{i}")).collect();
     let r = AgentResponse::new("t")
         .section(Section::toon("a", wide, vec![]))
         .section(Section::kv("k", vec![kv("message")]));
-    assert_collision(&r, "message");
+    assert_collision(&r, "duplicate root key 'error'");
 }
 
 #[test]

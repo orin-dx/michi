@@ -106,7 +106,20 @@ fn kv_duplicate_key_is_rejected() {
 
 #[test]
 fn kv_reserved_root_keys_are_rejected_even_when_unused() {
-    for key in ["totalCount", "help", "recovery"] {
+    let reserved = [
+        "totalCount",
+        "help",
+        "recovery",
+        "truncated",
+        "budget",
+        "sections",
+        "provenance",
+        "error",
+        "message",
+        "causes",
+        "exit_code",
+    ];
+    for key in reserved {
         assert_eq!(
             render_kv(&[kv(key, KvValue::Int(1))], None, &[]),
             Err(KvError::ReservedKey { key: key.into() }),
@@ -115,7 +128,7 @@ fn kv_reserved_root_keys_are_rejected_even_when_unused() {
     }
     assert_eq!(
         KvError::ReservedKey { key: "help".into() }.to_string(),
-        "key \"help\" is a reserved document key (totalCount, help, recovery)"
+        format!("key \"help\" is a reserved document key ({})", reserved.join(", "))
     );
 }
 
@@ -389,7 +402,7 @@ fn agent_response_kv_duplicate_or_reserved_key_is_a_validation_error() {
     assert_eq!(
         out,
         "error: kv_validation_failed\nmessage: \"key \\\"recovery\\\" is a reserved document key (totalCount, help, \
-         recovery)\"\nhelp[1]: h"
+         recovery, truncated, budget, sections, provenance, error, message, causes, exit_code)\"\nhelp[1]: h"
     );
     assert!(reserved.to_call_tool_result().is_error);
     conformant(&out);
