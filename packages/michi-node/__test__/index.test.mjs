@@ -290,11 +290,11 @@ void describe('standalone helpers', () => {
       /^Error: causes length 10001 exceeds maximum of 10000$/
     )
     assert.throws(() => renderDomainError('not_found', 'm', [], false, 'c'), /causes must be an array/)
-    // Causes share the call's 64 MiB budget with the message and hints.
+    // Causes share the call's 16 MiB budget with the message and hints.
     const mib = 'x'.repeat(1_048_576)
     assert.throws(
-      () => renderDomainError('not_found', 'm', Array.from({ length: 40 }, () => mib), false, Array.from({ length: 40 }, () => mib)),
-      /^Error: input byte total \d+ exceeds maximum of 67108864$/
+      () => renderDomainError('not_found', 'm', Array.from({ length: 10 }, () => mib), false, Array.from({ length: 10 }, () => mib)),
+      /^Error: input byte total \d+ exceeds maximum of 16777216$/
     )
   })
 
@@ -603,35 +603,35 @@ void describe('parseRetryAfter follows RFC 9110', () => {
 void describe('AgentResponse cumulative byte budget', () => {
   const mib = 'x'.repeat(1_048_576)
 
-  void it('caps hints at 64 MiB across calls, not per call', () => {
-    // 65 separate 1 MiB hints were all accepted and rendered 68 MB synchronously.
+  void it('caps hints at 16 MiB across calls, not per call', () => {
+    // 65 separate 1 MiB hints were all accepted and rendered 68 MB synchronously (at a 64 MiB cap).
     const r = new AgentResponse('t')
     let accepted = 0
     assert.throws(
       () => {
-        for (let i = 0; i < 65; i++) {
+        for (let i = 0; i < 17; i++) {
           r.hint(mib)
           accepted++
         }
       },
-      (err) => err.message === `cumulative byte total ${1 + 64 * 1_048_576} exceeds maximum of 67108864`
+      (err) => err.message === `cumulative byte total ${1 + 16 * 1_048_576} exceeds maximum of 16777216`
     )
-    assert.strictEqual(accepted, 63, '"t" takes one byte, so the 64th full hint passes 64 MiB')
-    assert.ok(r.renderText().length < 67_108_864)
+    assert.strictEqual(accepted, 15, '"t" takes one byte, so the 16th full hint passes 16 MiB')
+    assert.ok(r.renderText().length < 16_777_216 + 4096)
   })
 
   void it('charges recovery hints, items and kvItems to the same total', () => {
     const r = new AgentResponse('t')
-    for (let i = 0; i < 40; i++) r.recoveryHint('retry', mib)
-    const rows = Array.from({ length: 30 }, () => [{ type: 'str', strVal: mib }])
-    assert.throws(() => r.items(rows, ['v']), /^Error: cumulative byte total \d+ exceeds maximum of 67108864$/)
+    for (let i = 0; i < 10; i++) r.recoveryHint('retry', mib)
+    const rows = Array.from({ length: 10 }, () => [{ type: 'str', strVal: mib }])
+    assert.throws(() => r.items(rows, ['v']), /^Error: cumulative byte total \d+ exceeds maximum of 16777216$/)
     assert.ok(r.renderText().startsWith('t: []'), 'the builder is unchanged on error')
-    r.items(rows.slice(0, 20), ['v'])
-    // Every items call adds a section, so a second 20 MiB list adds to the first: 40 + 20 + 20 passes 64 MiB.
-    assert.throws(() => r.items(rows.slice(0, 20), ['v']), /cumulative byte total/)
+    r.items(rows.slice(0, 4), ['v'])
+    // Every items call adds a section, so a second 4 MiB list adds to the first: 10 + 4 + 4 passes 16 MiB.
+    assert.throws(() => r.items(rows.slice(0, 4), ['v']), /cumulative byte total/)
     const kv = Array.from({ length: 5 }, (_, i) => ({ key: `k${i}`, value: { type: 'str', strVal: mib } }))
-    assert.throws(() => r.kvItems(kv), /cumulative byte total/, '40 + 20 + 5 MiB passes 64 MiB')
-    r.kvItems(kv.slice(0, 3))
+    assert.throws(() => r.kvItems(kv), /cumulative byte total/, '10 + 4 + 5 MiB passes 16 MiB')
+    r.kvItems(kv.slice(0, 1))
   })
 
   void it('caps the constructor type name and humanContent', () => {
@@ -915,24 +915,24 @@ void describe('input limits bound the work (capacity limits)', () => {
     assert.ok(viaItems.ms < FAST_MS, `AgentResponse.items rejection took ${viaItems.ms} ms`)
   })
 
-  void it('charges a JS string shared by many cells once per cell against the 64 MiB byte budget', () => {
+  void it('charges a JS string shared by many cells once per cell against the 16 MiB byte budget', () => {
     // 10k x 10 cells referencing one 100 KB string would copy out ~10 GB.
     const shared = { type: 'str', strVal: 'x'.repeat(100_000) }
     const rows = Array.from({ length: 10_000 }, () => Array.from({ length: 10 }, () => shared))
     const fields = Array.from({ length: 10 }, (_, i) => `f${i}`)
     const { error, ms } = timed(() => renderToon({ typeName: 't', fields, rows, hints: [] }))
-    assert.match(error?.message ?? '', /^input byte total \d+ exceeds maximum of 67108864$/)
+    assert.match(error?.message ?? '', /^input byte total \d+ exceeds maximum of 16777216$/)
     assert.ok(ms < FAST_MS, `rejection took ${ms} ms`)
 
     const r = new AgentResponse('t')
     r.items([[{ type: 'int', intVal: 1 }]], ['id'])
-    assert.throws(() => r.items(rows, fields), /^Error: input byte total \d+ exceeds maximum of 67108864$/)
+    assert.throws(() => r.items(rows, fields), /^Error: input byte total \d+ exceeds maximum of 16777216$/)
     assert.strictEqual(r.renderText(), 't[1]{id}:\n  1', 'a rejected items() call leaves the builder unchanged')
 
     const hint = 'h'.repeat(1_000_000)
     assert.throws(
       () => renderHints(Array.from({ length: 100 }, () => hint)),
-      /input byte total \d+ exceeds maximum of 67108864/
+      /input byte total \d+ exceeds maximum of 16777216/
     )
   })
 
@@ -1219,11 +1219,129 @@ void describe('alreadyDone', () => {
     assert.deepStrictEqual({ ...alreadyDone('') }, { done: true, result: '' })
   })
 
-  void it('rejects a non-string and a stored result over 64 MiB', () => {
+  void it('rejects a non-string and a stored result over 16 MiB', () => {
     assert.throws(() => alreadyDone(42), /^Error: stored must be a string$/)
     assert.throws(
-      () => alreadyDone('x'.repeat(64 * 1024 * 1024 + 1)),
-      /^Error: stored byte length \(at least 67108865\) exceeds maximum of 67108864$/,
+      () => alreadyDone('x'.repeat(16 * 1024 * 1024 + 1)),
+      /^Error: stored byte length \(at least 16777217\) exceeds maximum of 16777216$/,
     )
+  })
+})
+
+// Every count cap, at every export that has it. The caps are enforced once, in the input layer, before any element is
+// read, so each export is checked here at the cap and one past it.
+void describe('count caps', () => {
+  const reps = (n, v) => Array.from({ length: n }, () => v)
+  const op = { index: 0, operation: 'o', reason: null }
+  const failedOp = { index: 0, operation: 'o', reason: 'r', recovery: null }
+  const step = { id: 'a', name: 'n', status: 'pending', reason: null }
+  const kvItem = (i) => ({ key: `k${i}`, value: { type: 'null' } })
+  const kvItems = (n) => Array.from({ length: n }, (_, i) => kvItem(i))
+  const names = (n) => Array.from({ length: n }, (_, i) => `f${i}`)
+  const nullRow = (n) => reps(n, { type: 'null' })
+  const toon = (over) => renderToon({ typeName: 't', fields: ['a'], rows: [], hints: [], ...over })
+
+  // [name, call with `n` entries, what the rejection names, cap]
+  const cases = [
+    ['renderHints', (n) => renderHints(reps(n, 'h')), 'hints length', 10_000],
+    ['appendHints', (n) => appendHints('b', reps(n, 'h')), 'hints length', 10_000],
+    ['renderRecovery', (n) => renderRecovery(reps(n, { tool: 'retry' })), 'hints length', 10_000],
+    ['emptyStateWithHints', (n) => emptyStateWithHints('t', reps(n, 'h')), 'hints length', 10_000],
+    ['renderKv items', (n) => renderKv(kvItems(n), null, []), 'items length', 1_000],
+    ['renderKv hints', (n) => renderKv([], null, reps(n, 'h')), 'hints length', 10_000],
+    ['renderStatus items', (n) => renderStatus('t', 'd', kvItems(n)), 'items length', 1_000],
+    ['renderStatus hints', (n) => renderStatus('t', 'd', [], reps(n, 'h')), 'hints length', 10_000],
+    ['renderAlreadyDone', (n) => renderAlreadyDone('o', 's', reps(n, 'h')), 'hints length', 10_000],
+    ['renderDomainError hints', (n) => renderDomainError('not_found', 'm', reps(n, 'h')), 'hints length', 10_000],
+    [
+      'renderDomainError causes',
+      (n) => renderDomainError('not_found', 'm', [], false, reps(n, 'c')),
+      'causes length',
+      10_000,
+    ],
+    ['renderPartialSuccess completed', (n) => renderPartialSuccess(reps(n, op), [], []), 'completed length', 10_000],
+    ['renderPartialSuccess failed', (n) => renderPartialSuccess([], reps(n, failedOp), []), 'failed length', 10_000],
+    ['renderPartialSuccess skipped', (n) => renderPartialSuccess([], [], reps(n, op)), 'skipped length', 10_000],
+    ['renderPipeline', (n) => renderPipeline(reps(n, step)), 'steps length', 10_000],
+    ['renderToon rows', (n) => toon({ rows: reps(n, []) }), 'rows length', 100_000],
+    ['renderToon fields', (n) => toon({ fields: names(n) }), 'fields length', 1_000],
+    ['renderToon hints', (n) => toon({ hints: reps(n, 'h') }), 'hints length', 10_000],
+    ['AgentResponse.items rows', (n) => new AgentResponse('t').items(reps(n, []), []), 'rows length', 100_000],
+    ['AgentResponse.items fields', (n) => new AgentResponse('t').items([], names(n)), 'fields length', 1_000],
+    ['AgentResponse.kvItems', (n) => new AgentResponse('t').kvItems(kvItems(n)), 'items length', 1_000],
+  ]
+
+  for (const [name, call, what, cap] of cases) {
+    void it(`${name}: accepts ${cap} and rejects ${cap + 1}`, () => {
+      try {
+        call(cap)
+      } catch (err) {
+        // A later validation may reject the call, but never by a cap.
+        assert.doesNotMatch(String(err.message), /exceeds maximum/, `${cap} entries must pass the cap`)
+      }
+      assert.throws(() => call(cap + 1), new RegExp(`^Error: ${what} ${cap + 1} exceeds maximum of ${cap}$`))
+    })
+  }
+
+  void it('caps a row at 1,000 values in renderToon and AgentResponse.items', () => {
+    assert.doesNotThrow(() => toon({ rows: [nullRow(1_000)], fields: names(1_000) }))
+    assert.throws(
+      () => toon({ rows: [nullRow(1_001)] }),
+      /^Error: row length 1001 exceeds maximum fields per row of 1000$/
+    )
+    assert.throws(
+      () => new AgentResponse('t').items([nullRow(1_001)], ['a']),
+      /^Error: row length 1001 exceeds maximum of 1000$/
+    )
+  })
+
+  void it('caps cumulative hints and recovery hints per AgentResponse at 10,000', () => {
+    const r = new AgentResponse('t')
+    for (let i = 0; i < 10_000; i++) r.hint('h')
+    assert.throws(() => r.hint('h'), /^Error: cumulative hint count exceeds maximum of 10000$/)
+    for (let i = 0; i < 10_000; i++) r.recoveryHint('retry')
+    assert.throws(() => r.recoveryHint('retry'), /^Error: cumulative recovery hint count exceeds maximum of 10000$/)
+  })
+})
+
+// The byte cap bounds the output as well as the input. Rendering writes a control character as `\u0001` in the text,
+// again escaped in the JSON, and the JSON again beside the text in toCallToolResult, so a render is at most 19 times
+// the bytes held. At 16 MiB that is 304 MiB, under V8's string limit (2^29 - 24 characters). At the old 64 MiB cap a
+// maximal response produced 377 MB of text, a renderJson string V8 could not hold (GenericFailure after rendering it),
+// and a toCallToolResult that took 25 s and 3 GiB.
+void describe('output size at the byte cap', () => {
+  const V8_MAX_STRING = 2 ** 29 - 24
+  const mib = 1_048_576
+
+  void it('renders the largest accepted control-character response in every format, or rejects it up front', () => {
+    const control = '\u0001'.repeat(mib)
+    const r = new AgentResponse('t')
+    let accepted = 0
+    assert.throws(
+      () => {
+        for (let i = 0; i < 17; i++) {
+          r.kvItems([{ key: `k${i}`, value: { type: 'str', strVal: control } }])
+          accepted++
+        }
+      },
+      (err) => /^cumulative byte total \d+ exceeds maximum of 16777216$/.test(err.message)
+    )
+    // Each value takes 1 MiB plus its key and storage, so 15 fit and the 16th is rejected before anything renders.
+    assert.strictEqual(accepted, 15)
+
+    const text = r.renderText()
+    const json = r.renderJson()
+    const result = r.toCallToolResult()
+    const held = 15 * mib
+    assert.ok(text.length <= 6 * held + 4096, `text is ${text.length} chars`)
+    assert.ok(json.length <= 13 * held + 4096, `json is ${json.length} chars`)
+    assert.ok(Math.max(text.length, json.length) < V8_MAX_STRING)
+    assert.strictEqual(result.content[0].text, text)
+    assert.deepStrictEqual(Object.keys(result.structuredContent), ['body', 'sections', 'hints', 'recovery', 'isError'])
+  })
+
+  void it('rejects a single call over the cap with a clear error, without rendering', () => {
+    const hints = Array.from({ length: 17 }, () => 'h'.repeat(mib))
+    assert.throws(() => renderHints(hints), /^Error: input byte total \d+ exceeds maximum of 16777216$/)
   })
 })

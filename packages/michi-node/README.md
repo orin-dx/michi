@@ -96,6 +96,14 @@ Setters return `void`, not `this`, so call them as sequential statements rather 
 
 Full type definitions ship in `index.d.ts`. See the [main repo](https://github.com/orin-dx/michi) for the complete primitive set, the TOON grammar, and the `michi-core` Rust API this wraps (this package always carries the same version as `michi-core`).
 
+## Input and output limits
+
+Every export that takes arrays or strings rejects oversize input with a thrown `Error` before it does any work (for example `rows length 100001 exceeds maximum of 100000`). The caps:
+
+- 100,000 rows; 1,000 fields, values per row, KV items or status items; 10,000 hints, causes, steps or partial-success entries; 1,000,000 cells per call.
+- 1 MiB per cell value, hint, reason, message or step name; 4 KiB per type name, field name, key, tool or identifier.
+- **16 MiB of string data** per call, and per `AgentResponse` across all its calls (`input byte total … exceeds maximum of 16777216`, `cumulative byte total … exceeds maximum of 16777216`). This was 64 MiB before it was found to bound only the input: a render writes up to 19 times the bytes it holds (control characters are the worst case), so 64 MiB could produce 1.2 GiB and a `renderJson()` string over V8's limit. At 16 MiB every render stays under 304 MiB, so a response either renders in every format or is rejected up front.
+
 ## Supported platforms
 
 Prebuilt native binaries ship for:

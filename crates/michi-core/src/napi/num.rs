@@ -9,8 +9,8 @@
 //! runs, so there is no coercion step left at any call site to reimplement
 //! inconsistently. This is the shared kernel for the whole NAPI numeric
 //! boundary: `JsRanged` is generic over its bounds, so each domain names
-//! its own aliases over the one type ([`JsDecimals`] for rendering,
-//! [`JsRetryCount`] and [`JsHttpStatus`] for resilience) instead of
+//! its own aliases over the one type ([`crate::napi::num::JsDecimals`] for rendering,
+//! [`crate::napi::num::JsRetryCount`] and [`crate::napi::num::JsHttpStatus`] for resilience) instead of
 //! redefining it.
 #![allow(clippy::as_conversions, clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
 
