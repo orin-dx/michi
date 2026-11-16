@@ -36,16 +36,21 @@ struct Input {
     step_text: String,
     status: u16,
     which: u8,
-    /// Wraps the planted token in a URL, a query or bare.
+    /// Wraps the planted token in a URL, a query, a header, a quoted pair or bare.
     shape: u8,
 }
 
 const PLANTED: &str = "ghp_Zq9xPlantedSecret7Zq9xPlantedSecret7";
 
 fn planted(shape: u8) -> String {
-    match shape % 3 {
+    match shape % 8 {
         0 => format!("https://bot:{PLANTED}@host/r"),
         1 => format!("https://host/r?token={PLANTED}"),
+        2 => format!("authorization=Basic {PLANTED}"),
+        3 => format!("token=\"{PLANTED}\""),
+        4 => format!("{{\"password\": \"{PLANTED}\"}}"),
+        5 => format!("Cookie: sid={PLANTED}; a=b"),
+        6 => format!("X-Api-Key: {PLANTED}"),
         _ => format!("Bearer {PLANTED}"),
     }
 }
@@ -80,7 +85,7 @@ fuzz_target!(|input: Input| {
     let d: DomainError = err.into();
     assert!(d.message().len() < 200, "the trusted message stays fixed text: {}", d.message().len());
     for cause in d.causes() {
-        assert!(cause.len() <= 512 + '…'.len_utf8(), "cause of {} bytes", cause.len());
+        assert!(cause.len() <= 512, "cause of {} bytes", cause.len());
     }
     assert!(!d.render(OutputFormat::Text).contains(PLANTED), "planted token survived: {}", d.render(OutputFormat::Text));
     assert!(!d.render(OutputFormat::Json).contains(PLANTED), "planted token survived in JSON");
