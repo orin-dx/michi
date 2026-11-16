@@ -191,10 +191,16 @@ michi/                           (workspace root — virtual manifest, no packag
         json.rs                  # the hand-built JSON writers every structured companion shares (private)
         kv/mod.rs                # render_kv(), KvItem, KvValue, KvError
         mcp.rs                   # ContentBlock, CallToolResult, StructuredContentError — always compiled
-        napi.rs                  # #[napi] exports (napi feature only)
+        napi.rs                  # NAPI module root: docs, lints, module list (napi feature only)
         napi/
           num.rs                 # JsRanged/JsFloat/JsCount/... numeric-boundary newtype kernel
-          input.rs               # bounded, incremental conversion of collection and string arguments
+          input.rs               # bounded, incremental conversion of collection and string arguments; the caps
+          value.rs               # ToonValue / KvItem and their one conversion into core values
+          toon.rs                # renderToon, renderKv, renderStatus, emptyState, emptyStateWithHints
+          hints.rs               # renderHints, appendHints, renderRecovery
+          outcome.rs             # renderDomainError, renderAlreadyDone, alreadyDone, renderPartialSuccess, renderPipeline
+          resilience.rs          # parseRetryAfter, nextRetryDelay, isRetryableStatus, truncate
+          response.rs            # the AgentResponse class, its cumulative budget, toCallToolResult
         pipeline/mod.rs          # Pipeline, PipelineStep, StepStatus and its reasons — data model + render only
         provenance.rs            # ProvenanceBlock, ProvenanceEntry and their render/JSON
         recovery.rs              # RecoveryHint, render_recovery()
