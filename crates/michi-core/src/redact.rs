@@ -105,21 +105,23 @@ fn settle(text: &str, pass: fn(&str) -> String) -> String {
     current
 }
 
+/// One forward pass over `text`: every byte is examined a bounded number of times, however many URLs there are.
+///
+/// Each search the pass needs (the next separator, a URL's end and its last `@`, the end of a quote's region) starts
+/// where the one before it left off, or reuses what the one before it found, so no suffix is scanned twice.
 fn userinfo_pass(text: &str) -> String {
-    let upper = text.to_ascii_uppercase();
     let mut out = String::with_capacity(text.len());
+    let mut scan = UrlScan::new(text);
     let mut pos = 0;
-    while let Some((i, len, encoded)) = next_separator(&upper, pos) {
+    while let Some((i, len, encoded)) = next_separator(text, pos) {
         let start = i + len;
         out.push_str(&text[pos..start]);
-        let tail = &text[start..];
-        let end = tail.find(is_url_end).unwrap_or(tail.len());
-        let found = last_at(&tail[..end], encoded).or_else(|| at_past_quote(tail, end, encoded)).filter(|at| *at > 0);
-        match found {
+        // A userinfo that would be empty (the URL starts with `@`) is not redacted.
+        match scan.userinfo_end(start, encoded).filter(|at| *at > start) {
             Some(at) => {
                 out.push_str(REDACTED);
                 // Resume at the `@`: the rest of the URL is kept and scanned for further URLs.
-                pos = start + at;
+                pos = at;
             }
             // No userinfo here; keep scanning right after the separator, so a URL inside this one is still seen.
             None => pos = start,
@@ -130,36 +132,152 @@ fn userinfo_pass(text: &str) -> String {
 }
 
 /// The earliest URL separator at or after `from`: its byte offset, its length, and whether it is percent-encoded.
-fn next_separator(upper: &str, from: usize) -> Option<(usize, usize, bool)> {
-    const SEPARATORS: [(&str, bool); 3] = [("://", false), (":\\/\\/", false), ("%3A%2F%2F", true)];
-    SEPARATORS
-        .iter()
-        // `upper` only changes ASCII letters, so its offsets are the text's; the separators are uppercase already.
-        .filter_map(|(sep, encoded)| upper[from..].find(sep).map(|i| (from + i, sep.len(), *encoded)))
-        .min_by_key(|(i, _, _)| *i)
+///
+/// One scan for all three forms (`://`, `:\/\/`, and `%3A%2F%2F` in either case). The next call starts after this
+/// match, so a form that is absent costs one scan of the text, not one per URL.
+fn next_separator(text: &str, from: usize) -> Option<(usize, usize, bool)> {
+    let bytes = text.as_bytes();
+    (from..bytes.len()).find_map(|i| match bytes[i] {
+        b':' if bytes[i + 1..].starts_with(b"//") => Some((i, 3, false)),
+        b':' if bytes[i + 1..].starts_with(b"\\/\\/") => Some((i, 5, false)),
+        b'%' if bytes.get(i..i + 9).is_some_and(|s| s.eq_ignore_ascii_case(b"%3A%2F%2F")) => Some((i, 9, true)),
+        _ => None,
+    })
 }
 
-/// Offset of the last `@` (or, in a percent-encoded URL, `%40`) in `url`.
-fn last_at(url: &str, encoded: bool) -> Option<usize> {
-    let plain = url.rfind('@');
-    if !encoded {
-        return plain;
-    }
-    let pct = url.to_ascii_uppercase().rfind("%40");
-    plain.max(pct)
+/// A search for the first character at or after `x` that matches, remembered: while the next query is not past the
+/// match, the answer is the same and nothing is scanned.
+struct Memo {
+    from: usize,
+    at: usize,
 }
 
-/// The first `@` after a quote that ended the URL at `end`, if nothing that ends an authority comes before it.
-fn at_past_quote(tail: &str, end: usize, encoded: bool) -> Option<usize> {
-    if !tail[end..].starts_with(['"', '\'']) {
-        return None;
+impl Memo {
+    /// Holds no answer: `from` is past every `at`.
+    const EMPTY: Self = Self { from: usize::MAX, at: 0 };
+
+    /// Offset of the first match in `text` at or after `x`, or `text.len()`. Queries that never go backwards scan each
+    /// byte once.
+    fn find(&mut self, text: &str, x: usize, is_match: impl Fn(char) -> bool) -> usize {
+        if !(self.from <= x && x <= self.at) {
+            self.from = x;
+            self.at = text[x..].find(is_match).map_or(text.len(), |i| x + i);
+        }
+        self.at
     }
-    let region_end = tail.find(|c: char| c.is_whitespace() || matches!(c, '`' | '<' | '>')).unwrap_or(tail.len());
-    let region = &tail[..region_end];
-    let stop = region.find(['/', '\\', '?', '#']).unwrap_or(region.len());
-    let candidate = &region[..stop];
-    let at = if encoded { last_at(candidate, true) } else { candidate.find('@') };
-    at.filter(|at| *at >= end)
+}
+
+/// What one scan of a URL found: where it ends and the last of each character that matters inside it. Positions are
+/// offsets into the text. The scan began at `from`, so it answers for any start from there up to `end`.
+struct Run {
+    from: usize,
+    end: usize,
+    last_at: Option<usize>,
+    last_pct: Option<usize>,
+    /// The last `/`, `\`, `?` or `#`, which end an authority.
+    last_stop: Option<usize>,
+}
+
+/// What one scan past a quote found: where the authority ends (`stop`) and the last `@` or `%40` before it.
+struct Region {
+    from: usize,
+    stop: usize,
+    last: Option<usize>,
+}
+
+/// The searches `userinfo_pass` makes after each separator, each remembered so that starts moving forward through the
+/// text never rescan it.
+struct UrlScan<'a> {
+    text: &'a str,
+    run: Run,
+    region: Region,
+    /// The first `@` at or after a position, for a quote's region in a plain URL.
+    at: Memo,
+}
+
+impl<'a> UrlScan<'a> {
+    fn new(text: &'a str) -> Self {
+        Self {
+            text,
+            run: Run { from: usize::MAX, end: 0, last_at: None, last_pct: None, last_stop: None },
+            region: Region { from: usize::MAX, stop: 0, last: None },
+            at: Memo::EMPTY,
+        }
+    }
+
+    /// Offset of the `@` (or, in a percent-encoded URL, `%40`) that ends the userinfo of the URL whose separator ends
+    /// at `start`, if it has one. For a URL with an `@`, the last one before its end. For one without, a quote that
+    /// ends it can hide the `@`: see [`redact_url_userinfo`]. `start` never decreases between calls.
+    fn userinfo_end(&mut self, start: usize, encoded: bool) -> Option<usize> {
+        if !(self.run.from <= start && start <= self.run.end) {
+            self.run = self.scan_run(start);
+        }
+        let run = &self.run;
+        let last = if encoded { run.last_at.max(run.last_pct) } else { run.last_at };
+        // A last `@` before `start` belongs to an earlier URL that this one begins inside.
+        if let Some(at) = last.filter(|at| *at >= start) {
+            return Some(at);
+        }
+        let end = run.end;
+        let ended_by_quote = self.text[end..].starts_with(['"', '\'']);
+        // A `/`, `\`, `?` or `#` before the quote already ended the authority.
+        if !ended_by_quote || run.last_stop.is_some_and(|stop| stop >= start) {
+            return None;
+        }
+        self.at_past_quote(end, encoded)
+    }
+
+    /// The `@` after the quote at `end` that still belongs to the URL: before the next whitespace, backtick, `<`, `>`,
+    /// `/`, `\`, `?` or `#`. The first one for a plain URL, the last `@` or `%40` for a percent-encoded one.
+    fn at_past_quote(&mut self, end: usize, encoded: bool) -> Option<usize> {
+        if !(self.region.from <= end && end <= self.region.stop) {
+            self.region = self.scan_region(end);
+        }
+        let stop = self.region.stop;
+        if encoded {
+            return self.region.last.filter(|at| *at >= end);
+        }
+        let at = self.at.find(self.text, end, |c| c == '@');
+        (at < stop).then_some(at)
+    }
+
+    /// One pass over the URL that starts at `start`: its end, and the last `@`, `%40` and authority-ending character.
+    fn scan_run(&self, start: usize) -> Run {
+        let bytes = self.text.as_bytes();
+        let mut run = Run { from: start, end: self.text.len(), last_at: None, last_pct: None, last_stop: None };
+        for (offset, c) in self.text[start..].char_indices() {
+            let i = start + offset;
+            if is_url_end(c) {
+                run.end = i;
+                break;
+            }
+            match c {
+                '@' => run.last_at = Some(i),
+                // The two characters after `%` cannot end the URL, so a match is inside it.
+                '%' if bytes[i + 1..].starts_with(b"40") => run.last_pct = Some(i),
+                '/' | '\\' | '?' | '#' => run.last_stop = Some(i),
+                _ => {}
+            }
+        }
+        run
+    }
+
+    /// One pass from `from` (the quote that ended a URL) to the first character that ends the authority.
+    fn scan_region(&self, from: usize) -> Region {
+        let bytes = self.text.as_bytes();
+        let mut region = Region { from, stop: self.text.len(), last: None };
+        for (offset, c) in self.text[from..].char_indices() {
+            let i = from + offset;
+            if c.is_whitespace() || matches!(c, '`' | '<' | '>' | '/' | '\\' | '?' | '#') {
+                region.stop = i;
+                break;
+            }
+            if c == '@' || (c == '%' && bytes[i + 1..].starts_with(b"40")) {
+                region.last = Some(i);
+            }
+        }
+        region
+    }
 }
 
 fn is_url_end(c: char) -> bool {

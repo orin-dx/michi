@@ -364,3 +364,52 @@ fn redact_common_shapes_is_linear_in_pairs() {
         }
     });
 }
+
+/// Texts that each made `redact_url_userinfo` rescan the rest of the text once per URL: a form of separator that is
+/// absent from the text, a URL with no whitespace to end it, a quote that sends the scan past the URL, a last `@` that
+/// is never found.
+const URL_UNITS: [&str; 10] = [
+    "a://b ",
+    "a://",
+    "a://\"",
+    "a://x'",
+    "%3A%2F%2F\"",
+    "%3a%2f%2fb%40",
+    "a:\\/\\/b ",
+    "a://u:p@h ",
+    "a://p@\"",
+    "a://x%40\"",
+];
+
+#[test]
+fn redact_url_userinfo_is_linear_in_urls() {
+    // Bounded like the pairs test: a quadratic regression at a large size runs for minutes in a debug build.
+    finishes_within("redact_url_userinfo urls", Duration::from_secs(20), || {
+        for unit in URL_UNITS {
+            assert_linear(
+                unit,
+                500,
+                |n| unit.repeat(n),
+                |text| {
+                    black_box(michi_core::redact::redact_url_userinfo(text));
+                },
+            );
+        }
+    });
+}
+
+#[test]
+fn redact_common_shapes_is_linear_in_urls() {
+    finishes_within("redact_common_shapes urls", Duration::from_secs(20), || {
+        for unit in URL_UNITS {
+            assert_linear(
+                unit,
+                500,
+                |n| unit.repeat(n),
+                |text| {
+                    black_box(michi_core::redact::redact_common_shapes(text));
+                },
+            );
+        }
+    });
+}

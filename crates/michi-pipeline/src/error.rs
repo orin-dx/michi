@@ -285,8 +285,10 @@ pub(crate) fn millis(d: Duration) -> u64 {
 const MAX_DETAIL_BYTES: usize = 512;
 
 /// Step-supplied text (an HTTP body, a `failed()` message, a panic payload) made fit for a `DomainError` cause:
-/// redacted with [`michi_core::redact::redact_common_shapes`], then cut on a char boundary so the result, the `…` marker included, is at most [`MAX_DETAIL_BYTES`] bytes.
-/// Redaction comes first so a cut cannot leave half a secret that no longer matches a shape. `None` for blank text.
+/// redacted with [`michi_core::redact::redact_common_shapes`], then cut on a char boundary so the result, the `…`
+/// marker included, is at most [`MAX_DETAIL_BYTES`] bytes. Redaction comes first so a cut cannot leave half a secret
+/// that no longer matches a shape, which means the whole text is scanned however long it is; the scan is linear
+/// (`tests/scaling.rs`). `None` for blank text.
 fn detail(raw: &str) -> Option<String> {
     let mut text = michi_core::redact::redact_common_shapes(raw);
     if text.trim().is_empty() {
