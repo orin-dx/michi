@@ -23,29 +23,18 @@ pub use truncate::{truncate, Truncated};
 pub use truncation::{truncate_by_count, truncate_by_size, TruncationOutcome};
 ```
 
-There is no crate-wide `Error` enum or `Result` alias: every fallible function returns its own error type
-(`ToonError`, `KvError`, `RetryConfigError`, `StructuredContentError`, `DuplicateOpIndex`, …), and `DomainError` is the
-one agent-facing error.
+There is no crate-wide `Error` enum or `Result` alias: every fallible function returns its own error type (`ToonError`, `KvError`, `RetryConfigError`, `StructuredContentError`, `DuplicateOpIndex`, …), and `DomainError` is the one agent-facing error.
 
 ### API conventions
 
-One rule for every builder and getter, so 1.0 freezes one shape (see "Invariants live behind private fields" in
-[06-decisions.md](06-decisions.md)):
+One rule for every builder and getter, so 1.0 freezes one shape (see "Invariants live behind private fields" in [06-decisions.md](06-decisions.md)):
 
-- **Builders** consume `self`, are `#[must_use]` and are named for what they set, with no prefix: `x(v)` sets one value or
-  appends one entry (`hint`, `cause`, `recovery`, `retryable`); the plural `xs(vec)` replaces a whole list (`hints`).
-- **Getters** take `&self` and are named for the field; a `bool` reads `is_x()`. When a builder of the same type already
-  uses the field's name, the getter is `get_x()`, as in `std::process::Command::get_args` (`DomainError::get_recovery`,
-  `get_retry_after`).
-- **Construction:** `new` never fails; a constructor that checks is `try_new` and returns its own error type.
-  Arguments go identity first (`code`, `index`, `id`, `key`), then name or text, then data; anything optional is a
-  builder call.
+- **Builders** consume `self`, are `#[must_use]` and are named for what they set, with no prefix: `x(v)` sets one value or appends one entry (`hint`, `cause`, `recovery`, `retryable`); the plural `xs(vec)` replaces a whole list (`hints`).
+- **Getters** take `&self` and are named for the field; a `bool` reads `is_x()`. When a builder of the same type already uses the field's name, the getter is `get_x()`, as in `std::process::Command::get_args` (`DomainError::get_recovery`, `get_retry_after`).
+- **Construction:** `new` never fails; a constructor that checks is `try_new` and returns its own error type. Arguments go identity first (`code`, `index`, `id`, `key`), then name or text, then data; anything optional is a builder call.
 - **Hints** are passed as `&[Hint]` (a slice) or `Vec<Hint>` (a replacing builder), never `&[String]`.
-- **Rendering:** a type with more than one output format renders through `render(OutputFormat)`; a text-only type has
-  `render()`. Other targets get their own named method (`render_github_annotation`).
-- **Fields:** a type whose fields carry a cross-field invariant keeps them private (`DomainError`, `RetryConfig`,
-  `PartialSuccess`, `Section`); a plain record keeps them public (`KvItem`, `FailedOp`, `CompletedOp`, `SkippedOp`,
-  `RecoveryHint`, `StatusItem`, `StatusResponse`, `PipelineStep`, `Pipeline`, `CallToolResult`).
+- **Rendering:** a type with more than one output format renders through `render(OutputFormat)`; a text-only type has `render()`. Other targets get their own named method (`render_github_annotation`).
+- **Fields:** a type whose fields carry a cross-field invariant keeps them private (`DomainError`, `RetryConfig`, `PartialSuccess`, `Section`); a plain record keeps them public (`KvItem`, `FailedOp`, `CompletedOp`, `SkippedOp`, `RecoveryHint`, `StatusItem`, `StatusResponse`, `PipelineStep`, `Pipeline`, `CallToolResult`).
 
 The root re-exports are explicit lists (0.4.0 replaced the `resilience::*` and `truncate::*` globs), so a new item in a module does not appear at the root by accident. `toon`, `pipeline` and `telemetry` are not re-exported at the root; their items are reached as `michi_core::toon::ToonOptions`, `michi_core::toon::list()`, `michi_core::pipeline::StepStatus`, and so on. There is no `michi` crate (the name on crates.io belongs to an unrelated project); consumers who prefer `michi::` paths rename the dependency with `michi = { package = "michi-core", version = "0.7" }`.
 

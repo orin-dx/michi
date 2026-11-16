@@ -29,13 +29,7 @@ impl JsonObject {
 }
 ```
 
-`structured_content` used to be a `String` where empty meant none, so a default-feature caller could build a result
-that could not serialize (validity was checked only by `try_new` or at serialization, both behind `serde`). A
-`JsonObject` is checked when it is made: michi's own renderers make it from their JSON writers, anything else goes
-through `JsonObject::new`, a strict RFC 8259 checker written in `mcp.rs` with `serde_json`'s limits (at most 127 levels
-of nesting, no lone surrogate escapes, every number finite as an f64), so the default build needs no JSON dependency and
-a checked object always serializes. A property test checks the checker against `serde_json`. The wire shape is
-unchanged.
+`structured_content` used to be a `String` where empty meant none, so a default-feature caller could build a result that could not serialize (validity was checked only by `try_new` or at serialization, both behind `serde`). A `JsonObject` is checked when it is made: michi's own renderers make it from their JSON writers, anything else goes through `JsonObject::new`, a strict RFC 8259 checker written in `mcp.rs` with `serde_json`'s limits (at most 127 levels of nesting, no lone surrogate escapes, every number finite as an f64), so the default build needs no JSON dependency and a checked object always serializes. A property test checks the checker against `serde_json`. The wire shape is unchanged.
 
 `audience` is a `Vec`, not a scalar.
 

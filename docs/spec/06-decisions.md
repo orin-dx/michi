@@ -71,8 +71,7 @@ This crate went through more than one draft. None of what follows is "the API us
 
 ### `error::DomainError` and `error::Error` are two types, not one
 
-> Superseded 2026-11-16: `Error` and the `Result` alias are removed, and `class()` and `is_retryable()` moved onto
-> `DomainError`. See "Invariants live behind private fields; `Error` is gone" below.
+> Superseded 2026-11-16: `Error` and the `Result` alias are removed, and `class()` and `is_retryable()` moved onto `DomainError`. See "Invariants live behind private fields; `Error` is gone" below.
 
 - An early draft called this type `AxiError` and made it the crate's entire error type.
 - The shipped design splits it: `DomainError` is the pure data/render type — what [03-rust-api.md](03-rust-api.md) documents.
@@ -826,59 +825,18 @@ The architecture and security audits of 0.10.0 rendered documents that contradic
 
 ### Resolved 2026-11-16 — Invariants live behind private fields; `Error` is gone
 
-Reverses "Public types can grow" (2026-10-21) where it kept every field "readable and assignable": that decision weighed
-ergonomics and additive growth, not types whose fields carry a rule the constructor enforces. The architecture audit of
-0.10.0 broke three such rules through plain field writes, each reproduced as a failing test before the change
-(`tests/api_invariants.rs`):
+Reverses "Public types can grow" (2026-10-21) where it kept every field "readable and assignable": that decision weighed ergonomics and additive growth, not types whose fields carry a rule the constructor enforces. The architecture audit of 0.10.0 broke three such rules through plain field writes, each reproduced as a failing test before the change (`tests/api_invariants.rs`):
 
-- `RetryConfig::try_new` rejects a zero `max_delay` because zero drops a server's `Retry-After`. Setting
-  `cfg.max_delay = Duration::ZERO` afterwards made `next_retry_delay(&cfg, 0, 0.5, Some(60 s))` return 0 ns, a hot
-  retry against a server that asked for a minute. `michi-pipeline` re-exports `RetryConfig`.
-- `DomainError`'s builder keeps `MAY_HAVE_TAKEN_EFFECT_HINT` present exactly while a `Timeout` is not retryable.
-  `e.retryable = true` on a timeout kept the hint, so the JSON said `retryable: true` and the help said not to retry
-  blindly; `e.code = Timeout` on a `RateLimited` error gave a retryable timeout with no hint, the unsafe retry the hint
-  exists for. `michi-pipeline`'s own `AmbiguousOutcome` conversion wrote `retryable = false` directly and so skipped the
-  hint; with the builder a timeout source now carries core's verify-first hint, and the pipeline adds its own
-  `VERIFY_BEFORE_RETRY_HINT` only when core's is absent, so the agent reads one, not two.
-- `PartialSuccess` took the same operation index in `completed`, `failed` and `skipped` (op 0 rendered completed and
-  failed, `exit=1`), and a completed operation's `reason` was accepted and silently not rendered.
+- `RetryConfig::try_new` rejects a zero `max_delay` because zero drops a server's `Retry-After`. Setting `cfg.max_delay = Duration::ZERO` afterwards made `next_retry_delay(&cfg, 0, 0.5, Some(60 s))` return 0 ns, a hot retry against a server that asked for a minute. `michi-pipeline` re-exports `RetryConfig`.
+- `DomainError`'s builder keeps `MAY_HAVE_TAKEN_EFFECT_HINT` present exactly while a `Timeout` is not retryable. `e.retryable = true` on a timeout kept the hint, so the JSON said `retryable: true` and the help said not to retry blindly; `e.code = Timeout` on a `RateLimited` error gave a retryable timeout with no hint, the unsafe retry the hint exists for. `michi-pipeline`'s own `AmbiguousOutcome` conversion wrote `retryable = false` directly and so skipped the hint; with the builder a timeout source now carries core's verify-first hint, and the pipeline adds its own `VERIFY_BEFORE_RETRY_HINT` only when core's is absent, so the agent reads one, not two.
+- `PartialSuccess` took the same operation index in `completed`, `failed` and `skipped` (op 0 rendered completed and failed, `exit=1`), and a completed operation's `reason` was accepted and silently not rendered.
 
-At 1.0 a public field freezes the layout and makes such a rule unenforceable for good. `michi-pipeline` and
-`michi-graph` already keep their fields private behind getters, so core now follows them where it matters.
+At 1.0 a public field freezes the layout and makes such a rule unenforceable for good. `michi-pipeline` and `michi-graph` already keep their fields private behind getters, so core now follows them where it matters.
 
-- **Private, with getters:** `DomainError` (`code()`, `message()`, `causes()`, `hints()`, `get_recovery()`,
-  `get_retry_after()`, `is_retryable()`), `RetryConfig` (`max_retries()`, `base_delay()`, `max_delay()`,
-  `jitter_factor()`) and `PartialSuccess` (`completed()`, `failed()`, `skipped()`, built with `try_new`, which returns
-  `DuplicateOpIndex`). `Section` went private the same day ("Envelope facts have one source"). The compiler is the
-  proof: `compile_fail,E0616` doctests on each type assert the error code for the audit's field writes.
-- **Still public:** plain records with no rule across fields: `KvItem`, `ProvenanceEntry`, `FailedOp`, `RecoveryHint`,
-  `StatusItem`, `StatusResponse`, `PipelineStep`, `Pipeline`, `ContentBlock`, `CallToolResult`, and the newtypes.
-- **States the domain forbids:** `OpRef` is split into `CompletedOp` (no reason, so none can be dropped) and
-  `SkippedOp`; the JS `renderPartialSuccess` takes the same two shapes, rejects a non-null `reason` on a completed op and
-  throws on a repeated index. `Pipeline.id` is removed: nothing rendered it, `renderPipeline` passed an empty string,
-  and `RunRecord::to_pipeline` filled it for no reader. Rejected: rendering it (`pipeline: <id>`), which would change a
-  document no consumer asked to change; `RunRecord::run_id()` already gives the id.
-- **`CallToolResult.structured_content` is `Option<JsonObject>`.** It was a `String` where empty meant none, checked
-  only by `try_new` or at serialization, both behind `serde`, so a default-feature caller could build a result that
-  could not serialize. `JsonObject::new` checks the text in every build with a strict RFC 8259 checker in `mcp.rs` that
-  applies `serde_json`'s limits (127 levels, no lone surrogate escapes, finite numbers); a property test compares the
-  two. michi's own renderers wrap their writers' output directly. The field stays public: the type now carries the
-  rule. The wire shape is unchanged.
-- **`michi_core::Error` and `Result` are removed.** No michi API returned them (every fallible function has its own
-  error type; `michi-pipeline` converts to `DomainError`), monokl builds `DomainError` directly, and
-  `Error::InvalidInput`/`NotFound` duplicated `ErrorCode` minus hints, recovery and causes. ADR 9 says such surface goes
-  before 1.0. `class()` and `is_retryable()` live on `DomainError`; `is_retryable()` is `true` exactly when `class()` is
-  `Transient`.
-- **One convention for builders and getters** (spec 03, "API conventions"): builders are bare and consuming (`x(v)` sets
-  or appends one, `xs(vec)` replaces a list); getters are bare, `is_x()` for a `bool`, and `get_x()` only when a builder
-  of the same type holds the bare name, as `std::process::Command::get_args` does. Considered: `with_x` builders (would
-  rename every builder in core and `michi-pipeline` to free a few getter names) and getters named after their type
-  (`recovery_hint()` would read as `AgentResponse`'s appending builder of the same name). Applied:
-  `StatusResponse::with_hints` became `hints`; `render_already_done` takes `&[Hint]` like every other renderer;
-  `DomainError::render()` and `render_json()` became `render(OutputFormat)`, like `AgentResponse`; text-only types keep
-  `render()`. `DomainError::context(prefix)` replaces the field write `e.message = format!(…)` the docs used to
-  suggest, and `retry_after(None)` clears a delay.
-- **Derives that were missing:** `Hash` on `ErrorCode` and `ErrorClass`, `Display` on `ErrorCode` (its label),
-  `PartialEq` on `DomainError`, `Eq` on `AttemptRecord`, and `FromStr` plus `Borrow<str>` on `StepId` and `RunId`, so
-  `"x".parse::<StepId>()` works and a `BTreeMap<StepId, _>` is looked up with a `&str`. `Hint`'s `Eq`/`Hash` belong to
-  the hints module's owner and are not part of this change.
+- **Private, with getters:** `DomainError` (`code()`, `message()`, `causes()`, `hints()`, `get_recovery()`, `get_retry_after()`, `is_retryable()`), `RetryConfig` (`max_retries()`, `base_delay()`, `max_delay()`, `jitter_factor()`) and `PartialSuccess` (`completed()`, `failed()`, `skipped()`, built with `try_new`, which returns `DuplicateOpIndex`). `Section` went private the same day ("Envelope facts have one source"). The compiler is the proof: `compile_fail,E0616` doctests on each type assert the error code for the audit's field writes.
+- **Still public:** plain records with no rule across fields: `KvItem`, `ProvenanceEntry`, `FailedOp`, `RecoveryHint`, `StatusItem`, `StatusResponse`, `PipelineStep`, `Pipeline`, `ContentBlock`, `CallToolResult`, and the newtypes.
+- **States the domain forbids:** `OpRef` is split into `CompletedOp` (no reason, so none can be dropped) and `SkippedOp`; the JS `renderPartialSuccess` takes the same two shapes, rejects a non-null `reason` on a completed op and throws on a repeated index. `Pipeline.id` is removed: nothing rendered it, `renderPipeline` passed an empty string, and `RunRecord::to_pipeline` filled it for no reader. Rejected: rendering it (`pipeline: <id>`), which would change a document no consumer asked to change; `RunRecord::run_id()` already gives the id.
+- **`CallToolResult.structured_content` is `Option<JsonObject>`.** It was a `String` where empty meant none, checked only by `try_new` or at serialization, both behind `serde`, so a default-feature caller could build a result that could not serialize. `JsonObject::new` checks the text in every build with a strict RFC 8259 checker in `mcp.rs` that applies `serde_json`'s limits (127 levels, no lone surrogate escapes, finite numbers); a property test compares the two. michi's own renderers wrap their writers' output directly. The field stays public: the type now carries the rule. The wire shape is unchanged.
+- **`michi_core::Error` and `Result` are removed.** No michi API returned them (every fallible function has its own error type; `michi-pipeline` converts to `DomainError`), monokl builds `DomainError` directly, and `Error::InvalidInput`/`NotFound` duplicated `ErrorCode` minus hints, recovery and causes. ADR 9 says such surface goes before 1.0. `class()` and `is_retryable()` live on `DomainError`; `is_retryable()` is `true` exactly when `class()` is `Transient`.
+- **One convention for builders and getters** (spec 03, "API conventions"): builders are bare and consuming (`x(v)` sets or appends one, `xs(vec)` replaces a list); getters are bare, `is_x()` for a `bool`, and `get_x()` only when a builder of the same type holds the bare name, as `std::process::Command::get_args` does. Considered: `with_x` builders (would rename every builder in core and `michi-pipeline` to free a few getter names) and getters named after their type (`recovery_hint()` would read as `AgentResponse`'s appending builder of the same name). Applied: `StatusResponse::with_hints` became `hints`; `render_already_done` takes `&[Hint]` like every other renderer; `DomainError::render()` and `render_json()` became `render(OutputFormat)`, like `AgentResponse`; text-only types keep `render()`. `DomainError::context(prefix)` replaces the field write `e.message = format!(…)` the docs used to suggest, and `retry_after(None)` clears a delay.
+- **Derives that were missing:** `Hash` on `ErrorCode` and `ErrorClass`, `Display` on `ErrorCode` (its label), `PartialEq` on `DomainError`, `Eq` on `AttemptRecord`, and `FromStr` plus `Borrow<str>` on `StepId` and `RunId`, so `"x".parse::<StepId>()` works and a `BTreeMap<StepId, _>` is looked up with a `&str`. `Hint`'s `Eq`/`Hash` belong to the hints module's owner and are not part of this change.
