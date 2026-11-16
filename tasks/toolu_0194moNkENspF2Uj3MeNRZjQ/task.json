@@ -1,0 +1,15 @@
+{
+  "tool_use_id": "toolu_0194moNkENspF2Uj3MeNRZjQ",
+  "agent_id": "ade6b6d1ac5a69d41",
+  "subagent_type": "general-purpose",
+  "task_description": "T6 pipeline observers",
+  "token_usage": {
+    "input_tokens": 84,
+    "cache_creation_tokens": 123374,
+    "cache_read_tokens": 3717002,
+    "output_tokens": 23774,
+    "api_call_count": 41
+  },
+  "started_at": "2026-11-16T08:38:30.19135-08:00",
+  "completed_at": "2026-11-16T08:45:48.918763-08:00"
+}

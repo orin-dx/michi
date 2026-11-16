@@ -1,0 +1,15 @@
+{
+  "tool_use_id": "toolu_01LUmJQxKNBGRh71dcznjEa4",
+  "agent_id": "a9947b4078dd683e0",
+  "subagent_type": "general-purpose",
+  "task_description": "T2 NAPI restructure",
+  "token_usage": {
+    "input_tokens": 218,
+    "cache_creation_tokens": 324861,
+    "cache_read_tokens": 25165819,
+    "output_tokens": 116791,
+    "api_call_count": 109
+  },
+  "started_at": "2026-11-16T08:38:30.19341-08:00",
+  "completed_at": "2026-11-16T08:56:10.419208-08:00"
+}

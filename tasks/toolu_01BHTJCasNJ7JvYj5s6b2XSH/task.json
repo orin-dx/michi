@@ -1,0 +1,15 @@
+{
+  "tool_use_id": "toolu_01BHTJCasNJ7JvYj5s6b2XSH",
+  "agent_id": "aacfac292c6577b2e",
+  "subagent_type": "general-purpose",
+  "task_description": "T1 envelope integrity",
+  "token_usage": {
+    "input_tokens": 290,
+    "cache_creation_tokens": 417021,
+    "cache_read_tokens": 47451304,
+    "output_tokens": 132352,
+    "api_call_count": 145
+  },
+  "started_at": "2026-11-16T08:38:30.211873-08:00",
+  "completed_at": "2026-11-16T09:03:33.392911-08:00"
+}

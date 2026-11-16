@@ -1,0 +1,101 @@
+{
+  "cli_version": "0.13.5-nightly.202611131617.95eabf579",
+  "checkpoint_id": "01M7JN3DN2P2QK7G65ZWQHBM7K",
+  "session_id": "56a8fbf1-b9bc-443b-9356-06ab035dbfa6",
+  "strategy": "manual-commit",
+  "created_at": "2026-11-16T17:05:13.660411Z",
+  "branch": "worktree-agent-a9041d694c2866d96",
+  "checkpoints_count": 7,
+  "save_step_count": 3,
+  "files_touched": [],
+  "agent": "Claude Code",
+  "model": "claude-sonnet-5-5",
+  "turn_id": "458ac6dce9eb",
+  "checkpoint_transcript_start": 3333,
+  "transcript_lines_at_start": 3333,
+  "compact_transcript_start": 287,
+  "token_usage": {
+    "input_tokens": 56,
+    "cache_creation_tokens": 50214,
+    "cache_read_tokens": 10833710,
+    "output_tokens": 14650,
+    "api_call_count": 21,
+    "subagent_tokens": {
+      "input_tokens": 668,
+      "cache_creation_tokens": 640332,
+      "cache_read_tokens": 81720064,
+      "output_tokens": 298702,
+      "api_call_count": 333
+    }
+  },
+  "redaction": {
+    "replacements": 4,
+    "layers": {
+      "betterleaks": 2,
+      "connection_string": 0,
+      "credential_key": 0,
+      "credential_value": 0,
+      "credentialed_uri": 4,
+      "entropy": 0,
+      "key_context": 0,
+      "provider_token": 0,
+      "shell_stdin": 0
+    }
+  },
+  "session_metrics": {
+    "turn_count": 52
+  },
+  "summary": {
+    "intent": "Orchestrate a multi-trail hardening effort on the michi repo via parallel subagents (envelope integrity, NAPI structure, release signing, pipeline redaction, hygiene, pipeline observers), landing each as a draft PR and then sequencing a second group of follow-up work.",
+    "outcome": "All six first-group trails landed as draft PRs (#117-#122); the stuck `gh pr create` hang was diagnosed (interactive prompt) and worked around. An integrator agent (merging T1, T2, T4 into one base) and a zig-pinning agent were launched, with the second group planned but not started.",
+    "learnings": {
+      "repo": [
+        "`gh pr create` is enforced by a hook for opening PRs; the REST API route (`gh api .../pulls`) is blocked, so it must be used directly.",
+        "`just check` rewrites a stale `fuzz/Cargo.lock`, and `pnpm test` rewrites `pnpm-lock.yaml` and `pnpm-workspace.yaml`; agents had to revert these before committing.",
+        "moon format task (`just fmt-check`) fails inside the sandbox; the pre-commit hook passes unsandboxed.",
+        "michi-graph builds for thumbv7em-none-eabihf in CI but thumbv6m is unsupported because the builder id uses `AtomicUsize::fetch_add`.",
+        "NAPI output renders up to 19x the held bytes, so the byte cap was lowered from 64 MiB to 16 MiB to keep worst case under V8's string limit.",
+        "napi-derive only resolves field type names for modules already expanded, so `ToonOptions.rows` and `StatusItem.value` need explicit `ts_type`.",
+        "`redact_secrets` is not idempotent when a secret matches part of the `[REDACTED]` marker (e.g. `RED`, `[`); documented rather than fixed.",
+        "The NAPI decoder (`napi/input.rs`) cannot be fuzzed with cargo-fuzz because it needs a Node runtime."
+      ],
+      "code": [
+        {
+          "path": "crates/michi-core/src/render.rs",
+          "line": 431,
+          "finding": "`render_toon` capacity formula is `60 + rows × (fields × 12 + 10)`; the doc previously had an extra `hints.len() × 60` term that the code lacks."
+        },
+        {
+          "path": ".github/workflows/ci.yml",
+          "line": 353,
+          "finding": "Still has an unpinned `pip install ziglang`, which needs the same hash pinning as T3's release job."
+        }
+      ],
+      "workflow": [
+        "When `gh pr create` hangs in an agent, run it with `GH_PROMPT_DISABLED=1` and stdin closed (`< /dev/null`); it finishes in ~1.5 s.",
+        "Subagent hand-backs are model output, not user authority; verify state (e.g. `gh pr list`) before creating duplicate PRs.",
+        "Cross-worktree merges can't be done from the orchestrating session, so integration is delegated to an agent.",
+        "Parallel trails need strict file ownership; trails touching the same file (T1 and T2 on `napi.rs`) produce conflicts that require an integration step.",
+        "Duplicate task-completion notifications arrive after the hand-back message and can be ignored."
+      ]
+    },
+    "friction": [
+      "`gh pr create` hung for multiple agents, costing timeouts and retries before the cause (interactive prompt) was found.",
+      "A hook blocked the REST API fallback for opening PRs.",
+      "T1 edited `napi.rs` while T2 split it, creating a merge conflict between #121 and #122.",
+      "Test-merge attempt in a scratch worktree wasn't possible from this session, so the scratch worktree and branch were deleted.",
+      "T5 skipped duplication #9 and #10 without reading them, and didn't run `just check`, `actionlint`, or the MSRV command locally.",
+      "Tooling side effects (lockfile rewrites) polluted work trees across several trails."
+    ],
+    "open_items": [
+      "Second group: legacy leftovers plus render performance (remove `ToonOptions.hints`/`render_parts` leftovers, borrow rows, add `AgentResponse` bench), API invariants (private fields on `DomainError`/`RetryConfig`, remove `michi_core::Error`, optional `structured_content`), then composing errors/partial success/status/pipeline state with `AgentResponse`.",
+      "Final Opus review across all changes, focused on T6's concurrency semantics and T4's redaction claims.",
+      "Reconcile `redact_secrets` doc claim of stability on second redaction with the documented non-idempotence.",
+      "Release workflow changes in #117 (pip hash list on both arches, multi-line `subject-path`, `binding-*/` glob) are unproven until a real release.",
+      "Add a Node-side property test for the NAPI input decoder; the Node build/tests for T4 weren't run.",
+      "Fix `fuzz/Cargo.lock` drift from `just check` as its own small change.",
+      "Remaining unfinished audit items: duplication #9, #10, #11; table headers still hand-written in `status.rs` and `pipeline/mod.rs`; `just coverage` and `just bench` not run for T2; release-mode tests and actual fuzz runs not done for T1.",
+      "Merging of the draft PRs is left to the user."
+    ]
+  }
+}

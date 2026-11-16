@@ -1,0 +1,15 @@
+{
+  "tool_use_id": "toolu_01JCMpaqVZRSNj45znkkv9Bm",
+  "agent_id": "a5c754065abcc1a9a",
+  "subagent_type": "general-purpose",
+  "task_description": "T3 release signing hardening",
+  "token_usage": {
+    "input_tokens": 52,
+    "cache_creation_tokens": 68786,
+    "cache_read_tokens": 1836704,
+    "output_tokens": 12149,
+    "api_call_count": 26
+  },
+  "started_at": "2026-11-16T08:38:38.132192-08:00",
+  "completed_at": "2026-11-16T08:44:48.968174-08:00"
+}

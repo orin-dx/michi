@@ -1,0 +1,15 @@
+{
+  "tool_use_id": "toolu_015aBeDWq4qJkmEgaGqZAmu4",
+  "agent_id": "a92ae3a3bfcf84954",
+  "subagent_type": "general-purpose",
+  "task_description": "T5 docs tests CI hygiene",
+  "token_usage": {
+    "input_tokens": 42,
+    "cache_creation_tokens": 73505,
+    "cache_read_tokens": 1345142,
+    "output_tokens": 6799,
+    "api_call_count": 21
+  },
+  "started_at": "2026-11-16T08:38:30.192662-08:00",
+  "completed_at": "2026-11-16T08:43:25.087311-08:00"
+}
