@@ -9,13 +9,40 @@
 use napi::bindgen_prelude::{FromNapiValue, JsObjectValue as _, Object, Unknown};
 use napi::{JsString, JsValue as _, ValueType};
 
+use super::hints::JsRecoveryHint;
 use super::num::JsCount;
-use super::{JsFailedOp, JsKvItem, JsOpRef, JsPipelineStep, JsRecoveryHint, JsStatusItem, JsToonValue};
+use super::outcome::{JsFailedOp, JsOpRef, JsPipelineStep};
+use super::toon::JsStatusItem;
+use super::value::{JsKvItem, JsToonValue};
 
+/// Most rows one call's `rows` may hold (`renderToon`'s `opts.rows`, `AgentResponse.items`'s `rows`).
+pub(crate) const MAX_ROWS: usize = 100_000;
+/// Most entries for anything shaped like "one entry per field": `fields`, each row's value count, and the `items` of
+/// `renderKv`, `renderStatus` and `AgentResponse.kvItems` (one KV entry is one field).
+pub(crate) const MAX_FIELDS: usize = 1_000;
+/// Most hints per call (`hints`, `causes`, recovery hints), and the cumulative count one `AgentResponse` takes
+/// through `hint` and `recoveryHint`.
+pub(crate) const MAX_HINTS: usize = 10_000;
+/// Most entries per list for `renderPartialSuccess`'s `completed`, `failed` and `skipped` and `renderPipeline`'s `steps`.
+pub(crate) const MAX_STEPS: usize = 10_000;
 /// Most cells (row values) one call may pass.
 pub(crate) const MAX_CELLS: usize = 1_000_000;
-/// Most UTF-8 bytes of string data one call may pass, summed over every string argument and nested string.
-pub(crate) const MAX_INPUT_BYTES: usize = 64 * 1024 * 1024;
+/// Most UTF-8 bytes of string data one call may pass, summed over every string argument and nested string, and most
+/// one `AgentResponse` may hold across all its calls.
+///
+/// This bounds the OUTPUT as well as the input. Rendering writes each string more than once, and a control character
+/// is the worst case: `\u0001` is six bytes in the text, thirteen in the JSON (`\\u0001` inside the body, plus the
+/// raw `sections` copy), and nineteen in `toCallToolResult` (the text plus the parsed JSON). So `n` held bytes render
+/// to at most `19 * n` (see [`MAX_OUTPUT_FACTOR`]). At the old 64 MiB that was 1.2 GiB per call on Node's event loop,
+/// and a response over V8's string limit (about 512 MiB) failed only after rendering it. At 16 MiB it is at most
+/// 304 MiB, under that limit, so a response either renders or is rejected here, before anything is rendered.
+pub(crate) const MAX_INPUT_BYTES: usize = 16 * 1024 * 1024;
+/// Largest ratio of any render's output to the string bytes held (see [`MAX_INPUT_BYTES`]); a test pins it.
+pub(crate) const MAX_OUTPUT_FACTOR: usize = 19;
+/// V8's longest string, in characters, on 64-bit builds (`2^29 - 24`). A string longer than this cannot be handed to
+/// JavaScript, so every output must stay under it.
+pub(crate) const V8_MAX_STRING_LEN: usize = (1 << 29) - 24;
+const _: () = assert!(MAX_INPUT_BYTES * MAX_OUTPUT_FACTOR < V8_MAX_STRING_LEN);
 /// Longest single cell value, hint, reason, description or message, in UTF-8 bytes.
 pub(crate) const MAX_STRING_BYTES: usize = 1024 * 1024;
 /// Longest type name, field name, key, tool name, error code, truncation hint or other identifier, in UTF-8 bytes.
@@ -25,6 +52,15 @@ pub(crate) const MAX_NAME_BYTES: usize = 4 * 1024;
 pub(crate) fn check_len(what: &str, len: usize, max: usize) -> napi::Result<()> {
     if len > max {
         return Err(napi::Error::from_reason(format!("{what} length {len} exceeds maximum of {max}")));
+    }
+    Ok(())
+}
+
+/// `"{what} byte length {len} exceeds maximum of {max}"` for a string argument napi has already copied. Used by the
+/// single-string builder methods: their one argument is copied once, so the cap bounds what is kept, not the copy.
+pub(crate) fn check_bytes(what: &str, s: &str, max: usize) -> napi::Result<()> {
+    if s.len() > max {
+        return Err(napi::Error::from_reason(format!("{what} byte length {} exceeds maximum of {max}", s.len())));
     }
     Ok(())
 }

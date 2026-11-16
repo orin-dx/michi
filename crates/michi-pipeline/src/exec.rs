@@ -43,7 +43,8 @@ pub enum FailurePolicy {
 
 /// Called synchronously from the scheduler loop as steps start and finish, so callers can persist progress and
 /// rebuild the run with [`RunRecord::from_parts`] after a crash. A closure `Fn(&RunId, &StepRecord)` implements it
-/// (finish events only). Keep it quick: it runs between dispatches.
+/// (finish events only). Keep it quick: it runs between dispatches. (A [`DurableObserver::record_start`] is the
+/// exception: it runs on a blocking thread, so a slow save delays only its own step.)
 ///
 /// A panic in an observer method is caught: the run continues, later events are still delivered, and the panic is
 /// counted in [`RunRecord::observer_panics`]. (The process's panic hook still runs, so the default hook prints it.)
@@ -86,6 +87,11 @@ pub trait DurableObserver: StepObserver {
     /// Persist the in-flight marker ([`StepRecord::in_flight`]) and return `Ok` only once it is saved. Called instead
     /// of [`StepObserver::on_step_started`]. `Err(reason)` or a panic stops the step: it ends
     /// `NotRun(StartNotRecorded)` without being invoked, and resume runs it again.
+    ///
+    /// Runs on a blocking thread (`tokio::task::spawn_blocking`) owned by the step it belongs to, so file or database
+    /// I/O here delays that step's start but not other steps' starts, timers or cancellation. Steps that start
+    /// together call it at the same time, from different threads, in no fixed order: it must be safe to call
+    /// concurrently (an append-only log behind a lock is). Each step still runs only after its own call returns `Ok`.
     ///
     /// # Errors
     ///
