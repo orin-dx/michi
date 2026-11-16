@@ -153,8 +153,15 @@ fn a_quoted_value_keeps_its_quotes() {
 
 #[test]
 fn unrelated_colons_and_pairs_are_kept() {
-    for s in ["error: not found at 10:30", "status: 500", "https://host:8080/p", "name=\"bob\" id: 7", "monkey: banana"]
-    {
+    for s in [
+        "error: not found at 10:30",
+        "status: 500",
+        "https://host:8080/p",
+        "token://host/p",
+        r"key:\/\/host",
+        "name=\"bob\" id: 7",
+        "monkey: banana",
+    ] {
         assert_eq!(redact_common_shapes(s), s);
     }
 }

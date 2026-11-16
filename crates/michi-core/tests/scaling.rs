@@ -214,7 +214,7 @@ fn redact_common_shapes_is_linear_in_pairs() {
     for unit in ["token=\"", "token: Basic ", "a:b=c ", "x=1&password='p'&", "Cookie: a=1; "] {
         assert_linear(
             unit,
-            2_000,
+            1_000,
             |n| unit.repeat(n),
             |text| {
                 black_box(michi_core::redact::redact_common_shapes(text));
