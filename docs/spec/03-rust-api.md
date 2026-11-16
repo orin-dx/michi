@@ -5,14 +5,14 @@
 `michi-core` is the one crate holding every sync primitive. Each primitive is a module (`michi_core::toon`, `michi_core::kv`, `michi_core::truncate`, `michi_core::resilience`, …), and the most-used types are re-exported at the crate root:
 
 ```rust
-pub use error::{DomainError, Error, ErrorClass, ErrorCode, Sensitive, MAY_HAVE_TAKEN_EFFECT_HINT};
+pub use error::{DomainError, ErrorClass, ErrorCode, Sensitive, MAY_HAVE_TAKEN_EFFECT_HINT};
 pub use response::{AgentResponse, OutputFormat};
 pub use kv::{render_kv, KvError, KvItem, KvValue};
 pub use audience::Audience;
 pub use empty::{empty_state, empty_state_with_hints, try_empty_state, try_empty_state_with_hints};
 pub use hints::{append_hints, render_hints, Hint};
-pub use idempotency::{FailedOp, PartialSuccess};
-pub use mcp::{CallToolResult, ContentBlock, StructuredContentError};
+pub use idempotency::{CompletedOp, DuplicateOpIndex, FailedOp, PartialSuccess, SkippedOp};
+pub use mcp::{CallToolResult, ContentBlock, JsonObject, StructuredContentError};
 pub use recovery::{append_recovery, render_recovery, RecoveryHint};
 pub use status::{Health, StatusItem, StatusResponse};
 pub use resilience::{
@@ -21,9 +21,20 @@ pub use resilience::{
 };
 pub use truncate::{truncate, Truncated};
 pub use truncation::{truncate_by_count, truncate_by_size, TruncationOutcome};
-
-pub type Result<T> = std::result::Result<T, Error>;
 ```
+
+There is no crate-wide `Error` enum or `Result` alias: every fallible function returns its own error type (`ToonError`, `KvError`, `RetryConfigError`, `StructuredContentError`, `DuplicateOpIndex`, …), and `DomainError` is the one agent-facing error.
+
+### API conventions
+
+One rule for every builder and getter, so 1.0 freezes one shape (see "Invariants live behind private fields" in [06-decisions.md](06-decisions.md)):
+
+- **Builders** consume `self`, are `#[must_use]` and are named for what they set, with no prefix: `x(v)` sets one value or appends one entry (`hint`, `cause`, `recovery`, `retryable`); the plural `xs(vec)` replaces a whole list (`hints`).
+- **Getters** take `&self` and are named for the field; a `bool` reads `is_x()`. When a builder of the same type already uses the field's name, the getter is `get_x()`, as in `std::process::Command::get_args` (`DomainError::get_recovery`, `get_retry_after`).
+- **Construction:** `new` never fails; a constructor that checks is `try_new` and returns its own error type. Arguments go identity first (`code`, `index`, `id`, `key`), then name or text, then data; anything optional is a builder call.
+- **Hints** are passed as `&[Hint]` (a slice) or `Vec<Hint>` (a replacing builder), never `&[String]`.
+- **Rendering:** a type with more than one output format renders through `render(OutputFormat)`; a text-only type has `render()`. Other targets get their own named method (`render_github_annotation`).
+- **Fields:** a type whose fields carry a cross-field invariant keeps them private (`DomainError`, `RetryConfig`, `PartialSuccess`, `Section`); a plain record keeps them public (`KvItem`, `FailedOp`, `CompletedOp`, `SkippedOp`, `RecoveryHint`, `StatusItem`, `StatusResponse`, `PipelineStep`, `Pipeline`, `CallToolResult`).
 
 The root re-exports are explicit lists (0.4.0 replaced the `resilience::*` and `truncate::*` globs), so a new item in a module does not appear at the root by accident. `toon`, `pipeline` and `telemetry` are not re-exported at the root; their items are reached as `michi_core::toon::ToonOptions`, `michi_core::toon::list()`, `michi_core::pipeline::StepStatus`, and so on. There is no `michi` crate (the name on crates.io belongs to an unrelated project); consumers who prefer `michi::` paths rename the dependency with `michi = { package = "michi-core", version = "0.7" }`.
 
@@ -136,20 +147,10 @@ Items are serialized to JSON text and read back (so an `f32` field keeps its own
 `DomainError` provides classified domain error responses (**AXI P6**):
 
 ```rust
+/// Fields are private: the builder keeps MAY_HAVE_TAKEN_EFFECT_HINT in step with the code and the retry flag.
 #[non_exhaustive]
-pub struct DomainError {
-    pub code: ErrorCode,
-    pub message: String,
-    /// Why it happened, outermost first (diagnosis). Rendered as `causes[N]: …`.
-    pub causes: Vec<String>,
-    /// What to do next (guidance). Rendered as `help[N]: …`.
-    pub hints: Vec<Hint>,
-    pub recovery: Option<RecoveryHint>,
-    /// Calling again is expected to help without repeating an effect. Defaults to true only for
-    /// RateLimited and Unavailable; see below.
-    pub retryable: bool,
-    pub retry_after: Option<Duration>,
-}
+#[derive(Debug, Clone, PartialEq)]
+pub struct DomainError { /* code, message, causes, hints, recovery, retryable, retry_after */ }
 
 impl DomainError {
     pub fn new(code: ErrorCode, message: impl Into<String>) -> Self;
@@ -162,15 +163,31 @@ impl DomainError {
     pub fn hint(self, hint: impl Into<String>) -> Self;
     pub fn recovery(self, r: RecoveryHint) -> Self;
     pub fn retryable(self, retryable: bool) -> Self;
-    pub fn retry_after(self, d: Duration) -> Self;
+    /// `None` clears it.
+    pub fn retry_after(self, d: impl Into<Option<Duration>>) -> Self;
+    /// message becomes "{context}: {message}"; everything else is kept.
+    pub fn context(self, context: impl Display) -> Self;
+
+    pub fn code(&self) -> ErrorCode;
+    pub fn message(&self) -> &str;
+    /// Why it happened, outermost first (diagnosis). Rendered as `causes[N]: …`.
+    pub fn causes(&self) -> &[String];
+    /// What to do next (guidance). Rendered as `help[N]: …`.
+    pub fn hints(&self) -> &[Hint];
+    pub fn get_recovery(&self) -> Option<&RecoveryHint>;
+    pub fn get_retry_after(&self) -> Option<Duration>;
+    /// Calling again is expected to help without repeating an effect; see below.
+    pub fn is_retryable(&self) -> bool;
+    /// Transient when retryable, otherwise `code().default_class()`.
+    pub fn class(&self) -> ErrorClass;
     /// Always returns `1`.
     pub fn exit_code(&self) -> i32;
-    pub fn render(&self) -> String;
+    pub fn render(&self, format: OutputFormat) -> String;
     pub fn render_github_annotation(&self) -> String;
-    pub fn render_json(&self) -> String;
     pub fn to_call_tool_result(&self) -> CallToolResult;
 }
 impl Display for DomainError { ... } // "{code label}: {message}"
+impl Display for ErrorCode { ... }   // the label
 
 #[non_exhaustive]
 pub enum ErrorCode {
@@ -185,39 +202,26 @@ impl ErrorCode {
 }
 
 #[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ErrorClass { User, Internal, Transient, Ambiguous }
 
 pub const MAY_HAVE_TAKEN_EFFECT_HINT: &str =
     "the operation may have taken effect; verify whether it completed before retrying, unless it is idempotent";
 
-/// The crate's unified error. Display: "Invalid input: {m}", "Not found: {m}", "{code}: {message}".
-#[non_exhaustive]
-pub enum Error {
-    InvalidInput(String),
-    NotFound(String),
-    Domain(DomainError), // From<DomainError>
-}
-impl Error {
-    pub fn render(&self) -> String;
-    pub fn exit_code(&self) -> i32; // always 1
-    pub fn class(&self) -> ErrorClass;
-    pub fn is_retryable(&self) -> bool; // class() == Transient
-}
-
 /// Omits its content from Debug and Display (both print "<redacted>").
 pub struct Sensitive<T>(pub T);
 ```
 
-- `render()` outputs a TOON 4.4 document: `error: <code>`, `message: …` (quoted per §7.2), `causes[N]: …` when there are causes, `exit_code: 1`, then `help[N]: …` and `recovery[1]{tool,params,reason}:` when set. `Error::render()` uses the same shape for every variant (`error: invalid_input` / `error: not_found` for the non-domain variants). See [02-toon-format.md](02-toon-format.md#agent-facing-blocks).
+- `render(OutputFormat::Text)` outputs a TOON 4.4 document: `error: <code>`, `message: …` (quoted per §7.2), `causes[N]: …` when there are causes, `exit_code: 1`, then `help[N]: …` and `recovery[1]{tool,params,reason}:` when set. See [02-toon-format.md](02-toon-format.md#agent-facing-blocks).
 - `render_github_annotation()` outputs a GitHub Actions annotation (`::error title=code::message`). The message is encoded as workflow command data (`%` → `%25` first, then CR → `%0D`, LF → `%0A`); the title also encodes `:` and `,`.
-- `retryable` means calling again is expected to help without repeating an effect. `DomainError::new` sets it from `ErrorCode::is_retryable_by_default()`: `true` for `RateLimited` and `Unavailable` (the request was not processed), `false` for every other code. A `Timeout` or `ExternalFailure` may have taken effect, so mark it `.retryable(true)` only when the operation is idempotent. `Error::is_retryable()` and `ErrorClass::Transient` follow the field.
+- `retryable` means calling again is expected to help without repeating an effect. `DomainError::new` sets it from `ErrorCode::is_retryable_by_default()`: `true` for `RateLimited` and `Unavailable` (the request was not processed), `false` for every other code. A `Timeout` or `ExternalFailure` may have taken effect, so mark it `.retryable(true)` only when the operation is idempotent. `is_retryable()` and `class() == ErrorClass::Transient` always agree.
 - A `Timeout` that is not marked retryable is `ErrorClass::Ambiguous` (no answer came back, so the operation may or may not have taken effect: not the caller's fault and not an internal error), and `DomainError::new` gives it the hint `MAY_HAVE_TAKEN_EFFECT_HINT` ("the operation may have taken effect; verify whether it completed before retrying, unless it is idempotent"). `.retryable(true)` makes it `Transient` and removes that hint; `.retryable(false)` puts it back. `ExternalFailure` covers too much (a failed local walk, a server error) to say, so it stays `Internal` with no automatic hint; add your own when you know the operation may have applied.
-- `render_json()` outputs a JSON object: `{"isError":true,"error":"...","message":"...","causes":[...],"retryable":bool,"hints":[...],"recovery":null|{...}}`. `causes` and `hints` are always present, `[]` when empty; serde and the `schemars` schema match it.
+- `render(OutputFormat::Json)` outputs a JSON object: `{"isError":true,"error":"...","message":"...","causes":[...],"retryable":bool,"hints":[...],"recovery":null|{...}}`. `causes` and `hints` are always present, `[]` when empty; serde and the `schemars` schema match it.
 - `from_error(code, err)` sets `message` to `err.to_string()` and nothing else: the `source()` chain stays out of the agent's view because causes often carry URLs with tokens, file paths and other internals. The top-level `Display` is still agent-visible, so check it too, or use `DomainError::new` with a message you wrote. It is passed through `redact_common_shapes` first (best effort, see `redact`).
 - `from_error_with_causes(code, err)` is the opt-in: it does what `from_error` does, then walks `err.source()`, adding each link's `Display` to `causes` (the separate diagnosis field, never `help[]`). A link whose text the last kept text (the message or the previous kept cause) already contains is skipped, since `thiserror` messages often embed their source (`#[error("walk failed: {0}")]`). The walk stops after 128 links. Nothing is stored but text: `source()` on a `DomainError` stays `None`, and it stays `Clone + Send + Sync`. Line breaks stay inside their cause; `render()` escapes them.
 - With the `miette` feature, `Diagnostic::help()` lists the hints, then one `caused by: …` line per cause (`None` when there are neither). The GitHub annotation stays message-only.
 - `to_call_tool_result()` builds an MCP `CallToolResult` with `is_error:true` and the rendered JSON as `structured_content`.
-- When the `schemars` feature is enabled, `DomainError` implements schemars 1.x's `JsonSchema` (the schema of `render_json()`'s object, as JSON Schema 2020-12). Only types serde actually serializes have a schema: `StatusResponse`, `ToonOptions`, `ErrorClass` and the other render-only types do not.
+- When the `schemars` feature is enabled, `DomainError` implements schemars 1.x's `JsonSchema` (the schema of the JSON render's object, as JSON Schema 2020-12). Only types serde actually serializes have a schema: `StatusResponse`, `ToonOptions`, `ErrorClass` and the other render-only types do not.
 
 ### `AgentResponse` Builder
 
@@ -357,35 +361,50 @@ Text order: the sections in call order, `budget:`, `provenance:`, `help[]`, `rec
 ### Idempotency
 
 ```rust
-// In michi_core::idempotency (also at michi_core::PartialSuccess, michi_core::FailedOp, michi_core::OpRef)
+// In michi_core::idempotency (also at the root: PartialSuccess, CompletedOp, SkippedOp, FailedOp, DuplicateOpIndex)
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OpRef {
+pub struct CompletedOp {
     /// Position in the caller's op slice: `results[index]` answers `ops[index]`.
     pub index: usize,
     pub operation: String,
-    /// A caller-defined machine token (`budget_exhausted`, `deadline`). Rendered for skipped ops only.
-    pub reason: Option<String>,
+}
+impl CompletedOp {
+    pub fn new(index: usize, operation: impl Into<String>) -> Self;
 }
 
-impl OpRef {
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkippedOp {
+    pub index: usize,
+    pub operation: String,
+    /// A caller-defined machine token (`budget_exhausted`, `deadline`); `null` when absent.
+    pub reason: Option<String>,
+}
+impl SkippedOp {
     pub fn new(index: usize, operation: impl Into<String>) -> Self;
     pub fn reason(self, reason: impl Into<String>) -> Self;
 }
 
+/// Fields are private: each index has exactly one outcome.
 #[non_exhaustive]
-#[derive(Default)]
-pub struct PartialSuccess {
-    pub completed: Vec<OpRef>,
-    pub failed: Vec<FailedOp>,
-    pub skipped: Vec<OpRef>,
-}
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PartialSuccess { /* completed, failed, skipped */ }
 
 impl PartialSuccess {
-    pub fn new(completed: Vec<OpRef>, failed: Vec<FailedOp>, skipped: Vec<OpRef>) -> Self;
+    /// Err names the first index that appears twice, within one list or across them.
+    pub fn try_new(completed: Vec<CompletedOp>, failed: Vec<FailedOp>, skipped: Vec<SkippedOp>)
+        -> Result<Self, DuplicateOpIndex>;
+    pub fn completed(&self) -> &[CompletedOp];
+    pub fn failed(&self) -> &[FailedOp];
+    pub fn skipped(&self) -> &[SkippedOp];
     pub fn render(&self) -> String;
     pub fn exit_code(&self) -> i32;   // 0 = no failures, 1 = any failed
 }
+
+/// Display: "operation index {index} has more than one outcome".
+#[non_exhaustive]
+pub struct DuplicateOpIndex { pub index: usize }
 
 #[non_exhaustive]
 pub struct FailedOp {
@@ -408,13 +427,13 @@ impl FailedOp {
 // failed[1]{index,operation,reason}:
 //   2,refs,"symbol not found: RetryPolicy"
 // skipped[1]{index,operation,reason}:
-//   3,search,budget_exhausted        <- `null` when the OpRef has no reason
+//   3,search,budget_exhausted        <- `null` when the SkippedOp has no reason
 
 // In michi_core::resilience (also at michi_core::already_done, michi_core::AlreadyDone)
 #[non_exhaustive]
 pub enum AlreadyDone { Yes { result: String }, No }
 pub fn already_done(stored: Option<String>) -> AlreadyDone;
-pub fn render_already_done(operation: &str, summary: &str, hints: &[String]) -> String;
+pub fn render_already_done(operation: &str, summary: &str, hints: &[Hint]) -> String;
 pub struct IdempotencyKey(pub String); // also From<String>, From<&str>
 impl IdempotencyKey {
     pub fn new(s: impl Into<String>) -> Self;
@@ -483,7 +502,8 @@ impl StatusItem {
 pub struct StatusResponse { pub tool_name: String, pub description: String, pub items: Vec<StatusItem>, pub hints: Vec<Hint> }
 impl StatusResponse {
     pub fn new(tool_name: impl Into<String>, description: impl Into<String>, items: Vec<StatusItem>) -> Self;
-    pub fn with_hints(self, hints: Vec<Hint>) -> Self;
+    /// Replaces the hint list.
+    pub fn hints(self, hints: Vec<Hint>) -> Self;
     pub fn render(&self) -> String;                           // tool, description, items[N]{key,value,health,reason}:, help
 }
 
@@ -509,9 +529,9 @@ pub struct PipelineStep { pub id: String, pub name: String, pub status: StepStat
 impl PipelineStep { pub fn new(id: impl Into<String>, name: impl Into<String>, status: StepStatus) -> Self; }
 #[non_exhaustive]
 #[derive(Default)]
-pub struct Pipeline { pub id: String, pub steps: Vec<PipelineStep> }
+pub struct Pipeline { pub steps: Vec<PipelineStep> } // no run id: nothing rendered one
 impl Pipeline {
-    pub fn new(id: impl Into<String>, steps: Vec<PipelineStep>) -> Self;
+    pub fn new(steps: Vec<PipelineStep>) -> Self;
     pub fn render(&self) -> String;                           // step[N]{id,name,status,reason}:, or step: []
 }
 
@@ -528,7 +548,7 @@ impl NoopProvider {
 }
 ```
 
-The structs above are `#[non_exhaustive]` from 0.4.0: build them with their constructors, then read or assign their public fields as before. Struct literals and exhaustive destructuring work only inside michi-core, so adding a field later is not a breaking change. `Value`, `KvValue`, `AlreadyDone`, `RetryConfigError` and the other enums marked `#[non_exhaustive]` above need a `_` arm in a `match` outside michi-core.
+The structs above are `#[non_exhaustive]` from 0.4.0: build them with their constructors, then read or assign their public fields as before (`PartialSuccess` is read through its getters). Struct literals and exhaustive destructuring work only inside michi-core, so adding a field later is not a breaking change. `Value`, `KvValue`, `AlreadyDone`, `RetryConfigError` and the other enums marked `#[non_exhaustive]` above need a `_` arm in a `match` outside michi-core.
 
 `KvValue::Float(f, decimals)` rounds `f` to `decimals` places and writes the rounded value in canonical TOON number form, so `Float(1.5, 3)` is `1.5`, not `1.500`; `KvValue::FULL_PRECISION` (255) never rounds, so `Float(5e-324, KvValue::FULL_PRECISION)` is `5e-324` in TOON and in the JSON companions, while a smaller count rounds as asked (`Float(1e-300, 2)` is `0`); `Missing` is `null`; `Duration` is the string `1.5s`. `AgentResponse`'s KV path turns a `KvError` into a `kv_validation_failed` error body and sets `is_error`, like `toon_validation_failed` on the TOON path.
 
@@ -627,12 +647,7 @@ Not re-exported at the crate root; use `michi_core::redact::…`.
 ```rust
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
-pub struct RetryConfig {
-    pub max_retries: u32,
-    pub base_delay: Duration,
-    pub max_delay: Duration,
-    pub jitter_factor: f64,
-}
+pub struct RetryConfig { /* private: the constructors' checks hold for the value's life */ }
 
 impl RetryConfig {
     /// Normalizing constructor — clamps out-of-range values.
@@ -640,6 +655,10 @@ impl RetryConfig {
     /// Strict constructor — returns Err for out-of-range values.
     pub fn try_new(max_retries: u32, base_delay: Duration, max_delay: Duration, jitter_factor: f64)
         -> Result<Self, RetryConfigError>;
+    pub fn max_retries(&self) -> u32;
+    pub fn base_delay(&self) -> Duration;   // never more than max_delay
+    pub fn max_delay(&self) -> Duration;    // never zero
+    pub fn jitter_factor(&self) -> f64;     // in [0.0, 1.0]
 }
 impl Default for RetryConfig { ... } // 3 retries, 500ms base, 30s max, jitter 0.2
 

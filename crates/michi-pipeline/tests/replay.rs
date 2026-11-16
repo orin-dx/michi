@@ -32,8 +32,8 @@ async fn gateway_502_and_504_do_not_reinvoke_a_non_idempotent_step() {
         assert!(matches!(err, ExecutionError::AmbiguousOutcome { .. }));
         assert!(!err.is_retryable());
         let domain: michi_core::DomainError = record.error().unwrap().into();
-        assert!(!domain.retryable);
-        assert!(domain.hints.iter().any(|h| h.0.contains("verify whether the operation completed")));
+        assert!(!domain.is_retryable());
+        assert!(domain.hints().iter().any(|h| h.0.contains("verify whether the operation completed")));
     }
 }
 

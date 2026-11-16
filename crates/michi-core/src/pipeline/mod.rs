@@ -281,23 +281,24 @@ impl PipelineStep {
     }
 }
 
-/// A pipeline run state.
+/// A pipeline run state: its steps and their statuses.
+///
+/// It has no run id: nothing renders one, so a field for it would carry a value no reader ever sees. Put the id in the
+/// surrounding response if an agent needs it.
 ///
 /// `#[non_exhaustive]`: build it with [`Pipeline::new`] or [`Pipeline::default`]; the fields stay public.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Pipeline {
-    /// Pipeline identifier.
-    pub id: String,
     /// All steps in declaration order.
     pub steps: Vec<PipelineStep>,
 }
 
 impl Pipeline {
-    /// A pipeline with its id and steps in declaration order.
+    /// A pipeline with its steps in declaration order.
     #[must_use]
-    pub fn new(id: impl Into<String>, steps: Vec<PipelineStep>) -> Self {
-        Self { id: id.into(), steps }
+    pub fn new(steps: Vec<PipelineStep>) -> Self {
+        Self { steps }
     }
 
     /// Render the pipeline state as a TOON 4.4 document: `step[N]{id,name,status,reason}:` with one row per step, or
@@ -338,7 +339,6 @@ mod tests {
     #[test]
     fn renders_pipeline_steps() {
         let p = Pipeline {
-            id: "my-pipeline".into(),
             steps: vec![
                 PipelineStep { id: "fetch".into(), name: "Fetch Data".into(), status: StepStatus::Completed },
                 PipelineStep { id: "upload".into(), name: "Upload".into(), status: StepStatus::Pending },
@@ -411,7 +411,7 @@ mod tests {
 
     #[test]
     fn empty_pipeline_renders_zero_steps() {
-        let p = Pipeline { id: "empty".into(), steps: vec![] };
+        let p = Pipeline { steps: vec![] };
         let out = p.render();
         assert_eq!(out, "step: []");
     }
@@ -419,7 +419,6 @@ mod tests {
     #[test]
     fn failed_step_label() {
         let p = Pipeline {
-            id: "p".into(),
             steps: vec![PipelineStep { id: "build".into(), name: "Build".into(), status: StepStatus::Failed }],
         };
         assert!(p.render().ends_with(",failed,null"), "got: {}", p.render());
@@ -428,7 +427,6 @@ mod tests {
     #[test]
     fn skipped_step_label() {
         let p = Pipeline {
-            id: "p".into(),
             steps: vec![PipelineStep {
                 id: "lint".into(),
                 name: "Lint".into(),
@@ -440,14 +438,11 @@ mod tests {
 
     #[test]
     fn effect_model_reasons_render_snake_case_labels() {
-        let p = Pipeline::new(
-            "p",
-            vec![
-                PipelineStep::new("a", "A", StepStatus::OutcomeUnknown(UnknownCause::StepFailed)),
-                PipelineStep::new("b", "B", StepStatus::NotRun(NotRunReason::Unverified)),
-                PipelineStep::new("c", "C", StepStatus::NotRun(NotRunReason::StartNotRecorded)),
-            ],
-        );
+        let p = Pipeline::new(vec![
+            PipelineStep::new("a", "A", StepStatus::OutcomeUnknown(UnknownCause::StepFailed)),
+            PipelineStep::new("b", "B", StepStatus::NotRun(NotRunReason::Unverified)),
+            PipelineStep::new("c", "C", StepStatus::NotRun(NotRunReason::StartNotRecorded)),
+        ]);
         assert_eq!(
             p.render(),
             "step[3]{id,name,status,reason}:\n  a,A,outcome_unknown,step_failed\n  b,B,not_run,unverified\n  \
@@ -458,7 +453,6 @@ mod tests {
     #[test]
     fn step_id_with_comma_is_toon_escaped() {
         let p = Pipeline {
-            id: "p".into(),
             steps: vec![PipelineStep { id: "a,b".into(), name: "A,B Step".into(), status: StepStatus::Pending }],
         };
         let out = p.render();
@@ -519,20 +513,9 @@ mod tests {
     }
 
     #[test]
-    fn ac010_pipeline_default_has_empty_id_and_steps() {
+    fn ac010_pipeline_default_has_no_steps() {
         let p = Pipeline::default();
-        assert_eq!(p.id, "");
         assert_eq!(p.steps.len(), 0);
-    }
-
-    // AC-013: a distinctive, non-overlapping id must not leak into render()
-    // output for an empty-steps pipeline.
-    #[test]
-    fn ac013_distinctive_id_never_appears_in_empty_render_output() {
-        let p = Pipeline { id: "zzz-unique-marker-999".into(), steps: vec![] };
-        let out = p.render();
-        assert_eq!(out, "step: []");
-        assert!(!out.contains("zzz-unique-marker-999"), "got: {out}");
     }
 
     // AC-014: the existing step_id_with_comma_is_toon_escaped test above only
@@ -540,7 +523,6 @@ mod tests {
     #[test]
     fn ac014_comma_in_id_and_name_renders_exact_quoted_literal() {
         let p = Pipeline {
-            id: "p".into(),
             steps: vec![PipelineStep { id: "a,b".into(), name: "A,B Step".into(), status: StepStatus::Pending }],
         };
         assert_eq!(p.render(), "step[1]{id,name,status,reason}:\n  \"a,b\",\"A,B Step\",pending,null");
@@ -548,14 +530,11 @@ mod tests {
 
     #[test]
     fn ac017_render_is_idempotent_and_does_not_mutate() {
-        let p = Pipeline {
-            id: "p".into(),
-            steps: vec![PipelineStep { id: "s".into(), name: "n".into(), status: StepStatus::Completed }],
-        };
+        let p =
+            Pipeline { steps: vec![PipelineStep { id: "s".into(), name: "n".into(), status: StepStatus::Completed }] };
         let first = p.render();
         let second = p.render();
         assert_eq!(first, second);
-        assert_eq!(p.id, "p");
         assert_eq!(p.steps[0].id, "s");
         assert_eq!(p.steps[0].name, "n");
         assert_eq!(p.steps[0].status, StepStatus::Completed);
@@ -564,7 +543,6 @@ mod tests {
     #[test]
     fn ac018_step_order_is_preserved_not_reordered() {
         let p = Pipeline {
-            id: "p".into(),
             steps: vec![
                 PipelineStep { id: "C".into(), name: "c".into(), status: StepStatus::Completed },
                 PipelineStep { id: "A".into(), name: "a".into(), status: StepStatus::Completed },
@@ -580,7 +558,6 @@ mod tests {
     #[test]
     fn ac019_duplicate_ids_render_without_error_or_dedup() {
         let p = Pipeline {
-            id: "p".into(),
             steps: vec![
                 PipelineStep { id: "dup".into(), name: "first".into(), status: StepStatus::Completed },
                 PipelineStep { id: "dup".into(), name: "second".into(), status: StepStatus::Pending },
@@ -595,7 +572,6 @@ mod tests {
     #[test]
     fn ac020_empty_id_and_name_render_without_panic() {
         let p = Pipeline {
-            id: "p".into(),
             steps: vec![PipelineStep { id: String::new(), name: String::new(), status: StepStatus::Pending }],
         };
         assert_eq!(p.render(), "step[1]{id,name,status,reason}:\n  \"\",\"\",pending,null");
@@ -604,10 +580,7 @@ mod tests {
     #[test]
     fn ac025_embedded_newline_in_id_is_quoted_and_escaped() {
         let id: String = ['l', 'i', 'n', 'e', '1', '\n', 'l', 'i', 'n', 'e', '2'].into_iter().collect();
-        let p = Pipeline {
-            id: "p".into(),
-            steps: vec![PipelineStep { id, name: "ok".into(), status: StepStatus::Pending }],
-        };
+        let p = Pipeline { steps: vec![PipelineStep { id, name: "ok".into(), status: StepStatus::Pending }] };
         assert_eq!(p.render(), "step[1]{id,name,status,reason}:\n  \"line1\\nline2\",ok,pending,null");
     }
 
@@ -619,38 +592,29 @@ mod tests {
     #[test]
     fn ac025_embedded_newline_in_name_is_also_quoted_and_escaped() {
         let name: String = ['l', 'i', 'n', 'e', '1', '\n', 'l', 'i', 'n', 'e', '2'].into_iter().collect();
-        let p = Pipeline {
-            id: "p".into(),
-            steps: vec![PipelineStep { id: "ok".into(), name, status: StepStatus::Pending }],
-        };
+        let p = Pipeline { steps: vec![PipelineStep { id: "ok".into(), name, status: StepStatus::Pending }] };
         assert_eq!(p.render(), "step[1]{id,name,status,reason}:\n  ok,\"line1\\nline2\",pending,null");
     }
 
     #[test]
     fn ac026_embedded_quote_in_id_is_escaped_within_quoted_field() {
         let id: String = ['a', '"', 'b'].into_iter().collect();
-        let p = Pipeline {
-            id: "p".into(),
-            steps: vec![PipelineStep { id, name: "c".into(), status: StepStatus::Pending }],
-        };
+        let p = Pipeline { steps: vec![PipelineStep { id, name: "c".into(), status: StepStatus::Pending }] };
         assert_eq!(p.render(), "step[1]{id,name,status,reason}:\n  \"a\\\"b\",c,pending,null");
     }
 
     #[test]
     fn ac027_clone_is_deep_and_independent() {
-        let p = Pipeline {
-            id: "orig".into(),
-            steps: vec![PipelineStep { id: "s".into(), name: "n".into(), status: StepStatus::Completed }],
-        };
+        let p =
+            Pipeline { steps: vec![PipelineStep { id: "s".into(), name: "n".into(), status: StepStatus::Completed }] };
         let mut q = p.clone();
-        assert_eq!(q.id, "orig");
         assert_eq!(q.steps.len(), 1);
         assert_eq!(q.steps[0].id, "s");
         assert_eq!(q.steps[0].name, "n");
         assert_eq!(q.steps[0].status, StepStatus::Completed);
 
-        q.id = "changed".to_string();
-        assert_eq!(p.id, "orig", "mutating the clone must not affect the original");
+        q.steps[0].name = "changed".to_string();
+        assert_eq!(p.steps[0].name, "n", "mutating the clone must not affect the original");
     }
 
     #[test]
@@ -660,7 +624,7 @@ mod tests {
             format!("{:?}", PipelineStep { id: "s".into(), name: "n".into(), status: StepStatus::Failed }),
             "PipelineStep { id: \"s\", name: \"n\", status: Failed }"
         );
-        assert_eq!(format!("{:?}", Pipeline::default()), "Pipeline { id: \"\", steps: [] }");
+        assert_eq!(format!("{:?}", Pipeline::default()), "Pipeline { steps: [] }");
     }
 
     #[test]
@@ -672,10 +636,7 @@ mod tests {
     #[test]
     fn ac030_embedded_carriage_return_in_id_is_quoted_and_escaped() {
         let id: String = ['l', 'i', 'n', 'e', '1', '\r', 'l', 'i', 'n', 'e', '2'].into_iter().collect();
-        let p = Pipeline {
-            id: "p".into(),
-            steps: vec![PipelineStep { id, name: "ok".into(), status: StepStatus::Pending }],
-        };
+        let p = Pipeline { steps: vec![PipelineStep { id, name: "ok".into(), status: StepStatus::Pending }] };
         assert_eq!(p.render(), "step[1]{id,name,status,reason}:\n  \"line1\\rline2\",ok,pending,null");
     }
 }

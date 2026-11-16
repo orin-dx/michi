@@ -31,7 +31,7 @@ proptest! {
             jitter_factor,
         );
         if let Some(delay) = next_retry_delay(&config, attempt, jitter_seed, None) {
-            prop_assert!(delay <= config.max_delay, "delay {delay:?} exceeded max_delay {:?}", config.max_delay);
+            prop_assert!(delay <= config.max_delay(), "delay {delay:?} exceeded max_delay {:?}", config.max_delay());
 
             // Lower bound: delay is always within
             // [min(base_delay * 2^attempt, max_delay), max_delay]. Jitter is additive-only (never
@@ -44,12 +44,12 @@ proptest! {
             // applied, in which case the delay can legitimately equal
             // max_delay exactly rather than the uncapped raw backoff.
             let exp = 2u32.saturating_pow(attempt);
-            let raw_backoff = config.base_delay.saturating_mul(exp);
-            let expected_min = raw_backoff.min(config.max_delay);
+            let raw_backoff = config.base_delay().saturating_mul(exp);
+            let expected_min = raw_backoff.min(config.max_delay());
             prop_assert!(
                 delay >= expected_min,
                 "delay {delay:?} below expected minimum {expected_min:?} (raw backoff {raw_backoff:?}, max_delay {:?})",
-                config.max_delay
+                config.max_delay()
             );
         }
     }

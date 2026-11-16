@@ -46,3 +46,25 @@ help: use `let _ = ...` to ignore the resulting value
   |
 8 |     let _ = e.clone().retry_after(std::time::Duration::from_secs(1));
   |     +++++++
+
+error: unused return value of `DomainError::cause` that must be used
+ --> tests/ui-fail/domain_error_must_use.rs:9:5
+  |
+9 |     e.clone().cause("c");
+  |     ^^^^^^^^^^^^^^^^^^^^
+  |
+help: use `let _ = ...` to ignore the resulting value
+  |
+9 |     let _ = e.clone().cause("c");
+  |     +++++++
+
+error: unused return value of `DomainError::context` that must be used
+  --> tests/ui-fail/domain_error_must_use.rs:10:5
+   |
+10 |     e.clone().context("x");
+   |     ^^^^^^^^^^^^^^^^^^^^^^
+   |
+help: use `let _ = ...` to ignore the resulting value
+   |
+10 |     let _ = e.clone().context("x");
+   |     +++++++

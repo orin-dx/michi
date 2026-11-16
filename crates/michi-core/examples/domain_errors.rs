@@ -14,7 +14,7 @@ fn main() {
         .recovery(RecoveryHint::new("list_packages"));
 
     println!("=== Agent Error Block ===");
-    println!("{}", err.render());
+    println!("{}", err.render(michi_core::OutputFormat::Text));
 
     println!("=== GitHub Workflow Annotation ===");
     println!("{}", err.render_github_annotation());

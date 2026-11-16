@@ -100,8 +100,8 @@ fn from_error_redacts_url_userinfo_in_the_message() {
     struct CloneFailed;
 
     let e = DomainError::from_error(ErrorCode::ExternalFailure, &CloneFailed);
-    assert_eq!(e.message, format!("clone of https://{REDACTED}@github.com/o/r failed"));
-    assert!(!e.render().contains("ghp_secret"));
+    assert_eq!(e.message(), format!("clone of https://{REDACTED}@github.com/o/r failed"));
+    assert!(!e.render(michi_core::OutputFormat::Text).contains("ghp_secret"));
 }
 
 #[test]
@@ -115,5 +115,5 @@ fn from_error_with_causes_redacts_url_userinfo_in_every_cause() {
     struct Outer(#[source] Inner);
 
     let e = DomainError::from_error_with_causes(ErrorCode::ExternalFailure, &Outer(Inner("boom".into())));
-    assert_eq!(e.causes, [format!("fetch https://{REDACTED}@h/x: boom")]);
+    assert_eq!(e.causes(), [format!("fetch https://{REDACTED}@h/x: boom")]);
 }

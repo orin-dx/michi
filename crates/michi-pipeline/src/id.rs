@@ -87,6 +87,22 @@ macro_rules! slug_id {
             }
         }
 
+        /// Lets a map keyed by this id be looked up with a `&str`; the derived `Eq`, `Ord` and `Hash` are the
+        /// string's own, as `Borrow` requires.
+        impl std::borrow::Borrow<str> for $name {
+            fn borrow(&self) -> &str {
+                &self.0
+            }
+        }
+
+        /// [`Self::try_new`], so an id parses with `"step-1".parse()`.
+        impl std::str::FromStr for $name {
+            type Err = IdError;
+            fn from_str(id: &str) -> Result<Self, IdError> {
+                Self::try_new(id)
+            }
+        }
+
         impl TryFrom<&str> for $name {
             type Error = IdError;
             fn try_from(id: &str) -> Result<Self, IdError> {
@@ -205,6 +221,17 @@ mod tests {
         assert_eq!(StepId::try_new("-lead"), Err(IdError::InvalidChar { ch: '-', index: 0 }));
         assert_eq!(StepId::try_new("has space"), Err(IdError::InvalidChar { ch: ' ', index: 3 }));
         assert_eq!(RunId::try_new("é"), Err(IdError::InvalidChar { ch: 'é', index: 0 }));
+    }
+
+    #[test]
+    fn ids_parse_and_look_up_by_str() {
+        assert_eq!("fetch".parse::<StepId>(), StepId::try_new("fetch"));
+        assert_eq!("run:1".parse::<RunId>(), Err(IdError::InvalidChar { ch: ':', index: 3 }));
+        let mut by_id = std::collections::BTreeMap::new();
+        by_id.insert(StepId::try_new("fetch").unwrap(), 1);
+        assert_eq!(by_id.get("fetch"), Some(&1));
+        let set: std::collections::HashSet<RunId> = [RunId::try_new("r1").unwrap()].into();
+        assert!(set.contains("r1"));
     }
 
     #[test]
