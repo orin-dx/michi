@@ -67,3 +67,17 @@ path  = "fuzz_targets/plan.rs"
 test  = false
 doc   = false
 bench = false
+
+[[bin]]
+name  = "redact"
+path  = "fuzz_targets/redact.rs"
+test  = false
+doc   = false
+bench = false
+
+[[bin]]
+name  = "error_text"
+path  = "fuzz_targets/error_text.rs"
+test  = false
+doc   = false
+bench = false
