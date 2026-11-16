@@ -1,6 +1,6 @@
 # The Wisp / monokl Response Envelope
 
-> **Status: Accepted ([ADR 10](../adr/0010-response-envelope-accepted.md)); partly implemented.** Sections, `BudgetSummary`, `ProvenanceBlock` and the JSON envelope (sections 1, 2, 3 and 5) are built in `michi-core`. Section 4 (the per-op index in `PartialSuccess`) lands in a separate PR. The published `outputSchema` in section 5 is not built. Where this text and the code differ, the code and [03-rust-api.md](03-rust-api.md) are current; the deviations are listed in [06-decisions.md](06-decisions.md) under "Envelope implementation deviations (gate 5)".
+> **Status: Accepted ([ADR 10](../adr/0010-response-envelope-accepted.md)); partly implemented.** Sections, `BudgetSummary`, `ProvenanceBlock`, the per-op index in `PartialSuccess` and the JSON envelope (sections 1 to 5) are built in `michi-core`. The published `outputSchema` in section 5 is not built. Where this text and the code differ, the code and [03-rust-api.md](03-rust-api.md) are current; the deviations are listed in [06-decisions.md](06-decisions.md) under "Envelope implementation deviations (gate 5)".
 
 This design describes how one `AgentResponse` carries a monokl batch result or Wisp briefing: named sections, budget and provenance summaries, and index-bearing operation outcomes.
 

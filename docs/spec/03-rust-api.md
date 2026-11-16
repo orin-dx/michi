@@ -479,7 +479,7 @@ impl IdempotencyKey {
 }
 ```
 
-### Key-value, hints, recovery, empty, status and pipeline blocks
+### Key-value, hints, recovery, status and pipeline blocks
 
 Every block renderer returns a finished TOON 4.4 document with no trailing newline; the `append_*` helpers join a block onto a document with one LF. The forms are listed in [02-toon-format.md](02-toon-format.md#agent-facing-blocks).
 
