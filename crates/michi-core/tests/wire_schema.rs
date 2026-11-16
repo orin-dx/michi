@@ -109,7 +109,8 @@ fn domain_error_schema_matches_render_json() {
     .iter()
     .map(ErrorCode::label)
     .collect();
-    let error_schema = resolve(&root, &resolve(&root, &root)["properties"]["error"]);
+    let fields_schema = resolve(&root, &resolve(&root, &root)["properties"]["error"]);
+    let error_schema = resolve(&root, &fields_schema["properties"]["code"]);
     // Documented variants become a `oneOf` of `const` values; undocumented ones would be a plain `enum`.
     let values: Vec<&serde_json::Value> = match error_schema["oneOf"].as_array() {
         Some(alts) => alts.iter().map(|a| &a["const"]).collect(),
@@ -122,13 +123,11 @@ fn domain_error_schema_matches_render_json() {
         let value: serde_json::Value =
             serde_json::from_str(&err.render(michi_core::OutputFormat::Json)).expect("render_json is JSON");
         assert_object_matches(&root, &root, &value);
+        assert_object_matches(&root, fields_schema, &value["error"]);
         let recovery = &resolve(&root, &root)["properties"]["recovery"];
-        if !value["recovery"].is_null() {
-            let recovery_schema = recovery["anyOf"]
-                .as_array()
-                .and_then(|alts| alts.iter().find(|a| a.get("$ref").is_some()))
-                .unwrap_or(recovery);
-            assert_object_matches(&root, recovery_schema, &value["recovery"]);
+        assert_eq!(recovery["type"], "array", "recovery is an array, as in every response: {recovery:#}");
+        for hint in value["recovery"].as_array().expect("recovery is an array") {
+            assert_object_matches(&root, &recovery["items"], hint);
         }
     }
 }

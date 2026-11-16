@@ -362,7 +362,7 @@ fn s9_1_empty_list_is_key_colon_brackets() {
         "issue: []\ntotalCount: 0\nhelp[1]: Try x"
     );
     let empty_pipeline = Pipeline::new(vec![]);
-    assert_eq!(empty_pipeline.render(), "step: []");
+    assert_eq!(empty_pipeline.render(), "step: []\ntotalCount: 0", "the same empty list as any section");
 }
 
 // §9.1 / §1.4 — a non-empty primitive array (the hints) is emitted inline: `help[N]: v1,v2`, one space after the

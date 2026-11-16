@@ -457,15 +457,28 @@ pub fn already_done(stored: Option<String>) -> AlreadyDone {
 /// Render an already-done response as a TOON 4.4 root object, with no trailing newline:
 /// `operation: …`, `status: already_done`, `summary: …`, then the inline `help[N]: …` array when `hints` is non-empty.
 /// `operation` and `summary` are quoted per §7.2.
+///
+/// It is the response `AgentResponse::new("already_done").already_done(operation, summary).hints(hints)`, so it is the
+/// same writer a composed response uses (see [`crate::AgentResponse::already_done`]).
 #[must_use]
 pub fn render_already_done(operation: &str, summary: &str, hints: &[Hint]) -> String {
-    let mut out = String::with_capacity(64 + operation.len() + summary.len() + hints.len() * 50);
-    out.push_str("operation: ");
-    out.push_str(&crate::toon::escape_value(operation));
-    out.push_str("\nstatus: already_done\nsummary: ");
-    out.push_str(&crate::toon::escape_value(summary));
-    crate::hints::append_hints(&mut out, hints);
-    out
+    crate::AgentResponse::new("already_done")
+        .already_done(operation, summary)
+        .hints(hints.to_vec())
+        .render(crate::OutputFormat::Text)
+}
+
+/// The KV section a composed already-done report is: `operation`, `status: already_done`, `summary`.
+pub(crate) fn already_done_section(operation: String, summary: String) -> crate::section::Section {
+    use crate::kv::{KvItem, KvValue};
+    crate::section::Section::kv(
+        "already_done",
+        vec![
+            KvItem::new("operation", KvValue::Text(operation)),
+            KvItem::new("status", KvValue::Text("already_done".into())),
+            KvItem::new("summary", KvValue::Text(summary)),
+        ],
+    )
 }
 
 fn fnv1a_64(data: &[u8]) -> u64 {

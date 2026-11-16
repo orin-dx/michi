@@ -200,9 +200,13 @@ impl std::str::FromStr for ErrorCode {
 /// e.code = michi_core::ErrorCode::Timeout;
 /// ```
 ///
+/// It renders as the error block of an [`AgentResponse`](crate::AgentResponse): `render` and `to_call_tool_result`
+/// are that response's, and [`AgentResponse::error`](crate::AgentResponse::error) puts the same block next to
+/// sections, so an error has one text form and one JSON form wherever it appears.
+///
 /// With the `serde` feature it serializes to exactly the JSON of `render(OutputFormat::Json)`
-/// (`{isError, error, message, causes, retryable, hints, recovery}`), and with `schemars` its schema describes that
-/// form, so it can be used as an MCP `outputSchema`. `retry_after` is not part of that form.
+/// (`{body, error: {code, message, causes, retryable}, hints, recovery, isError}`), and with `schemars` its schema
+/// describes that form, so it can be used as an MCP `outputSchema`. `retry_after` is not part of that form.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(into = "DomainErrorWire"))]
@@ -430,34 +434,26 @@ impl DomainError {
         1
     }
 
-    /// Render in the requested format.
+    /// Render in the requested format: the render of `AgentResponse::new(..).error(self)`, so a lone error and an
+    /// error inside a larger response are written by one writer.
     ///
     /// [`OutputFormat::Text`] is a TOON 4.4 root object, with no trailing newline: `error: <code label>`, `message: …`
     /// (quoted per §7.2), the inline `causes[N]: …` array when there are causes, `exit_code: 1`, then the inline
     /// `help[N]: …` array and the `recovery[1]{tool,params,reason}:` table when present.
     ///
-    /// [`OutputFormat::Json`] is a compact JSON object, the `structured_content` companion of the text. Keys:
-    /// `isError`, `error`, `message`, `causes`, `retryable`, `hints`, `recovery`. `causes` and `hints` are always
-    /// present, as `[]` when empty; `recovery` is the hint object, or `null`. The shape differs from
-    /// `AgentResponse`'s JSON (`{body, hints, recovery, isError}`, with `recovery` an array); only `isError` and
-    /// `hints` mean the same in both.
+    /// [`OutputFormat::Json`] is the response's JSON object, the `structured_content` companion of the text:
+    /// `{"body", "error": {"code", "message", "causes", "retryable"}, "hints", "recovery", "isError": true}`, where
+    /// `body` is the text before `help` and `recovery`. `causes`, `hints` and `recovery` are arrays, `[]` when
+    /// empty. It is the one error shape: an
+    /// `AgentResponse` with an [`error`](crate::AgentResponse::error) writes the same keys.
     #[must_use]
     pub fn render(&self, format: OutputFormat) -> String {
-        match format {
-            OutputFormat::Text => self.render_text(),
-            OutputFormat::Json => self.render_json(),
-        }
+        self.response().render(format)
     }
 
-    fn render_text(&self) -> String {
-        let causes_est: usize = self.causes.iter().map(|c| c.len() + 3).sum();
-        let mut out = String::with_capacity(96 + self.message.len() + causes_est + self.hints.len() * 50);
-        push_error_fields(&mut out, self.code.label(), &self.message, &self.causes);
-        crate::hints::append_hints(&mut out, &self.hints);
-        if let Some(r) = &self.recovery {
-            crate::recovery::append_recovery(&mut out, std::slice::from_ref(r));
-        }
-        out
+    /// The response that is this error alone. Its type name never renders: a response with an error has no empty list.
+    fn response(&self) -> crate::AgentResponse {
+        crate::AgentResponse::new("error").error(self.clone())
     }
 
     /// Render formatted for GitHub Actions workflow annotations (`::error title=code::message`).
@@ -474,74 +470,54 @@ impl DomainError {
         )
     }
 
-    fn render_json(&self) -> String {
-        let hints_est: usize = self.hints.iter().map(|h| h.as_str().len() + 4).sum();
-        let causes_est: usize = self.causes.iter().map(|c| c.len() + 4).sum();
-        let recovery_est: usize = self.recovery.as_ref().map_or(0, |r| {
-            50 + r.tool.len()
-                + r.params.iter().map(|_| 20usize).sum::<usize>()
-                + r.reason.as_ref().map_or(0, |s| s.len() + 12)
-        });
-        let mut out = String::with_capacity(140 + self.message.len() + causes_est + hints_est + recovery_est);
-        out.push_str("{\"isError\":true,\"error\":");
-        crate::json::push_str(&mut out, self.code.label());
-        out.push_str(",\"message\":");
-        crate::json::push_str(&mut out, &self.message);
-        out.push_str(",\"causes\":");
-        crate::json::push_str_array(&mut out, self.causes.iter().map(String::as_str));
-        out.push_str(",\"retryable\":");
-        crate::json::push_bool(&mut out, self.retryable);
-        out.push_str(",\"hints\":");
-        crate::json::push_str_array(&mut out, self.hints.iter().map(Hint::as_str));
-        out.push_str(",\"recovery\":");
-        match &self.recovery {
-            None => out.push_str("null"),
-            Some(r) => crate::json::push_recovery(&mut out, r),
-        }
-        out.push('}');
-        out
-    }
-
-    /// Build an MCP [`CallToolResult`](crate::mcp::CallToolResult) representing this error.
+    /// Build an MCP [`CallToolResult`](crate::mcp::CallToolResult) representing this error: the result of
+    /// `AgentResponse::new(..).error(self)`.
     ///
     /// Sets `is_error: true`. Text content is `render(OutputFormat::Text)`; `structured_content` is
-    /// `render(OutputFormat::Json)`.
-    ///
-    /// **Canonical path:** call this directly when you hold a `DomainError`.
-    /// Do not wrap in `AgentResponse::as_error()` — that loses typed fields.
+    /// `render(OutputFormat::Json)`. To report the error next to data (a batch where some operations answered), add
+    /// it to that response with [`AgentResponse::error`](crate::AgentResponse::error) instead.
     #[must_use]
     pub fn to_call_tool_result(&self) -> crate::mcp::CallToolResult {
-        crate::mcp::CallToolResult::new(
-            vec![crate::mcp::ContentBlock::new(self.render_text(), vec![crate::audience::Audience::Assistant])],
-            true,
-            Some(crate::mcp::JsonObject::from_trusted(self.render_json())),
-        )
+        self.response().to_call_tool_result()
     }
 }
 
-/// The wire form of [`DomainError`]: the object `render(OutputFormat::Json)` writes.
+/// The wire form of [`DomainError`]: the object `render(OutputFormat::Json)` writes, the JSON of an `AgentResponse`
+/// holding only this error.
 #[cfg(feature = "serde")]
 #[derive(serde::Serialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "schemars", schemars(rename = "DomainError"))]
 #[serde(rename_all = "camelCase")]
 struct DomainErrorWire {
+    /// The TOON error lines (`error`, `message`, `causes`, `exit_code`): the text before `help` and `recovery`.
+    body: String,
+    /// The error itself.
+    error: ErrorFieldsWire,
+    /// Contextual hints.
+    hints: Vec<String>,
+    /// The structured recovery hints: the error's, when it has one.
+    recovery: Vec<RecoveryHint>,
     /// Always `true`.
     #[cfg_attr(feature = "schemars", schemars(schema_with = "const_true_schema"))]
     is_error: bool,
+}
+
+/// The `error` object of a response's JSON.
+#[cfg(feature = "serde")]
+#[derive(serde::Serialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schemars", schemars(rename = "ErrorFields"))]
+struct ErrorFieldsWire {
     /// The snake_case error code label.
     #[cfg_attr(feature = "schemars", schemars(with = "ErrorCode"))]
-    error: &'static str,
+    code: &'static str,
     /// Human-readable message.
     message: String,
     /// Why it happened, outermost first; `[]` when unknown.
     causes: Vec<String>,
     /// Whether calling again is expected to help without repeating an effect.
     retryable: bool,
-    /// Contextual hints.
-    hints: Vec<String>,
-    /// The structured recovery hint, or `null`.
-    recovery: Option<RecoveryHint>,
 }
 
 #[cfg(feature = "schemars")]
@@ -552,14 +528,21 @@ fn const_true_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
 #[cfg(feature = "serde")]
 impl From<DomainError> for DomainErrorWire {
     fn from(e: DomainError) -> Self {
+        // The body of a response holding only this error: its error lines, without `help` and `recovery`, which
+        // the JSON carries as the arrays below.
+        let mut body = String::new();
+        push_error_fields(&mut body, &e);
         Self {
-            is_error: true,
-            error: e.code.label(),
-            message: e.message,
-            causes: e.causes,
-            retryable: e.retryable,
+            body,
+            error: ErrorFieldsWire {
+                code: e.code.label(),
+                message: e.message,
+                causes: e.causes,
+                retryable: e.retryable,
+            },
             hints: e.hints.iter().map(|h| h.as_str().to_string()).collect(),
-            recovery: e.recovery,
+            recovery: e.recovery.into_iter().collect(),
+            is_error: true,
         }
     }
 }
@@ -624,15 +607,34 @@ fn escape_annotation_property(s: &str) -> String {
     out
 }
 
-/// The fields every rendered error document starts with: `error: <code>`, `message: …`, `causes[N]: …` (only when
-/// there are causes), `exit_code: 1`.
-fn push_error_fields(out: &mut String, code: &str, message: &str, causes: &[String]) {
+/// The lines every rendered error document starts with: `error: <code>`, `message: …`, `causes[N]: …` (only when
+/// there are causes), `exit_code: 1`. Appended after a LF when `out` is not empty.
+pub(crate) fn push_error_fields(out: &mut String, e: &DomainError) {
+    let causes_est: usize = e.causes.iter().map(|c| c.len() + 3).sum();
+    out.reserve(48 + e.message.len() + causes_est);
+    if !out.is_empty() {
+        out.push('\n');
+    }
     out.push_str("error: ");
-    out.push_str(code);
+    out.push_str(e.code.label());
     out.push_str("\nmessage: ");
-    out.push_str(&crate::toon::escape_value(message));
-    crate::hints::append_inline_strings(out, "causes", causes.iter().map(String::as_str));
+    out.push_str(&crate::toon::escape_value(&e.message));
+    crate::hints::append_inline_strings(out, "causes", e.causes.iter().map(String::as_str));
     out.push_str("\nexit_code: 1");
+}
+
+/// The `error` object of a response's JSON: `{"code", "message", "causes", "retryable"}`. Hints and recovery are not
+/// in it: they are the response's `hints` and `recovery` arrays, like every other hint.
+pub(crate) fn push_error_json(out: &mut String, e: &DomainError) {
+    out.push_str("{\"code\":");
+    crate::json::push_str(out, e.code.label());
+    out.push_str(",\"message\":");
+    crate::json::push_str(out, &e.message);
+    out.push_str(",\"causes\":");
+    crate::json::push_str_array(out, e.causes.iter().map(String::as_str));
+    out.push_str(",\"retryable\":");
+    crate::json::push_bool(out, e.retryable);
+    out.push('}');
 }
 
 #[cfg(feature = "miette")]
@@ -794,7 +796,7 @@ mod tests {
         assert!(json.starts_with('{') && json.ends_with('}'), "must be a JSON object, got: {json}");
         assert!(json.contains("\"isError\":true"), "isError must be true, got: {json}");
         assert!(json.contains("\"hints\":["), "must include hints array, got: {json}");
-        assert!(json.contains("\"recovery\":null"), "must include recovery null, got: {json}");
+        assert!(json.contains("\"recovery\":[]"), "must include an empty recovery array, got: {json}");
         // Escaped quotes inside string values must use \" not raw "
         assert!(!json.contains(r#"has "quotes""#), "inner quotes must be escaped, got: {json}");
     }
@@ -815,7 +817,7 @@ mod tests {
         // Smoke test: no panic = capacity was sufficient (Vec didn't reallocate unexpectedly).
         // JSON correctness is validated by structure checks.
         assert!(json.contains("\"hints\":["), "got: {json}");
-        assert!(json.contains("\"recovery\":{"), "got: {json}");
+        assert!(json.contains("\"recovery\":[{"), "got: {json}");
         assert!(json.contains("\"reason\":"), "got: {json}");
     }
 
@@ -1130,7 +1132,10 @@ mod tests {
             let obj = parsed.as_object().unwrap();
             let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
             keys.sort_unstable();
-            assert_eq!(keys, vec!["causes", "error", "hints", "isError", "message", "recovery", "retryable"]);
+            assert_eq!(keys, vec!["body", "error", "hints", "isError", "recovery"]);
+            let mut fields: Vec<&str> = obj["error"].as_object().unwrap().keys().map(String::as_str).collect();
+            fields.sort_unstable();
+            assert_eq!(fields, vec!["causes", "code", "message", "retryable"]);
         }
     }
 
@@ -1140,11 +1145,13 @@ mod tests {
         let err = DomainError::new(ErrorCode::Unauthorized, "nope").hint("h1").retryable(true);
         let parsed: serde_json::Value = serde_json::from_str(&err.render(OutputFormat::Json)).unwrap();
         assert_eq!(parsed["isError"], serde_json::json!(true));
-        assert_eq!(parsed["error"], serde_json::json!("unauthorized"));
-        assert_eq!(parsed["message"], serde_json::json!("nope"));
-        assert_eq!(parsed["retryable"], serde_json::json!(true));
+        assert_eq!(
+            parsed["error"],
+            serde_json::json!({"code": "unauthorized", "message": "nope", "causes": [], "retryable": true})
+        );
         assert_eq!(parsed["hints"], serde_json::json!(["h1"]));
-        assert_eq!(parsed["recovery"], serde_json::Value::Null);
+        assert_eq!(parsed["recovery"], serde_json::json!([]));
+        assert_eq!(parsed["body"], serde_json::json!("error: unauthorized\nmessage: nope\nexit_code: 1"));
     }
 
     #[test]
@@ -1152,11 +1159,11 @@ mod tests {
     fn ac020_reason_key_is_absent_when_none_and_present_when_some() {
         let no_reason = DomainError::new(ErrorCode::NotFound, "m").recovery(RecoveryHint::new("t"));
         let parsed: serde_json::Value = serde_json::from_str(&no_reason.render(OutputFormat::Json)).unwrap();
-        assert!(parsed["recovery"].as_object().unwrap().get("reason").is_none(), "got: {parsed}");
+        assert!(parsed["recovery"][0].as_object().unwrap().get("reason").is_none(), "got: {parsed}");
 
         let with_reason = DomainError::new(ErrorCode::NotFound, "m").recovery(RecoveryHint::new("t").reason("why"));
         let parsed: serde_json::Value = serde_json::from_str(&with_reason.render(OutputFormat::Json)).unwrap();
-        assert_eq!(parsed["recovery"]["reason"], serde_json::json!("why"));
+        assert_eq!(parsed["recovery"][0]["reason"], serde_json::json!("why"));
     }
 
     #[test]
@@ -1165,7 +1172,7 @@ mod tests {
         let original = r#"has "quotes" and \backslash"#;
         let err = DomainError::new(ErrorCode::NotFound, original);
         let parsed: serde_json::Value = serde_json::from_str(&err.render(OutputFormat::Json)).unwrap();
-        assert_eq!(parsed["message"].as_str().unwrap(), original);
+        assert_eq!(parsed["error"]["message"].as_str().unwrap(), original);
     }
 
     #[test]
@@ -1177,7 +1184,7 @@ mod tests {
         let raw = err.render(OutputFormat::Json);
         assert!(!raw.contains('\n') && !raw.contains('\r') && !raw.contains('\t'), "got: {raw:?}");
         let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
-        assert_eq!(parsed["message"].as_str().unwrap(), original_message);
+        assert_eq!(parsed["error"]["message"].as_str().unwrap(), original_message);
         assert_eq!(parsed["hints"][0].as_str().unwrap(), original_hint);
     }
 
@@ -1191,7 +1198,7 @@ mod tests {
         let err = DomainError::new(ErrorCode::NotFound, original);
         let raw = err.render(OutputFormat::Json);
         let parsed: serde_json::Value = serde_json::from_str(&raw).expect("must be valid JSON");
-        assert_eq!(parsed["message"].as_str().unwrap(), original);
+        assert_eq!(parsed["error"]["message"].as_str().unwrap(), original);
     }
 
     #[test]
@@ -1205,9 +1212,9 @@ mod tests {
             .reason(original_reason);
         let err = DomainError::new(ErrorCode::NotFound, "m").recovery(r);
         let parsed: serde_json::Value = serde_json::from_str(&err.render(OutputFormat::Json)).unwrap();
-        assert_eq!(parsed["recovery"]["tool"].as_str().unwrap(), original_tool);
-        assert_eq!(parsed["recovery"]["reason"].as_str().unwrap(), original_reason);
-        let params = parsed["recovery"]["params"].as_object().unwrap();
+        assert_eq!(parsed["recovery"][0]["tool"].as_str().unwrap(), original_tool);
+        assert_eq!(parsed["recovery"][0]["reason"].as_str().unwrap(), original_reason);
+        let params = parsed["recovery"][0]["params"].as_object().unwrap();
         assert!(params.contains_key(original_key), "got keys: {:?}", params.keys().collect::<Vec<_>>());
     }
 
@@ -1326,6 +1333,6 @@ mod tests {
         let raw = e.render(OutputFormat::Json);
         let parsed: serde_json::Value = serde_json::from_str(&raw).expect("must be valid JSON");
         assert_eq!(parsed["hints"], serde_json::json!(["a", "b"]));
-        assert_eq!(parsed["recovery"]["params"], serde_json::json!({"zebra": 1, "alpha": 2}));
+        assert_eq!(parsed["recovery"][0]["params"], serde_json::json!({"zebra": 1, "alpha": 2}));
     }
 }

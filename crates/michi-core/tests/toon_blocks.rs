@@ -251,7 +251,7 @@ fn status_items_are_a_tabular_array_with_health_and_reason_columns() {
 #[test]
 fn status_without_items_has_an_empty_items_array() {
     let out = StatusResponse::new("t", "d", vec![]).render();
-    assert_eq!(out, "tool: t\ndescription: d\nitems: []");
+    assert_eq!(out, "tool: t\ndescription: d\nitems: []\ntotalCount: 0");
     conformant(&out);
 }
 
@@ -321,19 +321,19 @@ fn partial_success_full_example() {
     let out = ps.render();
     assert_eq!(
         out,
-        "partial_success: \"2 completed, 1 failed, 1 skipped\"\ncompleted[2]{index,operation}:\n  0,create_issue\n  \
-         1,add_label\nfailed[1]{index,operation,reason}:\n  2,assign_user,User 'ghost' not found\n\
-         skipped[1]{index,operation,reason}:\n  3,notify_team,budget_exhausted\n\
+        "partial_success[4]{index,operation,status,reason}:\n  0,create_issue,completed,null\n  \
+         1,add_label,completed,null\n  2,assign_user,failed,User 'ghost' not found\n  \
+         3,notify_team,skipped,budget_exhausted\n\
          recovery[1]{tool,params,reason}:\n  assign_user,\"{\\\"user\\\":\\\"alice\\\"}\",null"
     );
     conformant(&out);
 }
 
 #[test]
-fn partial_success_empty_is_just_the_summary() {
+fn partial_success_empty_is_the_empty_list() {
     let ps = PartialSuccess::default();
     let out = ps.render();
-    assert_eq!(out, "partial_success: \"0 completed, 0 failed, 0 skipped\"");
+    assert_eq!(out, "partial_success: []\ntotalCount: 0");
     conformant(&out);
 }
 
@@ -348,8 +348,8 @@ fn partial_success_operation_names_are_quoted_in_table_cells() {
     let out = ps.render();
     assert_eq!(
         out,
-        "partial_success: \"2 completed, 0 failed, 1 skipped\"\ncompleted[2]{index,operation}:\n  0,\"a, b\"\n  1,\"-x\"\n\
-         skipped[1]{index,operation,reason}:\n  2,\"\",\"\""
+        "partial_success[3]{index,operation,status,reason}:\n  0,\"a, b\",completed,null\n  \
+         1,\"-x\",completed,null\n  2,\"\",skipped,\"\""
     );
     conformant(&out);
 }

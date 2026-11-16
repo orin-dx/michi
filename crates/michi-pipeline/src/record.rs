@@ -513,7 +513,9 @@ impl RunRecord {
         )
     }
 
-    /// The run as a TOON 4.4 document: [`Pipeline::render`] of [`RunRecord::to_pipeline`].
+    /// The run as a TOON 4.4 document: [`Pipeline::render`] of [`RunRecord::to_pipeline`]. To report the run next to
+    /// its error or other results, compose it instead:
+    /// `AgentResponse::new(..).error(record.error()?.into()).pipeline("step", record.to_pipeline())`.
     #[must_use]
     pub fn render(&self) -> String {
         self.to_pipeline().render()

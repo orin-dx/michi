@@ -211,11 +211,12 @@ pub struct Sensitive<T>(pub T);
 - `render_github_annotation()` outputs a GitHub Actions annotation (`::error title=code::message`). The message is encoded as workflow command data (`%` → `%25` first, then CR → `%0D`, LF → `%0A`); the title also encodes `:` and `,`.
 - `retryable` means calling again is expected to help without repeating an effect. `DomainError::new` sets it from `ErrorCode::is_retryable_by_default()`: `true` for `RateLimited` and `Unavailable` (the request was not processed), `false` for every other code. A `Timeout` or `ExternalFailure` may have taken effect, so mark it `.retryable(true)` only when the operation is idempotent. `is_retryable()` and `class() == ErrorClass::Transient` always agree.
 - A `Timeout` that is not marked retryable is `ErrorClass::Ambiguous` (no answer came back, so the operation may or may not have taken effect: not the caller's fault and not an internal error), and `DomainError::new` gives it the hint `MAY_HAVE_TAKEN_EFFECT_HINT` ("the operation may have taken effect; verify whether it completed before retrying, unless it is idempotent"). `.retryable(true)` makes it `Transient` and removes that hint; `.retryable(false)` puts it back. `ExternalFailure` covers too much (a failed local walk, a server error) to say, so it stays `Internal` with no automatic hint; add your own when you know the operation may have applied.
-- `render(OutputFormat::Json)` outputs a JSON object: `{"isError":true,"error":"...","message":"...","causes":[...],"retryable":bool,"hints":[...],"recovery":null|{...}}`. `causes` and `hints` are always present, `[]` when empty; serde and the `schemars` schema match it.
+- `render(format)` and `to_call_tool_result()` are those of `AgentResponse::new(..).error(self)`: an error alone and an error inside a larger response are written by one writer (see "Outcomes compose into one response" in [06-decisions.md](06-decisions.md)).
+- `render(OutputFormat::Json)` outputs the response's JSON object: `{"body":"error: …\nexit_code: 1","error":{"code":"...","message":"...","causes":[...],"retryable":bool},"hints":[...],"recovery":[...],"isError":true}`. `body` is the text before `help` and `recovery`, as in every response; `causes`, `hints` and `recovery` are always arrays, `[]` when empty. It is the one error shape: a response with sections and an error has the same `error` object. serde and the `schemars` schema match it.
 - `from_error(code, err)` sets `message` to `err.to_string()` and nothing else: the `source()` chain stays out of the agent's view because causes often carry URLs with tokens, file paths and other internals. The top-level `Display` is still agent-visible, so check it too, or use `DomainError::new` with a message you wrote. It is passed through `redact_common_shapes` first (best effort, see `redact`).
 - `from_error_with_causes(code, err)` is the opt-in: it does what `from_error` does, then walks `err.source()`, adding each link's `Display` to `causes` (the separate diagnosis field, never `help[]`). A link whose text the last kept text (the message or the previous kept cause) already contains is skipped, since `thiserror` messages often embed their source (`#[error("walk failed: {0}")]`). The walk stops after 128 links. Nothing is stored but text: `source()` on a `DomainError` stays `None`, and it stays `Clone + Send + Sync`. Line breaks stay inside their cause; `render()` escapes them.
 - With the `miette` feature, `Diagnostic::help()` lists the hints, then one `caused by: …` line per cause (`None` when there are neither). The GitHub annotation stays message-only.
-- `to_call_tool_result()` builds an MCP `CallToolResult` with `is_error:true` and the rendered JSON as `structured_content`.
+- `to_call_tool_result()` builds an MCP `CallToolResult` with `is_error:true` and the rendered JSON as `structured_content`. To report an error next to data, add it to that response with `AgentResponse::error` instead.
 - When the `schemars` feature is enabled, `DomainError` implements schemars 1.x's `JsonSchema` (the schema of the JSON render's object, as JSON Schema 2020-12). Only types serde actually serializes have a schema: `StatusResponse`, `ToonOptions`, `ErrorClass` and the other render-only types do not.
 
 ### `AgentResponse` Builder
@@ -265,11 +266,26 @@ impl AgentResponse {
     pub fn as_error(self) -> Self;
     pub fn human_content(self, text: impl Into<String>) -> Self;
 
-    /// The one render path: every section in call order, then `budget:`, `provenance:`, `help[]`, `recovery[]`.
+    // Every outcome is a part of the response (see "Outcomes compose into one response" below).
+    /// The error block: rendered first; its hints and recovery lead `help[]` and `recovery[]`. A second call replaces.
+    pub fn error(self, error: DomainError) -> Self;
+    /// A `Toon` section `name[N]{index,operation,status,reason}:`, rows sorted by index; failed ops' recovery hints are
+    /// appended to the response's.
+    pub fn partial_success(self, name: impl Into<String>, outcome: PartialSuccess) -> Self;
+    /// A `Kv` section `status` (`tool`, `description`) and a `Toon` section `items`; the hints are appended.
+    pub fn status(self, status: StatusResponse) -> Self;
+    /// A `Toon` section `name[N]{id,name,status,reason}:`.
+    pub fn pipeline(self, name: impl Into<String>, pipeline: Pipeline) -> Self;
+    /// A `Kv` section `already_done`: `operation`, `status: already_done`, `summary`.
+    pub fn already_done(self, operation: impl Into<String>, summary: impl Into<String>) -> Self;
+
+    /// The one render path: the error block, every section in call order, then `budget:`, `provenance:`, `help[]`,
+    /// `recovery[]`.
     pub fn render(&self, format: OutputFormat) -> String;
-    /// Just the `help[N]: …` document for `.hint()`/`.hints()`.
+    /// Just the `help[N]: …` document: the error's hints, then `.hint()`/`.hints()`.
     pub fn render_hints_only(&self) -> String;
-    /// `as_error()` was called, or a section's TOON rows / KV items fail validation. Validates without rendering.
+    /// `as_error()` or `error()` was called, or a section's TOON rows / KV items fail validation. Validates without
+    /// rendering.
     pub fn is_error(&self) -> bool;
     /// `"user"` falls back to `render(OutputFormat::Text)` when `.human_content()` was never set.
     pub fn render_for(&self, audience: Audience) -> String;
@@ -278,9 +294,25 @@ impl AgentResponse {
 }
 ```
 
-`render_json()` is not part of the public API — it's reached only via `render(OutputFormat::Json)`.
+There is no `render_json()` on any type: JSON is `render(OutputFormat::Json)`, and only `AgentResponse` writes it.
 
-A response keeps its body in one place, an ordered `Vec<Section>`. `items()` and `kv_items()` are shorthand that append a section named for the response's type, so mixing them renders every body in call order. Because a section is a root key of the document, the shorthand serves one list (and one KV block) per response: a second `items()` call repeats the key and renders the `toon_validation_failed` error, never invalid TOON. For several lists use `section(Section::toon(distinct_name, ..))`. There is no response-level `total_count`: a total belongs to the section it counts, set with `Section::total_count`. `is_error()` validates without rendering. Hints and recovery are appended to the rendered body in place. `render(OutputFormat::Json)` is `{"body":…,"sections":[…],"hints":[…],"recovery":[…],"isError":bool}`, the same object `to_call_tool_result()` puts in `structured_content`; `sections` appears once the response has a section.
+A response keeps its body in one place, an ordered `Vec<Section>`. `items()` and `kv_items()` are shorthand that append a section named for the response's type, so mixing them renders every body in call order. Because a section is a root key of the document, the shorthand serves one list (and one KV block) per response: a second `items()` call repeats the key and renders the `toon_validation_failed` error, never invalid TOON. For several lists use `section(Section::toon(distinct_name, ..))`. There is no response-level `total_count`: a total belongs to the section it counts, set with `Section::total_count`. `is_error()` validates without rendering. Hints and recovery are appended to the rendered body in place. `render(OutputFormat::Json)` is `{"body":…,"error":{…},"sections":[…],"hints":[…],"recovery":[…],"isError":bool}`, the same object `to_call_tool_result()` puts in `structured_content`; `error` appears when one was set, `sections` once the response has a section.
+
+#### Outcomes compose into one response
+
+Every outcome michi renders is a part of `AgentResponse`, so a batch with results, per-op outcomes and an error is one valid TOON document, one JSON object and one MCP result, written by one writer on every surface (text, JSON, `render_for`, `to_call_tool_result`, NAPI):
+
+| Outcome | Added with | Becomes | Root contributions |
+| --- | --- | --- | --- |
+| `DomainError` | `error(e)` | the error block, first: `error`, `message`, `causes`, `exit_code` (michi's reserved keys) | its hints lead `help[]`, its recovery leads `recovery[]`; `isError` true |
+| `PartialSuccess` | `partial_success(name, ps)` | `Toon` section `name[N]{index,operation,status,reason}:`, sorted by index | failed ops' recovery hints join `recovery[]` |
+| `StatusResponse` | `status(s)` | `Kv` section `status` (`tool`, `description`), `Toon` section `items` | its hints join `help[]` |
+| `Pipeline` (and `michi-pipeline`'s `RunRecord::to_pipeline()`) | `pipeline(name, p)` | `Toon` section `name[N]{id,name,status,reason}:` | none |
+| already done | `already_done(operation, summary)` | `Kv` section `already_done` (`operation`, `status`, `summary`) | none |
+
+None of them writes a root key of its own beyond the error block's, so they never collide with the reserved list. Their names are section names, checked like any other: two parts that write one root key (two `pipeline("step", …)` calls, say) render the `toon_validation_failed` error naming it. A response holds one error, and a section that fails validation writes `error` too, so both together render that error for the key `error`. A partial batch is not an error by itself; call `error()` or `as_error()` when the call failed as a whole.
+
+Each type's own render is this writer: `DomainError::render(f)` is `AgentResponse::new(..).error(e).render(f)`, `PartialSuccess::render()` is the response with `partial_success("partial_success", ps)`, `StatusResponse::render()` with `status(s)`, `Pipeline::render()` with `pipeline("step", p)`, and `render_already_done(op, summary, hints)` with `already_done(op, summary).hints(hints)`. The standalone renders turn the cell cap off (`truncate_cells_at(usize::MAX)`), as they never cut a cell; inside a response the response's cap applies to their tables like any other `Toon` section.
 
 A response with no section, budget or provenance renders `type_name: []` and `totalCount: 0`, the definitive empty list: the same text an empty `Toon` section renders, and the only empty-state API (there is no `empty_state()`). An empty KV section renders nothing (or `totalCount: n` when a larger total is set).
 
@@ -416,15 +448,13 @@ impl FailedOp {
     pub fn recovery(self, hint: RecoveryHint) -> Self;
 }
 
-// PartialSuccess::render, the order and index of every row are the caller's, never renumbered:
-// partial_success: "2 completed, 1 failed, 1 skipped"
-// completed[2]{index,operation}:
-//   0,symbols
-//   1,dependents
-// failed[1]{index,operation,reason}:
-//   2,refs,"symbol not found: RetryPolicy"
-// skipped[1]{index,operation,reason}:
-//   3,search,budget_exhausted        <- `null` when the SkippedOp has no reason
+// PartialSuccess::render: one row per operation, sorted by index (never renumbered):
+// partial_success[4]{index,operation,status,reason}:
+//   0,symbols,completed,null
+//   1,dependents,completed,null
+//   2,refs,failed,"symbol not found: RetryPolicy"
+//   3,search,skipped,budget_exhausted        <- `null` when the SkippedOp has no reason
+// recovery[N]{tool,params,reason}: follows when a failed op has a recovery hint
 
 // In michi_core::resilience (also at michi_core::already_done, michi_core::AlreadyDone)
 #[non_exhaustive]
@@ -493,7 +523,7 @@ impl StatusResponse {
     pub fn new(tool_name: impl Into<String>, description: impl Into<String>, items: Vec<StatusItem>) -> Self;
     /// Replaces the hint list.
     pub fn hints(self, hints: Vec<Hint>) -> Self;
-    pub fn render(&self) -> String;                           // tool, description, items[N]{key,value,health,reason}:, help
+    pub fn render(&self) -> String;                           // tool, description, items[N]{key,value,health,reason}: (or items: [] and totalCount: 0), help
 }
 
 // michi_core::pipeline
@@ -521,7 +551,7 @@ impl PipelineStep { pub fn new(id: impl Into<String>, name: impl Into<String>, s
 pub struct Pipeline { pub steps: Vec<PipelineStep> } // no run id: nothing rendered one
 impl Pipeline {
     pub fn new(steps: Vec<PipelineStep>) -> Self;
-    pub fn render(&self) -> String;                           // step[N]{id,name,status,reason}:, or step: []
+    pub fn render(&self) -> String;                           // step[N]{id,name,status,reason}:, or step: [] and totalCount: 0
 }
 
 // michi_core::audience

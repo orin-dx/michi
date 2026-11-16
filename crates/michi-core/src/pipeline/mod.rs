@@ -1,5 +1,3 @@
-use std::fmt::Write as _;
-
 /// Status of an individual pipeline step.
 ///
 /// Each terminal status maps to one recovery action an agent can take; see "Status model" in
@@ -301,36 +299,35 @@ impl Pipeline {
         Self { steps }
     }
 
-    /// Render the pipeline state as a TOON 4.4 document: `step[N]{id,name,status,reason}:` with one row per step, or
-    /// `step: []` when there are no steps, with no trailing newline. `status` is [`StepStatus::label`] and `reason`
-    /// is [`StepStatus::reason`] or `null`. `id` and `name` are quoted when TOON's string rules (§7.2) require it.
+    /// Render the pipeline state as a TOON 4.4 document, with no trailing newline: the response
+    /// `AgentResponse::new("step").pipeline("step", self)` with no cell cap, so it is the same writer a composed
+    /// response uses (see [`crate::AgentResponse::pipeline`]). That is `step[N]{id,name,status,reason}:` with one row
+    /// per step, or `step: []` and `totalCount: 0` when there are no steps. `status` is [`StepStatus::label`] and
+    /// `reason` is [`StepStatus::reason`] or `null`. `id` and `name` are quoted when TOON's string rules (§7.2) require
+    /// it.
     #[must_use]
     pub fn render(&self) -> String {
-        let n = self.steps.len();
-        if n == 0 {
-            return String::from("step: []");
-        }
-        let capacity = 40 + n * 48;
-        let mut out = String::with_capacity(capacity);
+        crate::AgentResponse::new("step")
+            .truncate_cells_at(usize::MAX)
+            .pipeline("step", self.clone())
+            .render(crate::OutputFormat::Text)
+    }
 
-        out.push_str("step[");
-        let _ = write!(out, "{n}");
-        out.push_str("]{id,name,status,reason}:");
-
-        for step in &self.steps {
-            out.push_str("\n  ");
-            out.push_str(&crate::toon::escape_value(&step.id));
-            out.push(',');
-            out.push_str(&crate::toon::escape_value(&step.name));
-            out.push(',');
-            out.push_str(step.status.label());
-            out.push(',');
-            out.push_str(step.status.reason().unwrap_or("null"));
-        }
-
-        out
+    /// The table a composed response renders: one row per step, in declaration order.
+    pub(crate) fn rows(&self) -> Vec<Vec<crate::toon::Value>> {
+        use crate::toon::Value;
+        self.steps
+            .iter()
+            .map(|step| {
+                let reason = step.status.reason().map_or(Value::Null, Value::from);
+                vec![step.id.as_str().into(), step.name.as_str().into(), step.status.label().into(), reason]
+            })
+            .collect()
     }
 }
+
+/// The columns of the table a [`Pipeline`] renders as.
+pub(crate) const FIELDS: [&str; 4] = ["id", "name", "status", "reason"];
 
 #[cfg(test)]
 mod tests {
@@ -413,7 +410,7 @@ mod tests {
     fn empty_pipeline_renders_zero_steps() {
         let p = Pipeline { steps: vec![] };
         let out = p.render();
-        assert_eq!(out, "step: []");
+        assert_eq!(out, "step: []\ntotalCount: 0");
     }
 
     #[test]

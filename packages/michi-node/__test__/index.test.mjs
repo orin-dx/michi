@@ -1015,23 +1015,21 @@ void describe('renderPartialSuccess', () => {
     )
     assert.strictEqual(
       out,
-      'partial_success: "2 completed, 1 failed, 1 skipped"\ncompleted[2]{index,operation}:\n  0,create_issue\n  1,add_label\n' +
-        "failed[1]{index,operation,reason}:\n  2,assign_user,User 'ghost' not found\n" +
-        'skipped[1]{index,operation,reason}:\n  3,notify_team,budget_exhausted\n' +
+      'partial_success[4]{index,operation,status,reason}:\n  0,create_issue,completed,null\n  1,add_label,completed,null\n' +
+        "  2,assign_user,failed,User 'ghost' not found\n  3,notify_team,skipped,budget_exhausted\n" +
         'recovery[1]{tool,params,reason}:\n  assign_user,"{}",null',
     )
   })
 
-  void it('omits empty categories and a missing recovery hint', () => {
-    assert.strictEqual(renderPartialSuccess([], [], []), 'partial_success: "0 completed, 0 failed, 0 skipped"')
+  void it('renders no operations as the empty list, and no recovery table without a hint', () => {
+    assert.strictEqual(renderPartialSuccess([], [], []), 'partial_success: []\ntotalCount: 0')
     assert.strictEqual(
       renderPartialSuccess([{ index: 0, operation: 'a' }], [{ index: 1, operation: 'b', reason: 'c, d' }], []),
-      'partial_success: "1 completed, 1 failed, 0 skipped"\ncompleted[1]{index,operation}:\n  0,a\n' +
-        'failed[1]{index,operation,reason}:\n  1,b,"c, d"',
+      'partial_success[2]{index,operation,status,reason}:\n  0,a,completed,null\n  1,b,failed,"c, d"',
     )
   })
 
-  void it('keeps caller indexes and order, and renders a missing skip reason as null', () => {
+  void it('keeps caller indexes, sorts rows by them, and renders a missing skip reason as null', () => {
     assert.strictEqual(
       renderPartialSuccess(
         [
@@ -1044,8 +1042,8 @@ void describe('renderPartialSuccess', () => {
           { index: 4, operation: 'j' },
         ],
       ),
-      'partial_success: "2 completed, 0 failed, 2 skipped"\ncompleted[2]{index,operation}:\n  7,x\n  2,y\n' +
-        'skipped[2]{index,operation,reason}:\n  9,k,null\n  4,j,null',
+      'partial_success[4]{index,operation,status,reason}:\n  2,y,completed,null\n  4,j,skipped,null\n' +
+        '  7,x,completed,null\n  9,k,skipped,null',
     )
   })
 
@@ -1071,7 +1069,7 @@ void describe('renderPartialSuccess', () => {
     )
     assert.strictEqual(
       renderPartialSuccess([{ index: 0, operation: 'a', reason: null }], [], []),
-      'partial_success: "1 completed, 0 failed, 0 skipped"\ncompleted[1]{index,operation}:\n  0,a',
+      'partial_success[1]{index,operation,status,reason}:\n  0,a,completed,null',
     )
   })
 
@@ -1114,7 +1112,7 @@ void describe('renderPipeline', () => {
         '  upload,"Upload, then verify",outcome_unknown,timeout\n  notify,Notify,skipped,prerequisite_failed\n' +
         '  sync,Sync,not_run,circuit_open\n  old,Old,completed_earlier,null',
     )
-    assert.strictEqual(renderPipeline([]), 'step: []')
+    assert.strictEqual(renderPipeline([]), 'step: []\ntotalCount: 0')
   })
 
   void it('accepts every status and reason the Rust StepStatus has', () => {
@@ -1306,5 +1304,85 @@ void describe('output size at the byte cap', () => {
   void it('rejects a single call over the cap with a clear error, without rendering', () => {
     const hints = Array.from({ length: 17 }, () => 'h'.repeat(mib))
     assert.throws(() => renderHints(hints), /^Error: input byte total \d+ exceeds maximum of 16777216$/)
+  })
+})
+
+void describe('outcomes compose into one AgentResponse', () => {
+  const batch = () => {
+    const r = new AgentResponse('batch')
+    r.items([[{ type: 'str', strVal: 'RetryPolicy' }]], ['name'])
+    r.partialSuccess(
+      'ops',
+      [{ index: 0, operation: 'symbols' }],
+      [{ index: 1, operation: 'refs', reason: 'symbol not found', recovery: { tool: 'search' } }],
+      [{ index: 2, operation: 'search', reason: 'budget_exhausted' }],
+    )
+    return r
+  }
+
+  void it('renders a batch as one document with one recovery table', () => {
+    assert.strictEqual(
+      batch().renderText(),
+      'batch[1]{name}:\n  RetryPolicy\nops[3]{index,operation,status,reason}:\n  0,symbols,completed,null\n' +
+        '  1,refs,failed,symbol not found\n  2,search,skipped,budget_exhausted\n' +
+        'recovery[1]{tool,params,reason}:\n  search,"{}",null',
+    )
+    const json = JSON.parse(batch().renderJson())
+    assert.deepStrictEqual(json.sections[1].rows[1], [1, 'refs', 'failed', 'symbol not found'])
+    assert.deepStrictEqual(json.recovery, [{ tool: 'search', params: {} }])
+    assert.strictEqual(json.isError, false)
+  })
+
+  void it('gives an error one JSON shape, with structuredContent and isError', () => {
+    const r = new AgentResponse('charge')
+    r.error('timeout', 'POST /charge timed out', ['socket closed'])
+    r.recoveryHint('get_charge')
+    const text = r.renderText()
+    assert.strictEqual(
+      text,
+      renderDomainError('timeout', 'POST /charge timed out', [], null, ['socket closed']) +
+        '\nrecovery[1]{tool,params,reason}:\n  get_charge,"{}",null',
+    )
+    const result = r.toCallToolResult()
+    assert.strictEqual(result.isError, true)
+    assert.deepStrictEqual(result.structuredContent.error, {
+      code: 'timeout',
+      message: 'POST /charge timed out',
+      causes: ['socket closed'],
+      retryable: false,
+    })
+    assert.deepStrictEqual(result.structuredContent.recovery, [{ tool: 'get_charge', params: {} }])
+    const retryable = new AgentResponse('t')
+    retryable.error('timeout', 'GET timed out', null, true)
+    assert.strictEqual(JSON.parse(retryable.renderJson()).error.retryable, true)
+    assert.throws(() => retryable.error('bogus', 'm'), /^Error: unknown error code "bogus"/)
+  })
+
+  void it('composes a pipeline, a status report and an already-done report', () => {
+    const r = new AgentResponse('run')
+    r.pipeline('step', [{ id: 'fetch', name: 'Fetch', status: 'completed' }])
+    r.status('tool-x', 'does x', [{ key: 'index', value: { type: 'str', strVal: 'ready' }, health: 'ok' }])
+    r.alreadyDone('delete', 'deleted earlier')
+    r.hint('nothing else to do')
+    assert.strictEqual(
+      r.renderText(),
+      'step[1]{id,name,status,reason}:\n  fetch,Fetch,completed,null\ntool: tool-x\ndescription: does x\n' +
+        'items[1]{key,value,health,reason}:\n  index,ready,ok,null\noperation: delete\nstatus: already_done\n' +
+        'summary: deleted earlier\nhelp[1]: nothing else to do',
+    )
+    assert.strictEqual(JSON.parse(r.renderJson()).sections.length, 4)
+  })
+
+  void it('rejects bad outcome input and leaves the builder unchanged', () => {
+    const r = new AgentResponse('t')
+    const before = r.renderText()
+    assert.throws(
+      () => r.partialSuccess('ops', [{ index: 0, operation: 'a' }], [{ index: 0, operation: 'a', reason: 'x' }], []),
+      /^Error: operation index 0 has more than one outcome$/,
+    )
+    assert.throws(() => r.pipeline('step', [{ id: 'a', name: 'A', status: 'skipped' }]), /needs a reason/)
+    assert.throws(() => r.status('t', 'd', [{ key: 'k', value: { type: 'null' }, health: 'meh' }]), /unknown health/)
+    assert.throws(() => r.alreadyDone('x'.repeat(4097), 's'), /^Error: operation byte length/)
+    assert.strictEqual(r.renderText(), before)
   })
 })

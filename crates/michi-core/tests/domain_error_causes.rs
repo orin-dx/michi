@@ -211,7 +211,7 @@ fn render_json_carries_causes_and_an_empty_array_when_there_are_none() {
 fn render_json_causes_round_trip_exactly() {
     let e = DomainError::new(ErrorCode::NotFound, "m").cause("a\nb").cause("c\td");
     let parsed: serde_json::Value = serde_json::from_str(&e.render(OutputFormat::Json)).expect("render_json is JSON");
-    assert_eq!(parsed["causes"], serde_json::json!(["a\nb", "c\td"]));
+    assert_eq!(parsed["error"]["causes"], serde_json::json!(["a\nb", "c\td"]));
     assert_eq!(serde_json::to_value(&e).expect("serializes"), parsed);
 }
 
