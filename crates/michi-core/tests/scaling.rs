@@ -329,18 +329,38 @@ fn toon_list_is_linear_in_items_and_sparse_keys() {
     );
 }
 
+/// Fails, instead of hanging, when `work` does not finish within `limit`: a quadratic regression on a large input can
+/// run for minutes in a debug build, and a hung test says nothing. The work runs on its own thread, which is left to
+/// die with the test process on a timeout.
+fn finishes_within(label: &str, limit: Duration, work: impl FnOnce() + Send + 'static) {
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work));
+        // The receiver is gone after a timeout.
+        let _ = done.send(outcome);
+    });
+    match finished.recv_timeout(limit) {
+        Ok(Ok(())) => {}
+        Ok(Err(panic)) => std::panic::resume_unwind(panic),
+        Err(_) => panic!("{label}: did not finish within {limit:?}; linear work on this input takes about a second"),
+    }
+}
+
 #[test]
 fn redact_common_shapes_is_linear_in_pairs() {
     // One long line of pairs: each quoted, unterminated or scheme value must be found without rescanning the rest of
-    // the text. A per-value scan to the end of the line was quadratic here.
-    for unit in ["token=\"", "token: Basic ", "a:b=c ", "x=1&password='p'&", "Cookie: a=1; "] {
-        assert_linear(
-            unit,
-            1_000,
-            |n| unit.repeat(n),
-            |text| {
-                black_box(michi_core::redact::redact_common_shapes(text));
-            },
-        );
-    }
+    // the text. A per-value scan to the end of the line was quadratic here. The size is small (5,000 pairs at most) and
+    // the whole check is bounded, because a quadratic regression on a large input runs for minutes in a debug build.
+    finishes_within("redact_common_shapes pairs", Duration::from_secs(10), || {
+        for unit in ["token=\"", "token: Basic ", "a:b=c ", "x=1&password='p'&", "Cookie: a=1; "] {
+            assert_linear(
+                unit,
+                500,
+                |n| unit.repeat(n),
+                |text| {
+                    black_box(michi_core::redact::redact_common_shapes(text));
+                },
+            );
+        }
+    });
 }

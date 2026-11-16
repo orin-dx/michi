@@ -123,17 +123,27 @@ fn two_failing_sections_do_not_emit_two_error_keys() {
     let wide: Vec<String> = (0..=michi_core::toon::MAX_FIELDS).map(|i| format!("f{i}")).collect();
     let bad = |n: &str| Section::toon(n, wide.clone(), vec![]);
     let r = AgentResponse::new("t").section(bad("a")).section(bad("b"));
-    assert_collision(&r, "error");
+    // One error object: the first failure, the second as its cause, not a collision on `error`.
+    let text = r.render(OutputFormat::Text);
+    assert_eq!(text.matches("error:").count(), 1, "{text}");
+    assert!(text.contains("causes[1]: \"toon_validation_failed: fields length"), "{text}");
+    decode(&text).unwrap_or_else(|e| panic!("invalid TOON ({e}): {text}"));
+    assert!(r.is_error());
 }
 
 #[test]
 fn a_failing_section_beside_a_kv_error_key_is_two_failures() {
-    // `message` is reserved on its own now, so the KV block fails too: two error blocks would repeat `error`.
+    // `message` is reserved on its own, so the KV block fails too: one error object, the second failure its cause.
     let wide: Vec<String> = (0..=michi_core::toon::MAX_FIELDS).map(|i| format!("f{i}")).collect();
     let r = AgentResponse::new("t")
         .section(Section::toon("a", wide, vec![]))
         .section(Section::kv("k", vec![kv("message")]));
-    assert_collision(&r, "duplicate root key 'error'");
+    let text = r.render(OutputFormat::Text);
+    assert_eq!(text.matches("error:").count(), 1, "{text}");
+    assert!(text.starts_with("error: toon_validation_failed\nmessage: "), "{text}");
+    assert!(text.contains("causes[1]: \"kv_validation_failed: key \\\"message\\\" is a reserved"), "{text}");
+    decode(&text).unwrap_or_else(|e| panic!("invalid TOON ({e}): {text}"));
+    assert!(r.is_error());
 }
 
 #[test]

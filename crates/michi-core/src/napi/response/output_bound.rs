@@ -349,10 +349,6 @@ fn bare_cells() -> Vec<JsAgentResponse> {
     vec![empty_rows, numbers, JsAgentResponse::new(String::new()).expect("an empty type name is valid")]
 }
 
-/// The characters the matrix writes: every control character and escape trigger, plain text, and multi-byte
-/// characters (which cost fewer output bytes per held byte, never more).
-const UNITS: [char; 9] = ['\u{1}', '\u{1f}', '"', '\\', '\n', ',', 'a', 'é', '😀'];
-
 /// Every case for `unit`, with the label that names it in a failure.
 fn matrix(unit: char) -> Vec<(String, JsAgentResponse)> {
     let cases = vec![
@@ -380,14 +376,12 @@ fn fixed_cases() -> Vec<(String, JsAgentResponse)> {
     cases
 }
 
-#[test]
-fn every_render_is_at_most_the_documented_factor_of_the_bytes_held() {
+/// The worst `output / held` ratio (as a percentage) over `cases`, as `(percent, label)`. Panics naming every case
+/// whose output is over [`input::MAX_OUTPUT_FACTOR`] times the bytes held plus [`input::OUTPUT_ENVELOPE`].
+fn worst_ratio(cases: impl Iterator<Item = (String, JsAgentResponse)>) -> (usize, String) {
     let mut worst: (usize, String) = (0, String::new());
     let mut broken: Vec<String> = Vec::new();
-    let cases = UNITS.into_iter().flat_map(|unit| {
-        matrix(unit).into_iter().chain(one_kind(unit)).map(move |(l, r)| (format!("{l}, unit {unit:?}"), r))
-    });
-    for (label, r) in cases.chain(fixed_cases()) {
+    for (label, r) in cases {
         let held = r.held.total();
         for (surface, out) in ["text", "json", "toCallToolResult"].into_iter().zip(output_sizes(&r)) {
             let limit = input::MAX_OUTPUT_FACTOR * held + input::OUTPUT_ENVELOPE;
@@ -408,7 +402,46 @@ fn every_render_is_at_most_the_documented_factor_of_the_bytes_held() {
         input::OUTPUT_ENVELOPE,
         broken.join("\n")
     );
-    // The factor is reached, not just an upper bound nobody comes near.
+    worst
+}
+
+fn unit_cases(unit: char) -> impl Iterator<Item = (String, JsAgentResponse)> {
+    matrix(unit).into_iter().chain(one_kind(unit)).map(move |(l, r)| (format!("{l}, unit {unit:?}"), r))
+}
+
+/// One test per character (every control character and escape trigger, plain text, and multi-byte characters, which
+/// cost fewer output bytes per held byte, never more), so the matrix runs in parallel (about 17 s in one test in a debug build, under 3 s as
+/// the slowest of these) and a failure names its character.
+macro_rules! bound_test {
+    ($($name:ident: $unit:expr),* $(,)?) => {$(
+        #[test]
+        fn $name() {
+            worst_ratio(unit_cases($unit));
+        }
+    )*};
+}
+
+bound_test! {
+    every_render_of_control_unit_separator_is_within_the_factor: '\u{1f}',
+    every_render_of_a_quote_is_within_the_factor: '"',
+    every_render_of_a_backslash_is_within_the_factor: '\\',
+    every_render_of_a_newline_is_within_the_factor: '\n',
+    every_render_of_a_comma_is_within_the_factor: ',',
+    every_render_of_plain_text_is_within_the_factor: 'a',
+    every_render_of_two_byte_text_is_within_the_factor: '\u{e9}',
+    every_render_of_four_byte_text_is_within_the_factor: '\u{1f600}',
+}
+
+#[test]
+fn the_fixed_cases_are_within_the_factor() {
+    worst_ratio(fixed_cases().into_iter());
+}
+
+/// `U+0001` is the worst escape (six JSON bytes for one held), and with it the factor is reached, not just an upper
+/// bound nobody comes near: a loosened `MAX_OUTPUT_FACTOR` fails here.
+#[test]
+fn the_worst_character_reaches_the_documented_factor() {
+    let worst = worst_ratio(unit_cases('\u{1}'));
     assert!(
         worst.0 > 1500,
         "worst ratio {}/100 ({}): the documented factor of {} is loose",
