@@ -126,7 +126,134 @@ impl StepStatus {
     pub fn is_success(&self) -> bool {
         matches!(self, Self::Completed | Self::CompletedEarlier)
     }
+
+    /// Every status with every reason, in declaration order. [`StepStatus::from_labels`] searches this list, so a
+    /// label is parsed by the same table that [`label`](Self::label) and [`reason`](Self::reason) write; a unit test
+    /// names every variant without a wildcard, so a new one fails to compile there until it is listed here.
+    pub const ALL: [Self; 16] = [
+        Self::Pending,
+        Self::Running,
+        Self::Completed,
+        Self::CompletedEarlier,
+        Self::Failed,
+        Self::OutcomeUnknown(UnknownCause::Timeout),
+        Self::OutcomeUnknown(UnknownCause::Gateway),
+        Self::OutcomeUnknown(UnknownCause::Cancelled),
+        Self::OutcomeUnknown(UnknownCause::Interrupted),
+        Self::OutcomeUnknown(UnknownCause::StepFailed),
+        Self::Skipped(SkipReason::PrerequisiteFailed),
+        Self::Skipped(SkipReason::Cancelled),
+        Self::NotRun(NotRunReason::CircuitOpen),
+        Self::NotRun(NotRunReason::Unverified),
+        Self::NotRun(NotRunReason::StartNotRecorded),
+        Self::Panicked,
+    ];
+
+    /// The status a [`label`](Self::label) and [`reason`](Self::reason) pair name: the inverse of those two methods.
+    ///
+    /// # Errors
+    ///
+    /// [`StepLabelError`] for an unknown status, a status that needs a reason and has none, an unknown reason, or a
+    /// reason on a status that takes none.
+    pub fn from_labels(status: &str, reason: Option<&str>) -> Result<Self, StepLabelError> {
+        let mut known = false;
+        for candidate in Self::ALL {
+            if candidate.label() != status {
+                continue;
+            }
+            known = true;
+            if candidate.reason() == reason {
+                return Ok(candidate);
+            }
+        }
+        let own = || status.to_string();
+        if !known {
+            return Err(StepLabelError::UnknownStatus { status: own() });
+        }
+        // The status exists but this reason does not fit: it either needs one or must not have one.
+        match reason {
+            None => Err(StepLabelError::MissingReason { status: own() }),
+            Some(r) if Self::reasons_of(status).next().is_none() => {
+                Err(StepLabelError::UnexpectedReason { status: own(), reason: r.to_string() })
+            }
+            Some(r) => Err(StepLabelError::UnknownReason { status: own(), reason: r.to_string() }),
+        }
+    }
+
+    /// The reason labels `status` takes, in declaration order; none for a status without a reason.
+    fn reasons_of(status: &str) -> impl Iterator<Item = &'static str> + '_ {
+        Self::ALL.into_iter().filter(move |s| s.label() == status).filter_map(|s| s.reason())
+    }
 }
+
+/// Why [`StepStatus::from_labels`] rejected a status and reason pair.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum StepLabelError {
+    /// The status label names no status.
+    UnknownStatus {
+        /// The label that was given.
+        status: String,
+    },
+    /// The status needs a reason and none was given.
+    MissingReason {
+        /// The status label.
+        status: String,
+    },
+    /// The status takes no reason and one was given.
+    UnexpectedReason {
+        /// The status label.
+        status: String,
+        /// The reason that was given.
+        reason: String,
+    },
+    /// The status takes a reason, but not this one.
+    UnknownReason {
+        /// The status label.
+        status: String,
+        /// The reason that was given.
+        reason: String,
+    },
+}
+
+/// `a, b, c` for the labels in `labels`, or `a, b or c` when `last_or` is set.
+fn join_labels(labels: impl Iterator<Item = &'static str>, last_or: bool) -> String {
+    let labels: Vec<&str> = labels.collect();
+    match (labels.split_last(), last_or) {
+        (Some((last, rest)), true) if !rest.is_empty() => format!("{} or {last}", rest.join(", ")),
+        _ => labels.join(", "),
+    }
+}
+
+impl std::fmt::Display for StepLabelError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownStatus { status } => {
+                // Each status once, in declaration order (a status with several reasons appears several times).
+                let mut seen: Vec<&'static str> = Vec::new();
+                for s in StepStatus::ALL {
+                    if !seen.contains(&s.label()) {
+                        seen.push(s.label());
+                    }
+                }
+                write!(f, "unknown step status {status:?}: expected one of {}", seen.join(", "))
+            }
+            Self::MissingReason { status } => {
+                let expected = join_labels(StepStatus::reasons_of(status), true);
+                write!(f, "step status {status:?} needs a reason: {expected}")
+            }
+            Self::UnexpectedReason { status, reason } => {
+                write!(f, "step status {status:?} takes no reason, got {reason:?}")
+            }
+            Self::UnknownReason { status, reason } => {
+                let expected = join_labels(StepStatus::reasons_of(status), true);
+                write!(f, "unknown reason {reason:?} for step status {status:?}: expected {expected}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for StepLabelError {}
 
 /// A pipeline step definition.
 ///
@@ -222,6 +349,64 @@ mod tests {
             out,
             "step[2]{id,name,status,reason}:\n  fetch,Fetch Data,completed,null\n  upload,Upload,pending,null"
         );
+    }
+
+    // No wildcard arm: a new `StepStatus` variant fails to compile here until it is placed in `StepStatus::ALL`.
+    fn all_index(s: StepStatus) -> usize {
+        use {NotRunReason as N, SkipReason as S, StepStatus as T, UnknownCause as U};
+        match s {
+            T::Pending => 0,
+            T::Running => 1,
+            T::Completed => 2,
+            T::CompletedEarlier => 3,
+            T::Failed => 4,
+            T::OutcomeUnknown(U::Timeout) => 5,
+            T::OutcomeUnknown(U::Gateway) => 6,
+            T::OutcomeUnknown(U::Cancelled) => 7,
+            T::OutcomeUnknown(U::Interrupted) => 8,
+            T::OutcomeUnknown(U::StepFailed) => 9,
+            T::Skipped(S::PrerequisiteFailed) => 10,
+            T::Skipped(S::Cancelled) => 11,
+            T::NotRun(N::CircuitOpen) => 12,
+            T::NotRun(N::Unverified) => 13,
+            T::NotRun(N::StartNotRecorded) => 14,
+            T::Panicked => 15,
+        }
+    }
+
+    #[test]
+    fn step_status_all_lists_every_variant_once_in_order() {
+        for (i, s) in StepStatus::ALL.into_iter().enumerate() {
+            assert_eq!(all_index(s), i, "{s:?} is out of place in StepStatus::ALL");
+        }
+    }
+
+    #[test]
+    fn from_labels_inverts_label_and_reason_for_every_status() {
+        for status in StepStatus::ALL {
+            assert_eq!(StepStatus::from_labels(status.label(), status.reason()), Ok(status));
+        }
+    }
+
+    #[test]
+    fn from_labels_errors_say_what_is_wrong() {
+        let err = |s: &str, r: Option<&str>| StepStatus::from_labels(s, r).expect_err("rejected").to_string();
+        assert_eq!(
+            err("bogus", None),
+            "unknown step status \"bogus\": expected one of pending, running, completed, completed_earlier, failed, \
+             outcome_unknown, skipped, not_run, panicked"
+        );
+        assert_eq!(
+            err("outcome_unknown", None),
+            "step status \"outcome_unknown\" needs a reason: timeout, gateway, cancelled, interrupted or step_failed"
+        );
+        assert_eq!(
+            err("skipped", Some("nope")),
+            "unknown reason \"nope\" for step status \"skipped\": expected prerequisite_failed or cancelled"
+        );
+        assert_eq!(err("failed", Some("x")), "step status \"failed\" takes no reason, got \"x\"");
+        // A reason of another status is not accepted either.
+        assert!(StepStatus::from_labels("not_run", Some("timeout")).is_err());
     }
 
     #[test]
