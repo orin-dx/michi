@@ -1,9 +1,0 @@
----
-michi-core: minor
----
-
-michi-core: `AgentResponse` keeps its body in one list of sections. `items()` and `kv_items()` are shorthand that append a section named for the response's type, so calling both renders both bodies in call order instead of silently dropping one, as long as their root keys differ. Every section is a root key of the document: a repeated key (two `items()` calls, two `kv_items()` with a shared key, a name like `budget`, a repeated provenance label) renders the `toon_validation_failed` error naming the key, with `isError` true, instead of invalid TOON. For several lists use `.section(Section::toon(distinct_name, ..))`. The same applies to `@orin-dx/michi`'s `items()` and `kvItems()`, which render one list per response. A `Text` section now renders as one escaped string value (`name: "..."`), not raw prose.
-
-Breaking: removed `AgentResponse::render_toon()`, `render_kv()`, `total_count()` and `truncation()`, and NAPI `renderToon()`, `renderKv()` and `totalCount()`. A response with only `items()` or `kv_items()` renders the same text, with these exceptions: a `totalCount` line renders only when the total is larger than the rows returned (so an empty list no longer prints `totalCount: 0`), and `render(Json)` / `structuredContent` gain a `sections` array next to `body`.
-
-Migration: `AgentResponse::new(..).items(..).hints(..).render_toon()` becomes `.render(OutputFormat::Text)`; `.total_count(n)` becomes `Section::toon(name, fields, rows).total_count(Some(n))` passed to `.section(..)`; `.items(rows, f).truncation(&outcome, g)` becomes `.truncated_section(Section::toon(name, f, rows), &outcome, g)`. In JavaScript, `renderToon()` and `renderKv()` become `renderText()`, and `totalCount(n)` becomes the optional third argument of `items(rows, fields, n)` (second of `kvItems(items, n)`).
