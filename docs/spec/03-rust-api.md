@@ -9,7 +9,6 @@ pub use error::{DomainError, Error, ErrorClass, ErrorCode, Sensitive, MAY_HAVE_T
 pub use response::{AgentResponse, OutputFormat};
 pub use kv::{render_kv, KvError, KvItem, KvValue};
 pub use audience::Audience;
-pub use empty::{empty_state, empty_state_with_hints, try_empty_state, try_empty_state_with_hints};
 pub use hints::{append_hints, render_hints, Hint};
 pub use idempotency::{FailedOp, PartialSuccess};
 pub use mcp::{CallToolResult, ContentBlock, StructuredContentError};
@@ -31,43 +30,39 @@ The root re-exports are explicit lists (0.4.0 replaced the `resilience::*` and `
 
 `michi_core::toon` formats tabular lists using Token-Oriented Object Notation (**AXI P1**). Small cell strings (≤ 24 bytes) are stack-inlined via `compact_str::CompactString`.
 
+`ToonOptions` and `render_toon` write one list: the entry and the `truncated` block for any cut cell. `totalCount`, `help[]` and the truncation hint are the composer's (`AgentResponse`), which places each once however many sections a response has, so the standalone renderer takes none of them. To add hints to a standalone list, use `append_hints`.
+
 ```rust
 #[non_exhaustive]
 pub struct ToonOptions {
     pub type_name: String,
     pub fields: Vec<String>,
     pub rows: Vec<Vec<Value>>,
-    pub total_count: Option<usize>,
-    pub hints: Vec<String>,
     /// Max string cell length in chars, counted before escaping/quoting (default 200). A longer cell keeps its
     /// first `max_cell_len - 1` chars and ends in a plain `…`; each cut is listed in a
     /// `truncated[N]{row,field,removed}:` block after the list.
     pub max_cell_len: usize,
-    /// The caller's "get it in full" instruction (default None). When set and a cell was cut, michi adds one
-    /// `help[]` line naming the `truncated` block and this instruction. Tool-author text, never data.
-    pub truncation_hint: Option<String>,
 }
 
 impl ToonOptions {
     pub fn new(type_name: impl Into<String>, fields: Vec<String>, rows: Vec<Vec<Value>>) -> Self;
-    pub fn total_count(self, total: Option<usize>) -> Self;
-    pub fn hints(self, hints: Vec<String>) -> Self;
     pub fn max_cell_len(self, len: usize) -> Self;
-    pub fn truncation_hint(self, hint: impl Into<String>) -> Self;
     /// Validate structural invariants before rendering; rendering consumes the returned proof.
     /// Returns Err if type_name is a reserved document key (`totalCount`, `help`, `recovery`, `truncated`,
     /// `budget`, `sections`, `provenance`, `error`, `message`, `causes`, `exit_code`),
     /// there are more than MAX_FIELDS fields, a field name is repeated, rows × fields is more than
-    /// MAX_CELLS, truncation_hint is longer than MAX_TRUNCATION_HINT_CHARS chars, or any row's length
-    /// differs from fields.len() (checked in that order). Any other name is valid and is quoted per TOON 4.4 §7.3.
+    /// MAX_CELLS, or any row's length differs from fields.len() (checked in that order; `AgentResponse` also
+    /// checks its `truncation_hint` against MAX_TRUNCATION_HINT_CHARS chars, before the row lengths). Any other name is valid and is quoted per TOON 4.4 §7.3.
     pub fn validate(&self) -> Result<ToonDocument<'_>, ToonError>;
 }
 impl Default for ToonOptions { ... } // empty type name, no fields or rows, max_cell_len 200
 
 /// Proof that the options validated; only `ToonOptions::validate()` (or `ToonDocument::validate`) builds one.
+/// `AgentResponse` validates and renders through a borrowed view of its section's rows, so neither copies them.
 pub struct ToonDocument<'a> { /* private */ }
 impl<'a> ToonDocument<'a> {
     pub fn validate(opts: &'a ToonOptions) -> Result<Self, ToonError>;
+    /// The list entry, then the `truncated` block when a cell was cut. No `totalCount`, no `help`.
     pub fn render(&self) -> String;
 }
 
@@ -259,7 +254,9 @@ impl AgentResponse {
     /// Overrides the default TOON cell truncation limit (200 chars, counted before escaping/quoting); every `Toon`
     /// section, never `Kv` or `Text`.
     pub fn truncate_cells_at(self, limit: usize) -> Self;
-    /// Passed through to `ToonOptions::truncation_hint` for every `Toon` section; unset by default.
+    /// The caller's "get it in full" instruction for every `Toon` section; unset by default. When a cell was cut,
+    /// michi adds one `help[]` line naming the `truncated` block and this instruction (after your own hints, once for
+    /// the response). At most MAX_TRUNCATION_HINT_CHARS chars. Tool-author text, never data.
     pub fn truncation_hint(self, hint: impl Into<String>) -> Self;
     pub fn as_error(self) -> Self;
     pub fn human_content(self, text: impl Into<String>) -> Self;
@@ -281,7 +278,7 @@ impl AgentResponse {
 
 A response keeps its body in one place, an ordered `Vec<Section>`. `items()` and `kv_items()` are shorthand that append a section named for the response's type, so mixing them renders every body in call order. Because a section is a root key of the document, the shorthand serves one list (and one KV block) per response: a second `items()` call repeats the key and renders the `toon_validation_failed` error, never invalid TOON. For several lists use `section(Section::toon(distinct_name, ..))`. There is no response-level `total_count`: a total belongs to the section it counts, set with `Section::total_count`. `is_error()` validates without rendering. Hints and recovery are appended to the rendered body in place. `render(OutputFormat::Json)` is `{"body":…,"sections":[…],"hints":[…],"recovery":[…],"isError":bool}`, the same object `to_call_tool_result()` puts in `structured_content`; `sections` appears once the response has a section.
 
-A response with no section, budget or provenance renders `type_name: []`, the definitive empty list. An empty KV section renders nothing (or `totalCount: n` when a larger total is set).
+A response with no section, budget or provenance renders `type_name: []` and `totalCount: 0`, the definitive empty list: the same text an empty `Toon` section renders, and the only empty-state API (there is no `empty_state()`). An empty KV section renders nothing (or `totalCount: n` when a larger total is set).
 
 `truncated_section(name, fields, &outcome, row, guidance)` builds the section from `outcome.kept` (each item turned into a row by `row`), sets its total to `outcome.total_before` and adds the cut hint, in one call. Because michi builds the rows itself, the list's `[N]`, its `totalCount`, the JSON `returnedCount`/`truncated` and the `showing N of M` hint cannot describe different cuts.
 
@@ -332,7 +329,7 @@ impl Section {
 - `Toon` bodies render as a TOON list named `name`, with the response's `truncate_cells_at` cap and `truncation_hint` applied. `Kv` bodies render as `key: value` lines (the name is not printed). `Text` bodies are one string value, `name: <escaped value>`, escaped like any TOON string and never raw, so prose cannot forge a `help[]` line. A `totalCount` renders for a `Text` section as for the others.
 - `totalCount: n` follows a section only when `total_count` is `Some(n)` with `n` above the section's count: a total equal to the rows returned says nothing new.
 - The fields are private, and each fact has one source: the count is the body's rows or items (a `Text` body carries the count its constructor was given), the total is what `total_count` set, and `truncated()` is `total > count`. Text and JSON read the same three, so a section cannot print `totalCount: 5` while its JSON says `"truncated": false`.
-- An empty `Toon` section renders `name: []`; an empty `Kv` section renders nothing (or `totalCount: n` when a larger total is set).
+- An empty `Toon` section is the definitive empty state: `name: []` and `totalCount: 0` (or the larger `totalCount: n` the caller set); it takes part in the merged `totalCount` table like any section with a total. The JSON `sections` entry keeps the caller's facts (`returnedCount: 0`, and a `totalCount` only when one was set). An empty `Kv` section renders nothing (or `totalCount: n` when a larger total is set).
 - A section that fails validation renders an `error:` block (`toon_validation_failed` or `kv_validation_failed`) and makes `is_error()` true.
 - `render(Json)` adds a `sections` array; see [Envelope on `AgentResponse`](#envelope-on-agentresponse). Cut-cell `help[]` lines from every section merge into the one `help` block, once.
 
@@ -438,9 +435,9 @@ pub enum KvValue { Text(String), Int(i64), Float(f64, u8), Bool(bool), Duration(
 impl KvValue { pub const FULL_PRECISION: u8 = u8::MAX; }
 #[non_exhaustive]
 pub enum KvError { ReservedKey { key: String }, DuplicateKey { key: String } }
-/// `key: value` lines, then `totalCount` and `help`. Err for a repeated key (§14.3) or a key michi
-/// writes itself (the reserved list, e.g. `help`, `error`, `message`). Empty items: Ok("").
-pub fn render_kv(items: &[KvItem], total_count: Option<usize>, hints: &[Hint]) -> Result<String, KvError>;
+/// `key: value` lines. Err for a repeated key (§14.3) or a key michi writes itself (the reserved list, e.g.
+/// `help`, `error`, `message`). Empty items: Ok(""). `totalCount` and `help` come from `AgentResponse`.
+pub fn render_kv(items: &[KvItem]) -> Result<String, KvError>;
 
 // michi_core::hints
 pub struct Hint(pub String); // also From<&str>, From<String>, Display
@@ -461,14 +458,6 @@ impl RecoveryHint {
 }
 pub fn render_recovery(hints: &[RecoveryHint]) -> String;    // recovery[N]{tool,params,reason}:
 pub fn append_recovery(out: &mut String, hints: &[RecoveryHint]);
-
-// michi_core::empty
-pub fn empty_state(type_name: &str) -> String;                    // type_name: []\ntotalCount: 0
-pub fn empty_state_with_hints(type_name: &str, hints: &[Hint]) -> String; // … then help[N]
-/// Err(ToonError::InvalidTypeName) for totalCount/help/recovery; the non-try forms render the
-/// `error: toon_validation_failed` block instead.
-pub fn try_empty_state(type_name: &str) -> Result<String, ToonError>;
-pub fn try_empty_state_with_hints(type_name: &str, hints: &[Hint]) -> Result<String, ToonError>;
 
 // michi_core::status
 #[non_exhaustive]

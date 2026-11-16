@@ -1,7 +1,7 @@
 use michi_core::kv::{render_kv, KvItem, KvValue};
 
 fn kv(items: &[KvItem]) -> String {
-    render_kv(items, None, &[]).expect("valid items")
+    render_kv(items).expect("valid items")
 }
 
 #[test]

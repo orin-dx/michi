@@ -61,7 +61,6 @@ All modules live in `crates/michi-core/src/`.
 | `hints` | `help[]` hint blocks |
 | `truncate` | Token-safe content truncation |
 | `truncation` | `TruncationOutcome`: what a cap on a list cut, however the caller chose the survivors |
-| `empty` | Definitive empty state responses |
 | `error` | Unified `michi_core::Error` type with agent rendering |
 | `idempotency` | Partial-success reporting (`PartialSuccess`/`FailedOp`) — despite the name, idempotency keys and already-done detection live in `resilience` (`AlreadyDone`/`already_done()`), not here |
 | `resilience` | Retry config, delay calculation, retry-after parsing |

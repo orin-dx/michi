@@ -9,5 +9,5 @@ fn main() {
 fn render_n_items(b: Bencher, n: usize) {
     let items: Vec<KvItem> =
         (0..n).map(|i| KvItem::new(format!("field_{i}"), KvValue::Text(format!("value_{i}")))).collect();
-    b.bench(|| render_kv(&items, None, &[]));
+    b.bench(|| render_kv(&items));
 }

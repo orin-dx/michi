@@ -13,8 +13,6 @@ fn make_opts(n: usize) -> ToonOptions {
             .map(|i| vec![Value::Int(i as i64), Value::from(format!("Issue title number {i}")), Value::from("open")])
             .collect(),
     )
-    .total_count(Some(1000))
-    .hints(vec!["Call get_issue with number=<number>".to_string()])
 }
 
 #[divan::bench(args = [1, 10, 100, 1000])]

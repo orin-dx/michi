@@ -43,10 +43,7 @@ struct Input {
     rows: u8,
     /// Drop one cell from the last row, to reach the row-length error.
     ragged: bool,
-    total_count: Option<u32>,
-    hints: Vec<String>,
     max_cell_len: Option<u8>,
-    truncation_hint: Option<String>,
 }
 
 fuzz_target!(|input: Input| {
@@ -70,14 +67,9 @@ fuzz_target!(|input: Input| {
         }
     }
     let nrows = rows.len();
-    let mut opts = ToonOptions::new(input.type_name.clone(), input.fields.clone(), rows.clone())
-        .total_count(input.total_count.map(|n| n as usize))
-        .hints(input.hints.clone());
+    let mut opts = ToonOptions::new(input.type_name.clone(), input.fields.clone(), rows.clone());
     if let Some(n) = input.max_cell_len {
         opts = opts.max_cell_len(n as usize);
-    }
-    if let Some(h) = &input.truncation_hint {
-        opts = opts.truncation_hint(h.clone());
     }
 
     let Ok(out) = render_toon(&opts) else { return };
@@ -101,20 +93,11 @@ fuzz_target!(|input: Input| {
         }
     }
 
-    // With a non-empty truncation hint and at least one cut, one more line joins the caller's `help` hints.
-    let mut expected_hints = input.hints.clone();
-    if let Some(hint) = input.truncation_hint.as_deref().filter(|h| !h.is_empty() && !cuts.is_empty()) {
-        expected_hints.push(format!("Cut cells are listed in the truncated block; use {hint} for the full value"));
-    }
-
-    // Escaping: no raw CR, and the line count is exactly what the header declares, so no cell or hint made a line.
+    // Escaping: no raw CR, and the line count is exactly what the header declares, so no cell made a line.
+    // `totalCount` and `help[]` are the response's, never the standalone list's.
     assert!(!out.contains('\r'), "raw CR in {out:?}");
     let truncated_lines = if cuts.is_empty() { 0 } else { 1 + cuts.len() };
-    let expected_lines = 1
-        + nrows
-        + usize::from(input.total_count.is_some())
-        + usize::from(!expected_hints.is_empty())
-        + truncated_lines;
+    let expected_lines = 1 + nrows + truncated_lines;
     assert_eq!(out.matches('\n').count() + 1, expected_lines, "line count in {out:?}");
 
     // Canonical TOON 4.4: the strict decoder rejects anything an encoder must not emit.
@@ -124,8 +107,8 @@ fuzz_target!(|input: Input| {
     if nrows > 0 {
         assert_eq!(parsed.fields, input.fields);
     }
-    assert_eq!(parsed.total_count, input.total_count.map(|n| n as usize));
-    assert_eq!(parsed.hints, expected_hints);
+    assert_eq!(parsed.total_count, None);
+    assert!(parsed.hints.is_empty(), "no help block in {out:?}");
     let reported: Vec<(usize, String, usize)> =
         cuts.iter().map(|(r, c, _, removed)| (*r, input.fields[*c].clone(), *removed)).collect();
     assert_eq!(parsed.truncated, reported, "truncated block in {out:?}");

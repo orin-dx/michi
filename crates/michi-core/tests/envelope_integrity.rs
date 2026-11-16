@@ -82,7 +82,7 @@ fn a_success_response_cannot_render_an_error_document() {
         assert!(list.render(OutputFormat::Text).starts_with("error: toon_validation_failed\n"), "{key}");
         let kv = AgentResponse::new("t").kv_items(vec![KvItem::new(key, KvValue::Int(1))]);
         assert!(kv.is_error(), "kv key {key}");
-        assert!(michi_core::render_kv(&[KvItem::new(key, KvValue::Int(1))], None, &[]).is_err(), "render_kv {key}");
+        assert!(michi_core::render_kv(&[KvItem::new(key, KvValue::Int(1))]).is_err(), "render_kv {key}");
         let standalone = michi_core::toon::ToonOptions::new(key, vec![], vec![]);
         assert!(michi_core::toon::render_toon(&standalone).is_err(), "render_toon {key}");
     }

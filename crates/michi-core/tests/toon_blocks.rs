@@ -9,9 +9,8 @@ use michi_core::resilience::render_already_done;
 use michi_core::response::{AgentResponse, OutputFormat};
 use michi_core::toon::Value;
 use michi_core::{
-    append_hints, append_recovery, empty_state_with_hints, render_hints, render_kv, render_recovery, DomainError,
-    ErrorCode, FailedOp, Health, Hint, KvItem, KvValue, OpRef, PartialSuccess, RecoveryHint, StatusItem,
-    StatusResponse,
+    append_hints, append_recovery, render_hints, render_kv, render_recovery, DomainError, ErrorCode, FailedOp, Health,
+    Hint, KvItem, KvValue, OpRef, PartialSuccess, RecoveryHint, Section, StatusItem, StatusResponse,
 };
 
 mod support;
@@ -27,7 +26,7 @@ fn kv(key: &str, value: KvValue) -> KvItem {
 }
 
 fn kv_doc(items: &[KvItem]) -> String {
-    render_kv(items, None, &[]).expect("valid KV items")
+    render_kv(items).expect("valid KV items")
 }
 
 // --- KV block --------------------------------------------------------------------------------------------------------
@@ -43,7 +42,11 @@ fn kv_block_is_a_root_object_with_one_space_after_each_colon() {
         kv("wait", KvValue::Duration(Duration::from_millis(1500))),
         kv("gone", KvValue::Missing),
     ];
-    let out = render_kv(&items, Some(10), &[Hint::new("a, b")]).expect("valid");
+    // `totalCount` and `help[]` come from the composer, which owns both.
+    let out = AgentResponse::new("t")
+        .section(Section::kv("k", items.to_vec()).total_count(Some(10)))
+        .hint("a, b")
+        .render(OutputFormat::Text);
     assert_eq!(
         out,
         "id: abc-123\ntitle: Fix login\ncount: 3\nratio: 0.5\nok: true\nwait: 1.5s\ngone: null\ntotalCount: 10\n\
@@ -100,7 +103,7 @@ fn kv_floats_round_to_the_given_decimals_then_render_canonically() {
 #[test]
 fn kv_duplicate_key_is_rejected() {
     let items = [kv("a", KvValue::Int(1)), kv("a", KvValue::Int(2))];
-    assert_eq!(render_kv(&items, None, &[]), Err(KvError::DuplicateKey { key: "a".into() }));
+    assert_eq!(render_kv(&items), Err(KvError::DuplicateKey { key: "a".into() }));
     assert_eq!(KvError::DuplicateKey { key: "a".into() }.to_string(), "key \"a\" appears more than once");
 }
 
@@ -120,11 +123,7 @@ fn kv_reserved_root_keys_are_rejected_even_when_unused() {
         "exit_code",
     ];
     for key in reserved {
-        assert_eq!(
-            render_kv(&[kv(key, KvValue::Int(1))], None, &[]),
-            Err(KvError::ReservedKey { key: key.into() }),
-            "{key}"
-        );
+        assert_eq!(render_kv(&[kv(key, KvValue::Int(1))]), Err(KvError::ReservedKey { key: key.into() }), "{key}");
     }
     assert_eq!(
         KvError::ReservedKey { key: "help".into() }.to_string(),
@@ -134,7 +133,7 @@ fn kv_reserved_root_keys_are_rejected_even_when_unused() {
 
 #[test]
 fn kv_empty_items_is_the_empty_document() {
-    assert_eq!(render_kv(&[], Some(3), &[Hint::new("h")]), Ok(String::new()));
+    assert_eq!(render_kv(&[]), Ok(String::new()));
 }
 
 // --- help block and composition --------------------------------------------------------------------------------------
@@ -166,8 +165,8 @@ fn append_helpers_join_documents_with_one_lf_and_leave_no_trailing_newline() {
 }
 
 #[test]
-fn empty_state_with_hints_is_conformant() {
-    let out = empty_state_with_hints("issue", &[Hint::new("Try list_issues with a broader filter")]);
+fn an_empty_response_with_hints_is_conformant() {
+    let out = AgentResponse::new("issue").hint("Try list_issues with a broader filter").render(OutputFormat::Text);
     assert_eq!(out, "issue: []\ntotalCount: 0\nhelp[1]: Try list_issues with a broader filter");
     conformant(&out);
 }

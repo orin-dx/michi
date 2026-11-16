@@ -10,7 +10,7 @@
 use michi_core::pipeline::{Pipeline, PipelineStep, StepStatus};
 use michi_core::response::{AgentResponse, OutputFormat};
 use michi_core::toon::{escape_key, escape_value, render_toon, ToonError, ToonOptions, Value};
-use michi_core::{empty_state, empty_state_with_hints, render_hints, Hint};
+use michi_core::{render_hints, Hint, Section};
 
 mod support;
 use support::toon_parser::{decode, parse, Node, Prim};
@@ -35,12 +35,15 @@ fn assert_conformant(out: &str) {
 // §1.2 / §12 — line separator is LF; encoders MUST NOT use CRLF.
 #[test]
 fn s1_2_lines_are_separated_by_lf_only() {
-    let opts = ToonOptions::new("t", vec!["a".into()], vec![vec![Value::from("x")], vec![Value::from("y\r\nz")]])
-        .total_count(Some(2))
-        .hints(vec!["h".into()]);
-    let out = render_toon(&opts).unwrap();
+    let rows = vec![vec![Value::from("x")], vec![Value::from("y\r\nz")]];
+    let opts = ToonOptions::new("t", vec!["a".into()], rows.clone());
+    assert_eq!(render_toon(&opts).unwrap(), "t[2]{a}:\n  x\n  \"y\\r\\nz\"");
+    // `totalCount` and `help[]` are the response's.
+    let response =
+        AgentResponse::new("t").section(Section::toon("t", vec!["a".into()], rows).total_count(Some(3))).hint("h");
+    let out = response.render(OutputFormat::Text);
     assert!(!out.contains('\r'), "{out:?}");
-    assert_eq!(out, "t[2]{a}:\n  x\n  \"y\\r\\nz\"\ntotalCount: 2\nhelp[1]: h");
+    assert_eq!(out, "t[2]{a}:\n  x\n  \"y\\r\\nz\"\ntotalCount: 3\nhelp[1]: h");
 }
 
 // §1.2 — a syntax character matches as one scalar; a combining mark after it does not change it.
@@ -176,8 +179,8 @@ fn s6_no_empty_field_list_is_ever_emitted() {
 #[test]
 fn s6_declared_lengths_match_counts() {
     let rows: Vec<Vec<Value>> = (0..3).map(|i| vec![Value::Int(i)]).collect();
-    let opts = ToonOptions::new("t", vec!["n".into()], rows).hints(vec!["a".into(), "b".into()]);
-    let parsed = parse(&render_toon(&opts).unwrap()).unwrap();
+    let response = AgentResponse::new("t").section(Section::toon("t", vec!["n".into()], rows)).hint("a").hint("b");
+    let parsed = parse(&response.render(OutputFormat::Text)).unwrap();
     assert_eq!(parsed.rows.len(), 3);
     assert_eq!(parsed.hints.len(), 2);
 }
@@ -338,7 +341,9 @@ fn s7_3_header_type_and_field_names_are_quoted_when_required() {
 // §8 — primitive fields are `key: value` with a single space (the totalCount line).
 #[test]
 fn s8_total_count_is_a_key_value_line_with_one_space() {
-    let out = render_toon(&ToonOptions::new("t", vec![], vec![]).total_count(Some(47))).unwrap();
+    let out = AgentResponse::new("t")
+        .section(Section::toon("t", vec![], vec![]).total_count(Some(47)))
+        .render(OutputFormat::Text);
     assert_eq!(out, "t: []\ntotalCount: 47");
     assert_eq!(decode(&out).unwrap().get("totalCount"), Some(&Node::Prim(Prim::Num("47".into()))));
 }
@@ -346,10 +351,16 @@ fn s8_total_count_is_a_key_value_line_with_one_space() {
 // §9.1 — empty arrays MUST be `key: []`; the legacy `key[0]:` header MUST NOT be emitted.
 #[test]
 fn s9_1_empty_list_is_key_colon_brackets() {
-    let opts = ToonOptions::new("issues", vec!["id".into()], vec![]).total_count(Some(0)).hints(vec!["Try x".into()]);
-    assert_eq!(render_toon(&opts).unwrap(), "issues: []\ntotalCount: 0\nhelp[1]: Try x");
-    assert_eq!(empty_state("issue"), "issue: []\ntotalCount: 0");
-    assert_eq!(empty_state_with_hints("issue", &[Hint::new("Try x")]), "issue: []\ntotalCount: 0\nhelp[1]: Try x");
+    // The one definitive empty state: a response with no section, and an empty list section, render the same text.
+    assert_eq!(render_toon(&ToonOptions::new("issues", vec!["id".into()], vec![])).unwrap(), "issues: []");
+    let empty_section = Section::toon("issue", vec!["id".into()], vec![]);
+    let from_section = AgentResponse::new("other").section(empty_section).render(OutputFormat::Text);
+    assert_eq!(from_section, "issue: []\ntotalCount: 0");
+    assert_eq!(AgentResponse::new("issue").render(OutputFormat::Text), from_section);
+    assert_eq!(
+        AgentResponse::new("issue").hint("Try x").render(OutputFormat::Text),
+        "issue: []\ntotalCount: 0\nhelp[1]: Try x"
+    );
     let empty_pipeline = Pipeline::new("p", vec![]);
     assert_eq!(empty_pipeline.render(), "step: []");
 }
@@ -358,9 +369,8 @@ fn s9_1_empty_list_is_key_colon_brackets() {
 // colon. The form follows from the value's shape, so list form would be non-conformant.
 #[test]
 fn s9_1_help_block_is_an_inline_primitive_array() {
-    let opts = ToonOptions::new("t", vec![], vec![]).hints(vec!["Call get_issue".into(), "id=<id>, then retry".into()]);
-    let out = render_toon(&opts).unwrap();
-    assert_eq!(out, "t: []\nhelp[2]: Call get_issue,\"id=<id>, then retry\"");
+    let out = AgentResponse::new("t").hint("Call get_issue").hint("id=<id>, then retry").render(OutputFormat::Text);
+    assert_eq!(out, "t: []\ntotalCount: 0\nhelp[2]: Call get_issue,\"id=<id>, then retry\"");
     assert_eq!(parse(&out).unwrap().hints, vec!["Call get_issue", "id=<id>, then retry"]);
 }
 
@@ -391,23 +401,23 @@ fn s9_3_null_and_empty_string_cells_are_distinct() {
 // carrying the bare `-` marker.
 #[test]
 fn s9_4_zero_field_rows_render_as_list_of_empty_objects() {
-    let out = render_toon(&ToonOptions::new("t", vec![], vec![vec![], vec![]]).total_count(Some(2))).unwrap();
-    assert_eq!(out, "t[2]:\n  -\n  -\ntotalCount: 2");
+    let out = render_toon(&ToonOptions::new("t", vec![], vec![vec![], vec![]])).unwrap();
+    assert_eq!(out, "t[2]:\n  -\n  -");
     assert_eq!(decode(&out).unwrap().get("t"), Some(&Node::EmptyObjects(2)));
 }
 
 // §12 — no trailing newline, no trailing spaces, no blank lines, 2-space indentation, no BOM.
 #[test]
 fn s12_whitespace_invariants_hold_for_every_document_producer() {
-    let full = ToonOptions::new("t", vec!["a".into()], vec![vec![Value::from(" x ")]])
-        .total_count(Some(1))
-        .hints(vec!["h ".into()]);
+    let full = AgentResponse::new("t")
+        .section(Section::toon("t", vec!["a".into()], vec![vec![Value::from(" x ")]]).total_count(Some(2)))
+        .hint("h ");
     let pipeline = Pipeline::new("p", vec![PipelineStep::new("fetch", "Fetch, then parse", StepStatus::Failed)]);
     for out in [
-        render_toon(&full).unwrap(),
+        full.render(OutputFormat::Text),
         render_toon(&ToonOptions::default()).unwrap(),
-        empty_state("issue"),
-        empty_state_with_hints("x-y", &[Hint::new("a"), Hint::new("")]),
+        AgentResponse::new("issue").render(OutputFormat::Text),
+        AgentResponse::new("x-y").hint("a").hint("").render(OutputFormat::Text),
         pipeline.render(),
         AgentResponse::new("t")
             .section(michi_core::Section::toon("t", vec!["n".into()], vec![vec![Value::Int(1)]]).total_count(Some(9)))
@@ -467,7 +477,7 @@ fn docs_example_quoted_keys_nulls_and_numbers() {
 // Composite: the canonical michi document from the spec docs decodes to exactly the input data.
 #[test]
 fn composite_list_document_round_trips() {
-    let opts = ToonOptions::new(
+    let section = Section::toon(
         "issues",
         vec!["number".into(), "title".into(), "state".into()],
         vec![
@@ -475,9 +485,9 @@ fn composite_list_document_round_trips() {
             vec![Value::Int(44), Value::from("Update deps, bump major"), Value::Null],
         ],
     )
-    .total_count(Some(47))
-    .hints(vec!["Call get_issue with number=<number>".into()]);
-    let out = render_toon(&opts).unwrap();
+    .total_count(Some(47));
+    let response = AgentResponse::new("issues").section(section).hint("Call get_issue with number=<number>");
+    let out = response.render(OutputFormat::Text);
     assert_eq!(
         out,
         "issues[2]{number,title,state}:\n  42,Fix login redirect,open\n  44,\"Update deps, bump major\",null\ntotalCount: 47\nhelp[1]: Call get_issue with number=<number>"

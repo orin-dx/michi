@@ -1,10 +1,9 @@
-//! The one-shot document renders: `renderToon`, `renderKv`, `renderStatus`, `emptyState` and `emptyStateWithHints`.
+//! The one-shot document renders: `renderToon`, `renderKv` and `renderStatus`.
 
 use napi::bindgen_prelude::Unknown;
 use napi_derive::napi;
 
 use super::input::{self, Budget, List, MAX_FIELDS, MAX_HINTS, MAX_NAME_BYTES, MAX_ROWS, MAX_STRING_BYTES};
-use super::num::JsCount;
 use super::value::{JsKvItem, JsToonValue};
 
 /// Options for rendering a TOON document (JavaScript-friendly).
@@ -21,31 +20,21 @@ pub struct JsToonOptions {
     // Named explicitly: napi-derive resolves a field's type name only for modules it has already expanded.
     #[napi(ts_type = "Array<Array<ToonValue>>")]
     pub rows: Vec<Vec<JsToonValue>>,
-    /// Total available count (may exceed `rows.len()` when paginated).
-    #[napi(js_name = "totalCount", ts_type = "number")]
-    pub total_count: Option<JsCount>,
-    /// Agent-facing usage hints. Capped at `MAX_HINTS` entries.
-    pub hints: Vec<String>,
-    /// The caller's instruction for getting a cut cell in full (e.g. `"full=true"`). Cut cells end in `…` and are
-    /// listed in a `truncated[N]{row,field,removed}:` block; when a cell was cut this adds a `help[]` line that
-    /// names the block and the instruction. Omitted: the block still reports each cut. Tool-author text, never data.
-    #[napi(js_name = "truncationHint")]
-    pub truncation_hint: Option<String>,
 }
 
-/// Render a TOON list document from options.
+/// Render one TOON list from options: the entry and the `truncated` block for any cut cell. `totalCount` and `help[]`
+/// belong to `AgentResponse`.
 ///
 /// # Errors
 ///
-/// Returns an error if `rows`, `fields`, `hints`, or any row's value count
-/// exceeds this module's hard size limits (`MAX_ROWS`, `MAX_FIELDS`,
-/// `MAX_HINTS`) — an unbounded caller-supplied collection here would let a
+/// Returns an error if `rows`, `fields`, or any row's value count
+/// exceeds this module's hard size limits (`MAX_ROWS`, `MAX_FIELDS`)
+/// — an unbounded caller-supplied collection here would let a
 /// single JS call force unbounded synchronous allocation on Node's event
 /// loop, which `#[napi(catch_unwind)]` alone does not guard against. The
 /// limits are checked on the JS arrays before anything is converted, and
 /// the call's cells (at most 1,000,000) and string bytes (at most 16 MiB in
-/// all, 1 MiB per cell or hint, 4 KiB for `typeName`, a field name or
-/// `truncationHint`) are counted as they are read. Also
+/// all, 1 MiB per cell, 4 KiB for `typeName` or a field name) are counted as they are read. Also
 /// returns an error if `ToonOptions::validate()` rejects the input — a row
 /// whose value count differs from `fields.len()`, a field name repeated in
 /// `fields`, a reserved `type_name` (a root key michi writes itself, such as `help` or `error`), or a
@@ -58,16 +47,11 @@ pub fn render_toon(opts: Unknown<'_>) -> napi::Result<String> {
     let obj = input::object(opts, "opts")?;
     let rows = input::list_prop(&obj, "rows")?;
     let fields = input::list_prop(&obj, "fields")?;
-    let hints = input::list_prop(&obj, "hints")?;
     input::check_len("rows", rows.len(), MAX_ROWS)?;
     input::check_len("fields", fields.len(), MAX_FIELDS)?;
-    input::check_len("hints", hints.len(), MAX_HINTS)?;
     let opts = JsToonOptions {
         type_name: budget.string_prop(&obj, "typeName", "typeName", MAX_NAME_BYTES)?,
-        total_count: input::typed_prop::<JsCount>(&obj, "totalCount")?,
-        truncation_hint: budget.opt_string_prop(&obj, "truncationHint", "truncationHint", MAX_NAME_BYTES)?,
         fields: budget.strings(&fields, "fields", MAX_FIELDS, "field name", MAX_NAME_BYTES)?,
-        hints: budget.strings(&hints, "hints", MAX_HINTS, "hint", MAX_STRING_BYTES)?,
         rows: budget.rows(&rows, MAX_ROWS, MAX_FIELDS, "maximum fields per row")?,
     };
     toon_document(opts)
@@ -80,79 +64,31 @@ fn toon_document(opts: JsToonOptions) -> napi::Result<String> {
         .into_iter()
         .map(|row| row.into_iter().map(|v| Ok(v.into_cell()?.into())).collect::<napi::Result<Vec<_>>>())
         .collect::<napi::Result<Vec<_>>>()?;
-    let mut toon_opts = crate::toon::ToonOptions::new(opts.type_name, opts.fields, rows)
-        .total_count(opts.total_count.map(JsCount::get))
-        .hints(opts.hints);
-    if let Some(hint) = opts.truncation_hint {
-        toon_opts = toon_opts.truncation_hint(hint);
-    }
+    let toon_opts = crate::toon::ToonOptions::new(opts.type_name, opts.fields, rows);
     crate::toon::render_toon(&toon_opts).map_err(|e| napi::Error::from_reason(format!("toon_validation_failed: {e}")))
 }
 
-/// Render an explicit empty-state response.
-///
-/// # Errors
-///
-/// Returns an error if `type_name` is a reserved root key (one michi writes itself, such as `help`). The reason is
-/// `toon_validation_failed: ` followed by the `ToonError` text, as `renderToon` reports it. Also rejects a `typeName`
-/// over 4 KiB, as `emptyStateWithHints` does.
-#[napi(catch_unwind)]
-pub fn empty_state(type_name: String) -> napi::Result<String> {
-    input::check_bytes("typeName", &type_name, MAX_NAME_BYTES)?;
-    crate::empty::try_empty_state(&type_name)
-        .map_err(|e| napi::Error::from_reason(format!("toon_validation_failed: {e}")))
-}
-
-/// Render an empty state with a `help[N]: …` block: `{typeName}: []`, `totalCount: 0`, then the hints.
-///
-/// # Errors
-///
-/// Returns an error if `type_name` is a reserved root key (one michi writes itself, such as `help`), with the reason
-/// `toon_validation_failed: ` followed by the `ToonError` text, as `emptyState` reports it. Also rejects more than
-/// 10,000 hints, a `typeName` over 4 KiB, a hint over 1 MiB, and more than 16 MiB of strings per call.
-#[napi(catch_unwind, js_name = "emptyStateWithHints", ts_args_type = "typeName: string, hints: Array<string>")]
-pub fn empty_state_with_hints(type_name: Unknown<'_>, hints: Unknown<'_>) -> napi::Result<String> {
-    let mut budget = Budget::new();
-    let hints = List::new(hints, "hints")?;
-    input::check_len("hints", hints.len(), MAX_HINTS)?;
-    let type_name = budget.string(type_name, "typeName", MAX_NAME_BYTES)?;
-    let hints: Vec<crate::hints::Hint> =
-        budget.strings(&hints, "hints", MAX_HINTS, "hint", MAX_STRING_BYTES)?.into_iter().map(Into::into).collect();
-    crate::empty::try_empty_state_with_hints(&type_name, &hints)
-        .map_err(|e| napi::Error::from_reason(format!("toon_validation_failed: {e}")))
-}
-
-/// Render key-value pairs as a TOON 4.4 root object: `key: value` lines, then `totalCount` and `help`.
+/// Render key-value pairs as a TOON 4.4 root object: `key: value` lines.
 ///
 /// # Errors
 ///
 /// Rejects a duplicate key or a reserved root key such as `help` or `message` (`kv_validation_failed: …`),
-/// and inputs over the caps: 1,000 items, 10,000 hints, 4 KiB per key, 1 MiB per value or hint, 16 MiB of strings
-/// per call.
-#[napi(
-    catch_unwind,
-    js_name = "renderKv",
-    ts_args_type = "items: Array<KvItem>, totalCount: number | undefined | null, hints: Array<string>"
-)]
-pub fn render_kv(items: Unknown<'_>, total_count: Option<JsCount>, hints: Unknown<'_>) -> napi::Result<String> {
+/// and inputs over the caps: 1,000 items, 4 KiB per key, 1 MiB per value, 16 MiB of strings per call.
+#[napi(catch_unwind, js_name = "renderKv", ts_args_type = "items: Array<KvItem>")]
+pub fn render_kv(items: Unknown<'_>) -> napi::Result<String> {
     let mut budget = Budget::new();
     let items = List::new(items, "items")?;
-    let hints = List::new(hints, "hints")?;
     input::check_len("items", items.len(), MAX_FIELDS)?;
-    input::check_len("hints", hints.len(), MAX_HINTS)?;
     let items = budget.kv_items(&items, MAX_FIELDS)?;
-    let hints = budget.strings(&hints, "hints", MAX_HINTS, "hint", MAX_STRING_BYTES)?;
-    kv_document(items, total_count, hints)
+    kv_document(items)
 }
 
-fn kv_document(items: Vec<JsKvItem>, total_count: Option<JsCount>, hints: Vec<String>) -> napi::Result<String> {
+fn kv_document(items: Vec<JsKvItem>) -> napi::Result<String> {
     let converted = items
         .into_iter()
         .map(|i| Ok(crate::kv::KvItem::new(i.key, i.value.into_cell()?.into())))
         .collect::<napi::Result<Vec<_>>>()?;
-    let hints: Vec<crate::hints::Hint> = hints.into_iter().map(Into::into).collect();
-    crate::kv::render_kv(&converted, total_count.map(JsCount::get), &hints)
-        .map_err(|e| napi::Error::from_reason(format!("kv_validation_failed: {e}")))
+    crate::kv::render_kv(&converted).map_err(|e| napi::Error::from_reason(format!("kv_validation_failed: {e}")))
 }
 
 /// A component status item for `renderStatus`.
@@ -247,9 +183,6 @@ mod tests {
             type_name: type_name.to_string(),
             fields: fields.iter().map(|f| (*f).to_string()).collect(),
             rows,
-            total_count: None,
-            hints: vec![],
-            truncation_hint: None,
         }
     }
 
@@ -263,8 +196,7 @@ mod tests {
 
     #[test]
     fn render_toon_basic() {
-        let mut o = opts("issue", &["id"], vec![vec![int_cell(1.0)]]);
-        o.total_count = Some(JsCount::try_from(1.0).expect("1 is a valid count"));
+        let o = opts("issue", &["id"], vec![vec![int_cell(1.0)]]);
         let out = toon_document(o).expect("valid input renders");
         assert!(out.starts_with("issue[1]{id}:"));
     }
@@ -310,21 +242,6 @@ mod tests {
     }
 
     #[test]
-    fn render_toon_truncation_hint_is_optional() {
-        let long = || vec![vec![str_cell(&"a".repeat(500))]];
-        let with = |hint: Option<&str>| JsToonOptions {
-            truncation_hint: hint.map(str::to_string),
-            ..opts("t", &["a"], long())
-        };
-        let cut = format!("t[1]{{a}}:\n  {}\u{2026}\ntruncated[1]{{row,field,removed}}:\n  0,a,301", "a".repeat(199));
-        assert_eq!(toon_document(with(None)).expect("valid input renders"), cut);
-        assert_eq!(
-            toon_document(with(Some("full=true"))).expect("valid input renders"),
-            format!("{cut}\nhelp[1]: Cut cells are listed in the truncated block; use full=true for the full value")
-        );
-    }
-
-    #[test]
     fn render_toon_rejects_int_with_missing_int_val() {
         let err = toon_document(opts("t", &["a"], vec![vec![value("int")]])).expect_err("missing intVal");
         assert!(err.reason.contains("intVal"), "error should name the missing field, got: {}", err.reason);
@@ -343,31 +260,6 @@ mod tests {
         assert!(toon_document(opts("t", &["a"], vec![vec![value("null")]])).is_ok());
     }
 
-    #[test]
-    fn empty_state_renders() {
-        assert_eq!(empty_state("issue".to_string()).expect("valid name"), "issue: []\ntotalCount: 0");
-    }
-
-    // emptyStateWithHints caps typeName at 4 KiB; emptyState took any length.
-    #[test]
-    fn empty_state_caps_the_type_name_like_empty_state_with_hints() {
-        let err = empty_state("t".repeat(MAX_NAME_BYTES + 1)).expect_err("over 4 KiB");
-        assert_eq!(
-            err.reason,
-            format!("typeName byte length {} exceeds maximum of {MAX_NAME_BYTES}", MAX_NAME_BYTES + 1)
-        );
-        assert!(empty_state("t".repeat(MAX_NAME_BYTES)).is_ok());
-    }
-
-    #[test]
-    fn empty_state_rejects_a_reserved_type_name_like_render_toon() {
-        for name in ["totalCount", "help", "recovery"] {
-            let err = empty_state(name.to_string()).expect_err("reserved root key");
-            assert!(err.reason.starts_with("toon_validation_failed: "), "{}", err.reason);
-            assert!(err.reason.contains(name), "{}", err.reason);
-        }
-    }
-
     fn kv_item(k: &str) -> JsKvItem {
         JsKvItem { key: k.to_string(), value: value("null") }
     }
@@ -375,15 +267,15 @@ mod tests {
     #[test]
     fn render_kv_rejects_bool_with_missing_bool_val() {
         let items = vec![JsKvItem { key: "k".to_string(), value: value("bool") }];
-        let err = kv_document(items, None, vec![]).expect_err("missing boolVal must error, not default to false");
+        let err = kv_document(items).expect_err("missing boolVal must error, not default to false");
         assert!(err.reason.contains("boolVal"), "error should name the missing field, got: {}", err.reason);
     }
 
     #[test]
     fn render_kv_rejects_duplicate_and_reserved_keys() {
-        let err = kv_document(vec![kv_item("a"), kv_item("a")], None, vec![]).expect_err("duplicate key");
+        let err = kv_document(vec![kv_item("a"), kv_item("a")]).expect_err("duplicate key");
         assert_eq!(err.reason, "kv_validation_failed: key \"a\" appears more than once");
-        let err = kv_document(vec![kv_item("help")], None, vec![]).expect_err("reserved key");
+        let err = kv_document(vec![kv_item("help")]).expect_err("reserved key");
         assert_eq!(
             err.reason,
             "kv_validation_failed: key \"help\" is a reserved document key (totalCount, help, recovery, truncated, \
@@ -396,7 +288,7 @@ mod tests {
     #[test]
     fn kv_rejects_unrecognized_value_type_instead_of_defaulting_to_missing() {
         let item = JsKvItem { key: "id".into(), value: value("unrecognized-type") };
-        let err = kv_document(vec![item], None, vec![]).expect_err("unrecognized type must error");
+        let err = kv_document(vec![item]).expect_err("unrecognized type must error");
         assert!(err.reason.contains("unrecognized-type"), "error should name the offending type, got: {}", err.reason);
     }
 
@@ -410,7 +302,7 @@ mod tests {
                 ..value("float")
             },
         };
-        let out = kv_document(vec![item], None, vec![]).unwrap();
+        let out = kv_document(vec![item]).unwrap();
         assert_eq!(out, "score: 3.14159", "the shortest exact decimals by default, then canonical (no padding)");
     }
 
@@ -429,7 +321,7 @@ mod tests {
             (5e-324, "x: 5e-324"),
             (-1.234_567_890_123_456_8e-250, "x: -1.2345678901234568e-250"),
         ] {
-            let out = kv_document(vec![JsKvItem { key: "x".into(), value: float(f) }], None, vec![]).unwrap();
+            let out = kv_document(vec![JsKvItem { key: "x".into(), value: float(f) }]).unwrap();
             assert_eq!(out, expected, "{f}");
         }
         let status = status_document(
@@ -453,7 +345,7 @@ mod tests {
                 ..value("float")
             },
         };
-        let out = kv_document(vec![item], None, vec![]).unwrap();
+        let out = kv_document(vec![item]).unwrap();
         assert!(out.contains("3.14"), "expected 2 decimal places, got: {out}");
         assert!(!out.contains("3.141"), "must not have more than 2 decimal places, got: {out}");
     }

@@ -83,7 +83,7 @@ fn render_kv_is_linear_in_items() {
         1_000,
         |n| (0..n).map(|i| KvItem::new(format!("key{i}"), KvValue::Text(format!("value {i}")))).collect::<Vec<_>>(),
         |items| {
-            black_box(render_kv(items, None, &[]).expect("valid items"));
+            black_box(render_kv(items).expect("valid items"));
         },
     );
 }
@@ -135,4 +135,74 @@ fn envelope_render_is_linear_in_section_count() {
             },
         );
     }
+}
+
+#[test]
+fn response_render_is_linear_in_rows() {
+    use michi_core::{AgentResponse, OutputFormat, Section};
+    // Every row has a cell over the cap, so the list and the cut list (and so the `truncated` block) grow with the row
+    // count, and the JSON `sections` array carries every row in full.
+    for format in [OutputFormat::Text, OutputFormat::Json] {
+        assert_linear(
+            "AgentResponse rows",
+            1_000,
+            |n| {
+                let rows = (0..n)
+                    .map(|i| vec![Value::Int(i as i64), Value::from(format!("a title cell that is cut, number {i}"))])
+                    .collect();
+                AgentResponse::new("t")
+                    .truncate_cells_at(12)
+                    .truncation_hint("full=true")
+                    .section(Section::toon("t", vec!["n".into(), "title".into()], rows).total_count(Some(n * 2)))
+            },
+            |r| {
+                black_box(r.render(format));
+            },
+        );
+    }
+}
+
+#[test]
+fn response_to_call_tool_result_and_is_error_are_linear_in_rows() {
+    use michi_core::{AgentResponse, Section};
+    assert_linear(
+        "AgentResponse::to_call_tool_result rows",
+        1_000,
+        |n| {
+            let rows = (0..n).map(|i| vec![Value::Int(i as i64), Value::from(format!("title {i}"))]).collect();
+            AgentResponse::new("t").section(Section::toon("t", vec!["n".into(), "title".into()], rows))
+        },
+        |r| {
+            black_box(r.is_error());
+            black_box(r.to_call_tool_result());
+        },
+    );
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn toon_list_is_linear_in_items_and_sparse_keys() {
+    #[derive(serde::Serialize)]
+    struct Issue {
+        number: usize,
+        title: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        assignee: Option<String>,
+    }
+    assert_linear(
+        "toon::list items",
+        1_000,
+        |n| {
+            (0..n)
+                .map(|i| Issue {
+                    number: i,
+                    title: format!("Issue {i}"),
+                    assignee: (i % 3 == 0).then(|| format!("user{i}")),
+                })
+                .collect::<Vec<_>>()
+        },
+        |items| {
+            black_box(michi_core::toon::list("issue", items).expect("valid items"));
+        },
+    );
 }

@@ -86,7 +86,7 @@ fn budget_or_provenance_alone_has_no_empty_list_line() {
 
 #[test]
 fn a_response_with_no_section_renders_the_empty_list() {
-    assert_eq!(AgentResponse::new("t").render(OutputFormat::Text), "t: []");
+    assert_eq!(AgentResponse::new("t").render(OutputFormat::Text), "t: []\ntotalCount: 0");
     let r = AgentResponse::new("t")
         .section(Section::toon("t", fields(&["n"]), vec![vec![Value::Int(1)]]).total_count(Some(9)));
     assert_eq!(r.render(OutputFormat::Text), "t[1]{n}:\n  1\ntotalCount: 9");

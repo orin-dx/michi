@@ -51,6 +51,7 @@ divan      = "0.1"
 proptest   = "1"
 insta      = { version = "1", features = ["yaml"] }
 trybuild   = "1"
+stats_alloc = "0.1.10"
 
 [[bench]]
 name    = "toon_render"
@@ -58,4 +59,8 @@ harness = false
 
 [[bench]]
 name    = "kv_render"
+harness = false
+
+[[bench]]
+name    = "response_render"
 harness = false

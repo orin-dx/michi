@@ -1,4 +1,5 @@
 use michi_core::toon::{render_toon, ToonOptions, Value};
+use michi_core::{AgentResponse, OutputFormat, Section};
 use proptest::prelude::*;
 
 mod support;
@@ -72,10 +73,14 @@ proptest! {
     ) {
         let rows: Vec<Vec<Value>> =
             cells.iter().map(|row| row.iter().map(|c| Value::Str(c.clone().into())).collect()).collect();
-        let opts = ToonOptions::new(type_name.clone(), fields.clone(), rows.clone())
-            .total_count(total_count)
-            .hints(hints.clone());
-        let rendered = render_toon(&opts).expect("doc_strategy only generates valid options");
+        // The response owns `totalCount` and `help[]`; the list itself is what `render_toon` writes.
+        let section = Section::toon(type_name.clone(), fields.clone(), rows.clone()).total_count(total_count);
+        let mut response = AgentResponse::new("ignored").section(section);
+        for hint in &hints {
+            response = response.hint(hint.clone());
+        }
+        let rendered = response.render(OutputFormat::Text);
+        prop_assert!(!response.is_error(), "doc_strategy only generates valid lists: {}", rendered);
 
         let parsed = parse(&rendered).map_err(|e| TestCaseError::fail(format!("{e}\n{rendered:?}")))?;
         prop_assert_eq!(parsed.type_name, type_name);
@@ -83,7 +88,9 @@ proptest! {
             prop_assert_eq!(&parsed.fields, &fields);
         }
         prop_assert_eq!(parsed.rows.len(), row_count);
-        prop_assert_eq!(parsed.total_count, total_count);
+        // A total shows only when it exceeds the rows; an empty list always says `totalCount: 0`.
+        let shown = total_count.filter(|n| *n > row_count).or_else(|| (row_count == 0).then_some(0));
+        prop_assert_eq!(parsed.total_count, shown);
         prop_assert_eq!(parsed.hints, hints);
         for (parsed_row, original_row) in parsed.rows.iter().zip(rows.iter()) {
             prop_assert_eq!(parsed_row.len(), fields.len());

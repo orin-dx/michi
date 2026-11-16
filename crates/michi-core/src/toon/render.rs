@@ -215,23 +215,23 @@ fn push_cell(out: &mut String, cell: &Value, max_cell_len: usize) -> Option<usiz
 /// - otherwise the tabular form `key[N]{f1,f2}:` with one row per line at depth 1 (§9.3).
 ///
 /// Returns the cells that were cut, as `(row, field index, chars removed)`.
-fn push_list(out: &mut String, opts: &crate::toon::ToonOptions) -> Vec<(usize, usize, usize)> {
+fn push_list(out: &mut String, opts: &crate::toon::ListRef<'_>) -> Vec<(usize, usize, usize)> {
     use std::fmt::Write as _;
     let mut cut = Vec::new();
     if opts.rows.is_empty() {
-        out.push_str(&escape_key(&opts.type_name));
+        out.push_str(&escape_key(opts.type_name));
         out.push_str(": []\n");
         return cut;
     }
     if opts.fields.is_empty() {
-        out.push_str(&escape_key(&opts.type_name));
+        out.push_str(&escape_key(opts.type_name));
         let _ = writeln!(out, "[{}]:", opts.rows.len());
-        for _ in &opts.rows {
+        for _ in opts.rows {
             out.push_str("  -\n");
         }
         return cut;
     }
-    super::table::push_header(out, &opts.type_name, opts.rows.len(), &opts.fields);
+    super::table::push_header(out, opts.type_name, opts.rows.len(), opts.fields);
     out.push('\n');
     for (r, row) in opts.rows.iter().enumerate() {
         out.push_str("  ");
@@ -262,16 +262,17 @@ pub(crate) struct RenderedList {
 /// one. The compiler enforces that; `tests/ui-fail/toon_document_no_field_construction.rs` and
 /// `toon_document_no_new_constructor.rs` prove it from outside the crate.
 mod proof {
+    use crate::toon::ListRef;
+
     /// Proof that a `ToonOptions` value has passed structural validation.
     ///
-    /// The only function that produces a `ToonDocument` is
-    /// [`ToonDocument::validate`] -- see this module's own doc comment for
-    /// why no other function anywhere in the crate can construct one.
-    /// Borrows `&'a ToonOptions` immutably, so the validated options cannot
-    /// be mutated while the proof is live.
+    /// The only functions that produce a `ToonDocument` are [`ToonDocument::validate`] and the crate-internal
+    /// `validate_list` it calls -- see this module's own doc comment for why no other function anywhere in the crate
+    /// can construct one. It borrows the list immutably, so the validated rows cannot be mutated while the proof is
+    /// live.
     #[derive(Debug)]
     pub struct ToonDocument<'a> {
-        opts: &'a crate::toon::ToonOptions,
+        list: ListRef<'a>,
     }
 
     impl<'a> ToonDocument<'a> {
@@ -291,33 +292,37 @@ mod proof {
         /// [`crate::toon::MAX_FIELDS`] fields,
         /// [`crate::toon::ToonError::InvalidFieldName`] if a field name appears
         /// more than once, [`crate::toon::ToonError::TooManyCells`] if
-        /// `rows × fields` (at least one cell per row) is past [`crate::toon::MAX_CELLS`],
-        /// [`crate::toon::ToonError::TruncationHintTooLong`] if the truncation
-        /// hint is past [`crate::toon::MAX_TRUNCATION_HINT_CHARS`] chars, and
+        /// `rows × fields` (at least one cell per row) is past [`crate::toon::MAX_CELLS`], and
         /// [`crate::toon::ToonError::RowLengthMismatch`] if any row's length
         /// differs from `fields.len()`. Every check is linear in the input.
         pub fn validate(opts: &'a crate::toon::ToonOptions) -> Result<Self, crate::toon::ToonError> {
+            Self::validate_list(opts.list_ref())
+        }
+
+        /// [`validate`](Self::validate) for a borrowed list, which also checks the truncation hint
+        /// ([`crate::toon::ToonError::TruncationHintTooLong`], after the cell cap and before row arity).
+        pub(crate) fn validate_list(list: ListRef<'a>) -> Result<Self, crate::toon::ToonError> {
             use crate::toon::{ToonError, MAX_CELLS, MAX_FIELDS, MAX_TRUNCATION_HINT_CHARS};
-            if crate::toon::is_reserved_root_key(&opts.type_name) {
-                return Err(ToonError::InvalidTypeName { name: opts.type_name.clone() });
+            if crate::toon::is_reserved_root_key(list.type_name) {
+                return Err(ToonError::InvalidTypeName { name: list.type_name.to_string() });
             }
-            if opts.fields.len() > MAX_FIELDS {
-                return Err(ToonError::TooManyFields { count: opts.fields.len(), max: MAX_FIELDS });
+            if list.fields.len() > MAX_FIELDS {
+                return Err(ToonError::TooManyFields { count: list.fields.len(), max: MAX_FIELDS });
             }
-            let mut seen = std::collections::HashSet::with_capacity(opts.fields.len());
-            for field in &opts.fields {
+            let mut seen = std::collections::HashSet::with_capacity(list.fields.len());
+            for field in list.fields {
                 if !seen.insert(field.as_str()) {
                     return Err(ToonError::InvalidFieldName { name: field.clone() });
                 }
             }
-            if crate::toon::cell_count(opts.rows.len(), opts.fields.len()) > MAX_CELLS {
+            if crate::toon::cell_count(list.rows.len(), list.fields.len()) > MAX_CELLS {
                 return Err(ToonError::TooManyCells {
-                    rows: opts.rows.len(),
-                    fields: opts.fields.len(),
+                    rows: list.rows.len(),
+                    fields: list.fields.len(),
                     max: MAX_CELLS,
                 });
             }
-            if let Some(hint) = &opts.truncation_hint {
+            if let Some(hint) = list.truncation_hint {
                 // A hint of at most MAX bytes has at most MAX chars, so only a longer one needs counting.
                 if hint.len() > MAX_TRUNCATION_HINT_CHARS {
                     let len = hint.chars().count();
@@ -326,67 +331,56 @@ mod proof {
                     }
                 }
             }
-            for (i, row) in opts.rows.iter().enumerate() {
-                if row.len() != opts.fields.len() {
+            for (i, row) in list.rows.iter().enumerate() {
+                if row.len() != list.fields.len() {
                     return Err(ToonError::RowLengthMismatch {
                         row_index: i,
-                        expected: opts.fields.len(),
+                        expected: list.fields.len(),
                         actual: row.len(),
                     });
                 }
             }
-            Ok(Self { opts })
+            Ok(Self { list })
         }
 
-        /// Render `self` to a TOON 4.4 document: the list entry, then
-        /// `totalCount: N` and the inline `help[N]: …` array when present,
-        /// with no trailing newline (§12). Infallible and total by
-        /// construction: row arity was already proven equal to
-        /// `fields.len()` by `validate`, so rows and fields are iterated in
+        /// Render `self` to a TOON 4.4 list: the list entry, then the `truncated[N]{row,field,removed}:` block when a
+        /// cell was cut to `max_cell_len`, with no trailing newline (§12). Infallible and total by construction: row
+        /// arity was already proven equal to `fields.len()` by `validate`, so rows and fields are iterated in
         /// lockstep instead of indexed by position, which could fail.
         ///
-        /// Cells cut to `max_cell_len` end in `…` and are reported in a `truncated[N]{row,field,removed}:` block
-        /// after the list. When [`ToonOptions::truncation_hint`](crate::toon::ToonOptions::truncation_hint) is set
-        /// and a cell was cut, michi adds one line to `help[]` pointing at that block and the caller's instruction.
+        /// Cut cells end in `…`. `totalCount`, `help[]` and the truncation hint are not written here:
+        /// [`AgentResponse`](crate::AgentResponse) owns them for the whole response.
         #[must_use]
         pub fn render(&self) -> String {
-            use std::fmt::Write as _;
             let list = self.render_list();
             let mut out = list.text;
-            let fields = &self.opts.fields;
             let cuts: Vec<crate::toon::table::Cut<'_>> = list
                 .cuts
                 .iter()
                 .map(|&(row, field, removed)| crate::toon::table::Cut {
-                    section: &self.opts.type_name,
+                    section: self.list.type_name,
                     row,
-                    field: fields.get(field).map_or("", String::as_str),
+                    field: self.list.fields.get(field).map_or("", String::as_str),
                     removed,
                 })
                 .collect();
             crate::toon::table::push_truncated(&mut out, &cuts, false);
-            if let Some(total) = self.opts.total_count {
-                crate::hints::start_block(&mut out);
-                let _ = write!(out, "totalCount: {total}");
-            }
-            let hints = self.opts.hints.iter().map(String::as_str).chain(list.extra_hint.as_deref());
-            let hints: Vec<&str> = hints.collect();
-            crate::hints::append_help_block(&mut out, hints.into_iter());
             out
         }
 
         /// The list entry alone, the cells it cut and the `help[]` line michi adds when it cut a cell and the caller
-        /// set a truncation hint. [`render`](Self::render) puts the `truncated` block, `totalCount` and `help` after
-        /// it; [`AgentResponse`](crate::AgentResponse) places them itself, so several sections share one of each.
+        /// set a truncation hint. [`render`](Self::render) puts the `truncated` block after it;
+        /// [`AgentResponse`](crate::AgentResponse) places that block, `totalCount` and `help` itself, so several
+        /// sections share one of each.
         pub(crate) fn render_list(&self) -> super::RenderedList {
-            let opts = self.opts;
-            let capacity = 60 + opts.rows.len() * (opts.fields.len() * 12 + 10);
+            let list = &self.list;
+            let capacity = 60 + list.rows.len() * (list.fields.len() * 12 + 10);
             let mut text = String::with_capacity(capacity);
-            let cuts = super::push_list(&mut text, opts);
+            let cuts = super::push_list(&mut text, list);
             if text.ends_with('\n') {
                 text.pop();
             }
-            let extra_hint = match opts.truncation_hint.as_deref() {
+            let extra_hint = match list.truncation_hint {
                 Some(hint) if !cuts.is_empty() && !hint.is_empty() => {
                     Some(format!("Cut cells are listed in the truncated block; use {hint} for the full value"))
                 }
@@ -403,34 +397,26 @@ mod tests {
     use super::Value;
     use compact_str::CompactString;
 
-    fn render(
-        type_name: &str,
-        fields: &[String],
-        rows: &[Vec<Value>],
-        total_count: Option<usize>,
-        hints: &[String],
-        max_cell_len: usize,
-    ) -> String {
+    fn render(type_name: &str, fields: &[String], rows: &[Vec<Value>], max_cell_len: usize) -> String {
         let opts = crate::toon::ToonOptions {
             type_name: type_name.to_string(),
             fields: fields.to_vec(),
             rows: rows.to_vec(),
-            total_count,
-            hints: hints.to_vec(),
             max_cell_len,
-            truncation_hint: None,
         };
         crate::toon::ToonDocument::validate(&opts).expect("test render() shim: options must validate").render()
     }
 
-    /// One string cell `content` under field `a`, rendered with `max_cell_len` and an optional truncation hint.
+    /// One string cell `content` under field `a`, rendered by a response with `max_cell_len` and an optional
+    /// truncation hint: the hint is the response's, so the `help[]` line it adds appears here and not in `render`.
     fn render_cell(content: &str, max_cell_len: usize, hint: Option<&str>) -> String {
-        let mut opts = crate::toon::ToonOptions::new("t", vec!["a".to_string()], vec![vec![Value::from(content)]])
-            .max_cell_len(max_cell_len);
+        let mut response = crate::AgentResponse::new("t")
+            .truncate_cells_at(max_cell_len)
+            .items(vec![vec![Value::from(content)]], &["a"]);
         if let Some(hint) = hint {
-            opts = opts.truncation_hint(hint);
+            response = response.truncation_hint(hint);
         }
-        crate::toon::render_toon(&opts).expect("one-cell document validates")
+        response.render(crate::OutputFormat::Text)
     }
 
     #[test]
@@ -449,7 +435,7 @@ mod tests {
     fn non_finite_floats_render_as_null() {
         // TOON 4.4 §3: NaN and ±Infinity normalize to null.
         for f in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            let out = render("t", &["v".to_string()], &[vec![Value::Float(f)]], None, &[], 200);
+            let out = render("t", &["v".to_string()], &[vec![Value::Float(f)]], 200);
             assert_eq!(out, "t[1]{v}:\n  null", "{f}");
         }
     }
@@ -465,17 +451,9 @@ mod tests {
     }
 
     #[test]
-    fn hint_with_newline_is_escaped() {
-        let out = render("t", &[], &[], None, &["line1\nline2".to_string()], 200);
-        // The hint is quoted and its LF written as `\n`, so it cannot inject a line.
-        assert_eq!(out, "t: []\nhelp[1]: \"line1\\nline2\"");
-        assert_eq!(out.lines().count(), 2, "hint newline must not inject a line, got: {out:?}");
-    }
-
-    #[test]
     fn ac011_truncated_cell_content_is_exact() {
         // 199 chars are kept and a plain `…` fills the 200-char cap; the other 301 are reported in the block.
-        let out = render("t", &["a".to_string()], &[vec![Value::from("a".repeat(500))]], None, &[], 200);
+        let out = render("t", &["a".to_string()], &[vec![Value::from("a".repeat(500))]], 200);
         let expected_prefix = "a".repeat(199);
         assert_eq!(
             out,
@@ -508,7 +486,8 @@ mod tests {
 
     #[test]
     fn spec_02_truncated_field_value_example_is_real_output() {
-        let opts = crate::toon::ToonOptions::new(
+        use crate::{AgentResponse, OutputFormat, Section};
+        let section = Section::toon(
             "components",
             vec!["name".to_string(), "description".to_string(), "tokens".to_string()],
             vec![
@@ -524,12 +503,14 @@ mod tests {
                 ],
             ],
         )
-        .total_count(Some(84))
-        .hints(vec!["Call get_component with name=<name> and full=true for complete description".to_string()])
-        .max_cell_len(40)
-        .truncation_hint("full=true");
+        .total_count(Some(84));
+        let response = AgentResponse::new("components")
+            .section(section)
+            .hint("Call get_component with name=<name> and full=true for complete description")
+            .truncate_cells_at(40)
+            .truncation_hint("full=true");
         assert_eq!(
-            crate::toon::render_toon(&opts).unwrap(),
+            response.render(OutputFormat::Text),
             "components[2]{name,description,tokens}:\n  \
              Button,Primary action element used to submit f…,12\n  \
              Icon,Scalable vector glyphs that inherit col…,8\n\
@@ -553,7 +534,7 @@ mod tests {
         // cut cell is quoted and each LF written as `\n`.
         let content = "a\n".repeat(300);
         assert_eq!(content.chars().count(), 600);
-        let out = render("t", &["a".to_string()], &[vec![Value::from(content)]], None, &[], 200);
+        let out = render("t", &["a".to_string()], &[vec![Value::from(content)]], 200);
         let expected_prefix = format!("{}a", "a\\n".repeat(99));
         assert_eq!(
             out,
@@ -570,7 +551,7 @@ mod tests {
         let content = "日".repeat(100);
         assert_eq!(content.chars().count(), 100);
         assert_eq!(content.len(), 300);
-        let out = render("t", &["a".to_string()], &[vec![Value::from(content.clone())]], None, &[], 200);
+        let out = render("t", &["a".to_string()], &[vec![Value::from(content.clone())]], 200);
         assert_eq!(
             out,
             format!("t[1]{{a}}:\n  {content}"),
@@ -581,7 +562,7 @@ mod tests {
     #[test]
     fn ac011c_max_cell_len_smaller_than_suffix_falls_back_to_ellipsis() {
         // The cell is always `max_cell_len - 1` kept chars and an ellipsis, however small the cap.
-        let out = render("t", &["a".to_string()], &[vec![Value::from("a".repeat(50))]], None, &[], 10);
+        let out = render("t", &["a".to_string()], &[vec![Value::from("a".repeat(50))]], 10);
         assert_eq!(out, "t[1]{a}:\n  aaaaaaaaa…\ntruncated[1]{row,field,removed}:\n  0,a,41");
         let out = render_cell(&"a".repeat(50), 1, None);
         assert_eq!(out, "t[1]{a}:\n  …\ntruncated[1]{row,field,removed}:\n  0,a,50");
@@ -591,13 +572,13 @@ mod tests {
 
     #[test]
     fn ac008_render_level_comma_cell_is_quoted_when_untruncated() {
-        let out = render("t", &["a".to_string()], &[vec![Value::from("x,y")]], None, &[], 200);
+        let out = render("t", &["a".to_string()], &[vec![Value::from("x,y")]], 200);
         assert_eq!(out, "t[1]{a}:\n  \"x,y\"");
     }
 
     #[test]
     fn ac009_render_level_quote_cell_is_wrapped_and_escaped_when_untruncated() {
-        let out = render("t", &["a".to_string()], &[vec![Value::from(r#"say "hi""#)]], None, &[], 200);
+        let out = render("t", &["a".to_string()], &[vec![Value::from(r#"say "hi""#)]], 200);
         assert_eq!(out, "t[1]{a}:\n  \"say \\\"hi\\\"\"");
     }
 
@@ -605,7 +586,7 @@ mod tests {
     fn ac008b_ac011d_truncated_cell_with_comma_in_kept_prefix_is_quoted() {
         let content = "a,".repeat(300);
         assert_eq!(content.chars().count(), 600);
-        let out = render("t", &["a".to_string()], &[vec![Value::from(content)]], None, &[], 200);
+        let out = render("t", &["a".to_string()], &[vec![Value::from(content)]], 200);
         let expected_kept: String = "a,".repeat(300).chars().take(199).collect();
         let expected =
             format!("t[1]{{a}}:\n  \"{expected_kept}\u{2026}\"\ntruncated[1]{{row,field,removed}}:\n  0,a,401");
@@ -631,10 +612,7 @@ mod tests {
     #[test]
     fn ac012c_toon_options_new_defaults() {
         let opts = crate::toon::ToonOptions::new("t", vec![], vec![]);
-        assert_eq!(opts.total_count, None);
-        assert!(opts.hints.is_empty());
         assert_eq!(opts.max_cell_len, 200);
-        assert_eq!(opts.truncation_hint, None);
     }
 
     #[test]
@@ -648,14 +626,8 @@ mod tests {
 
     #[test]
     fn ac021_leading_space_in_cell_content_is_quoted() {
-        let out = render("t", &["a".to_string()], &[vec![Value::from(" x")]], None, &[], 200);
+        let out = render("t", &["a".to_string()], &[vec![Value::from(" x")]], 200);
         assert_eq!(out, "t[1]{a}:\n  \" x\"");
-    }
-
-    #[test]
-    fn ac023_leading_space_in_hint_is_quoted() {
-        let out = render("t", &[], &[], None, &[" h".to_string()], 200);
-        assert_eq!(out, "t: []\nhelp[1]: \" h\"");
     }
 
     #[test]
@@ -668,14 +640,14 @@ mod tests {
         assert_eq!(v, Value::Int(i64::MAX));
         let v: Value = (i64::MAX as u64 + 1).into();
         assert_eq!(v, Value::UInt(i64::MAX as u64 + 1));
-        let out = render("t", &["n".to_string()], &[vec![u64::MAX.into()]], None, &[], 200);
+        let out = render("t", &["n".to_string()], &[vec![u64::MAX.into()]], 200);
         assert_eq!(out, "t[1]{n}:\n  18446744073709551615");
     }
 
     #[test]
     fn ac013_numeric_cells_ignore_max_cell_len() {
         let fields = ["n".to_string(), "m".to_string()];
-        let out = render("t", &fields, &[vec![u64::MAX.into(), Value::Int(i64::MIN)]], None, &[], 5);
+        let out = render("t", &fields, &[vec![u64::MAX.into(), Value::Int(i64::MIN)]], 5);
         assert_eq!(out, "t[1]{n,m}:\n  18446744073709551615,-9223372036854775808");
     }
 
@@ -685,14 +657,8 @@ mod tests {
         assert_eq!(v, Value::Int(42));
         let v: Value = 42usize.into();
         assert_eq!(v, Value::Int(42));
-        let out = render("t", &["n".to_string()], &[vec![42u64.into()]], None, &[], 200);
+        let out = render("t", &["n".to_string()], &[vec![42u64.into()]], 200);
         assert_eq!(out, "t[1]{n}:\n  42");
-    }
-
-    #[test]
-    fn ac023_empty_hints_produce_no_help_line() {
-        let out = render("t", &[], &[], None, &[], 200);
-        assert_eq!(out, "t: []");
     }
 
     #[test]
@@ -702,20 +668,14 @@ mod tests {
             let err = crate::toon::render_toon(&opts).unwrap_err();
             assert_eq!(err, crate::toon::ToonError::InvalidTypeName { name: name.to_string() });
         }
-        let out = render(
-            "t",
-            &["help".to_string(), "totalCount".to_string()],
-            &[vec![Value::Int(1), Value::Int(2)]],
-            None,
-            &[],
-            200,
-        );
+        let out =
+            render("t", &["help".to_string(), "totalCount".to_string()], &[vec![Value::Int(1), Value::Int(2)]], 200);
         assert_eq!(out, "t[1]{help,totalCount}:\n  1,2");
     }
 
     #[test]
     fn ac022_type_name_with_a_colon_is_quoted_not_rejected() {
-        let out = render("totalCount:", &[], &[], None, &[], 200);
+        let out = render("totalCount:", &[], &[], 200);
         assert_eq!(out, "\"totalCount:\": []");
     }
 
@@ -730,7 +690,7 @@ mod tests {
     #[test]
     fn ac044_a_cut_cell_is_exactly_max_cell_len_chars_and_kept_plus_removed_is_the_input() {
         for (len, cap) in [(500usize, 200usize), (50, 10), (11, 10), (3, 2)] {
-            let out = render("t", &["a".to_string()], &[vec![Value::from("a".repeat(len))]], None, &[], cap);
+            let out = render("t", &["a".to_string()], &[vec![Value::from("a".repeat(len))]], cap);
             let cell = out.lines().nth(1).unwrap().trim_start();
             assert_eq!(cell.chars().count(), cap, "len={len} cap={cap}");
             let removed: usize = out.lines().nth(3).unwrap().rsplit(',').next().unwrap().parse().unwrap();
@@ -745,34 +705,15 @@ mod tests {
         let none_via_option: Value = None::<String>.into();
         assert_eq!(none_via_option, Value::Null);
 
-        let out_some = render(
-            "t",
-            &["a".to_string(), "b".to_string()],
-            &[vec![some_via_option, Value::from("y")]],
-            None,
-            &[],
-            200,
-        );
-        let out_str = render(
-            "t",
-            &["a".to_string(), "b".to_string()],
-            &[vec![Value::from("x"), Value::from("y")]],
-            None,
-            &[],
-            200,
-        );
+        let out_some =
+            render("t", &["a".to_string(), "b".to_string()], &[vec![some_via_option, Value::from("y")]], 200);
+        let out_str =
+            render("t", &["a".to_string(), "b".to_string()], &[vec![Value::from("x"), Value::from("y")]], 200);
         assert_eq!(out_some, out_str);
 
-        let out_none = render(
-            "t",
-            &["a".to_string(), "b".to_string()],
-            &[vec![none_via_option, Value::from("y")]],
-            None,
-            &[],
-            200,
-        );
-        let out_null =
-            render("t", &["a".to_string(), "b".to_string()], &[vec![Value::Null, Value::from("y")]], None, &[], 200);
+        let out_none =
+            render("t", &["a".to_string(), "b".to_string()], &[vec![none_via_option, Value::from("y")]], 200);
+        let out_null = render("t", &["a".to_string(), "b".to_string()], &[vec![Value::Null, Value::from("y")]], 200);
         assert_eq!(out_none, out_null);
         assert_eq!(out_null, "t[1]{a,b}:\n  null,y");
     }
@@ -783,27 +724,25 @@ mod tests {
             "t",
             vec!["a".to_string(), "b".to_string()],
             vec![vec![crate::toon::Value::from("x"), crate::toon::Value::Int(1)]],
-        )
-        .total_count(Some(5))
-        .hints(vec!["h".to_string()]);
+        );
         let doc = super::ToonDocument::validate(&opts).expect("valid options must validate");
-        assert_eq!(doc.render(), "t[1]{a,b}:\n  x,1\ntotalCount: 5\nhelp[1]: h");
+        assert_eq!(doc.render(), "t[1]{a,b}:\n  x,1");
     }
 
-    // The response and the standalone renderer place the `truncated` block and `totalCount` themselves, from the same
-    // list entry and cut list, so a one-section response renders exactly what `render_toon` does.
+    // The response and the standalone renderer place the `truncated` block themselves, from the same list entry and
+    // cut list, so a one-section response renders exactly what `render_toon` does, plus the `totalCount` that only the
+    // response writes.
     #[test]
     fn a_one_section_response_renders_what_render_toon_does() {
         use crate::{AgentResponse, OutputFormat, Section};
         let rows = vec![vec![Value::from("a".repeat(50)), Value::Int(1)], vec![Value::from("b,c"), Value::Null]];
+        let opts = crate::toon::ToonOptions::new("t", vec!["x".into(), "y".into()], rows.clone()).max_cell_len(10);
+        let list = crate::toon::render_toon(&opts).expect("valid");
         for total in [None, Some(9)] {
-            let opts = crate::toon::ToonOptions::new("t", vec!["x".into(), "y".into()], rows.clone())
-                .total_count(total)
-                .max_cell_len(10)
-                .truncation_hint("full=true");
             let section = Section::toon("t", vec!["x".into(), "y".into()], rows.clone()).total_count(total);
-            let r = AgentResponse::new("t").truncate_cells_at(10).truncation_hint("full=true").section(section);
-            assert_eq!(r.render(OutputFormat::Text), crate::toon::render_toon(&opts).expect("valid"), "{total:?}");
+            let r = AgentResponse::new("t").truncate_cells_at(10).section(section);
+            let expected = total.map_or_else(|| list.clone(), |n| format!("{list}\ntotalCount: {n}"));
+            assert_eq!(r.render(OutputFormat::Text), expected, "{total:?}");
         }
     }
 }

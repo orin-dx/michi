@@ -76,10 +76,11 @@ Output conforms to the [TOON 4.4 specification](https://github.com/toon-format/s
 ### Rust
 
 ```rust
-use michi_core::toon::{render_toon, ToonOptions, Value};
+use michi_core::toon::Value;
+use michi_core::{AgentResponse, OutputFormat, Section};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let opts = ToonOptions::new(
+    let issues = Section::toon(
         "issues",
         vec!["number".to_string(), "title".to_string(), "state".to_string()],
         vec![
@@ -87,10 +88,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             vec![Value::Int(51812), Value::from("dark mode request"), Value::from("open")],
         ],
     )
-    .total_count(Some(8771))
-    .hints(vec!["Run `gh-axi issue view <number>` to view an issue".to_string()]);
+    .total_count(Some(8771));
+    let response =
+        AgentResponse::new("issues").section(issues).hint("Run `gh-axi issue view <number>` to view an issue");
 
-    print!("{}", render_toon(&opts)?);
+    print!("{}", response.render(OutputFormat::Text));
     Ok(())
 }
 ```
@@ -98,12 +100,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### TypeScript / Node.js
 
 ```typescript
-import { renderToon } from "@orin-dx/michi";
+import { AgentResponse } from "@orin-dx/michi";
 
-const out = renderToon({
-  typeName: "issues",
-  fields: ["number", "title", "state"],
-  rows: [
+const response = new AgentResponse("issues");
+response.items(
+  [
     [
       { type: "int", intVal: 51815 },
       { type: "str", strVal: "[Bug]: Telegram plugin" },
@@ -115,11 +116,12 @@ const out = renderToon({
       { type: "str", strVal: "open" },
     ],
   ],
-  totalCount: 8771,
-  hints: ["Run `gh-axi issue view <number>` to view an issue"],
-});
+  ["number", "title", "state"],
+  8771,
+);
+response.hint("Run `gh-axi issue view <number>` to view an issue");
 
-process.stdout.write(out);
+process.stdout.write(response.renderText());
 ```
 
 ### Output

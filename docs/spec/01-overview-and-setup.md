@@ -13,15 +13,15 @@ michi encodes the subset of AXI that's pure, language-agnostic computation — t
 
 **Seven of the ten principles, as typed Rust:**
 
-| Principle                           | Module(s)                                             |
-| ----------------------------------- | ----------------------------------------------------- |
-| P1 — Token-Efficient Output         | `toon`, `kv`                                          |
-| P3 — Content Truncation             | `truncate`, `truncation`                              |
-| P4 — Pre-Computed Aggregates        | `ToonOptions::total_count`, `status` health summaries |
-| P5 — Definitive Empty States        | `empty`                                               |
-| P6 — Structured Errors & Exit Codes | `error`, `idempotency`                                |
-| P8 — Content First                  | `status`                                              |
-| P9 — Contextual Disclosure          | `hints`, `recovery`                                   |
+| Principle                           | Module(s)                                         |
+| ----------------------------------- | ------------------------------------------------- |
+| P1 — Token-Efficient Output         | `toon`, `kv`                                      |
+| P3 — Content Truncation             | `truncate`, `truncation`                          |
+| P4 — Pre-Computed Aggregates        | `Section::total_count`, `status` health summaries |
+| P5 — Definitive Empty States        | an empty `Section` / `AgentResponse`              |
+| P6 — Structured Errors & Exit Codes | `error`, `idempotency`                            |
+| P8 — Content First                  | `status`                                          |
+| P9 — Contextual Disclosure          | `hints`, `recovery`                               |
 
 The other three stay out of scope on purpose.
 
@@ -179,7 +179,6 @@ michi/                           (workspace root — virtual manifest, no packag
         lib.rs                   # module declarations, explicit root re-exports (incl. resilience and truncate items), Result<T>
         audience.rs              # Audience — always compiled
         budget.rs                # BudgetSummary and its render/JSON (roll-up derived from the sections)
-        empty.rs                 # empty_state(), empty_state_with_hints() and their try_ forms
         error.rs                 # Error, ErrorCode, DomainError, ErrorClass, Sensitive<T>,
                                   # MAY_HAVE_TAKEN_EFFECT_HINT
         float_wire.rs            # serde wire form for non-finite floats (serde feature, private)
@@ -196,7 +195,7 @@ michi/                           (workspace root — virtual manifest, no packag
           num.rs                 # JsRanged/JsFloat/JsCount/... numeric-boundary newtype kernel
           input.rs               # bounded, incremental conversion of collection and string arguments; the caps
           value.rs               # ToonValue / KvItem and their one conversion into core values
-          toon.rs                # renderToon, renderKv, renderStatus, emptyState, emptyStateWithHints
+          toon.rs                # renderToon, renderKv, renderStatus
           hints.rs               # renderHints, appendHints, renderRecovery
           outcome.rs             # renderDomainError, renderAlreadyDone, alreadyDone, renderPartialSuccess, renderPipeline
           resilience.rs          # parseRetryAfter, nextRetryDelay, isRetryableStatus, truncate

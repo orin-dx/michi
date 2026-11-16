@@ -1,8 +1,9 @@
 use michi_core::toon::{render_toon, ToonOptions, Value};
+use michi_core::{AgentResponse, OutputFormat, Section};
 
 #[test]
 fn renders_basic_list() {
-    let opts = ToonOptions::new(
+    let section = Section::toon(
         "issue",
         vec!["number".into(), "title".into(), "state".into()],
         vec![
@@ -10,10 +11,11 @@ fn renders_basic_list() {
             vec![Value::Int(43), Value::Str("Add dark mode".into()), Value::Str("open".into())],
         ],
     )
-    .total_count(Some(47))
-    .hints(vec!["Call get_issue with number=<number> for full detail".to_string()]);
+    .total_count(Some(47));
+    let response =
+        AgentResponse::new("issue").section(section).hint("Call get_issue with number=<number> for full detail");
 
-    let out = render_toon(&opts).expect("valid input renders");
+    let out = response.render(OutputFormat::Text);
     assert_eq!(
         out,
         "issue[2]{number,title,state}:\n  42,Fix login,open\n  43,Add dark mode,open\ntotalCount: 47\nhelp[1]: Call get_issue with number=<number> for full detail"
@@ -22,10 +24,9 @@ fn renders_basic_list() {
 
 #[test]
 fn renders_empty_state() {
-    let opts = ToonOptions::new("issue", vec![], vec![])
-        .total_count(Some(0))
-        .hints(vec!["Try list_issues with a broader filter".to_string()]);
-    let out = render_toon(&opts).expect("valid input renders");
+    // An empty response is the definitive empty state: no section, so no list was dropped.
+    let response = AgentResponse::new("issue").hint("Try list_issues with a broader filter");
+    let out = response.render(OutputFormat::Text);
     assert_eq!(out, "issue: []\ntotalCount: 0\nhelp[1]: Try list_issues with a broader filter");
 }
 
@@ -63,10 +64,7 @@ fn no_total_count_when_none() {
 
 #[test]
 fn multiple_hints_render_correctly() {
-    let opts = ToonOptions::new("item", vec!["id".into()], vec![])
-        .total_count(Some(0))
-        .hints(vec!["hint one".to_string(), "hint two".to_string()]);
-    let out = render_toon(&opts).expect("valid input renders");
+    let out = AgentResponse::new("item").hint("hint one").hint("hint two").render(OutputFormat::Text);
     assert!(out.ends_with("\nhelp[2]: hint one,hint two"), "got: {out:?}");
 }
 
@@ -125,17 +123,9 @@ fn short_cell_value_is_not_truncated() {
 }
 
 #[test]
-fn hints_field_accepts_hint_type() {
-    let opts = ToonOptions::new("issue", vec![], vec![]).hints(vec!["do this".to_string()]);
-    let out = render_toon(&opts).expect("valid input renders");
-    assert!(out.ends_with("\nhelp[1]: do this"), "got: {out:?}");
-}
-
-#[test]
 fn crate_root_reexports_are_reachable() {
     type KvResult = Result<String, michi_core::KvError>;
-    let _: fn(&[michi_core::kv::KvItem], Option<usize>, &[michi_core::Hint]) -> KvResult = michi_core::render_kv;
-    let _ = michi_core::empty_state("t");
+    let _: fn(&[michi_core::kv::KvItem]) -> KvResult = michi_core::render_kv;
     let _: fn(Option<String>) -> michi_core::AlreadyDone = michi_core::already_done;
     let _: fn(&str, &str, &[String]) -> String = michi_core::render_already_done;
     let _ = michi_core::RetryConfig::default();

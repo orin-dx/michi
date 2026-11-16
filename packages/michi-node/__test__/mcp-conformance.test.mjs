@@ -18,8 +18,6 @@ import {
 } from '@modelcontextprotocol/sdk/types.js'
 import {
   AgentResponse,
-  emptyState,
-  emptyStateWithHints,
   renderDomainError,
   renderStatus,
   renderPipeline,
@@ -218,13 +216,12 @@ void describe(`MCP CallToolResult conformance (SDK protocol ${LATEST_PROTOCOL_VE
 
   void it('empty states', () => {
     check('no rows', (r) => r.items([], ['a', 'b']))
-    check('emptyState as human content', (r) => {
+    check('empty response with hints as human content', (r) => {
       r.items([], ['a'])
-      r.humanContent(emptyState('issue'))
-    })
-    check('emptyStateWithHints as human content', (r) => {
-      r.items([], ['a'])
-      r.humanContent(emptyStateWithHints('issue', ['try a wider range', 'a, b']))
+      const empty = new AgentResponse('issue')
+      empty.hint('try a wider range')
+      empty.hint('a, b')
+      r.humanContent(empty.renderText())
     })
     check('kv with no items', (r) => r.kvItems([]))
   })

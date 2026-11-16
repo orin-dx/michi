@@ -1,16 +1,15 @@
-use michi_core::empty::empty_state_with_hints;
 use michi_core::error::{DomainError, ErrorCode};
-use michi_core::hints::Hint;
 use michi_core::idempotency::{FailedOp, OpRef, PartialSuccess};
 use michi_core::kv::{render_kv, KvItem, KvValue};
 use michi_core::recovery::RecoveryHint;
 use michi_core::response::{AgentResponse, OutputFormat};
+use michi_core::section::Section;
 use michi_core::status::{Health, StatusItem, StatusResponse};
-use michi_core::toon::{render_toon, ToonOptions, Value};
+use michi_core::toon::Value;
 
 #[test]
 fn snapshot_toon_basic_list() {
-    let opts = ToonOptions::new(
+    let section = Section::toon(
         "issue",
         vec!["number".into(), "title".into(), "state".into()],
         vec![
@@ -19,17 +18,17 @@ fn snapshot_toon_basic_list() {
             vec![Value::Int(44), Value::Str("Update deps, bump major".into()), Value::Str("closed".into())],
         ],
     )
-    .total_count(Some(47))
-    .hints(vec![
-        "Call get_issue with number=<number> for full detail".to_string(),
-        "Call list_issues with state=open to filter".to_string(),
-    ]);
-    insta::assert_snapshot!(render_toon(&opts).unwrap());
+    .total_count(Some(47));
+    let response = AgentResponse::new("issue")
+        .section(section)
+        .hint("Call get_issue with number=<number> for full detail")
+        .hint("Call list_issues with state=open to filter");
+    insta::assert_snapshot!(response.render(OutputFormat::Text));
 }
 
 #[test]
 fn snapshot_toon_empty_state() {
-    let out = empty_state_with_hints("issue", &[Hint::new("Try list_issues with a broader filter")]);
+    let out = AgentResponse::new("issue").hint("Try list_issues with a broader filter").render(OutputFormat::Text);
     insta::assert_snapshot!(out);
 }
 
@@ -41,7 +40,7 @@ fn snapshot_kv_single_item() {
         KvItem::new("state", KvValue::Text("open".into())),
         KvItem::new("count", KvValue::Int(3)),
     ];
-    insta::assert_snapshot!(render_kv(&items, None, &[]).expect("valid items"));
+    insta::assert_snapshot!(render_kv(&items).expect("valid items"));
 }
 
 #[test]
@@ -51,7 +50,7 @@ fn snapshot_kv_mixed_values() {
         KvItem::new("description", KvValue::Text("A longer field value".into())),
         KvItem::new("x", KvValue::Bool(true)),
     ];
-    insta::assert_snapshot!(render_kv(&items, None, &[]).expect("valid items"));
+    insta::assert_snapshot!(render_kv(&items).expect("valid items"));
 }
 
 #[test]

@@ -81,7 +81,7 @@ fuzz_target!(|data: &[u8]| {
 
     // Accepted wire values go through the renderers: line breaks in caller text must not make lines.
     if let Some(value) = round_trip::<KvValue>(data) {
-        if let Ok(out) = render_kv(&[KvItem::new("k", value)], None, &[]) {
+        if let Ok(out) = render_kv(&[KvItem::new("k", value)]) {
             assert!(!out.contains('\r'), "raw CR in {out:?}");
             assert_eq!(out.matches('\n').count(), 0, "one field is one line: {out:?}");
         }

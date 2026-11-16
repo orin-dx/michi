@@ -12,7 +12,7 @@
 //!
 //! | Module | Exports |
 //! | --- | --- |
-//! | `toon` | `renderToon`, `renderKv`, `renderStatus`, `emptyState`, `emptyStateWithHints` |
+//! | `toon` | `renderToon`, `renderKv`, `renderStatus` |
 //! | `hints` | `renderHints`, `appendHints`, `renderRecovery` |
 //! | `outcome` | `renderDomainError`, `renderAlreadyDone`, `alreadyDone`, `renderPartialSuccess`, `renderPipeline` |
 //! | `resilience` | `parseRetryAfter`, `nextRetryDelay`, `isRetryableStatus`, `truncate` |
@@ -267,8 +267,8 @@ mod tests {
             }
         }
         assert!(
-            checked >= 30,
-            "expected to check at least 30 #[napi]-attributed fns/methods, only checked {checked} \
+            checked >= 29,
+            "expected to check at least 29 #[napi]-attributed fns/methods, only checked {checked} \
              (a change to how attributes are written may have broken this scan's detection)"
         );
     }

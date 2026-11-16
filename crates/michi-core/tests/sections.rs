@@ -85,7 +85,7 @@ fn count_is_derived_for_toon_and_kv_and_declared_for_text() {
 fn a_section_with_no_rows_renders_an_empty_list_and_keeps_its_total() {
     let empty = Section::toon("hits", fields(&["a"]), vec![]);
     let r = AgentResponse::new("t").section(empty.clone()).section(refs());
-    assert_eq!(r.render(OutputFormat::Text), format!("hits: []\n{REFS_TEXT}"));
+    assert_eq!(r.render(OutputFormat::Text), format!("hits: []\ntotalCount: 0\n{REFS_TEXT}"));
     let r = AgentResponse::new("t").section(empty.total_count(Some(3)));
     assert_eq!(r.render(OutputFormat::Text), "hits: []\ntotalCount: 3");
     let r = AgentResponse::new("t").section(Section::kv("k", vec![])).section(refs());

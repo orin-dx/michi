@@ -13,12 +13,11 @@ npm installs the matching prebuilt binary as an optional dependency; see [Suppor
 ## Quick start
 
 ```typescript
-import { renderToon } from "@orin-dx/michi";
+import { AgentResponse } from "@orin-dx/michi";
 
-const out = renderToon({
-  typeName: "issues",
-  fields: ["number", "title", "state"],
-  rows: [
+const response = new AgentResponse("issues");
+response.items(
+  [
     [
       { type: "int", intVal: 51815 },
       { type: "str", strVal: "[Bug]: Telegram plugin" },
@@ -30,11 +29,12 @@ const out = renderToon({
       { type: "str", strVal: "open" },
     ],
   ],
-  totalCount: 8771,
-  hints: ["Run `gh-axi issue view <number>` to view an issue"],
-});
+  ["number", "title", "state"],
+  8771,
+);
+response.hint("Run `gh-axi issue view <number>` to view an issue");
 
-process.stdout.write(out);
+process.stdout.write(response.renderText());
 ```
 
 ```text
@@ -53,13 +53,11 @@ Every string these functions return for an agent is a TOON 4.4 document with no 
 
 | Function | Signature |
 | --- | --- |
-| `renderToon` | `(opts: ToonOptions) => string` — TOON list rendering |
-| `emptyState` | `(typeName: string) => string` — definitive empty-state block |
-| `emptyStateWithHints` | `(typeName: string, hints: string[]) => string` — the empty-state block plus `help[N]: …`; like `emptyState`, throws `toon_validation_failed: …` for a reserved type name (a root key michi writes, such as `help` or `error`) |
+| `renderToon` | `(opts: ToonOptions) => string` — one TOON list (`typeName`, `fields`, `rows`): the entry and a `truncated[N]{row,field,removed}:` block for any cut cell. `totalCount`, `help[]` and the truncation hint belong to `AgentResponse` |
 | `renderHints` | `(hints: string[]) => string` — the inline array `help[N]: h1,h2` |
 | `appendHints` | `(body: string, hints: string[]) => string` — append `help[N]: …` to a document, on its own line |
 | `renderRecovery` | `(hints: RecoveryHint[]) => string` — the table `recovery[N]{tool,params,reason}:` (`params` is `"{}"` here; an absent reason is `null`) |
-| `renderKv` | `(items: KvItem[], totalCount?: number, hints: string[]) => string` — `key: value` lines; throws `kv_validation_failed: …` for a repeated key or a reserved key (a root key michi writes, such as `help` or `message`) |
+| `renderKv` | `(items: KvItem[]) => string` — `key: value` lines; throws `kv_validation_failed: …` for a repeated key or a reserved key (a root key michi writes, such as `help` or `message`) |
 | `renderDomainError` | `(code, message, hints, githubAnnotation?, causes?) => string` — `error`, `message`, `causes`, `exit_code`, `help` |
 | `renderStatus` | `(toolName, description, items, hints?) => string` — `tool`, `description`, the table `items[N]{key,value,health,reason}:`, `help` |
 | `renderAlreadyDone` | `(operation, summary, hints) => string` — `operation`, `status: already_done`, `summary`, `help` |
@@ -84,7 +82,7 @@ Setters return `void`, not `this`, so call them as sequential statements rather 
 | `.kvItems` | `(items: KvItem[], totalCount?: number \| null) => void` — appends a key-value section the same way |
 | `.hint` | `(hint: string) => void` |
 | `.recoveryHint` | `(tool: string, reason?: string) => void` |
-| `.truncationHint` | `(hint: string) => void` — the caller's instruction for getting a cut cell in full (same as `ToonOptions.truncationHint`). Cut cells end in `…` and are listed in a `truncated[N]{row,field,removed}:` block; when a cell was cut, the hint adds one `help[]` line after your own hints. Without it the block still reports each cut |
+| `.truncationHint` | `(hint: string) => void` — the caller's instruction for getting a cut cell in full. Cut cells end in `…` and are listed in a `truncated[N]{row,field,removed}:` block; when a cell was cut, the hint adds one `help[]` line after your own hints. Without it the block still reports each cut |
 | `.asError` | `() => void` |
 | `.renderText` | `() => string` — the sections in call order, then `help[]` and `recovery[]` |
 | `.renderJson` | `() => string` — compact JSON: `{"body":...,"sections":[...],"hints":[...],"recovery":[...],"isError":bool}` |

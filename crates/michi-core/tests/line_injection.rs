@@ -4,8 +4,8 @@
 use michi_core::resilience::render_already_done;
 use michi_core::toon::{render_toon, ToonOptions, Value};
 use michi_core::{
-    empty_state, render_hints, render_kv, render_recovery, DomainError, ErrorCode, FailedOp, Hint, KvItem, KvValue,
-    OpRef, PartialSuccess, RecoveryHint, StatusItem, StatusResponse,
+    render_hints, render_kv, render_recovery, AgentResponse, DomainError, ErrorCode, FailedOp, Hint, KvItem, KvValue,
+    OpRef, OutputFormat, PartialSuccess, RecoveryHint, StatusItem, StatusResponse,
 };
 
 mod support;
@@ -45,7 +45,7 @@ fn assert_param_round_trips(hint: RecoveryHint, expected_params: serde_json::Val
 }
 
 fn kv(key: &str, value: &str) -> String {
-    render_kv(&[KvItem::new(key, KvValue::Text(value.into()))], None, &[]).expect("valid")
+    render_kv(&[KvItem::new(key, KvValue::Text(value.into()))]).expect("valid")
 }
 
 #[test]
@@ -54,8 +54,8 @@ fn hints() {
 }
 
 #[test]
-fn empty_state_type_name() {
-    assert_not_injected(&empty_state(INJECTED));
+fn empty_response_type_name() {
+    assert_not_injected(&AgentResponse::new(INJECTED).render(OutputFormat::Text));
 }
 
 #[test]
@@ -117,15 +117,17 @@ fn status_fields() {
 
 #[test]
 fn toon_hint() {
-    let opts = ToonOptions::new("t", vec![], vec![]).hints(vec![INJECTED.to_string()]);
-    assert_not_injected(&render_toon(&opts).expect("renders"));
+    assert_not_injected(&AgentResponse::new("t").hint(INJECTED).render(OutputFormat::Text));
 }
 
 #[test]
 fn toon_hint_keeps_ordinary_punctuation() {
-    let opts = ToonOptions::new("t", vec![], vec![]).hints(vec!["Call get_issue with id=<id>, then {retry}".into()]);
+    let response = AgentResponse::new("t").hint("Call get_issue with id=<id>, then {retry}");
     // The punctuation is kept verbatim; TOON 4.4 §7.2 requires quoting for the comma and braces, nothing is dropped.
-    assert_eq!(render_toon(&opts).expect("renders"), "t: []\nhelp[1]: \"Call get_issue with id=<id>, then {retry}\"");
+    assert_eq!(
+        response.render(OutputFormat::Text),
+        "t: []\ntotalCount: 0\nhelp[1]: \"Call get_issue with id=<id>, then {retry}\""
+    );
 }
 
 #[test]

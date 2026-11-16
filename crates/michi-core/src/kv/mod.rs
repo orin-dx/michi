@@ -1,4 +1,3 @@
-use crate::hints::Hint;
 use std::fmt::Write as _;
 use std::time::Duration;
 
@@ -154,32 +153,27 @@ pub(crate) fn push_kv_line(out: &mut String, key: &str, value: &KvValue) {
     push_kv_value(out, value);
 }
 
-/// Render key-value pairs as a TOON 4.4 root object (§8): one `key: value` line per item, then `totalCount: N` and
-/// the inline `help[N]: …` array when present, with no trailing newline.
+/// Render key-value pairs as a TOON 4.4 root object (§8): one `key: value` line per item, with no trailing newline.
 ///
 /// Keys are quoted per §7.3 and values written as TOON primitives (see [`KvValue`]). Exactly one space follows each
-/// colon, so values are not column-aligned. Returns the empty string (the empty TOON document) for empty `items`,
-/// ignoring `total_count` and `hints`.
+/// colon, so values are not column-aligned. Returns the empty string (the empty TOON document) for empty `items`.
+/// `totalCount` and `help[]` belong to [`crate::AgentResponse`]; add hints to a standalone block with
+/// [`crate::append_hints`].
 ///
 /// # Errors
 ///
 /// [`KvError::ReservedKey`] for an item key michi writes itself (see the variant), and [`KvError::DuplicateKey`] for a
 /// repeated key: either could make the document hold a duplicate key (§14.3).
-pub fn render_kv(items: &[KvItem], total_count: Option<usize>, hints: &[Hint]) -> Result<String, KvError> {
+pub fn render_kv(items: &[KvItem]) -> Result<String, KvError> {
     if items.is_empty() {
         return Ok(String::new());
     }
     validate_keys(items)?;
-    let capacity = items.iter().map(|i| i.key.len() + 24).sum::<usize>() + hints.len() * 50 + 20;
+    let capacity = items.iter().map(|i| i.key.len() + 24).sum::<usize>() + 20;
     let mut out = String::with_capacity(capacity);
     for item in items {
         push_kv_line(&mut out, &item.key, &item.value);
     }
-    if let Some(total) = total_count {
-        out.push_str("\ntotalCount: ");
-        let _ = write!(out, "{total}");
-    }
-    crate::hints::append_hints(&mut out, hints);
     Ok(out)
 }
 
@@ -194,7 +188,7 @@ mod tests {
     }
 
     fn render(items: &[KvItem]) -> String {
-        render_kv(items, None, &[]).expect("valid items")
+        render_kv(items).expect("valid items")
     }
 
     #[test]
@@ -290,13 +284,6 @@ mod tests {
         assert_eq!(value(&KvValue::Float(1e-300, 254)), "0");
     }
 
-    // AC-017: total_count and hints are NOT rendered when items is empty — not just the trivial all-None/empty case,
-    // but with both set.
-    #[test]
-    fn ac017_empty_items_ignores_total_count_and_hints() {
-        assert_eq!(render_kv(&[], Some(42), &[Hint::from("x")]), Ok(String::new()));
-    }
-
     // AC-018 (superseded): values are no longer column-aligned; TOON 4.4 §8/§12 require exactly one space after the
     // colon whatever the key lengths.
     #[test]
@@ -320,15 +307,9 @@ mod tests {
     }
 
     #[test]
-    fn render_kv_total_count_appended() {
-        let items = vec![KvItem { key: "id".into(), value: KvValue::Int(1) }];
-        assert_eq!(render_kv(&items, Some(42), &[]), Ok("id: 1\ntotalCount: 42".to_string()));
-    }
-
-    #[test]
     fn render_kv_capacity_covers_the_items() {
         let items = vec![KvItem { key: "id".into(), value: KvValue::Int(1) }];
-        let out = render_kv(&items, None, &[]).expect("valid");
+        let out = render_kv(&items).expect("valid");
         assert!(out.capacity() >= "id".len() + 24, "capacity {} too small", out.capacity());
     }
 

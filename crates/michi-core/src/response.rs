@@ -5,7 +5,7 @@ use crate::kv::KvItem;
 use crate::provenance::ProvenanceBlock;
 use crate::recovery::RecoveryHint;
 use crate::section::{Section, SectionBody};
-use crate::toon::Value;
+use crate::toon::{ListRef, ToonDocument, Value};
 
 /// The serialisation format for `AgentResponse::render`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -48,7 +48,7 @@ pub struct AgentResponse {
 impl AgentResponse {
     /// Create a new, empty response for the given type name. The name labels the sections that
     /// [`items`](Self::items) and [`kv_items`](Self::kv_items) add. A response that never gets a section, budget or
-    /// provenance renders `name: []`, the definitive empty list.
+    /// provenance renders `name: []` and `totalCount: 0`, the definitive empty list.
     pub fn new(type_name: impl Into<String>) -> Self {
         Self {
             name: type_name.into(),
@@ -199,9 +199,10 @@ impl AgentResponse {
     }
 
     /// Set the caller's instruction for getting a cut TOON cell in full. When a cell was cut, michi adds one line to
-    /// `help[]` (after your own hints) that names the `truncated` block and this instruction (see
-    /// [`crate::toon::ToonOptions::truncation_hint`]). Unset by default: michi never invents a parameter the tool
-    /// may not have, and the `truncated` block still reports each cut. Pass tool-author text, never data.
+    /// `help[]` (after your own hints) that names the `truncated` block and this instruction. At most
+    /// [`crate::toon::MAX_TRUNCATION_HINT_CHARS`] chars: a longer hint renders the `toon_validation_failed` error.
+    /// Unset by default: michi never invents a parameter the tool may not have, and the `truncated` block still
+    /// reports each cut. Pass tool-author text, never data.
     #[must_use]
     pub fn truncation_hint(mut self, hint: impl Into<String>) -> Self {
         self.truncation_hint = Some(hint.into());
@@ -234,20 +235,16 @@ impl AgentResponse {
         }
     }
 
-    /// The options a `Toon` section renders by: the response's cell cap and truncation hint, the section's own
-    /// `totalCount` rule. Copies the rows: `ToonOptions` owns them.
-    fn section_options(
-        &self,
-        name: &str,
-        fields: &[String],
-        rows: &[Vec<Value>],
-        shown_total: Option<usize>,
-    ) -> crate::toon::ToonOptions {
-        let mut opts = crate::toon::ToonOptions::new(name, fields.to_vec(), rows.to_vec());
-        opts.total_count = shown_total;
-        opts.max_cell_len = self.max_cell_len;
-        opts.truncation_hint.clone_from(&self.truncation_hint);
-        opts
+    /// The list a `Toon` section renders: borrowed from the section, with the response's cell cap and truncation hint.
+    /// Nothing is copied, so validating and rendering cost what the output costs, not a second copy of the rows.
+    fn list_ref<'a>(&'a self, name: &'a str, fields: &'a [String], rows: &'a [Vec<Value>]) -> ListRef<'a> {
+        ListRef {
+            type_name: name,
+            fields,
+            rows,
+            max_cell_len: self.max_cell_len,
+            truncation_hint: self.truncation_hint.as_deref(),
+        }
     }
 
     /// The blocks to render: the sections, or, for a response with nothing at all, the one empty list that names
@@ -265,23 +262,29 @@ impl AgentResponse {
         let total = s.shown_total();
         let name = s.name();
         match s.body() {
-            SectionBody::Toon { fields, rows } => match self.section_options(name, fields, rows, total).validate() {
-                Ok(doc) => {
-                    let list = doc.render_list();
-                    let cuts = list
-                        .cuts
-                        .iter()
-                        .map(|&(row, field, removed)| crate::toon::table::Cut {
-                            section: name,
-                            row,
-                            field: fields.get(field).map_or("", String::as_str),
-                            removed,
-                        })
-                        .collect();
-                    (Part { name, text: list.text, cuts, total }, false, list.extra_hint.map(Hint::new))
+            SectionBody::Toon { fields, rows } => {
+                match ToonDocument::validate_list(self.list_ref(name, fields, rows)) {
+                    Ok(doc) => {
+                        // An empty list is the definitive empty state: `name: []` and `totalCount: 0`, so a reader sees
+                        // "zero results" and not a list that might have been dropped. A larger total the caller set
+                        // (everything was cut) stays as it is.
+                        let total = total.or_else(|| rows.is_empty().then_some(0));
+                        let list = doc.render_list();
+                        let cuts = list
+                            .cuts
+                            .iter()
+                            .map(|&(row, field, removed)| crate::toon::table::Cut {
+                                section: name,
+                                row,
+                                field: fields.get(field).map_or("", String::as_str),
+                                removed,
+                            })
+                            .collect();
+                        (Part { name, text: list.text, cuts, total }, false, list.extra_hint.map(Hint::new))
+                    }
+                    Err(e) => (Part::failed(name, "toon_validation_failed", &e.to_string()), true, None),
                 }
-                Err(e) => (Part::failed(name, "toon_validation_failed", &e.to_string()), true, None),
-            },
+            }
             SectionBody::Kv(items) => kv_part(name, items, total),
             // One string value under the section's name, escaped like any other value: prose cannot start a line
             // of its own, so it cannot forge a `help[]` line or break the document.
@@ -298,7 +301,7 @@ impl AgentResponse {
             .iter()
             .map(|s| match s.body() {
                 SectionBody::Toon { fields, rows } => {
-                    self.section_options(s.name(), fields, rows, s.shown_total()).validate().is_err()
+                    ToonDocument::validate_list(self.list_ref(s.name(), fields, rows)).is_err()
                 }
                 SectionBody::Kv(items) => crate::kv::validate_keys(items).is_err(),
                 SectionBody::Text { .. } => false,
@@ -561,7 +564,7 @@ fn kv_part<'a>(name: &'a str, items: &[KvItem], total: Option<usize>) -> (Part<'
     if items.is_empty() {
         return (Part { name, text: String::new(), cuts: Vec::new(), total }, false, None);
     }
-    match crate::kv::render_kv(items, None, &[]) {
+    match crate::kv::render_kv(items) {
         Ok(text) => (Part { name, text, cuts: Vec::new(), total }, false, None),
         Err(e) => (Part::failed(name, "kv_validation_failed", &e.to_string()), true, None),
     }
@@ -675,7 +678,7 @@ mod tests {
     #[test]
     fn ac001_unset_target_renders_empty_toon_exactly() {
         let r = AgentResponse::new("widget");
-        assert_eq!(r.render(OutputFormat::Text), "widget: []");
+        assert_eq!(r.render(OutputFormat::Text), "widget: []\ntotalCount: 0");
     }
 
     // AC-002: the test above (items_path_renders_toon) only checks
@@ -695,7 +698,7 @@ mod tests {
         let items = vec![KvItem { key: "id".into(), value: KvValue::Int(1) }];
         let r = AgentResponse::new("t").kv_items(items.clone());
         // Without hints or recovery the composed text is exactly the KV document.
-        assert_eq!(Ok(r.render(OutputFormat::Text)), crate::kv::render_kv(&items, None, &[]));
+        assert_eq!(Ok(r.render(OutputFormat::Text)), crate::kv::render_kv(&items));
     }
 
     #[test]
@@ -825,7 +828,7 @@ mod tests {
         use crate::kv::{KvItem, KvValue};
         let items = vec![KvItem { key: "id".into(), value: KvValue::Int(1) }];
         let r = AgentResponse::new("t").kv_items(items.clone());
-        assert_eq!(Ok(r.render(OutputFormat::Text)), crate::kv::render_kv(&items, None, &[]));
+        assert_eq!(Ok(r.render(OutputFormat::Text)), crate::kv::render_kv(&items));
     }
 
     // AC-012: Missing rendered via the AgentResponse Json body is the TOON

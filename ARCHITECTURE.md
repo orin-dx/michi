@@ -49,7 +49,7 @@ michi is a response contract (totals, truncation reports, hints, recovery steps,
 `michi` provides two main entry points for formatting output:
 
 1. **`response::AgentResponse` (Fluent Builder)**: Composes TOON lists, KV items, `help[]` hints, and recovery guidance into a unified output buffer. Supports assistant/user audience routing and direct conversion to MCP `CallToolResult`.
-2. **Standalone DTOs**: `DomainError`, `StatusResponse`, `AlreadyDone`, and `empty_state()` render themselves directly into agent-readable KV blocks or GitHub Actions annotations without passing through `AgentResponse`.
+2. **Standalone DTOs**: `DomainError`, `StatusResponse` and `AlreadyDone` render themselves directly into agent-readable KV blocks or GitHub Actions annotations without passing through `AgentResponse`.
 
 ```mermaid
 flowchart TB
@@ -79,12 +79,10 @@ flowchart TB
     subgraph standalone["Standalone Renderers"]
         err["DomainError"]
         status["StatusResponse"]
-        empty["empty_state()"]
     end
 
     err --> text
     status --> text
-    empty --> text
 ```
 
 ## Node.js / NAPI Bridge (`packages/michi-node`)

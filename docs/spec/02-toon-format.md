@@ -54,7 +54,7 @@ totalCount: 47
 help[2]: Call get_issue with number=<number> for full detail,Call list_issues with state=open to filter
 ```
 
-**Truncated field value** (`.max_cell_len(40).truncation_hint("full=true")`, descriptions of 75 and 73 chars):
+**Truncated field value** (`AgentResponse::truncate_cells_at(40).truncation_hint("full=true")`, descriptions of 75 and 73 chars):
 
 ```
 components[2]{name,description,tokens}:
@@ -75,6 +75,8 @@ totalCount: 0
 help[1]: Try list_issues with a broader filter
 ```
 
+This is the one definitive empty state: a response with no section and a list section with no rows both render `name: []` and `totalCount: 0`, so a reader sees "zero results" and not a list that might have been dropped. There is no separate empty-state function. A larger `totalCount` the caller set stays as set (everything was cut). `render_toon` alone writes just `name: []`, since `totalCount` belongs to the response.
+
 **Quoted keys, nulls and numbers:**
 
 ```
@@ -94,9 +96,9 @@ A dedicated `recovery[N]` table, not folded into `help[]`: hints are strings, re
 
 ## Agent-facing blocks
 
-Every block michi renders for an agent — not only lists — is a TOON 4.4 root object with the default options, so an agent parses one format. Each renderer returns a finished document with no trailing newline; `append_hints` and `append_recovery` join a block onto a document with exactly one LF (none when the buffer is empty or already ends in one). Composition keeps keys unique: a list's type name and a KV key may not be `totalCount`, `help` or `recovery`, and KV keys may not repeat (`ToonError::InvalidTypeName`, `KvError`). Strings and keys are quoted per [Strings](#strings); numbers follow [Numbers, booleans and null](#numbers-booleans-and-null).
+Every block michi renders for an agent — not only lists — is a TOON 4.4 root object, so an agent parses one format. Each renderer returns a finished document with no trailing newline; `append_hints` and `append_recovery` join a block onto a document with exactly one LF (none when the buffer is empty or already ends in one). Composition keeps keys unique: a list's type name and a KV key may not be `totalCount`, `help` or `recovery`, and KV keys may not repeat (`ToonError::InvalidTypeName`, `KvError`). Strings and keys are quoted per [Strings](#strings); numbers follow [Numbers, booleans and null](#numbers-booleans-and-null).
 
-**Key-value (`kv::render_kv`, `AgentResponse` KV sections)** — one `key: value` field per item (§8), exactly one space after the colon (no column alignment), then `totalCount` and `help`:
+**Key-value (`kv::render_kv`, `AgentResponse` KV sections)** — one `key: value` field per item (§8), exactly one space after the colon (no column alignment). `render_kv` writes the lines; `AgentResponse` adds `totalCount` and `help`:
 
 ```
 id: abc-123
@@ -209,7 +211,7 @@ A string cell longer than `max_cell_len` chars (default 200) is cut, and the cut
 
 - The cell keeps its first `max_cell_len - 1` chars and ends with a plain `…`, so a cut cell is exactly `max_cell_len` chars. A cap of 1 gives `…` and a cap of 0 gives the empty string `""`. The cell never carries a message.
 - A `truncated[N]{row,field,removed}:` block follows the list and lists every cut cell, in row then field order: `row` is the 0-based row index, `field` the field name, and `removed` the number of chars cut. Kept chars (not counting the `…`) plus `removed` equal the original char count. The block is omitted when nothing was cut. A cell that ends in `…` with no entry in the block is just data.
-- When the caller sets `ToonOptions::truncation_hint` (`AgentResponse::truncation_hint`, NAPI `truncationHint`) and a cell was cut, michi adds one line to `help[]`, after the caller's own hints: `Cut cells are listed in the truncated block; use {hint} for the full value`. michi does not know the calling tool's parameters, so it never invents a hint; an empty hint is the same as none. The hint is tool-author text and travels in the trusted `help` channel, not in a cell.
+- When the caller sets `AgentResponse::truncation_hint` (NAPI `truncationHint`) and a cell was cut, michi adds one line to `help[]`, after the caller's own hints: `Cut cells are listed in the truncated block; use {hint} for the full value`. michi does not know the calling tool's parameters, so it never invents a hint; an empty hint is the same as none. The hint is tool-author text and travels in the trusted `help` channel, not in a cell.
 - The cap counts chars **before** escaping and quoting: a cut cell is then quoted and escaped by the rules above, so a cell holding `"`, `\`, a line break or a comma is written longer than `max_cell_len`.
 - Numbers, booleans and `null` are never truncated.
 - `truncate::truncate()` (and NAPI `truncate`) cuts one free-text string the same way and reports the cut in `Truncated::removed`, not in the text, so the text never carries a message that data could imitate.
@@ -222,11 +224,11 @@ A string cell longer than `max_cell_len` chars (default 200) is cut, and the cut
 | --- | --- | --- |
 | At most 1,000 header fields | `MAX_FIELDS` | `ToonError::TooManyFields { count, max }` |
 | At most 1,000,000 cells (`rows × fields`; a list with no fields counts one cell per row) | `MAX_CELLS` | `ToonError::TooManyCells { rows, fields, max }` |
-| A `truncation_hint` of at most 256 chars | `MAX_TRUNCATION_HINT_CHARS` | `ToonError::TruncationHintTooLong { len, max }` |
+| An `AgentResponse::truncation_hint` of at most 256 chars | `MAX_TRUNCATION_HINT_CHARS` | `ToonError::TruncationHintTooLong { len, max }` |
 
-- Checks run in a fixed order and the first failure wins: reserved type name, field count, repeated field, cell count, truncation hint length, row length.
+- Checks run in a fixed order and the first failure wins: reserved type name, field count, repeated field, cell count, truncation hint length (a response only), row length.
 - Every check is linear: repeated field names are found with a set, so the largest accepted header costs 1,000 lookups instead of ~500,000 comparisons.
-- serde `list()` checks the field and cell limits against the union of the items' keys before it builds any row, so a sparse item set (each item with a few distinct keys) cannot expand into a huge table of `null` cells.
+- serde `list()` checks the field and cell limits against the union of the items' keys before it pads any row, so a sparse item set (each item with a few distinct keys) cannot expand into a huge table of `null` cells. It turns each item into cells as it parses it, so only one parsed JSON tree is alive at a time.
 - `AgentResponse` reports a violation like any other validation failure: an `error: toon_validation_failed` body with `isError` set on the text, JSON and MCP surfaces.
 - The truncation hint is one short instruction, which is why its length is capped. The renderer builds its help line once per document.
 
