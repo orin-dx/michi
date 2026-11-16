@@ -245,6 +245,12 @@ jobs:
       - name: Install the Rust target
         run: rustup target add "$TRIPLE"
 
+      # Known gap: this composite runs moonrepo/setup-toolchain@v0 (floating tag, pinned only by the composite's own
+      # SHA), which downloads and runs the proto and moon install scripts from moonrepo/moon's master branch
+      # ("Installing `moon` globally", because .moon/ exists). Neither can be pinned from here: the script URL is
+      # hardcoded in that action, and the only inputs (proto-version, moon-version) pick the release the script
+      # fetches, not the script itself. Replacing the composite with a pinned setup-toolchain would still run the
+      # proto script, and auto-install would add rust to the proto installs. These jobs never call moon.
       - uses: orin-dx/actions/setup-proto-node-pnpm@2521888266780dabc7f5fd4c32b02d6ab82849db # v1.1
         with:
           working-directory: ${{ matrix.packageDir }}
@@ -368,7 +374,9 @@ jobs:
       - name: Verify the handoff
         run: (cd "$RUNNER_TEMP/release-intent" && shasum -a 256 -c release-intent.json.sha256)
 
-      # Attestations carry this run's SHA, so a binary from another run or workflow fails here, before placement.
+      # Verification pins the signing workflow and this commit's SHA, not the run ID. A binary built by another
+      # workflow, or by this workflow at a different commit, fails here, before placement; a build from another run
+      # of this workflow at the same commit would pass.
       - name: Verify the napi addon attestations
         if: needs.plan.outputs.has_napi == 'true'
         env:
