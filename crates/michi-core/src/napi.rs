@@ -22,7 +22,9 @@
 //! Every export uses `#[napi(catch_unwind)]` so a Rust panic cannot crash the host Node.js process, and every export
 //! that accepts caller-controlled collection sizes validates them against hard limits before doing any work, since a
 //! single crafted call from untrusted JS is otherwise able to force unbounded synchronous allocation on Node's
-//! single-threaded event loop. The byte cap also bounds the output (see `input::MAX_INPUT_BYTES`).
+//! single-threaded event loop. The byte cap also bounds the output: a render is at most 19 times the bytes held plus
+//! 4 KiB, because every held byte is charged for each place a writer can put it (see `input::MAX_INPUT_BYTES` and
+//! `cost`).
 //!
 //! This is the one module in the crate exempted from the workspace's
 //! `unsafe_code = "deny"` lint (`[workspace.lints.rust]` in the root
@@ -45,6 +47,8 @@
 /// both the rendering and resilience domains).
 pub mod num;
 
+/// What a held item can cost in output beyond its own bytes: the names a `truncated` or `totalCount` row writes again.
+mod cost;
 /// Bounded, incremental conversion of the exports' collection and string arguments.
 mod input;
 
@@ -60,8 +64,9 @@ mod tests {
     use super::input::{MAX_FIELDS, MAX_HINTS, MAX_ROWS, MAX_STEPS};
 
     /// Every source file of the module tree, for the scans below.
-    const SOURCES: [(&str, &str); 8] = [
+    const SOURCES: [(&str, &str); 9] = [
         ("napi.rs", include_str!("napi.rs")),
+        ("napi/cost.rs", include_str!("napi/cost.rs")),
         ("napi/hints.rs", include_str!("napi/hints.rs")),
         ("napi/input.rs", include_str!("napi/input.rs")),
         ("napi/outcome.rs", include_str!("napi/outcome.rs")),
@@ -80,6 +85,21 @@ mod tests {
         assert_eq!(MAX_HINTS, 10_000);
         assert_eq!(MAX_STEPS, 10_000);
         assert_eq!(super::input::MAX_INPUT_BYTES, 16 * 1024 * 1024);
+        assert_eq!(super::input::MAX_OUTPUT_FACTOR, 19);
+        assert_eq!(super::input::OUTPUT_ENVELOPE, 4096);
+    }
+
+    // The output bound charges a cell for the names a `truncated` row writes again only if the cell is cut, and a cell
+    // is cut at the response's default cap. A call that changed the cap would cut more cells than the charge covers.
+    #[test]
+    fn no_export_changes_the_per_cell_cap() {
+        let setters = [["truncate_cells", "_at"].concat(), [".max_cell", "_len("].concat()];
+        for (name, src) in SOURCES {
+            for setter in &setters {
+                // The scan's own tokens are built above, so this file does not contain them.
+                assert!(!src.contains(setter.as_str()), "{name} sets the cell cap with `{setter}`");
+            }
+        }
     }
 
     // --- AC-032: packages/michi-node/src/lib.rs contains only a doc-comment
