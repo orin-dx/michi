@@ -54,7 +54,7 @@ async fn resume_refuses_a_changed_plan_before_running_anything() {
     assert_eq!(err, ResumeError::FingerprintMismatch { record: p.fingerprint(), plan: changed.fingerprint() });
     assert_eq!(log.starts(), ["a"], "nothing ran on the refused resume");
     let domain: michi_core::DomainError = err.into();
-    assert_eq!(domain.code, michi_core::ErrorCode::Conflict);
+    assert_eq!(domain.code(), michi_core::ErrorCode::Conflict);
 
     let forged = RunRecord::from_parts(
         rid("r"),

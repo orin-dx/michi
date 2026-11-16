@@ -4,8 +4,8 @@
 use michi_core::resilience::render_already_done;
 use michi_core::toon::{render_toon, ToonOptions, Value};
 use michi_core::{
-    empty_state, render_hints, render_kv, render_recovery, DomainError, ErrorCode, FailedOp, Hint, KvItem, KvValue,
-    OpRef, PartialSuccess, RecoveryHint, StatusItem, StatusResponse,
+    empty_state, render_hints, render_kv, render_recovery, CompletedOp, DomainError, ErrorCode, FailedOp, Hint, KvItem,
+    KvValue, OutputFormat, PartialSuccess, RecoveryHint, SkippedOp, StatusItem, StatusResponse,
 };
 
 mod support;
@@ -60,15 +60,8 @@ fn empty_state_type_name() {
 
 #[test]
 fn domain_error_message_and_hint() {
-    assert_not_injected(&DomainError::new(ErrorCode::NotFound, INJECTED).render());
-    assert_not_injected(&DomainError::new(ErrorCode::NotFound, "m").hint(INJECTED).render());
-}
-
-#[test]
-fn unified_error_variants() {
-    assert_not_injected(&michi_core::Error::InvalidInput(INJECTED.into()).render());
-    assert_not_injected(&michi_core::Error::NotFound(INJECTED.into()).render());
-    assert_not_injected(&michi_core::Error::Domain(DomainError::new(ErrorCode::NotFound, INJECTED)).render());
+    assert_not_injected(&DomainError::new(ErrorCode::NotFound, INJECTED).render(OutputFormat::Text));
+    assert_not_injected(&DomainError::new(ErrorCode::NotFound, "m").hint(INJECTED).render(OutputFormat::Text));
 }
 
 #[test]
@@ -95,16 +88,17 @@ fn kv_key_and_value() {
 fn already_done_fields() {
     assert_not_injected(&render_already_done(INJECTED, "s", &[]));
     assert_not_injected(&render_already_done("op", INJECTED, &[]));
-    assert_not_injected(&render_already_done("op", "s", &[INJECTED.to_string()]));
+    assert_not_injected(&render_already_done("op", "s", &[Hint::new(INJECTED)]));
 }
 
 #[test]
 fn partial_success_operations() {
-    let ps = PartialSuccess::new(
-        vec![OpRef::new(0, INJECTED)],
+    let ps = PartialSuccess::try_new(
+        vec![CompletedOp::new(0, INJECTED)],
         vec![FailedOp::new(1, INJECTED, INJECTED)],
-        vec![OpRef::new(2, INJECTED).reason(INJECTED)],
-    );
+        vec![SkippedOp::new(2, INJECTED).reason(INJECTED)],
+    )
+    .expect("distinct indices");
     assert_not_injected(&ps.render());
 }
 

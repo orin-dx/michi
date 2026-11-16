@@ -8,7 +8,7 @@ use std::fmt;
 
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
-use michi_core::{DomainError, ErrorCode};
+use michi_core::{DomainError, ErrorCode, OutputFormat};
 use michi_pipeline::ExecutionError;
 
 /// One link of a `source()` chain with arbitrary `Display` text.
@@ -58,9 +58,9 @@ fuzz_target!(|input: Input| {
     }
     if let Some(head) = link {
         let e = DomainError::from_error_with_causes(ErrorCode::ExternalFailure, &*head);
-        assert!(e.causes.len() <= 128);
-        let _ = e.render();
-        serde_json::from_str::<serde_json::Value>(&e.render_json()).expect("render_json is valid JSON");
+        assert!(e.causes().len() <= 128);
+        let _ = e.render(OutputFormat::Text);
+        serde_json::from_str::<serde_json::Value>(&e.render(OutputFormat::Json)).expect("render_json is valid JSON");
     }
 
     // The pipeline conversion, with a planted token somewhere in the step text.
@@ -78,11 +78,11 @@ fuzz_target!(|input: Input| {
         _ => ExecutionError::AmbiguousOutcome { source: Box::new(ExecutionError::failed(text)) },
     };
     let d: DomainError = err.into();
-    assert!(d.message.len() < 200, "the trusted message stays fixed text: {}", d.message.len());
-    for cause in &d.causes {
+    assert!(d.message().len() < 200, "the trusted message stays fixed text: {}", d.message().len());
+    for cause in d.causes() {
         assert!(cause.len() <= 512 + '…'.len_utf8(), "cause of {} bytes", cause.len());
     }
-    assert!(!d.render().contains(PLANTED), "planted token survived: {}", d.render());
-    assert!(!d.render_json().contains(PLANTED), "planted token survived in JSON");
-    serde_json::from_str::<serde_json::Value>(&d.render_json()).expect("render_json is valid JSON");
+    assert!(!d.render(OutputFormat::Text).contains(PLANTED), "planted token survived: {}", d.render(OutputFormat::Text));
+    assert!(!d.render(OutputFormat::Json).contains(PLANTED), "planted token survived in JSON");
+    serde_json::from_str::<serde_json::Value>(&d.render(OutputFormat::Json)).expect("render_json is valid JSON");
 });

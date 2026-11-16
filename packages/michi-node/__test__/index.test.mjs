@@ -1082,6 +1082,25 @@ void describe('renderPartialSuccess', () => {
     assert.throws(() => renderPartialSuccess([{ index: 1.5, operation: 'a' }], [], []), /non-negative integer/)
   })
 
+  void it('rejects two outcomes for one index and a reason on a completed operation', () => {
+    assert.throws(
+      () => renderPartialSuccess([{ index: 0, operation: 'a' }], [{ index: 0, operation: 'a', reason: 'boom' }], []),
+      /^Error: operation index 0 has more than one outcome$/,
+    )
+    assert.throws(
+      () => renderPartialSuccess([], [], [{ index: 3, operation: 'a' }, { index: 3, operation: 'b' }]),
+      /^Error: operation index 3 has more than one outcome$/,
+    )
+    assert.throws(
+      () => renderPartialSuccess([{ index: 0, operation: 'a', reason: 'because' }], [], []),
+      /^Error: a completed operation takes no `reason`$/,
+    )
+    assert.strictEqual(
+      renderPartialSuccess([{ index: 0, operation: 'a', reason: null }], [], []),
+      'partial_success: "1 completed, 0 failed, 0 skipped"\ncompleted[1]{index,operation}:\n  0,a',
+    )
+  })
+
   void it('rejects inputs over the caps', () => {
     const many = Array.from({ length: 10_001 }, (_, i) => ({ index: i, operation: `s${i}` }))
     assert.throws(() => renderPartialSuccess(many, [], []), /^Error: completed length 10001 exceeds maximum of 10000$/)

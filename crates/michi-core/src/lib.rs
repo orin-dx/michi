@@ -74,7 +74,7 @@ pub mod error;
 mod float_wire;
 /// Contextual usage hints (`help[]`).
 pub mod hints;
-/// Idempotency: partial-success state for multi-step operations.
+/// Partial-success state for multi-step operations.
 pub mod idempotency;
 #[cfg(feature = "schemars")]
 mod int_schema;
@@ -118,11 +118,11 @@ pub(crate) mod test_support;
 pub use audience::Audience;
 pub use budget::BudgetSummary;
 pub use empty::{empty_state, empty_state_with_hints, try_empty_state, try_empty_state_with_hints};
-pub use error::{DomainError, Error, ErrorClass, ErrorCode, Sensitive, MAY_HAVE_TAKEN_EFFECT_HINT};
+pub use error::{DomainError, ErrorClass, ErrorCode, Sensitive, MAY_HAVE_TAKEN_EFFECT_HINT};
 pub use hints::{append_hints, render_hints, Hint};
-pub use idempotency::{FailedOp, OpRef, PartialSuccess};
+pub use idempotency::{CompletedOp, DuplicateOpIndex, FailedOp, PartialSuccess, SkippedOp};
 pub use kv::{render_kv, KvError, KvItem, KvValue};
-pub use mcp::{CallToolResult, ContentBlock, StructuredContentError};
+pub use mcp::{CallToolResult, ContentBlock, JsonObject, StructuredContentError};
 pub use provenance::{ProvenanceBlock, ProvenanceEntry};
 pub use recovery::{append_recovery, render_recovery, RecoveryHint};
 pub use response::{AgentResponse, OutputFormat};
@@ -137,9 +137,6 @@ pub use resilience::{
 };
 pub use truncate::{truncate, Truncated};
 pub use truncation::{truncate_by_count, truncate_by_size, TruncationOutcome};
-
-/// Crate-level `Result` alias.
-pub type Result<T> = std::result::Result<T, Error>;
 
 #[cfg(test)]
 mod tests {
@@ -197,7 +194,7 @@ mod tests {
         let json = serde_json::to_string(&block).expect("ContentBlock serializes");
         assert_eq!(serde_json::from_str::<ContentBlock>(&json).expect("ContentBlock deserializes"), block);
 
-        let result = CallToolResult::new(vec![], false, "{}");
+        let result = CallToolResult::new(vec![], false, Some(JsonObject::new("{}").expect("an object")));
         let json = serde_json::to_string(&result).expect("CallToolResult serializes");
         assert!(serde_json::from_str::<CallToolResult>(&json).is_ok(), "CallToolResult deserializes");
     }

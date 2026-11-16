@@ -6,4 +6,6 @@ fn main() {
     e.clone().recovery(michi_core::RecoveryHint::new("t"));
     e.clone().retryable(true);
     e.clone().retry_after(std::time::Duration::from_secs(1));
+    e.clone().cause("c");
+    e.clone().context("x");
 }

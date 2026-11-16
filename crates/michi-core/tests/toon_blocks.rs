@@ -9,9 +9,9 @@ use michi_core::resilience::render_already_done;
 use michi_core::response::{AgentResponse, OutputFormat};
 use michi_core::toon::Value;
 use michi_core::{
-    append_hints, append_recovery, empty_state_with_hints, render_hints, render_kv, render_recovery, DomainError,
-    ErrorCode, FailedOp, Health, Hint, KvItem, KvValue, OpRef, PartialSuccess, RecoveryHint, StatusItem,
-    StatusResponse,
+    append_hints, append_recovery, empty_state_with_hints, render_hints, render_kv, render_recovery, CompletedOp,
+    DomainError, ErrorCode, FailedOp, Health, Hint, KvItem, KvValue, PartialSuccess, RecoveryHint, SkippedOp,
+    StatusItem, StatusResponse,
 };
 
 mod support;
@@ -237,7 +237,7 @@ fn status_items_are_a_tabular_array_with_health_and_reason_columns() {
             StatusItem::new("workers", KvValue::Int(4)),
         ],
     )
-    .with_hints(vec![Hint::new("Call get_status for detail")]);
+    .hints(vec![Hint::new("Call get_status for detail")]);
     let out = resp.render();
     assert_eq!(
         out,
@@ -259,7 +259,7 @@ fn status_without_items_has_an_empty_items_array() {
 #[test]
 fn status_item_keys_cannot_collide_with_root_keys() {
     let items = ["tool", "help", "help"].into_iter().map(|k| StatusItem::new(k, KvValue::Missing)).collect();
-    let out = StatusResponse::new("t", "a, b", items).with_hints(vec![Hint::new("h")]).render();
+    let out = StatusResponse::new("t", "a, b", items).hints(vec![Hint::new("h")]).render();
     assert_eq!(
         out,
         "tool: t\ndescription: \"a, b\"\nitems[3]{key,value,health,reason}:\n  tool,null,null,null\n  \
@@ -272,7 +272,7 @@ fn status_item_keys_cannot_collide_with_root_keys() {
 
 #[test]
 fn already_done_is_a_root_object() {
-    let out = render_already_done("delete_item", "item 42 was deleted in run abc", &["use get_item".to_string()]);
+    let out = render_already_done("delete_item", "item 42 was deleted in run abc", &[Hint::new("use get_item")]);
     assert_eq!(
         out,
         "operation: delete_item\nstatus: already_done\nsummary: item 42 was deleted in run abc\nhelp[1]: use get_item"
@@ -290,7 +290,7 @@ fn domain_error_is_a_root_object_with_help_and_recovery() {
     let e = DomainError::new(ErrorCode::NotFound, "Issue #9999 does not exist: check the number")
         .hint("Call list_issues to see available numbers")
         .recovery(RecoveryHint::new("list_issues").param("state", KvValue::Text("open".into())));
-    let out = e.render();
+    let out = e.render(OutputFormat::Text);
     assert_eq!(
         out,
         "error: not_found\nmessage: \"Issue #9999 does not exist: check the number\"\nexit_code: 1\n\
@@ -302,18 +302,8 @@ fn domain_error_is_a_root_object_with_help_and_recovery() {
 
 #[test]
 fn domain_error_without_hints_or_recovery() {
-    let out = DomainError::new(ErrorCode::RateLimited, "slow down").render();
+    let out = DomainError::new(ErrorCode::RateLimited, "slow down").render(OutputFormat::Text);
     assert_eq!(out, "error: rate_limited\nmessage: slow down\nexit_code: 1");
-    conformant(&out);
-}
-
-#[test]
-fn unified_error_variants_use_the_domain_error_shape() {
-    let out = michi_core::Error::InvalidInput("field 'name' is required".into()).render();
-    assert_eq!(out, "error: invalid_input\nmessage: field 'name' is required\nexit_code: 1");
-    conformant(&out);
-    let out = michi_core::Error::NotFound("issue 42".into()).render();
-    assert_eq!(out, "error: not_found\nmessage: issue 42\nexit_code: 1");
     conformant(&out);
 }
 
@@ -321,12 +311,13 @@ fn unified_error_variants_use_the_domain_error_shape() {
 
 #[test]
 fn partial_success_full_example() {
-    let ps = PartialSuccess::new(
-        vec![OpRef::new(0, "create_issue"), OpRef::new(1, "add_label")],
+    let ps = PartialSuccess::try_new(
+        vec![CompletedOp::new(0, "create_issue"), CompletedOp::new(1, "add_label")],
         vec![FailedOp::new(2, "assign_user", "User 'ghost' not found")
             .recovery(RecoveryHint::new("assign_user").param("user", KvValue::Text("alice".into())))],
-        vec![OpRef::new(3, "notify_team").reason("budget_exhausted")],
-    );
+        vec![SkippedOp::new(3, "notify_team").reason("budget_exhausted")],
+    )
+    .expect("distinct indices");
     let out = ps.render();
     assert_eq!(
         out,
@@ -340,7 +331,7 @@ fn partial_success_full_example() {
 
 #[test]
 fn partial_success_empty_is_just_the_summary() {
-    let ps = PartialSuccess::new(vec![], vec![], vec![]);
+    let ps = PartialSuccess::default();
     let out = ps.render();
     assert_eq!(out, "partial_success: \"0 completed, 0 failed, 0 skipped\"");
     conformant(&out);
@@ -348,11 +339,12 @@ fn partial_success_empty_is_just_the_summary() {
 
 #[test]
 fn partial_success_operation_names_are_quoted_in_table_cells() {
-    let ps = PartialSuccess::new(
-        vec![OpRef::new(0, "a, b"), OpRef::new(1, "-x")],
+    let ps = PartialSuccess::try_new(
+        vec![CompletedOp::new(0, "a, b"), CompletedOp::new(1, "-x")],
         vec![],
-        vec![OpRef::new(2, "").reason("")],
-    );
+        vec![SkippedOp::new(2, "").reason("")],
+    )
+    .expect("distinct indices");
     let out = ps.render();
     assert_eq!(
         out,
