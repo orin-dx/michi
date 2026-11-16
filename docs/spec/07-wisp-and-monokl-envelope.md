@@ -130,10 +130,10 @@ budget:
   truncated: true
 sections[2]{name,returned,total,truncated}:
   brief.symbols,12,40,true
-  brief.refs,5,5,false
+  brief.refs,5,null,false
 ```
 
-Absent fields are omitted rather than rendered as `null`. The roll-up renders only when the response carries two or more sections. A single-section response already states its count in its own TOON header and `totalCount:` line, and repeating it costs tokens for nothing. michi writes the roll-up from the response's own sections when it renders (name, count, total, derived `truncated`), so it can name no section the response lacks and cannot disagree with the `totalCount` lines above it. An earlier version took a hand-typed `SectionCost` list instead; see 06-decisions, "Envelope facts have one source".
+Absent fields are omitted rather than rendered as `null`. The roll-up renders only when the response carries two or more sections. A single-section response already states its count in its own TOON header and `totalCount:` line, and repeating it costs tokens for nothing. michi writes the roll-up from the response's own sections when it renders (name, count, total, derived `truncated`), so it can name no section the response lacks and cannot disagree with the `totalCount` lines above it. Its `total` is the `totalCount` the section reports everywhere: the total when it exceeds the rows (`brief.refs` set 5 of 5, which says nothing new, so `null`), or `0` for an empty list. An earlier version took a hand-typed `SectionCost` list instead; see 06-decisions, "Envelope facts have one source".
 
 michi renders a budget; it never computes one. Which items survive a budget is the caller's decision — a BM25 cutoff, a reserved-floor allocator, monokl's `apply_budget` degrade-then-drop ladder. Reporting what got cut in a consistent agent-readable shape is the part every caller needs identically, which is exactly the split [`PRINCIPLES.md`](../../PRINCIPLES.md) describes for truncation.
 

@@ -41,13 +41,13 @@ proptest! {
     ) {
         // MCP requires `structuredContent` to be an object; anything else is rejected when the value is built, so a
         // `CallToolResult` cannot hold it.
-        prop_assert!(JsonObject::new(garbage.as_str()).is_err(), "{garbage:?} must be rejected");
+        prop_assert!(JsonObject::try_new(garbage.as_str()).is_err(), "{garbage:?} must be rejected");
     }
 
     // Differential check: michi's checker (used in every build) and serde_json agree on what is a JSON object.
     #[test]
     fn json_object_check_agrees_with_serde_json(text in r#"\{[ {}\[\]":,0-9a-z.eE+\-\\]{0,30}\}?"#) {
-        let ours = JsonObject::new(text.as_str()).is_ok();
+        let ours = JsonObject::try_new(text.as_str()).is_ok();
         let theirs = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&text).is_ok();
         prop_assert_eq!(ours, theirs, "{:?}", text);
     }

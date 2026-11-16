@@ -125,12 +125,16 @@ impl Section {
     /// Whether this section was cut: its total exceeds its count. Derived, never set.
     #[must_use]
     pub fn truncated(&self) -> bool {
-        self.shown_total().is_some()
+        self.total_count.is_some_and(|n| n > self.count())
     }
 
-    /// The `totalCount` to render: the total only when it exceeds [`count`](Self::count).
-    pub(crate) fn shown_total(&self) -> Option<usize> {
-        self.total_count.filter(|n| *n > self.count())
+    /// The `totalCount` this section reports, the one rule every surface reads (the text's `totalCount`, the JSON
+    /// `sections` entry, the budget roll-up's `total` column): the total when it exceeds [`count`](Self::count), `0` for
+    /// an empty `Toon` list with no larger total (the definitive empty state), otherwise none. A total at or below the
+    /// count says nothing the count does not.
+    pub(crate) fn reported_total(&self) -> Option<usize> {
+        let cut = self.total_count.filter(|n| *n > self.count());
+        cut.or_else(|| matches!(&self.body, SectionBody::Toon { rows, .. } if rows.is_empty()).then_some(0))
     }
 }
 
