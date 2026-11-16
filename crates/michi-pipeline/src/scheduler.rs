@@ -647,7 +647,6 @@ async fn attempt_once(
     }
 }
 
-/// Admission, the retry loop and classification for one step.
 /// Saves the step's in-flight marker on a blocking thread, so a slow save (file or database I/O) ties up neither the
 /// scheduler nor the other steps. The step waits for it: nothing of the step runs until this returns `Ok`.
 async fn record_start(durable: Arc<dyn crate::DurableObserver>, job: &Job) -> Result<(), String> {
@@ -668,13 +667,15 @@ async fn record_start(durable: Arc<dyn crate::DurableObserver>, job: &Job) -> Re
     }
 }
 
+/// Admission, the retry loop and classification for one step.
 async fn run_step(job: Job) -> Outcome {
+    let cancelled_before_start = || Outcome {
+        status: StepStatus::Skipped(SkipReason::Cancelled),
+        error: None,
+        reason: Some("run cancelled before the step started".to_string()),
+    };
     if job.token.is_cancelled() {
-        return Outcome {
-            status: StepStatus::Skipped(SkipReason::Cancelled),
-            error: None,
-            reason: Some("run cancelled before the step started".to_string()),
-        };
+        return cancelled_before_start();
     }
     if let Some(durable) = job.durable.clone() {
         if let Err(reason) = record_start(durable, &job).await {
@@ -683,6 +684,22 @@ async fn run_step(job: Job) -> Outcome {
                 error: None,
                 reason: Some(format!("its start could not be recorded, so it was not run: {reason}")),
             };
+        }
+        // The save can take long enough for the run to change under the step: a cancel or a fail-fast stop lands, or
+        // its deadline group's window (opened at dispatch) ends. Look again, so the step ends as it would have had
+        // that happened just before dispatch, rather than starting work only to be interrupted.
+        if job.token.is_cancelled() {
+            return cancelled_before_start();
+        }
+        if let Some((end, key)) = &job.group_deadline {
+            if Instant::now() >= *end {
+                let message = format!("the window of deadline group {key} ended before the step started");
+                return Outcome {
+                    status: StepStatus::Failed,
+                    reason: Some(format!("{message}, so it was not run")),
+                    error: Some(ExecutionError::DeadlinePassed { message }),
+                };
+            }
         }
     }
     let guard = match &job.breaker {
