@@ -179,6 +179,128 @@ fn response_to_call_tool_result_and_is_error_are_linear_in_rows() {
     );
 }
 
+// ---- Composed outcomes: each part is built and rendered inside the timed region, so a quadratic row builder, cause
+// writer or hint merge shows up, not only a quadratic render. ----
+
+fn causes_error(n: usize) -> michi_core::DomainError {
+    let mut e = michi_core::DomainError::new(michi_core::ErrorCode::ExternalFailure, "upstream failed");
+    for i in 0..n {
+        e = e.cause(format!("layer {i} said: connection reset, retry later"));
+    }
+    e
+}
+
+#[test]
+fn error_causes_render_linearly() {
+    use michi_core::{AgentResponse, OutputFormat};
+    for format in [OutputFormat::Text, OutputFormat::Json] {
+        assert_linear("DomainError causes", 1_000, causes_error, |e| {
+            black_box(AgentResponse::new("t").error(e.clone()).render(format));
+        });
+    }
+}
+
+fn ops(n: usize) -> michi_core::PartialSuccess {
+    use michi_core::{CompletedOp, FailedOp, PartialSuccess, RecoveryHint, SkippedOp};
+    let (mut completed, mut failed, mut skipped) = (Vec::new(), Vec::new(), Vec::new());
+    // Descending indices, so the composed table has to sort them.
+    for i in (0..n).rev() {
+        match i % 3 {
+            0 => completed.push(CompletedOp::new(i, format!("op{i}"))),
+            1 => failed.push(FailedOp::new(i, format!("op{i}"), "not indexed").recovery(RecoveryHint::new("index"))),
+            _ => skipped.push(SkippedOp::new(i, format!("op{i}")).reason("budget_exhausted")),
+        }
+    }
+    PartialSuccess::try_new(completed, failed, skipped).expect("distinct indices")
+}
+
+#[test]
+fn partial_success_composes_and_renders_linearly() {
+    use michi_core::{AgentResponse, OutputFormat};
+    for format in [OutputFormat::Text, OutputFormat::Json] {
+        assert_linear("PartialSuccess ops", 3_000, ops, |ps| {
+            black_box(AgentResponse::new("t").partial_success("ops", ps.clone()).render(format));
+        });
+    }
+}
+
+fn status(n: usize) -> michi_core::StatusResponse {
+    use michi_core::{Health, Hint, StatusItem, StatusResponse};
+    let items = (0..n)
+        .map(|i| {
+            StatusItem::new(format!("check{i}"), KvValue::Float(i as f64 / 7.0, 2))
+                .health(Health::Degraded(format!("slow {i}")))
+        })
+        .collect();
+    StatusResponse::new("tool", "does things", items)
+        .hints((0..n).map(|i| Hint::new(format!("look at check{i}"))).collect())
+}
+
+#[test]
+fn status_composes_and_renders_linearly() {
+    use michi_core::{AgentResponse, OutputFormat};
+    for format in [OutputFormat::Text, OutputFormat::Json] {
+        assert_linear("StatusResponse items", 1_000, status, |s| {
+            black_box(AgentResponse::new("t").status(s.clone()).render(format));
+        });
+    }
+}
+
+fn pipeline(n: usize) -> michi_core::pipeline::Pipeline {
+    use michi_core::pipeline::{Pipeline, PipelineStep, StepStatus};
+    Pipeline::new(
+        (0..n)
+            .map(|i| {
+                PipelineStep::new(
+                    format!("step{i}"),
+                    format!("Step, number {i}"),
+                    StepStatus::ALL[i % StepStatus::ALL.len()],
+                )
+            })
+            .collect(),
+    )
+}
+
+#[test]
+fn pipeline_composes_and_renders_linearly() {
+    use michi_core::{AgentResponse, OutputFormat};
+    for format in [OutputFormat::Text, OutputFormat::Json] {
+        assert_linear("Pipeline steps", 1_000, pipeline, |p| {
+            black_box(AgentResponse::new("t").pipeline("step", p.clone()).render(format));
+        });
+    }
+}
+
+#[test]
+fn a_response_mixing_every_outcome_renders_linearly() {
+    use michi_core::{AgentResponse, BudgetSummary, Hint, OutputFormat, RecoveryHint, Section};
+    // Every part grows with `n`: the error's causes, the batch, the status table and its hints, the pipeline, a data
+    // section, the caller's hints and recovery hints. The response is built and rendered on every surface.
+    assert_linear(
+        "AgentResponse mixed outcomes",
+        500,
+        |n| (causes_error(n), ops(n), status(n), pipeline(n), n),
+        |(e, ps, s, p, n)| {
+            let rows = (0..*n).map(|i| vec![Value::Int(i as i64), Value::from(format!("result {i}"))]).collect();
+            let mut r = AgentResponse::new("batch")
+                .error(e.clone())
+                .section(Section::toon("results", vec!["n".into(), "title".into()], rows).total_count(Some(n * 2)))
+                .partial_success("ops", ps.clone())
+                .status(s.clone())
+                .pipeline("step", p.clone())
+                .budget(BudgetSummary::new().tokens_used(1));
+            r = r.hints((0..*n).map(|i| Hint::new(format!("hint {i}"))).collect());
+            for i in 0..*n {
+                r = r.hint(format!("more {i}")).recovery_hint(RecoveryHint::new(format!("tool{i}")));
+            }
+            black_box(r.render(OutputFormat::Text));
+            black_box(r.render(OutputFormat::Json));
+            black_box(r.is_error());
+            black_box(r.to_call_tool_result());
+        },
+    );
+}
+
 #[cfg(feature = "serde")]
 #[test]
 fn toon_list_is_linear_in_items_and_sparse_keys() {

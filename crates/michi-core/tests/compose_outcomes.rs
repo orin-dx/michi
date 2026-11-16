@@ -181,13 +181,20 @@ fn a_second_error_replaces_the_first() {
 }
 
 #[test]
-fn a_domain_error_and_a_failed_section_are_two_error_blocks_and_render_the_collision() {
+fn a_domain_error_and_a_failed_section_keep_the_error_and_add_the_failure_as_a_cause() {
+    // Before: the two error blocks collided on `error`, so the text read `toon_validation_failed` ("duplicate root
+    // key 'error'", a key the caller never used) while the JSON still said `not_found`. See tests/response_consistency.rs.
     let bad = Section::toon("t", fields(&["a"]), vec![vec![Value::Int(1), Value::Int(2)]]);
     let r = AgentResponse::new("t").section(bad).error(DomainError::new(ErrorCode::NotFound, "gone"));
     let text = r.render(OutputFormat::Text);
-    assert!(text.starts_with("error: toon_validation_failed\nmessage: \"duplicate root key 'error'"), "{text}");
+    assert_eq!(
+        text,
+        "error: not_found\nmessage: gone\ncauses[1]: \"toon_validation_failed: row 0 has 2 values but 1 fields \
+         declared\"\nexit_code: 1"
+    );
     valid(&text);
     assert!(r.is_error());
+    assert_eq!(json(&r)["error"]["code"], "not_found");
 }
 
 // ---- PartialSuccess ----
@@ -433,7 +440,7 @@ proptest! {
         let mut r = AgentResponse::new("batch").truncate_cells_at(cap);
         let rows = rows.iter().map(|c| vec![Value::from(c.clone())]).collect();
         r = r.section(Section::toon("results", fields(&["v"]), rows));
-        let has_error = error.is_some();
+        let caller_error = error.clone();
         if let Some(e) = error {
             r = r.error(e);
         }
@@ -460,11 +467,24 @@ proptest! {
         };
         prop_assert_eq!(v["isError"].as_bool(), Some(r.is_error()));
         prop_assert_eq!(r.is_error(), r.to_call_tool_result().is_error);
-        prop_assert_eq!(v.get("error").is_some(), has_error);
-        if has_error {
+        // One error shape: the caller's error, or else a validation failure, is the `error` object; nothing else sets
+        // `isError` here.
+        prop_assert_eq!(v.get("error").is_some(), r.is_error());
+        if let Some(e) = caller_error {
+            // The caller's error is never hidden: it leads the text and is the JSON `error`, and a validation failure
+            // can only add one cause after its own.
             prop_assert!(r.is_error());
-            prop_assert!(text.starts_with("error: "), "{}", text);
+            let code = e.code().label();
+            prop_assert!(text.starts_with(&format!("error: {code}\n")), "{}", text);
+            prop_assert_eq!(v["error"]["code"].as_str(), Some(code));
+            prop_assert_eq!(v["error"]["message"].as_str(), Some(e.message()));
+            let causes: Vec<&str> =
+                v["error"]["causes"].as_array().map(|c| c.iter().filter_map(|c| c.as_str()).collect()).unwrap_or_default();
+            let own: Vec<&str> = e.causes().iter().map(String::as_str).collect();
+            prop_assert!(causes.starts_with(&own) && causes.len() <= own.len() + 1, "{:?}", causes);
         }
+        let result = r.to_call_tool_result();
+        prop_assert_eq!(result.content[0].text.as_str(), text.as_str());
         prop_assert_eq!(v["body"].as_str().map(|b| text.starts_with(b)), Some(true));
         // One `help`, one `recovery`, one `error`: TOON forbids a repeated root key, and the decoder checks it.
         let doc = doc.unwrap_or_else(|_| unreachable!());

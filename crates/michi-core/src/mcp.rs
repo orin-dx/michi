@@ -73,7 +73,7 @@ impl From<ContentBlockWire> for ContentBlock {
 
 /// The text of one JSON object (RFC 8259), checked when it is built: what MCP requires for `structuredContent`.
 ///
-/// michi's own renderers build it from their JSON writers; anything else goes through [`JsonObject::new`] (or
+/// michi's own renderers build it from their JSON writers; anything else goes through [`JsonObject::try_new`] (or
 /// `parse()`), in every build, with or without the `serde` feature. The check is strict: one object, nothing after it
 /// but whitespace, no lone surrogate escapes, every number finite as an f64, and at most 127 levels of nesting. Those
 /// are the limits `serde_json` applies, so a value that passes here also serializes.
@@ -87,7 +87,7 @@ impl JsonObject {
     ///
     /// [`StructuredContentError::InvalidJson`] when `text` is not JSON, and [`StructuredContentError::NotAnObject`]
     /// when it is JSON but not an object.
-    pub fn new(text: impl Into<String>) -> Result<Self, StructuredContentError> {
+    pub fn try_new(text: impl Into<String>) -> Result<Self, StructuredContentError> {
         let text = text.into();
         check_json_object(&text)?;
         Ok(Self(text))
@@ -126,9 +126,9 @@ impl AsRef<str> for JsonObject {
 impl std::str::FromStr for JsonObject {
     type Err = StructuredContentError;
 
-    /// [`JsonObject::new`] on a copy of `s`.
+    /// [`JsonObject::try_new`] on a copy of `s`.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::new(s)
+        Self::try_new(s)
     }
 }
 
@@ -470,7 +470,7 @@ mod tests {
     use super::*;
 
     fn obj(text: &str) -> Option<JsonObject> {
-        Some(JsonObject::new(text).expect("a JSON object"))
+        Some(JsonObject::try_new(text).expect("a JSON object"))
     }
 
     #[test]
@@ -500,12 +500,12 @@ mod tests {
             "{\"\\ud83d\\ude00\":0}",
             "{\"a\":0.0,\"b\":-0,\"c\":1E5}",
         ] {
-            assert_eq!(JsonObject::new(good).map(JsonObject::into_string), Ok(good.to_string()), "{good}");
+            assert_eq!(JsonObject::try_new(good).map(JsonObject::into_string), Ok(good.to_string()), "{good}");
         }
         for (bad, found) in
             [("[1]", "array"), ("\"s\"", "string"), ("42", "number"), ("true", "boolean"), ("null", "null")]
         {
-            assert_eq!(JsonObject::new(bad), Err(StructuredContentError::NotAnObject { found }), "{bad}");
+            assert_eq!(JsonObject::try_new(bad), Err(StructuredContentError::NotAnObject { found }), "{bad}");
         }
         for bad in [
             "",
@@ -530,9 +530,9 @@ mod tests {
             "{\"a\":nul}",
         ] {
             assert!(
-                matches!(JsonObject::new(bad), Err(StructuredContentError::InvalidJson { .. })),
+                matches!(JsonObject::try_new(bad), Err(StructuredContentError::InvalidJson { .. })),
                 "{bad:?}: {:?}",
-                JsonObject::new(bad)
+                JsonObject::try_new(bad)
             );
         }
     }
@@ -540,8 +540,8 @@ mod tests {
     #[test]
     fn json_object_nesting_stops_where_serde_json_does() {
         let nested = |n: usize| format!("{{\"a\":{}1{}}}", "[".repeat(n - 1), "]".repeat(n - 1));
-        assert!(JsonObject::new(nested(MAX_JSON_DEPTH)).is_ok());
-        assert!(JsonObject::new(nested(MAX_JSON_DEPTH + 1)).is_err());
+        assert!(JsonObject::try_new(nested(MAX_JSON_DEPTH)).is_ok());
+        assert!(JsonObject::try_new(nested(MAX_JSON_DEPTH + 1)).is_err());
     }
 
     // The checker and serde_json agree on every fixture, including the limits, so a checked object always serializes.
@@ -561,7 +561,7 @@ mod tests {
             nested(MAX_JSON_DEPTH + 1),
         ];
         for text in fixtures {
-            let ours = JsonObject::new(text.as_str()).is_ok();
+            let ours = JsonObject::try_new(text.as_str()).is_ok();
             let theirs = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&text).is_ok();
             assert_eq!(ours, theirs, "{text:.80}");
         }
@@ -585,7 +585,7 @@ mod tests {
         let resp = crate::AgentResponse::new("t").hint("h").recovery_hint(crate::RecoveryHint::new("r"));
         for result in [err.to_call_tool_result(), resp.to_call_tool_result(), resp.as_error().to_call_tool_result()] {
             let text = result.structured_content.expect("set").into_string();
-            assert!(JsonObject::new(text.as_str()).is_ok(), "{text}");
+            assert!(JsonObject::try_new(text.as_str()).is_ok(), "{text}");
         }
     }
 

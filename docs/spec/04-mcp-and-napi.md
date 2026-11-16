@@ -23,13 +23,13 @@ pub struct CallToolResult {
 /// The text of one JSON object, checked when built (in every build, no serde needed).
 pub struct JsonObject(/* private */);
 impl JsonObject {
-    pub fn new(text: impl Into<String>) -> Result<Self, StructuredContentError>; // also FromStr
+    pub fn try_new(text: impl Into<String>) -> Result<Self, StructuredContentError>; // also FromStr
     pub fn as_str(&self) -> &str;
     pub fn into_string(self) -> String;
 }
 ```
 
-`structured_content` used to be a `String` where empty meant none, so a default-feature caller could build a result that could not serialize (validity was checked only by `try_new` or at serialization, both behind `serde`). A `JsonObject` is checked when it is made: michi's own renderers make it from their JSON writers, anything else goes through `JsonObject::new`, a strict RFC 8259 checker written in `mcp.rs` with `serde_json`'s limits (at most 127 levels of nesting, no lone surrogate escapes, every number finite as an f64), so the default build needs no JSON dependency and a checked object always serializes. A property test checks the checker against `serde_json`. The wire shape is unchanged.
+`structured_content` used to be a `String` where empty meant none, so a default-feature caller could build a result that could not serialize (validity was checked only by `try_new` or at serialization, both behind `serde`). A `JsonObject` is checked when it is made: michi's own renderers make it from their JSON writers, anything else goes through `JsonObject::try_new`, a strict RFC 8259 checker written in `mcp.rs` with `serde_json`'s limits (at most 127 levels of nesting, no lone surrogate escapes, every number finite as an f64), so the default build needs no JSON dependency and a checked object always serializes. A property test checks the checker against `serde_json`. The wire shape is unchanged.
 
 `audience` is a `Vec`, not a scalar.
 
@@ -48,7 +48,7 @@ Under the `serde` feature, `ContentBlock`/`CallToolResult` don't derive `Seriali
 
 The wire rules, for output and input:
 
-- **Output:** `structuredContent` is the parsed JSON object and is omitted when `structured_content` is `None` (no `null`, array or double-encoded string is ever emitted). A non-object cannot get that far: `JsonObject::new` returns `StructuredContentError::InvalidJson` or `NotAnObject`.
+- **Output:** `structuredContent` is the parsed JSON object and is omitted when `structured_content` is `None` (no `null`, array or double-encoded string is ever emitted). A non-object cannot get that far: `JsonObject::try_new` returns `StructuredContentError::InvalidJson` or `NotAnObject`.
 - **Input is tolerant where MCP is:** only `content` is required. `isError` defaults to `false`; an absent or `null` `structuredContent` becomes `None`; `annotations` and `annotations.audience` are optional and default to no audience; other annotation fields (such as `priority`) are ignored. Still rejected: a `structuredContent` that is not an object, and a content block whose `type` is not `"text"`.
 
 `AgentResponse::to_call_tool_result()` (see [03-rust-api.md](03-rust-api.md)) is the only intended constructor. It builds:
