@@ -871,11 +871,11 @@ mod tests {
     }
 
     // AC-041 through AC-045: RecoveryHint params through AgentResponse's Json
-    // path use kv_value_to_json (bare null for missing and non-finite floats, bare bool), in
+    // path use json::push_kv_value (bare null for missing and non-finite floats, bare bool), in
     // contrast to kv_items' plain-text body rendering above.
     #[test]
     #[cfg(feature = "serde")]
-    fn ac041_to_ac045_recovery_params_use_kv_value_to_json_typing() {
+    fn ac041_to_ac045_recovery_params_use_json_kv_value_typing() {
         use crate::kv::KvValue;
         use crate::recovery::RecoveryHint;
         let cases: Vec<(KvValue, serde_json::Value)> = vec![
@@ -1094,7 +1094,7 @@ mod tests {
         assert!(!out.contains('a'), "got: {out}");
     }
 
-    // AC-038 (extended): json_escape_str's generic below-0x20 control-
+    // AC-038 (extended): json::push_str's generic below-0x20 control-
     // character branch (\u00XX), distinct from the dedicated \n/\r/\t arms.
     #[test]
     #[cfg(feature = "serde")]

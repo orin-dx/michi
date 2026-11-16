@@ -1034,7 +1034,7 @@ mod tests {
     }
 
     // AC-018/AC-021a: \n, \r, \t each have their own dedicated escape arm in
-    // json_escape_str; this proves the generic below-0x20 control-character
+    // json::push_str; this proves the generic below-0x20 control-character
     // arm (\u00XX) that every OTHER control character falls through to.
     #[test]
     #[cfg(feature = "serde")]
