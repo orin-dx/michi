@@ -191,7 +191,7 @@ mod tests {
         let json = serde_json::to_string(&block).expect("ContentBlock serializes");
         assert_eq!(serde_json::from_str::<ContentBlock>(&json).expect("ContentBlock deserializes"), block);
 
-        let result = CallToolResult::new(vec![], false, Some(JsonObject::new("{}").expect("an object")));
+        let result = CallToolResult::new(vec![], false, Some(JsonObject::try_new("{}").expect("an object")));
         let json = serde_json::to_string(&result).expect("CallToolResult serializes");
         assert!(serde_json::from_str::<CallToolResult>(&json).is_ok(), "CallToolResult deserializes");
     }

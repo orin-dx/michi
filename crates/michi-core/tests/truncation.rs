@@ -234,7 +234,9 @@ fn truncated_section_rows_are_the_outcome_kept_items() {
         assert!(out.starts_with(&header), "{out}");
         let json: serde_json::Value = serde_json::from_str(&r.render(OutputFormat::Json)).unwrap();
         assert_eq!(json["sections"][0]["returnedCount"], kept);
-        assert_eq!(json["sections"][0]["totalCount"], outcome.total_before);
+        // The JSON reports the total the text does: a cut's total, or 0 for the empty list; none for a whole list.
+        let reported = (outcome.truncated() || kept == 0).then_some(outcome.total_before as u64);
+        assert_eq!(json["sections"][0].get("totalCount").and_then(serde_json::Value::as_u64), reported, "{out}");
         assert_eq!(json["sections"][0]["truncated"], outcome.truncated());
         match outcome.hint("g") {
             Some(hint) => assert!(out.ends_with(&format!("help[1]: {}", hint.as_str()))),

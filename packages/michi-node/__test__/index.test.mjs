@@ -1358,6 +1358,34 @@ void describe('outcomes compose into one AgentResponse', () => {
     assert.throws(() => retryable.error('bogus', 'm'), /^Error: unknown error code "bogus"/)
   })
 
+  void it('keeps the caller error and adds a validation failure as its cause, on every surface', () => {
+    const step = [{ id: 'fetch', name: 'Fetch', status: 'completed' }]
+    const failure = "toon_validation_failed: duplicate root key 'step': give every section and KV key a distinct name"
+    const r = new AgentResponse('run')
+    r.pipeline('step', step)
+    r.pipeline('step', step)
+    r.error('not_found', 'gone')
+    const text = r.renderText()
+    assert.strictEqual(text, `error: not_found\nmessage: gone\ncauses[1]: "${failure}"\nexit_code: 1`)
+    const result = r.toCallToolResult()
+    assert.strictEqual(result.content[0].text, text)
+    assert.strictEqual(result.isError, true)
+    const want = { code: 'not_found', message: 'gone', causes: [failure], retryable: false }
+    assert.deepStrictEqual(result.structuredContent.error, want)
+    assert.deepStrictEqual(JSON.parse(r.renderJson()).error, want)
+
+    // Without a caller error the failure is the error object, with the same keys.
+    const alone = new AgentResponse('run')
+    alone.pipeline('step', step)
+    alone.pipeline('step', step)
+    assert.deepStrictEqual(JSON.parse(alone.renderJson()).error, {
+      code: 'toon_validation_failed',
+      message: "duplicate root key 'step': give every section and KV key a distinct name",
+      causes: [],
+      retryable: false,
+    })
+  })
+
   void it('composes a pipeline, a status report and an already-done report', () => {
     const r = new AgentResponse('run')
     r.pipeline('step', [{ id: 'fetch', name: 'Fetch', status: 'completed' }])

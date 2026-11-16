@@ -74,7 +74,7 @@ fuzz_target!(|data: &[u8]| {
         if let Some(object) = &result.structured_content {
             let parsed: serde_json::Value = serde_json::from_str(object.as_str()).unwrap();
             assert!(parsed.is_object(), "structuredContent {object:?}");
-            michi_core::JsonObject::new(object.as_str()).expect("an accepted object passes the checker");
+            michi_core::JsonObject::try_new(object.as_str()).expect("an accepted object passes the checker");
         }
     }
 

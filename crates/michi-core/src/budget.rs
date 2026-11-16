@@ -105,8 +105,9 @@ fn rendered_truncated(b: &BudgetSummary, sections: &[Section]) -> bool {
 }
 
 /// Render the `budget:` block, with no trailing newline. With two or more `sections`, the
-/// `sections[n]{name,returned,total,truncated}:` roll-up of those sections follows. An unknown `total` is the TOON
-/// `null` cell, because a table row needs a value in every column.
+/// `sections[n]{name,returned,total,truncated}:` roll-up of those sections follows. `total` is the `totalCount` the
+/// section reports everywhere else; a section that reports none is the TOON `null` cell, because a table row needs a
+/// value in every column.
 pub(crate) fn render_budget_block(b: &BudgetSummary, sections: &[Section]) -> String {
     let mut out = String::with_capacity(160 + sections.len() * 48);
     out.push_str("budget:");
@@ -119,8 +120,12 @@ pub(crate) fn render_budget_block(b: &BudgetSummary, sections: &[Section]) -> St
     if sections.len() >= 2 {
         table::push_header(&mut out, "sections", sections.len(), ["name", "returned", "total", "truncated"]);
         for s in sections {
-            let cells =
-                [Cell::Str(s.name()), Cell::count(s.count()), Cell::opt_count(s.total()), Cell::Bool(s.truncated())];
+            let cells = [
+                Cell::Str(s.name()),
+                Cell::count(s.count()),
+                Cell::opt_count(s.reported_total()),
+                Cell::Bool(s.truncated()),
+            ];
             table::push_row(&mut out, &cells);
         }
     }
@@ -178,8 +183,10 @@ mod tests {
 
     const SPEC_BLOCK: &str =
         "budget:\n  tokensUsed: 7412\n  bytesUsed: 31208\n  maxTokens: 8000\n  maxBytes: 2097152\n  truncated: true";
+    // `brief.refs` sets a total equal to its rows, which says nothing new: no `totalCount` in its text or JSON, so a
+    // `null` total here.
     const SPEC_ROLLUP: &str =
-        "\nsections[2]{name,returned,total,truncated}:\n  brief.symbols,12,40,true\n  brief.refs,5,5,false";
+        "\nsections[2]{name,returned,total,truncated}:\n  brief.symbols,12,40,true\n  brief.refs,5,null,false";
 
     #[test]
     fn spec_example_renders_exactly_with_rollup() {

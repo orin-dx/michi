@@ -253,7 +253,8 @@ impl AgentResponse {
         guidance: impl Into<String>,
     ) -> Self;
     pub fn hint(self, hint: impl Into<String>) -> Self;
-    /// Replaces the full hint list (contrast `hint()`, which appends).
+    /// Replaces the hints added with `hint()` and `hints()` (contrast `hint()`, which appends). Hints a part brought
+    /// (a `status()` report's, a `truncated_section()`'s `showing N of M` line, the error's) keep their place.
     pub fn hints(self, hints: Vec<Hint>) -> Self;
     pub fn recovery_hint(self, r: RecoveryHint) -> Self;
     /// Overrides the default TOON cell truncation limit (200 chars, counted before escaping/quoting); every `Toon`
@@ -268,6 +269,7 @@ impl AgentResponse {
 
     // Every outcome is a part of the response (see "Outcomes compose into one response" below).
     /// The error block: rendered first; its hints and recovery lead `help[]` and `recovery[]`. A second call replaces.
+    /// A validation failure of the response's shape never hides it: the failure becomes its last cause.
     pub fn error(self, error: DomainError) -> Self;
     /// A `Toon` section `name[N]{index,operation,status,reason}:`, rows sorted by index; failed ops' recovery hints are
     /// appended to the response's.
@@ -296,7 +298,7 @@ impl AgentResponse {
 
 There is no `render_json()` on any type: JSON is `render(OutputFormat::Json)`, and only `AgentResponse` writes it.
 
-A response keeps its body in one place, an ordered `Vec<Section>`. `items()` and `kv_items()` are shorthand that append a section named for the response's type, so mixing them renders every body in call order. Because a section is a root key of the document, the shorthand serves one list (and one KV block) per response: a second `items()` call repeats the key and renders the `toon_validation_failed` error, never invalid TOON. For several lists use `section(Section::toon(distinct_name, ..))`. There is no response-level `total_count`: a total belongs to the section it counts, set with `Section::total_count`. `is_error()` validates without rendering. Hints and recovery are appended to the rendered body in place. `render(OutputFormat::Json)` is `{"body":…,"error":{…},"sections":[…],"hints":[…],"recovery":[…],"isError":bool}`, the same object `to_call_tool_result()` puts in `structured_content`; `error` appears when one was set, `sections` once the response has a section.
+A response keeps its body in one place, an ordered `Vec<Section>`. `items()` and `kv_items()` are shorthand that append a section named for the response's type, so mixing them renders every body in call order. Because a section is a root key of the document, the shorthand serves one list (and one KV block) per response: a second `items()` call repeats the key and renders the `toon_validation_failed` error, never invalid TOON. For several lists use `section(Section::toon(distinct_name, ..))`. There is no response-level `total_count`: a total belongs to the section it counts, set with `Section::total_count`. `is_error()` validates without rendering. Hints and recovery are appended to the rendered body in place. `render(OutputFormat::Json)` is `{"body":…,"error":{…},"sections":[…],"hints":[…],"recovery":[…],"isError":bool}`, the same object `to_call_tool_result()` puts in `structured_content`; `error` appears when one was set or the response failed validation (see "A validation failure" below), `sections` once the response has a section.
 
 #### Outcomes compose into one response
 
@@ -310,7 +312,14 @@ Every outcome michi renders is a part of `AgentResponse`, so a batch with result
 | `Pipeline` (and `michi-pipeline`'s `RunRecord::to_pipeline()`) | `pipeline(name, p)` | `Toon` section `name[N]{id,name,status,reason}:` | none |
 | already done | `already_done(operation, summary)` | `Kv` section `already_done` (`operation`, `status`, `summary`) | none |
 
-None of them writes a root key of its own beyond the error block's, so they never collide with the reserved list. Their names are section names, checked like any other: two parts that write one root key (two `pipeline("step", …)` calls, say) render the `toon_validation_failed` error naming it. A response holds one error, and a section that fails validation writes `error` too, so both together render that error for the key `error`. A partial batch is not an error by itself; call `error()` or `as_error()` when the call failed as a whole.
+None of them writes a root key of its own beyond the error block's, so they never collide with the reserved list. Their names are section names, checked like any other: two parts that write one root key (two `pipeline("step", …)` calls, say) render the `toon_validation_failed` error naming it. A partial batch is not an error by itself; call `error()` or `as_error()` when the call failed as a whole.
+
+**A validation failure** is a problem with the response's own shape: a section whose rows or KV items are invalid, or two blocks writing one root key. It is reported the same way on every surface (text, JSON, `render_for`, `to_call_tool_result`, NAPI), and `is_error()` and `isError` are true:
+
+- Without a caller's error, the failure is the error block, as `error: toon_validation_failed` (or `kv_validation_failed`) and `message: …`. A failed section's lines take its place among the sections; a collision replaces the whole body. The JSON `error` is `{"code": "toon_validation_failed", "message": …, "causes": [], "retryable": false}`, the same four keys as a `DomainError`, so there is one error shape.
+- With a caller's error, that error leads and stays the JSON `error` (its code, message and `retryable`). The failure is added as its last cause, `<code>: <message>` (`causes[1]: "toon_validation_failed: row 0 has 2 values but 1 fields declared"`), and a failed section writes no lines of its own. A collision still drops the sections, so the body is the error block alone. The caller's error is never hidden, and the failure is never lost.
+
+Two failed sections are a collision on `error` (each would write the error lines), reported like any other collision.
 
 Each type's own render is this writer: `DomainError::render(f)` is `AgentResponse::new(..).error(e).render(f)`, `PartialSuccess::render()` is the response with `partial_success("partial_success", ps)`, `StatusResponse::render()` with `status(s)`, `Pipeline::render()` with `pipeline("step", p)`, and `render_already_done(op, summary, hints)` with `already_done(op, summary).hints(hints)`. The standalone renders turn the cell cap off (`truncate_cells_at(usize::MAX)`), as they never cut a cell; inside a response the response's cap applies to their tables like any other `Toon` section.
 
@@ -363,10 +372,10 @@ impl Section {
 ```
 
 - `Toon` bodies render as a TOON list named `name`, with the response's `truncate_cells_at` cap and `truncation_hint` applied. `Kv` bodies render as `key: value` lines (the name is not printed). `Text` bodies are one string value, `name: <escaped value>`, escaped like any TOON string and never raw, so prose cannot forge a `help[]` line. A `totalCount` renders for a `Text` section as for the others.
-- `totalCount: n` follows a section only when `total_count` is `Some(n)` with `n` above the section's count: a total equal to the rows returned says nothing new.
+- `totalCount: n` follows a section only when `total_count` is `Some(n)` with `n` above the section's count: a total equal to the rows returned (or below them) says nothing new. An empty `Toon` section reports `totalCount: 0` (below). One rule, in one place (`Section::reported_total`, crate-internal), gives the text's `totalCount`, the JSON section's `totalCount` and the budget roll-up's `total` column, so the three cannot disagree. `total()` still returns the value as given.
 - The fields are private, and each fact has one source: the count is the body's rows or items (a `Text` body carries the count its constructor was given), the total is what `total_count` set, and `truncated()` is `total > count`. Text and JSON read the same three, so a section cannot print `totalCount: 5` while its JSON says `"truncated": false`.
-- An empty `Toon` section is the definitive empty state: `name: []` and `totalCount: 0` (or the larger `totalCount: n` the caller set); it takes part in the merged `totalCount` table like any section with a total. The JSON `sections` entry keeps the caller's facts (`returnedCount: 0`, and a `totalCount` only when one was set). An empty `Kv` section renders nothing (or `totalCount: n` when a larger total is set).
-- A section that fails validation renders an `error:` block (`toon_validation_failed` or `kv_validation_failed`) and makes `is_error()` true.
+- An empty `Toon` section is the definitive empty state: `name: []` and `totalCount: 0` (or the larger `totalCount: n` the caller set); it takes part in the merged `totalCount` table like any section with a total. Its JSON `sections` entry says the same: `returnedCount: 0` and `totalCount: 0` (or the larger total). An empty `Kv` section renders nothing (or `totalCount: n` when a larger total is set).
+- A section that fails validation renders an `error:` block (`toon_validation_failed` or `kv_validation_failed`), or a cause of the caller's error when there is one, and makes `is_error()` true (see "A validation failure" above).
 - `render(Json)` adds a `sections` array; see [Envelope on `AgentResponse`](#envelope-on-agentresponse). Cut-cell `help[]` lines from every section merge into the one `help` block, once.
 
 ### Envelope on `AgentResponse`
@@ -384,8 +393,8 @@ Text order: the sections in call order, `budget:`, `provenance:`, `help[]`, `rec
 
 - The budget roll-up (`sections[n]{...}`) renders only when the response has two or more sections, and is derived from them.
 - `truncated` and `totalCount` are root keys, and a TOON object may not repeat a key. When one block has cut cells (or a `totalCount`) it renders inline after its list. When two or more do, each becomes one table after the last block, with a leading `section` column: `truncated[N]{section,row,field,removed}:` and `totalCount[N]{section,total}:`. michi's own "Cut cells are listed in the truncated block" help line is added once.
-- Section names and KV keys are root keys, beside the names michi writes itself. Those are one reserved list shared by every writer: `totalCount`, `help`, `recovery`, `truncated`, `budget`, `sections`, `provenance`, and the error document's `error`, `message`, `causes` and `exit_code`, reserved even on success so caller data cannot render an error document while `isError` is false. Validity never depends on caller data: a reserved name, two blocks writing one root key, two failed sections (each would write `error`), or two equal provenance labels (or a label `fingerprint`, with or without a fingerprint) renders the whole body as the `toon_validation_failed` (or `kv_validation_failed`) error naming the key, and `is_error()`, the JSON `isError` and MCP `isError` are true. The JSON `sections` still carry the data as given.
-- JSON (`render(Json)` and `structured_content`): `body`, then `sections`, `budget`, `provenance` only when set (`sections` is set by `items()` and `kv_items()` too), then `hints`, `recovery`, `isError`. A section is `{name, kind, ...}` with `kind` `toon` (`fields`, `rows` of typed values), `kv` (`items` of `{key, value}`) or `text` (`text`), then `returnedCount`, `totalCount` when set, and `truncated`. Rows carry the full values: the cell cap (`truncate_cells_at`) shapes only the text render, and `structured_content` is the canonical, uncapped data. Keys are camelCase and hand-built, so the default build needs no `serde_json`.
+- Section names and KV keys are root keys, beside the names michi writes itself. Those are one reserved list shared by every writer: `totalCount`, `help`, `recovery`, `truncated`, `budget`, `sections`, `provenance`, and the error document's `error`, `message`, `causes` and `exit_code`, reserved even on success so caller data cannot render an error document while `isError` is false. Validity never depends on caller data: a reserved name, two blocks writing one root key, two failed sections (each would write `error`), or two equal provenance labels (or a label `fingerprint`, with or without a fingerprint) renders the whole body as the `toon_validation_failed` (or `kv_validation_failed`) error naming the key (a cause of the caller's error when the response has one), the JSON `error` object says the same, and `is_error()`, the JSON `isError` and MCP `isError` are true. The JSON `sections` still carry the data as given.
+- JSON (`render(Json)` and `structured_content`): `body`, then `error` (the caller's error or a validation failure), `sections`, `budget`, `provenance` only when set (`sections` is set by `items()` and `kv_items()` too), then `hints`, `recovery`, `isError`. A section is `{name, kind, ...}` with `kind` `toon` (`fields`, `rows` of typed values), `kv` (`items` of `{key, value}`) or `text` (`text`), then `returnedCount`, `totalCount` when the section reports one (the text's rule), and `truncated`. Rows carry the full values: the cell cap (`truncate_cells_at`) shapes only the text render, and `structured_content` is the canonical, uncapped data. Keys are camelCase and hand-built, so the default build needs no `serde_json`.
 
 ### Idempotency
 
