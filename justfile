@@ -165,7 +165,7 @@ mutants:
 
 # ── Fuzzing ─────────────────────────────────────────────────────────────────
 # Run one cargo-fuzz target from fuzz/ for `seconds` (default 60). Needs `rustup toolchain install nightly` and
-# `cargo install cargo-fuzz --locked`. Targets: toon_render truncate resilience mcp_wire graph plan. Not part of
+# `cargo install cargo-fuzz --locked`. Targets: toon_render truncate resilience mcp_wire graph plan redact error_text. Not part of
 # `check` or `ci`: fuzz/ is outside the workspace and a bounded run proves nothing by passing.
 fuzz target seconds="60":
     #!/usr/bin/env bash
