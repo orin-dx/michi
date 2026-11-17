@@ -27,9 +27,20 @@ pub const REDACTED: &str = "[REDACTED]";
 /// Replaces every occurrence of each secret in `text` with [`REDACTED`].
 ///
 /// Empty secrets are ignored. When one secret contains another, the longer one wins, so no part of it is left behind.
-/// The text is scanned once and a [`REDACTED`] already in it is copied through, so no secret is ever matched inside
-/// the marker (`RED` does not turn `[REDACTED]` into `[[REDACTED]ACTED]`). Redacting the result a second time therefore
-/// changes nothing, provided no secret contains `[`: a secret that starts with `[` could match across a marker's edge.
+///
+/// The text is scanned once, left to right. At each position a known secret that matches there is replaced, longest
+/// first. Only where no secret matches is a [`REDACTED`] already in the text copied through, so a secret is never
+/// matched starting inside the marker (`RED` does not turn `[REDACTED]` into `[[REDACTED]ACTED]`), while a secret that
+/// starts with or contains the marker (`[REDACTED]private-tail`) is still removed whole.
+///
+/// Two guarantees, with their exact limits:
+///
+/// - **No known secret survives, except next to a marker.** An occurrence of a secret in the output always overlaps a
+///   `[REDACTED]`. For a secret with no `[` or `]` that means it sits entirely inside a marker that was already in the
+///   text (`RED` in `[REDACTED]`), which is the one place it is left alone.
+/// - **Redacting twice equals redacting once, provided no secret contains `[`.** A secret that starts with `[` can
+///   match the marker this function just wrote, so the second pass cuts further (`[REDACTED]x` after `tok` became a
+///   marker). Secrets that contain `]`, `RED` and the like are fine.
 ///
 /// ```
 /// use michi_core::redact::redact_secrets;
@@ -46,12 +57,13 @@ pub fn redact_secrets(text: &str, secrets: &[&str]) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(c) = rest.chars().next() {
-        if rest.starts_with(REDACTED) {
-            out.push_str(REDACTED);
-            rest = &rest[REDACTED.len()..];
-        } else if let Some(s) = secrets.iter().find(|s| rest.starts_with(**s)) {
+        // Secrets first, longest first: a secret that starts with (or equals) the marker must not be cut short by it.
+        if let Some(s) = secrets.iter().find(|s| rest.starts_with(**s)) {
             out.push_str(REDACTED);
             rest = &rest[s.len()..];
+        } else if rest.starts_with(REDACTED) {
+            out.push_str(REDACTED);
+            rest = &rest[REDACTED.len()..];
         } else {
             out.push(c);
             rest = &rest[c.len_utf8()..];

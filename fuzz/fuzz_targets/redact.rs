@@ -47,7 +47,7 @@ fuzz_target!(|input: Input| {
     assert_eq!(redact_url_userinfo(&once), once, "userinfo not idempotent for {:?}", input.text);
 
     // Known secrets. The marker in the text is copied through, so idempotence holds for every secret without a
-    // bracket (one starting with `[` could match across a marker's edge). A secret that occurs inside the marker
+    // bracket (one starting with `[` could match the marker the first pass wrote). A secret that occurs inside the marker
     // (`RED`, `D]`) is legitimately left alone where it sits in the marker, so "never survives" is only claimed
     // for alphanumeric secrets that are not part of the marker.
     let secrets: Vec<&str> = input.secrets.iter().map(String::as_str).collect();

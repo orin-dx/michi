@@ -399,6 +399,24 @@ fn redact_url_userinfo_is_linear_in_urls() {
 }
 
 #[test]
+fn redact_secrets_is_linear_in_text_with_markers_and_overlapping_secrets() {
+    // Markers, secrets that start with or contain the marker, and near-misses that match a long prefix and then fail.
+    let secrets = ["[REDACTED]private-tail", "private[REDACTED]", "tok", "token-long", "[REDACTED"];
+    finishes_within("redact_secrets", Duration::from_secs(10), move || {
+        for unit in ["[REDACTED]", "[REDACTED]private-tai ", "private[REDACTED]x", "tokentoken-lon ", "[REDACTE "] {
+            assert_linear(
+                unit,
+                1_000,
+                |n| unit.repeat(n),
+                |text| {
+                    black_box(michi_core::redact::redact_secrets(text, &secrets));
+                },
+            );
+        }
+    });
+}
+
+#[test]
 fn redact_common_shapes_is_linear_in_urls() {
     finishes_within("redact_common_shapes urls", Duration::from_secs(20), || {
         for unit in URL_UNITS {
