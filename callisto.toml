@@ -1,41 +1,18 @@
 # callisto configuration
+#
+# Everything not set here is Callisto's default: changesets in `.changeset`, the default cascade, every package
+# released by changeset, and each package publishing where its manifest says (michi-pipeline and michi-graph to
+# crates.io, @orin-dx/michi and its platform packages to npm).
 
-[changesets]
-dir = ".changeset"
-
-[cascade]
-mode = "out-of-range"
-bump-severity = "patch"
-peer-escalation = true
-preserve-npm-ranges = true
-
-# Rust library crates, published to crates.io.
+# michi-core publishes to crates.io and carries the group's GitHub release.
 [[package]]
 match = "cargo/michi-core"
 # One GitHub release per version for the whole group, attached here and tagged michi@{version}. Callisto keeps a tag
 # per package (it finds each package's last release from its own tag and rejects a shared tag, E194), so the other
 # members keep {name}@{version}; this mirrors Callisto's own callisto@{version} release tag.
 publish-to = ["crates-io", "github-release"]
-release-trigger = "changeset"
 tag-template = "michi@{version}"
 previous-tag-templates = ["michi-core@{version}"]
-
-[[package]]
-match = "cargo/michi-pipeline"
-publish-to = ["crates-io"]
-release-trigger = "changeset"
-
-# MIT graph crate, released with the rest of michi (one version for every michi package).
-[[package]]
-match = "cargo/michi-graph"
-publish-to = ["crates-io"]
-release-trigger = "changeset"
-
-# michi-node: NAPI cdylib + npm package
-[[package]]
-match = "npm/@orin-dx/michi"
-publish-to = ["npm"]
-release-trigger = "changeset"
 
 # Every michi package ships one version: a change to any of them releases all four.
 [[fixed-group]]

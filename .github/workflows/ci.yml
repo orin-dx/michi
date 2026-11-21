@@ -42,7 +42,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: orin-dx/callisto/.github/actions/callisto-validate@aebeedcdaa1dce8f0d9ad1836844ab6be68daf1f # callisto@0.20.0
+      - uses: orin-dx/callisto/.github/actions/callisto-validate@9234c02c00f65c7b742da4f4dd8b9fdbfbb0215a # callisto@0.22.0
 
   lint:
     name: Lint
@@ -123,6 +123,7 @@ jobs:
           fetch-depth: 0
       - run: python3 scripts/test_check_api_docs.py
       - run: python3 scripts/test_released_version.py
+      - run: python3 scripts/test_group_release_notes.py
       - name: Check the spec moves with the API
         env:
           GH_TOKEN: ${{ github.token }}
