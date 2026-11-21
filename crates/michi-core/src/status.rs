@@ -62,14 +62,16 @@ impl StatusResponse {
         Self { tool_name: tool_name.into(), description: description.into(), items, hints: Vec::new() }
     }
 
-    /// Attach contextual hints.
+    /// Replace the contextual hints with `hints`.
     #[must_use]
-    pub fn with_hints(mut self, hints: Vec<Hint>) -> Self {
+    pub fn hints(mut self, hints: Vec<Hint>) -> Self {
         self.hints = hints;
         self
     }
 
-    /// Render this status response as a TOON 4.4 document, with no trailing newline:
+    /// Render this status response as a TOON 4.4 document, with no trailing newline: the response
+    /// `AgentResponse::new("items").status(self)` with no cell cap, so it is the same writer a composed response uses
+    /// (see [`crate::AgentResponse::status`]).
     ///
     /// ```text
     /// tool: my-tool
@@ -80,50 +82,45 @@ impl StatusResponse {
     /// help[1]: Call get_status for detail
     /// ```
     ///
-    /// `items` is a tabular array (§9.3), `items: []` when there are none. `health` is `ok`, `degraded`, `error`, or
-    /// `null` when the item carries no health signal; `reason` is the degraded/error reason, `null` otherwise. Item
-    /// keys are cells, not root keys, so any key — even a repeated one — keeps the document valid. Every string is
-    /// quoted per §7.2 and the value is a TOON primitive (see [`KvValue`]).
+    /// `items` is a tabular array (§9.3); with no items it is `items: []` and `totalCount: 0`, the definitive empty
+    /// list. `health` is `ok`, `degraded`, `error`, or `null` when the item carries no health signal; `reason` is the
+    /// degraded/error reason, `null` otherwise. Item keys are cells, not root keys, so any key — even a repeated one —
+    /// keeps the document valid. Every string is quoted per §7.2 and the value is the token [`KvValue`] renders.
     #[must_use]
     pub fn render(&self) -> String {
-        let capacity = 48
-            + self.tool_name.len()
-            + self.description.len()
-            + self.items.iter().map(|i| i.key.len() + 32).sum::<usize>()
-            + self.hints.len() * 50;
-        let mut out = String::with_capacity(capacity);
-        out.push_str("tool: ");
-        out.push_str(&crate::toon::escape_value(&self.tool_name));
-        out.push_str("\ndescription: ");
-        out.push_str(&crate::toon::escape_value(&self.description));
-        if self.items.is_empty() {
-            out.push_str("\nitems: []");
-        } else {
-            out.push_str("\nitems[");
-            out.push_str(&self.items.len().to_string());
-            out.push_str("]{key,value,health,reason}:");
-            for item in &self.items {
-                out.push_str("\n  ");
-                out.push_str(&crate::toon::escape_value(&item.key));
-                out.push(',');
-                crate::kv::push_kv_value(&mut out, &item.value);
+        crate::AgentResponse::new("items")
+            .truncate_cells_at(usize::MAX)
+            .status(self.clone())
+            .render(crate::OutputFormat::Text)
+    }
+
+    /// The two sections a composed response holds: `tool` and `description` as a KV section named `status`, then the
+    /// `items` table.
+    pub(crate) fn sections(&self) -> [crate::section::Section; 2] {
+        use crate::section::Section;
+        use crate::toon::Value;
+        let head = Section::kv(
+            "status",
+            vec![
+                crate::kv::KvItem::new("tool", KvValue::Text(self.tool_name.clone())),
+                crate::kv::KvItem::new("description", KvValue::Text(self.description.clone())),
+            ],
+        );
+        let rows = self
+            .items
+            .iter()
+            .map(|item| {
                 let (health, reason) = match &item.health {
-                    None => ("null", None),
-                    Some(Health::Ok) => ("ok", None),
-                    Some(Health::Degraded(reason)) => ("degraded", Some(reason)),
-                    Some(Health::Error(reason)) => ("error", Some(reason)),
+                    None => (Value::Null, Value::Null),
+                    Some(Health::Ok) => ("ok".into(), Value::Null),
+                    Some(Health::Degraded(reason)) => ("degraded".into(), reason.as_str().into()),
+                    Some(Health::Error(reason)) => ("error".into(), reason.as_str().into()),
                 };
-                out.push(',');
-                out.push_str(health);
-                out.push(',');
-                match reason {
-                    Some(reason) => out.push_str(&crate::toon::escape_value(reason)),
-                    None => out.push_str("null"),
-                }
-            }
-        }
-        crate::hints::append_hints(&mut out, &self.hints);
-        out
+                vec![item.key.as_str().into(), crate::kv::to_cell(&item.value), health, reason]
+            })
+            .collect();
+        let fields = ["key", "value", "health", "reason"].map(String::from).to_vec();
+        [head, Section::toon("items", fields, rows)]
     }
 }
 
@@ -150,7 +147,7 @@ mod tests {
     #[test]
     fn empty_items_renders_tool_description_and_an_empty_items_array() {
         let out = StatusResponse::new("tool-x", "does things", vec![]).render();
-        assert_eq!(out, "tool: tool-x\ndescription: does things\nitems: []");
+        assert_eq!(out, "tool: tool-x\ndescription: does things\nitems: []\ntotalCount: 0");
     }
 
     #[test]
@@ -198,19 +195,20 @@ mod tests {
     }
 
     #[test]
-    fn ac021_new_defaults_hints_empty_and_with_hints_is_a_consuming_builder() {
+    fn ac021_new_defaults_hints_empty_and_hints_is_a_consuming_builder() {
         let resp = StatusResponse::new("tool", "desc", vec![]);
         assert!(resp.hints.is_empty());
 
         let hints = vec![Hint::new("a hint")];
-        let with = resp.with_hints(hints.clone());
+        let with = resp.hints(hints.clone());
         assert_eq!(with.hints, hints);
         assert_eq!(with.tool_name, "tool");
         assert_eq!(with.description, "desc");
         assert!(with.items.is_empty());
     }
 
-    // AC-023 (superseded): 3 lines (tool, description, items header) plus one row per item.
+    // AC-023 (superseded): 3 lines (tool, description, items header) plus one row per item; no items is `items: []` and
+    // `totalCount: 0`.
     #[test]
     fn ac023_line_count_is_3_plus_n_with_default_hints() {
         for n in 0..=3 {
@@ -222,15 +220,15 @@ mod tests {
                 })
                 .collect();
             let out = StatusResponse::new("tool", "desc", items).render();
-            assert_eq!(out.lines().count(), 3 + n, "n={n}, got: {out:?}");
+            assert_eq!(out.lines().count(), 3 + n.max(1), "n={n}, got: {out:?}");
         }
     }
 
     #[test]
-    fn ac023a_with_hints_appends_the_help_block_on_its_own_line() {
+    fn ac023a_hints_appends_the_help_block_on_its_own_line() {
         let items = || vec![StatusItem { key: "k".into(), value: KvValue::Int(1), health: None }];
         let hints = vec![Hint::new("h1"), Hint::new("h2")];
-        let out = StatusResponse::new("tool", "desc", items()).with_hints(hints.clone()).render();
+        let out = StatusResponse::new("tool", "desc", items()).hints(hints.clone()).render();
         let no_hints = StatusResponse::new("tool", "desc", items()).render();
         assert_eq!(out, format!("{no_hints}\n{}", crate::hints::render_hints(&hints)));
     }
@@ -272,7 +270,7 @@ mod tests {
     #[test]
     fn ac022a_tool_name_and_description_newlines_are_escaped() {
         let out = StatusResponse::new("a\nb", "c\nd", vec![]).render();
-        assert_eq!(out, "tool: \"a\\nb\"\ndescription: \"c\\nd\"\nitems: []");
+        assert_eq!(out, "tool: \"a\\nb\"\ndescription: \"c\\nd\"\nitems: []\ntotalCount: 0");
     }
 
     #[test]

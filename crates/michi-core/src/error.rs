@@ -2,9 +2,10 @@ use std::time::Duration;
 
 use crate::hints::Hint;
 use crate::recovery::RecoveryHint;
+use crate::response::OutputFormat;
 
-/// Classification of a `crate::Error` for routing and display decisions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Classification of a [`DomainError`] for routing and display decisions; see [`DomainError::class`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ErrorClass {
     /// The caller provided invalid input. Do not retry.
@@ -51,9 +52,10 @@ impl<T> std::fmt::Display for Sensitive<T> {
 
 /// The specific kind of domain error.
 ///
-/// Rendered output uses the snake_case [`ErrorCode::label`]; with the `schemars` feature its schema is the enum of
-/// those labels, matching the `error` field of [`DomainError::render_json`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Rendered output uses the snake_case [`ErrorCode::label`], which is also its `Display` and its `FromStr` input; with
+/// the `schemars` feature its schema is the enum of those labels, matching the `error` field of the JSON form of
+/// [`DomainError::render`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "schemars", schemars(rename_all = "snake_case"))]
 #[non_exhaustive]
@@ -127,11 +129,11 @@ impl ErrorCode {
         matches!(self, Self::Timeout)
     }
 
-    /// The default [`ErrorClass`] for this code, independent of `DomainError.retryable`.
+    /// The default [`ErrorClass`] for this code, independent of whether an error is marked retryable.
     ///
     /// `Timeout` returns `Ambiguous` (the operation may have taken effect); `RateLimited`, `Unavailable` and
-    /// `ExternalFailure` return `Internal`; caller-fault codes return `User`. Used by [`Error::class()`] when the error
-    /// is not marked retryable.
+    /// `ExternalFailure` return `Internal`; caller-fault codes return `User`. Used by [`DomainError::class`] when the
+    /// error is not marked retryable.
     #[must_use]
     pub fn default_class(&self) -> ErrorClass {
         match self {
@@ -141,6 +143,13 @@ impl ErrorCode {
             Self::RateLimited | Self::Unavailable | Self::ExternalFailure => ErrorClass::Internal,
             Self::Timeout => ErrorClass::Ambiguous,
         }
+    }
+}
+
+/// The [`label`](ErrorCode::label).
+impl std::fmt::Display for ErrorCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.label())
     }
 }
 
@@ -173,34 +182,43 @@ impl std::str::FromStr for ErrorCode {
 /// A domain-level error.
 ///
 /// `causes` say why it happened (diagnosis); `hints` say what to do next (guidance). They are separate fields, and
-/// render as separate keys, so an agent can tell them apart. [`DomainError::from_error_with_causes`] fills `message` and `causes`
-/// from a `std::error::Error` and its `source()` chain.
+/// render as separate keys, so an agent can tell them apart. [`DomainError::from_error_with_causes`] fills `message`
+/// and `causes` from a `std::error::Error` and its `source()` chain.
 ///
-/// With the `serde` feature it serializes to exactly the JSON of [`DomainError::render_json`]
-/// (`{isError, error, message, causes, retryable, hints, recovery}`), and with `schemars` its schema describes that
-/// form, so it can be used as an MCP `outputSchema`. `retry_after` is not part of that form.
-#[derive(Debug, Clone)]
+/// The fields are private: build the error with [`DomainError::new`] and the builder methods, and read it with the
+/// getters. The builder keeps [`MAY_HAVE_TAKEN_EFFECT_HINT`] in step with the code and the retry flag, which a field
+/// write would skip (a `Timeout` set retryable after construction kept the "verify first" hint; a `RateLimited` error
+/// whose code became `Timeout` was retryable with no hint at all).
+///
+/// ```compile_fail,E0616
+/// let mut e = michi_core::DomainError::new(michi_core::ErrorCode::Timeout, "POST /charge timed out");
+/// e.retryable = true;
+/// ```
+///
+/// ```compile_fail,E0616
+/// let mut e = michi_core::DomainError::new(michi_core::ErrorCode::RateLimited, "slow down");
+/// e.code = michi_core::ErrorCode::Timeout;
+/// ```
+///
+/// It renders as the error block of an [`AgentResponse`](crate::AgentResponse): `render` and `to_call_tool_result`
+/// are that response's, and [`AgentResponse::error`](crate::AgentResponse::error) puts the same block next to
+/// sections, so an error has one text form and one JSON form wherever it appears.
+///
+/// With the `serde` feature it serializes to exactly the JSON of `render(OutputFormat::Json)`
+/// (`{body, error: {code, message, causes, retryable}, hints, recovery, isError}`), and with `schemars` its schema
+/// describes that form, so it can be used as an MCP `outputSchema`. `retry_after` is not part of that form.
+#[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(into = "DomainErrorWire"))]
 #[non_exhaustive]
 pub struct DomainError {
-    /// The error classification.
-    pub code: ErrorCode,
-    /// Human-readable message.
-    pub message: String,
-    /// Why it happened, outermost first: one entry per underlying cause, rendered as `causes[N]: …` after the
-    /// message. Diagnosis only; what the agent should do next goes in `hints`.
-    pub causes: Vec<String>,
-    /// Contextual hints, rendered as a trailing `help[N]:` block.
-    pub hints: Vec<Hint>,
-    /// Optional structured recovery hint.
-    pub recovery: Option<RecoveryHint>,
-    /// Whether calling again is expected to help without repeating an effect. Defaults to `true` only for
-    /// `RateLimited` and `Unavailable` (the request was not processed); set it for a `Timeout` or `ExternalFailure`
-    /// only when the operation is idempotent, since the failed attempt may have taken effect.
-    pub retryable: bool,
-    /// Parsed `Retry-After` delay, if known.
-    pub retry_after: Option<Duration>,
+    code: ErrorCode,
+    message: String,
+    causes: Vec<String>,
+    hints: Vec<Hint>,
+    recovery: Option<RecoveryHint>,
+    retryable: bool,
+    retry_after: Option<Duration>,
 }
 
 impl DomainError {
@@ -239,8 +257,10 @@ impl DomainError {
     /// internals that should not reach an agent. Use [`DomainError::from_error_with_causes`] to opt in to the chain.
     /// The top-level `Display` is still agent-visible, so make sure it is safe to show; if it is not, build the
     /// error with [`DomainError::new`] and a message you wrote. The message is tool-author text, never data. As a
-    /// safety net, `user:password@` in any URL is replaced with `[REDACTED]` ([`crate::redact::redact_url_userinfo`]);
-    /// that is best-effort and covers nothing else.
+    /// safety net the text goes through [`crate::redact::redact_common_shapes`]: URL userinfo, the values of
+    /// `token=`/`api_key=`/`password=`-style pairs (a `reqwest` error puts the whole URL, query included, in its
+    /// top-level `Display`) and a few token prefixes become `[REDACTED]`. That is best effort, not a guarantee: see
+    /// that function for what it misses.
     ///
     /// ```
     /// use michi_core::{DomainError, ErrorCode};
@@ -251,16 +271,16 @@ impl DomainError {
     ///
     /// let io = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "/home/ci/.netrc: permission denied");
     /// let e = DomainError::from_error(ErrorCode::ExternalFailure, &Sync(io));
-    /// assert_eq!(e.message, "sync failed");
-    /// assert!(e.causes.is_empty());
+    /// assert_eq!(e.message(), "sync failed");
+    /// assert!(e.causes().is_empty());
     /// ```
     pub fn from_error(code: ErrorCode, err: &(dyn std::error::Error + 'static)) -> Self {
-        Self::new(code, crate::redact::redact_url_userinfo(&err.to_string()))
+        Self::new(code, crate::redact::redact_common_shapes(&err.to_string()))
     }
 
     /// Like [`DomainError::from_error`], and also copies the `source()` chain into `causes`. Opt-in: every link's
     /// `Display` becomes agent-visible text, so use it only when the whole chain is safe to show (no URLs with
-    /// tokens, no paths or internals you would not print to an end user). URL userinfo is redacted in every link, as in
+    /// tokens, no paths or internals you would not print to an end user). The same redaction is applied to every link, as in
     /// [`DomainError::from_error`].
     ///
     /// Each `source()` link, outermost first, adds its `Display` as one entry of `causes` (never a hint: causes are
@@ -270,8 +290,8 @@ impl DomainError {
     /// renderers escape them. The walk stops after 128 links, so a cyclic `source()` cannot loop.
     ///
     /// The chain is kept as text only: no source error is stored, so [`std::error::Error::source`] on the result is
-    /// still `None`, and the result stays `Clone`, `Send` and `Sync`. Prefix the message yourself if you want one
-    /// (`e.message = format!("walk: {}", e.message)`).
+    /// still `None`, and the result stays `Clone`, `Send` and `Sync`. Add a prefix with
+    /// [`context`](Self::context).
     ///
     /// ```
     /// use michi_core::{DomainError, ErrorCode};
@@ -282,15 +302,15 @@ impl DomainError {
     ///
     /// let io = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "permission denied");
     /// let e = DomainError::from_error_with_causes(ErrorCode::ExternalFailure, &Walk(io));
-    /// assert_eq!(e.message, "walk failed: permission denied");
-    /// assert!(e.causes.is_empty(), "the message already holds the only cause");
+    /// assert_eq!(e.message(), "walk failed: permission denied");
+    /// assert!(e.causes().is_empty(), "the message already holds the only cause");
     /// ```
     pub fn from_error_with_causes(code: ErrorCode, err: &(dyn std::error::Error + 'static)) -> Self {
         let mut out = Self::from_error(code, err);
         let mut link = err.source();
         for _ in 0..MAX_CAUSE_LINKS {
             let Some(e) = link else { break };
-            let text = crate::redact::redact_url_userinfo(&e.to_string());
+            let text = crate::redact::redact_common_shapes(&e.to_string());
             let previous = out.causes.last().unwrap_or(&out.message);
             if !previous.contains(text.as_str()) {
                 out.causes.push(text);
@@ -331,11 +351,81 @@ impl DomainError {
         self
     }
 
-    /// Attach a `Retry-After` delay.
+    /// Attach a `Retry-After` delay, or clear it with `None`.
     #[must_use]
-    pub fn retry_after(mut self, d: Duration) -> Self {
-        self.retry_after = Some(d);
+    pub fn retry_after(mut self, d: impl Into<Option<Duration>>) -> Self {
+        self.retry_after = d.into();
         self
+    }
+
+    /// Prefix the message with `context`, as `"{context}: {message}"`, keeping everything else. Tool-author text, never
+    /// data.
+    ///
+    /// ```
+    /// use michi_core::{DomainError, ErrorCode};
+    ///
+    /// let e = DomainError::new(ErrorCode::NotFound, "no such file").context("load config");
+    /// assert_eq!(e.message(), "load config: no such file");
+    /// ```
+    #[must_use]
+    pub fn context(mut self, context: impl std::fmt::Display) -> Self {
+        self.message = format!("{context}: {}", self.message);
+        self
+    }
+
+    /// The error's code.
+    #[must_use]
+    pub fn code(&self) -> ErrorCode {
+        self.code
+    }
+
+    /// The human-readable message.
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    /// Why it happened, outermost first: one entry per underlying cause, rendered as `causes[N]: …` after the message.
+    #[must_use]
+    pub fn causes(&self) -> &[String] {
+        &self.causes
+    }
+
+    /// The contextual hints, rendered as `help[N]: …`, including [`MAY_HAVE_TAKEN_EFFECT_HINT`] while it applies.
+    #[must_use]
+    pub fn hints(&self) -> &[Hint] {
+        &self.hints
+    }
+
+    /// The structured recovery hint, if one was attached with [`recovery`](Self::recovery).
+    #[must_use]
+    pub fn get_recovery(&self) -> Option<&RecoveryHint> {
+        self.recovery.as_ref()
+    }
+
+    /// The `Retry-After` delay attached with [`retry_after`](Self::retry_after), if any.
+    #[must_use]
+    pub fn get_retry_after(&self) -> Option<Duration> {
+        self.retry_after
+    }
+
+    /// Whether calling again is expected to help without repeating an effect: by default `true` only for
+    /// `RateLimited` and `Unavailable` (the request was not processed), or after [`retryable(true)`](Self::retryable)
+    /// for an idempotent operation. True exactly when [`class`](Self::class) is [`ErrorClass::Transient`].
+    #[must_use]
+    pub fn is_retryable(&self) -> bool {
+        self.retryable
+    }
+
+    /// Classify this error for routing: [`ErrorClass::Transient`] when it is retryable, otherwise the code's
+    /// [`default_class`](ErrorCode::default_class).
+    #[must_use]
+    pub fn class(&self) -> ErrorClass {
+        if self.retryable {
+            ErrorClass::Transient
+        } else {
+            self.code.default_class()
+        }
     }
 
     /// The process exit code to use when this error is fatal. Always `1`.
@@ -344,19 +434,26 @@ impl DomainError {
         1
     }
 
-    /// Render as a TOON 4.4 root object, with no trailing newline: `error: <code label>`, `message: …` (quoted per
-    /// §7.2), the inline `causes[N]: …` array when there are causes, `exit_code: 1`, then the inline `help[N]: …`
-    /// array and the `recovery[1]{tool,params,reason}:` table when present.
+    /// Render in the requested format: the render of `AgentResponse::new(..).error(self)`, so a lone error and an
+    /// error inside a larger response are written by one writer.
+    ///
+    /// [`OutputFormat::Text`] is a TOON 4.4 root object, with no trailing newline: `error: <code label>`, `message: …`
+    /// (quoted per §7.2), the inline `causes[N]: …` array when there are causes, `exit_code: 1`, then the inline
+    /// `help[N]: …` array and the `recovery[1]{tool,params,reason}:` table when present.
+    ///
+    /// [`OutputFormat::Json`] is the response's JSON object, the `structured_content` companion of the text:
+    /// `{"body", "error": {"code", "message", "causes", "retryable"}, "hints", "recovery", "isError": true}`, where
+    /// `body` is the text before `help` and `recovery`. `causes`, `hints` and `recovery` are arrays, `[]` when
+    /// empty. It is the one error shape: an
+    /// `AgentResponse` with an [`error`](crate::AgentResponse::error) writes the same keys.
     #[must_use]
-    pub fn render(&self) -> String {
-        let causes_est: usize = self.causes.iter().map(|c| c.len() + 3).sum();
-        let mut out = String::with_capacity(96 + self.message.len() + causes_est + self.hints.len() * 50);
-        push_error_fields(&mut out, self.code.label(), &self.message, &self.causes);
-        crate::hints::append_hints(&mut out, &self.hints);
-        if let Some(r) = &self.recovery {
-            crate::recovery::append_recovery(&mut out, std::slice::from_ref(r));
-        }
-        out
+    pub fn render(&self, format: OutputFormat) -> String {
+        self.response().render(format)
+    }
+
+    /// The response that is this error alone. Its type name never renders: a response with an error has no empty list.
+    fn response(&self) -> crate::AgentResponse {
+        crate::AgentResponse::new("error").error(self.clone())
     }
 
     /// Render formatted for GitHub Actions workflow annotations (`::error title=code::message`).
@@ -373,104 +470,54 @@ impl DomainError {
         )
     }
 
-    /// Render as a compact JSON object, the `structured_content` companion of [`DomainError::render`].
+    /// Build an MCP [`CallToolResult`](crate::mcp::CallToolResult) representing this error: the result of
+    /// `AgentResponse::new(..).error(self)`.
     ///
-    /// Keys: `isError`, `error`, `message`, `causes`, `retryable`, `hints`, `recovery`. `causes` and `hints` are
-    /// always present, as `[]` when empty; `recovery` is the hint object, or `null`. The shape differs from
-    /// `AgentResponse`'s JSON (`{body, hints, recovery, isError}`, with `recovery` an array); only `isError` and
-    /// `hints` mean the same in both.
-    #[must_use]
-    pub fn render_json(&self) -> String {
-        let hints_est: usize = self.hints.iter().map(|h| h.as_str().len() + 4).sum();
-        let causes_est: usize = self.causes.iter().map(|c| c.len() + 4).sum();
-        let recovery_est: usize = self.recovery.as_ref().map_or(0, |r| {
-            50 + r.tool.len()
-                + r.params.iter().map(|_| 20usize).sum::<usize>()
-                + r.reason.as_ref().map_or(0, |s| s.len() + 12)
-        });
-        let mut out = String::with_capacity(140 + self.message.len() + causes_est + hints_est + recovery_est);
-        out.push_str("{\"isError\":true,\"error\":");
-        crate::kv::json_escape_str(&mut out, self.code.label());
-        out.push_str(",\"message\":");
-        crate::kv::json_escape_str(&mut out, &self.message);
-        out.push_str(",\"causes\":[");
-        for (i, c) in self.causes.iter().enumerate() {
-            if i > 0 {
-                out.push(',');
-            }
-            crate::kv::json_escape_str(&mut out, c);
-        }
-        out.push_str("],\"retryable\":");
-        out.push_str(if self.retryable { "true" } else { "false" });
-        out.push_str(",\"hints\":[");
-        for (i, h) in self.hints.iter().enumerate() {
-            if i > 0 {
-                out.push(',');
-            }
-            crate::kv::json_escape_str(&mut out, h.as_str());
-        }
-        out.push_str("],\"recovery\":");
-        match &self.recovery {
-            None => out.push_str("null"),
-            Some(r) => {
-                out.push_str("{\"tool\":");
-                crate::kv::json_escape_str(&mut out, &r.tool);
-                out.push_str(",\"params\":");
-                crate::recovery::push_params_json(&mut out, &r.params);
-                if let Some(reason) = &r.reason {
-                    out.push_str(",\"reason\":");
-                    crate::kv::json_escape_str(&mut out, reason);
-                }
-                out.push('}');
-            }
-        }
-        out.push('}');
-        out
-    }
-
-    /// Build an MCP [`CallToolResult`](crate::mcp::CallToolResult) representing this error.
-    ///
-    /// Sets `is_error: true`. Text content uses [`DomainError::render()`];
-    /// `structured_content` uses [`DomainError::render_json()`].
-    ///
-    /// **Canonical path:** call this directly when you hold a `DomainError`.
-    /// Do not wrap in `AgentResponse::as_error()` — that loses typed fields.
+    /// Sets `is_error: true`. Text content is `render(OutputFormat::Text)`; `structured_content` is
+    /// `render(OutputFormat::Json)`. To report the error next to data (a batch where some operations answered), add
+    /// it to that response with [`AgentResponse::error`](crate::AgentResponse::error) instead.
     #[must_use]
     pub fn to_call_tool_result(&self) -> crate::mcp::CallToolResult {
-        crate::mcp::CallToolResult {
-            content: vec![crate::mcp::ContentBlock {
-                text: self.render(),
-                audience: vec![crate::audience::Audience::Assistant],
-            }],
-            is_error: true,
-            structured_content: self.render_json(),
-        }
+        self.response().to_call_tool_result()
     }
 }
 
-/// The wire form of [`DomainError`]: the object `render_json()` writes.
+/// The wire form of [`DomainError`]: the object `render(OutputFormat::Json)` writes, the JSON of an `AgentResponse`
+/// holding only this error.
 #[cfg(feature = "serde")]
 #[derive(serde::Serialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "schemars", schemars(rename = "DomainError"))]
 #[serde(rename_all = "camelCase")]
 struct DomainErrorWire {
+    /// The TOON error lines (`error`, `message`, `causes`, `exit_code`): the text before `help` and `recovery`.
+    body: String,
+    /// The error itself.
+    error: ErrorFieldsWire,
+    /// Contextual hints.
+    hints: Vec<String>,
+    /// The structured recovery hints: the error's, when it has one.
+    recovery: Vec<RecoveryHint>,
     /// Always `true`.
     #[cfg_attr(feature = "schemars", schemars(schema_with = "const_true_schema"))]
     is_error: bool,
+}
+
+/// The `error` object of a response's JSON.
+#[cfg(feature = "serde")]
+#[derive(serde::Serialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schemars", schemars(rename = "ErrorFields"))]
+struct ErrorFieldsWire {
     /// The snake_case error code label.
     #[cfg_attr(feature = "schemars", schemars(with = "ErrorCode"))]
-    error: &'static str,
+    code: &'static str,
     /// Human-readable message.
     message: String,
     /// Why it happened, outermost first; `[]` when unknown.
     causes: Vec<String>,
     /// Whether calling again is expected to help without repeating an effect.
     retryable: bool,
-    /// Contextual hints.
-    hints: Vec<String>,
-    /// The structured recovery hint, or `null`.
-    recovery: Option<RecoveryHint>,
 }
 
 #[cfg(feature = "schemars")]
@@ -481,19 +528,26 @@ fn const_true_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
 #[cfg(feature = "serde")]
 impl From<DomainError> for DomainErrorWire {
     fn from(e: DomainError) -> Self {
+        // The body of a response holding only this error: its error lines, without `help` and `recovery`, which
+        // the JSON carries as the arrays below.
+        let mut body = String::new();
+        push_error_fields(&mut body, &e);
         Self {
-            is_error: true,
-            error: e.code.label(),
-            message: e.message,
-            causes: e.causes,
-            retryable: e.retryable,
+            body,
+            error: ErrorFieldsWire {
+                code: e.code.label(),
+                message: e.message,
+                causes: e.causes,
+                retryable: e.retryable,
+            },
             hints: e.hints.iter().map(|h| h.as_str().to_string()).collect(),
-            recovery: e.recovery,
+            recovery: e.recovery.into_iter().collect(),
+            is_error: true,
         }
     }
 }
 
-// The schema describes the render_json()/serde wire form above, not the Rust field layout.
+// The schema describes the JSON render/serde wire form above, not the Rust field layout.
 #[cfg(feature = "schemars")]
 #[cfg_attr(docsrs, doc(cfg(feature = "schemars")))]
 impl schemars::JsonSchema for DomainError {
@@ -553,15 +607,34 @@ fn escape_annotation_property(s: &str) -> String {
     out
 }
 
-/// The fields every rendered error document starts with: `error: <code>`, `message: …`, `causes[N]: …` (only when
-/// there are causes), `exit_code: 1`.
-fn push_error_fields(out: &mut String, code: &str, message: &str, causes: &[String]) {
+/// The lines every rendered error document starts with: `error: <code>`, `message: …`, `causes[N]: …` (only when
+/// there are causes), `exit_code: 1`. Appended after a LF when `out` is not empty.
+pub(crate) fn push_error_fields(out: &mut String, e: &DomainError) {
+    let causes_est: usize = e.causes.iter().map(|c| c.len() + 3).sum();
+    out.reserve(48 + e.message.len() + causes_est);
+    if !out.is_empty() {
+        out.push('\n');
+    }
     out.push_str("error: ");
-    out.push_str(code);
+    out.push_str(e.code.label());
     out.push_str("\nmessage: ");
-    out.push_str(&crate::toon::escape_value(message));
-    crate::hints::append_inline_strings(out, "causes", causes.iter().map(String::as_str));
+    out.push_str(&crate::toon::escape_value(&e.message));
+    crate::hints::append_inline_strings(out, "causes", e.causes.iter().map(String::as_str));
     out.push_str("\nexit_code: 1");
+}
+
+/// The `error` object of a response's JSON: `{"code", "message", "causes", "retryable"}`. Hints and recovery are not
+/// in it: they are the response's `hints` and `recovery` arrays, like every other hint.
+pub(crate) fn push_error_json(out: &mut String, e: &DomainError) {
+    out.push_str("{\"code\":");
+    crate::json::push_str(out, e.code.label());
+    out.push_str(",\"message\":");
+    crate::json::push_str(out, &e.message);
+    out.push_str(",\"causes\":");
+    crate::json::push_str_array(out, e.causes.iter().map(String::as_str));
+    out.push_str(",\"retryable\":");
+    crate::json::push_bool(out, e.retryable);
+    out.push('}');
 }
 
 #[cfg(feature = "miette")]
@@ -589,63 +662,6 @@ impl miette::Diagnostic for DomainError {
     }
 }
 
-/// The unified error type for michi-core.
-#[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
-pub enum Error {
-    /// Invalid or malformed input.
-    #[error("Invalid input: {0}")]
-    InvalidInput(String),
-
-    /// A required resource was not found.
-    #[error("Not found: {0}")]
-    NotFound(String),
-
-    /// A classified domain error with hints, recovery, and retry metadata.
-    #[error("{}: {}", .0.code.label(), .0.message)]
-    Domain(#[from] DomainError),
-}
-
-impl Error {
-    /// Render this error as a TOON 4.4 document in the shape of [`DomainError::render`]: `Domain` renders its inner
-    /// error; `InvalidInput(m)` and `NotFound(m)` render `error: invalid_input` / `error: not_found`, `message: m`
-    /// (quoted per §7.2) and `exit_code: 1`, with no trailing newline.
-    #[must_use]
-    pub fn render(&self) -> String {
-        let (code, message) = match self {
-            Self::Domain(d) => return d.render(),
-            Self::InvalidInput(m) => (ErrorCode::InvalidInput.label(), m),
-            Self::NotFound(m) => (ErrorCode::NotFound.label(), m),
-        };
-        let mut out = String::with_capacity(48 + message.len());
-        push_error_fields(&mut out, code, message, &[]);
-        out
-    }
-
-    /// The process exit code to use when this error is fatal.
-    #[must_use]
-    pub fn exit_code(&self) -> i32 {
-        1
-    }
-
-    /// Classify this error for routing decisions.
-    #[must_use]
-    pub fn class(&self) -> ErrorClass {
-        match self {
-            Self::Domain(d) if d.retryable => ErrorClass::Transient,
-            Self::Domain(d) => d.code.default_class(),
-            Self::InvalidInput(_) | Self::NotFound(_) => ErrorClass::User,
-        }
-    }
-
-    /// Whether this error is [`ErrorClass::Transient`]: calling again is expected to help without repeating an
-    /// effect. A `Timeout` or `ExternalFailure` is retryable only when its `DomainError` was marked so.
-    #[must_use]
-    pub fn is_retryable(&self) -> bool {
-        matches!(self.class(), ErrorClass::Transient)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -653,7 +669,7 @@ mod tests {
     #[test]
     fn domain_error_render_json_basic() {
         let err = DomainError::new(ErrorCode::NotFound, "Item 42 not found");
-        let json = err.render_json();
+        let json = err.render(OutputFormat::Json);
         assert!(json.contains("\"isError\":true"), "got: {json}");
         assert!(json.contains("\"error\":"), "got: {json}");
         assert!(json.contains("\"message\":\"Item 42 not found\""), "got: {json}");
@@ -664,7 +680,7 @@ mod tests {
     #[test]
     fn domain_error_render_json_includes_hints() {
         let err = DomainError::new(ErrorCode::NotFound, "not found").hint("Try searching with get_items");
-        let json = err.render_json();
+        let json = err.render(OutputFormat::Json);
         assert!(json.contains("\"hints\""), "got: {json}");
         assert!(json.contains("Try searching"), "got: {json}");
     }
@@ -680,21 +696,15 @@ mod tests {
     #[test]
     fn domain_error_json_escapes_message() {
         let err = DomainError::new(ErrorCode::InvalidInput, r#"field "name" invalid"#);
-        let json = err.render_json();
+        let json = err.render(OutputFormat::Json);
         assert!(json.contains("\\\"name\\\""), "quotes in message must be JSON-escaped, got: {json}");
-    }
-
-    #[test]
-    fn invalid_input_renders() {
-        let e = Error::InvalidInput("field 'name' is required".into());
-        assert_eq!(e.render(), "error: invalid_input\nmessage: field 'name' is required\nexit_code: 1");
     }
 
     #[test]
     fn domain_error_renders_kv_block_with_hints() {
         let e = DomainError::new(ErrorCode::NotFound, "Issue #9999 does not exist in this repository")
             .hint("Call list_issues to see available numbers");
-        let out = e.render();
+        let out = e.render(OutputFormat::Text);
         assert_eq!(
             out,
             "error: not_found\nmessage: Issue #9999 does not exist in this repository\nexit_code: 1\nhelp[1]: Call list_issues to see available numbers"
@@ -782,11 +792,11 @@ mod tests {
             .hint("call list_items")
             .hint("check the id")
             .retryable(false);
-        let json = err.render_json();
+        let json = err.render(OutputFormat::Json);
         assert!(json.starts_with('{') && json.ends_with('}'), "must be a JSON object, got: {json}");
         assert!(json.contains("\"isError\":true"), "isError must be true, got: {json}");
         assert!(json.contains("\"hints\":["), "must include hints array, got: {json}");
-        assert!(json.contains("\"recovery\":null"), "must include recovery null, got: {json}");
+        assert!(json.contains("\"recovery\":[]"), "must include an empty recovery array, got: {json}");
         // Escaped quotes inside string values must use \" not raw "
         assert!(!json.contains(r#"has "quotes""#), "inner quotes must be escaped, got: {json}");
     }
@@ -803,30 +813,30 @@ mod tests {
                     .param("after_ms", crate::kv::KvValue::Int(5000))
                     .reason("Rate limit window resets every 60 seconds"),
             );
-        let json = err.render_json();
+        let json = err.render(OutputFormat::Json);
         // Smoke test: no panic = capacity was sufficient (Vec didn't reallocate unexpectedly).
         // JSON correctness is validated by structure checks.
         assert!(json.contains("\"hints\":["), "got: {json}");
-        assert!(json.contains("\"recovery\":{"), "got: {json}");
+        assert!(json.contains("\"recovery\":[{"), "got: {json}");
         assert!(json.contains("\"reason\":"), "got: {json}");
     }
 
     #[test]
     fn unavailable_with_retryable_false_is_internal_not_user() {
-        let err = Error::Domain(DomainError::new(ErrorCode::Unavailable, "down").retryable(false));
+        let err = DomainError::new(ErrorCode::Unavailable, "down").retryable(false);
         assert_eq!(err.class(), ErrorClass::Internal, "infra error with retryable=false must be Internal, not User");
     }
 
     #[test]
     fn invalid_input_is_user() {
-        let err = Error::Domain(DomainError::new(ErrorCode::InvalidInput, "bad input"));
+        let err = DomainError::new(ErrorCode::InvalidInput, "bad input");
         assert_eq!(err.class(), ErrorClass::User);
     }
 
     #[test]
     fn rate_limited_retryable_true_is_transient() {
         // Default: RateLimited is retryable by default
-        let err = Error::Domain(DomainError::new(ErrorCode::RateLimited, "429"));
+        let err = DomainError::new(ErrorCode::RateLimited, "429");
         assert_eq!(err.class(), ErrorClass::Transient);
     }
 
@@ -847,7 +857,7 @@ mod tests {
     #[test]
     fn internal_class_is_not_retryable() {
         // Internal is not Transient, so is_retryable() must return false
-        let err = Error::Domain(DomainError::new(ErrorCode::Unavailable, "down").retryable(false));
+        let err = DomainError::new(ErrorCode::Unavailable, "down").retryable(false);
         assert!(!err.is_retryable(), "Internal-classified error must not be retryable");
     }
 
@@ -882,6 +892,58 @@ mod tests {
     fn ac002_error_code_is_copy() {
         fn assert_copy<T: Copy>() {}
         assert_copy::<ErrorCode>();
+    }
+
+    // Codes and classes are map keys (counting failures by code, routing by class).
+    #[test]
+    fn error_code_and_class_are_hashable_and_errors_compare() {
+        let by_code: std::collections::HashSet<ErrorCode> = ErrorCode::ALL.into_iter().collect();
+        assert_eq!(by_code.len(), ErrorCode::ALL.len());
+        let classes: std::collections::HashSet<ErrorClass> =
+            ErrorCode::ALL.iter().map(ErrorCode::default_class).collect();
+        assert_eq!(classes.len(), 3);
+        let a = DomainError::new(ErrorCode::NotFound, "m").hint("h");
+        assert_eq!(a, a.clone());
+        assert_ne!(a, a.clone().cause("c"));
+    }
+
+    // `is_retryable` and `class` cannot disagree: Transient exactly when retryable, for every code either way.
+    #[test]
+    fn is_retryable_is_exactly_the_transient_class() {
+        for code in ErrorCode::ALL {
+            for e in [DomainError::new(code, "m"), DomainError::new(code, "m").retryable(true)] {
+                assert_eq!(e.is_retryable(), e.class() == ErrorClass::Transient, "{code:?}");
+            }
+            let off = DomainError::new(code, "m").retryable(false);
+            assert!(!off.is_retryable());
+            assert_eq!(off.class(), code.default_class(), "{code:?}");
+        }
+    }
+
+    #[test]
+    fn getters_read_what_the_builder_set() {
+        let r = RecoveryHint::new("t");
+        let e = DomainError::new(ErrorCode::Conflict, "m")
+            .cause("c")
+            .hint("h")
+            .recovery(r.clone())
+            .retry_after(Duration::from_secs(3));
+        assert_eq!(e.code(), ErrorCode::Conflict);
+        assert_eq!(e.message(), "m");
+        assert_eq!(e.causes(), ["c"]);
+        assert_eq!(e.hints(), [Hint::new("h")]);
+        assert_eq!(e.get_recovery(), Some(&r));
+        assert_eq!(e.get_retry_after(), Some(Duration::from_secs(3)));
+        assert_eq!(e.retry_after(None).get_retry_after(), None, "None clears it");
+    }
+
+    #[test]
+    fn context_prefixes_the_message_and_keeps_the_rest() {
+        let e = DomainError::new(ErrorCode::Timeout, "no answer").cause("c").retry_after(Duration::from_secs(1));
+        let wrapped = e.clone().context("step a").context("run r");
+        assert_eq!(wrapped.message(), "run r: step a: no answer");
+        assert_eq!((wrapped.code(), wrapped.causes(), wrapped.hints()), (e.code(), e.causes(), e.hints()));
+        assert_eq!(wrapped.get_retry_after(), e.get_retry_after());
     }
 
     #[test]
@@ -995,9 +1057,9 @@ mod tests {
     fn ac012a_retry_after_contributes_no_bytes_to_any_render_output() {
         let base = DomainError::new(ErrorCode::NotFound, "m").hint("h").recovery(RecoveryHint::new("t"));
         let with_retry_after = base.clone().retry_after(Duration::from_secs(30));
-        assert_eq!(base.render(), with_retry_after.render());
+        assert_eq!(base.render(OutputFormat::Text), with_retry_after.render(OutputFormat::Text));
         assert_eq!(base.render_github_annotation(), with_retry_after.render_github_annotation());
-        assert_eq!(base.render_json(), with_retry_after.render_json());
+        assert_eq!(base.render(OutputFormat::Json), with_retry_after.render(OutputFormat::Json));
     }
 
     #[test]
@@ -1018,7 +1080,7 @@ mod tests {
     fn ac014_render_with_hints_and_recovery_is_exact_literal() {
         let e = DomainError::new(ErrorCode::NotFound, "m").hint("h").recovery(RecoveryHint::new("t"));
         assert_eq!(
-            e.render(),
+            e.render(OutputFormat::Text),
             "error: not_found\nmessage: m\nexit_code: 1\nhelp[1]: h\nrecovery[1]{tool,params,reason}:\n  t,\"{}\",null"
         );
     }
@@ -1027,19 +1089,19 @@ mod tests {
     fn ac014b_render_with_recovery_and_no_hints_has_no_help_block() {
         let e = DomainError::new(ErrorCode::NotFound, "m").recovery(RecoveryHint::new("t"));
         assert_eq!(
-            e.render(),
+            e.render(OutputFormat::Text),
             "error: not_found\nmessage: m\nexit_code: 1\nrecovery[1]{tool,params,reason}:\n  t,\"{}\",null"
         );
-        assert!(!e.render().contains("help["), "got: {}", e.render());
+        assert!(!e.render(OutputFormat::Text).contains("help["), "got: {}", e.render(OutputFormat::Text));
     }
 
     #[test]
     fn ac015_render_with_no_hints_no_recovery_is_exact_prefix_regardless_of_retry_after() {
         let e = DomainError::new(ErrorCode::NotFound, "m");
-        assert_eq!(e.render(), "error: not_found\nmessage: m\nexit_code: 1");
+        assert_eq!(e.render(OutputFormat::Text), "error: not_found\nmessage: m\nexit_code: 1");
 
         let e_with_retry_after = e.retry_after(Duration::from_secs(1));
-        assert_eq!(e_with_retry_after.render(), "error: not_found\nmessage: m\nexit_code: 1");
+        assert_eq!(e_with_retry_after.render(OutputFormat::Text), "error: not_found\nmessage: m\nexit_code: 1");
     }
 
     // AC-014/AC-014a/AC-014b/AC-015: every prior exact-literal render()
@@ -1051,13 +1113,13 @@ mod tests {
     fn ac015_render_with_no_hints_no_recovery_ignores_retryable_true() {
         let e = DomainError::new(ErrorCode::RateLimited, "m");
         assert!(e.retryable, "RateLimited defaults retryable=true");
-        assert_eq!(e.render(), "error: rate_limited\nmessage: m\nexit_code: 1");
+        assert_eq!(e.render(OutputFormat::Text), "error: rate_limited\nmessage: m\nexit_code: 1");
     }
 
     #[test]
     fn ac014_render_with_hints_and_recovery_ignores_retryable_true() {
         let e = DomainError::new(ErrorCode::RateLimited, "m").hint("h").recovery(RecoveryHint::new("t"));
-        assert_eq!(e.render(), "error: rate_limited\nmessage: m\nexit_code: 1\nhelp[1]: h\nrecovery[1]{tool,params,reason}:\n  t,\"{}\",null");
+        assert_eq!(e.render(OutputFormat::Text), "error: rate_limited\nmessage: m\nexit_code: 1\nhelp[1]: h\nrecovery[1]{tool,params,reason}:\n  t,\"{}\",null");
     }
 
     #[test]
@@ -1066,11 +1128,14 @@ mod tests {
         let with_recovery = DomainError::new(ErrorCode::NotFound, "m").recovery(RecoveryHint::new("t"));
         let without_recovery = DomainError::new(ErrorCode::NotFound, "m");
         for err in [with_recovery, without_recovery] {
-            let parsed: serde_json::Value = serde_json::from_str(&err.render_json()).unwrap();
+            let parsed: serde_json::Value = serde_json::from_str(&err.render(OutputFormat::Json)).unwrap();
             let obj = parsed.as_object().unwrap();
             let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
             keys.sort_unstable();
-            assert_eq!(keys, vec!["causes", "error", "hints", "isError", "message", "recovery", "retryable"]);
+            assert_eq!(keys, vec!["body", "error", "hints", "isError", "recovery"]);
+            let mut fields: Vec<&str> = obj["error"].as_object().unwrap().keys().map(String::as_str).collect();
+            fields.sort_unstable();
+            assert_eq!(fields, vec!["causes", "code", "message", "retryable"]);
         }
     }
 
@@ -1078,25 +1143,27 @@ mod tests {
     #[cfg(feature = "serde")]
     fn ac018_render_json_field_values_match_the_source_fields() {
         let err = DomainError::new(ErrorCode::Unauthorized, "nope").hint("h1").retryable(true);
-        let parsed: serde_json::Value = serde_json::from_str(&err.render_json()).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&err.render(OutputFormat::Json)).unwrap();
         assert_eq!(parsed["isError"], serde_json::json!(true));
-        assert_eq!(parsed["error"], serde_json::json!("unauthorized"));
-        assert_eq!(parsed["message"], serde_json::json!("nope"));
-        assert_eq!(parsed["retryable"], serde_json::json!(true));
+        assert_eq!(
+            parsed["error"],
+            serde_json::json!({"code": "unauthorized", "message": "nope", "causes": [], "retryable": true})
+        );
         assert_eq!(parsed["hints"], serde_json::json!(["h1"]));
-        assert_eq!(parsed["recovery"], serde_json::Value::Null);
+        assert_eq!(parsed["recovery"], serde_json::json!([]));
+        assert_eq!(parsed["body"], serde_json::json!("error: unauthorized\nmessage: nope\nexit_code: 1"));
     }
 
     #[test]
     #[cfg(feature = "serde")]
     fn ac020_reason_key_is_absent_when_none_and_present_when_some() {
         let no_reason = DomainError::new(ErrorCode::NotFound, "m").recovery(RecoveryHint::new("t"));
-        let parsed: serde_json::Value = serde_json::from_str(&no_reason.render_json()).unwrap();
-        assert!(parsed["recovery"].as_object().unwrap().get("reason").is_none(), "got: {parsed}");
+        let parsed: serde_json::Value = serde_json::from_str(&no_reason.render(OutputFormat::Json)).unwrap();
+        assert!(parsed["recovery"][0].as_object().unwrap().get("reason").is_none(), "got: {parsed}");
 
         let with_reason = DomainError::new(ErrorCode::NotFound, "m").recovery(RecoveryHint::new("t").reason("why"));
-        let parsed: serde_json::Value = serde_json::from_str(&with_reason.render_json()).unwrap();
-        assert_eq!(parsed["recovery"]["reason"], serde_json::json!("why"));
+        let parsed: serde_json::Value = serde_json::from_str(&with_reason.render(OutputFormat::Json)).unwrap();
+        assert_eq!(parsed["recovery"][0]["reason"], serde_json::json!("why"));
     }
 
     #[test]
@@ -1104,8 +1171,8 @@ mod tests {
     fn ac021_quote_and_backslash_round_trip_exactly() {
         let original = r#"has "quotes" and \backslash"#;
         let err = DomainError::new(ErrorCode::NotFound, original);
-        let parsed: serde_json::Value = serde_json::from_str(&err.render_json()).unwrap();
-        assert_eq!(parsed["message"].as_str().unwrap(), original);
+        let parsed: serde_json::Value = serde_json::from_str(&err.render(OutputFormat::Json)).unwrap();
+        assert_eq!(parsed["error"]["message"].as_str().unwrap(), original);
     }
 
     #[test]
@@ -1114,24 +1181,24 @@ mod tests {
         let original_message = "line1\nline2\rline3\ttabbed";
         let original_hint = "hint\nwith\rcontrol\tchars";
         let err = DomainError::new(ErrorCode::NotFound, original_message).hint(original_hint);
-        let raw = err.render_json();
+        let raw = err.render(OutputFormat::Json);
         assert!(!raw.contains('\n') && !raw.contains('\r') && !raw.contains('\t'), "got: {raw:?}");
         let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
-        assert_eq!(parsed["message"].as_str().unwrap(), original_message);
+        assert_eq!(parsed["error"]["message"].as_str().unwrap(), original_message);
         assert_eq!(parsed["hints"][0].as_str().unwrap(), original_hint);
     }
 
     // AC-018/AC-021a: \n, \r, \t each have their own dedicated escape arm in
-    // json_escape_str; this proves the generic below-0x20 control-character
+    // json::push_str; this proves the generic below-0x20 control-character
     // arm (\u00XX) that every OTHER control character falls through to.
     #[test]
     #[cfg(feature = "serde")]
     fn ac021a_generic_control_characters_below_0x20_round_trip_exactly() {
         let original = "before\u{1}mid\u{1f}end";
         let err = DomainError::new(ErrorCode::NotFound, original);
-        let raw = err.render_json();
+        let raw = err.render(OutputFormat::Json);
         let parsed: serde_json::Value = serde_json::from_str(&raw).expect("must be valid JSON");
-        assert_eq!(parsed["message"].as_str().unwrap(), original);
+        assert_eq!(parsed["error"]["message"].as_str().unwrap(), original);
     }
 
     #[test]
@@ -1144,10 +1211,10 @@ mod tests {
             .param(original_key, crate::kv::KvValue::Text("v".to_string()))
             .reason(original_reason);
         let err = DomainError::new(ErrorCode::NotFound, "m").recovery(r);
-        let parsed: serde_json::Value = serde_json::from_str(&err.render_json()).unwrap();
-        assert_eq!(parsed["recovery"]["tool"].as_str().unwrap(), original_tool);
-        assert_eq!(parsed["recovery"]["reason"].as_str().unwrap(), original_reason);
-        let params = parsed["recovery"]["params"].as_object().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&err.render(OutputFormat::Json)).unwrap();
+        assert_eq!(parsed["recovery"][0]["tool"].as_str().unwrap(), original_tool);
+        assert_eq!(parsed["recovery"][0]["reason"].as_str().unwrap(), original_reason);
+        let params = parsed["recovery"][0]["params"].as_object().unwrap();
         assert!(params.contains_key(original_key), "got keys: {:?}", params.keys().collect::<Vec<_>>());
     }
 
@@ -1157,60 +1224,25 @@ mod tests {
         let result = err.to_call_tool_result();
         assert!(result.is_error);
         assert_eq!(result.content.len(), 1);
-        assert_eq!(result.content[0].text, err.render());
+        assert_eq!(result.content[0].text, err.render(OutputFormat::Text));
         assert_eq!(result.content[0].audience, vec![crate::audience::Audience::Assistant]);
-        assert_eq!(result.structured_content, err.render_json());
-    }
-
-    #[test]
-    fn ac024_error_domain_render_matches_inner_domain_error_render() {
-        let d = DomainError::new(ErrorCode::Conflict, "m").hint("h");
-        assert_eq!(Error::Domain(d.clone()).render(), d.render());
-    }
-
-    #[test]
-    fn ac026_error_not_found_variant_renders_exact_prefix() {
-        let e = Error::NotFound("issue 42".into());
-        assert_eq!(e.render(), "error: not_found\nmessage: issue 42\nexit_code: 1");
-    }
-
-    #[test]
-    fn ac027_exit_code_is_one_for_every_variant() {
-        assert_eq!(Error::InvalidInput("x".into()).exit_code(), 1);
-        assert_eq!(Error::NotFound("x".into()).exit_code(), 1);
-        assert_eq!(Error::Domain(DomainError::new(ErrorCode::Unavailable, "x")).exit_code(), 1);
-    }
-
-    // AC-030 TRAP: a test named for the InvalidInput/NotFound *variants* must actually
-    // construct those variants, not Error::Domain(DomainError::new(InvalidInput, ..)) --
-    // the two are different Error variants with independently-implemented class() arms.
-    #[test]
-    fn ac030_invalid_input_and_not_found_variants_are_always_user_class() {
-        assert_eq!(Error::InvalidInput(String::new()).class(), ErrorClass::User);
-        assert_eq!(Error::InvalidInput("msg".into()).class(), ErrorClass::User);
-        assert_eq!(Error::NotFound(String::new()).class(), ErrorClass::User);
-        assert_eq!(Error::NotFound("msg".into()).class(), ErrorClass::User);
+        assert_eq!(
+            result.structured_content.as_ref().map(|j| j.as_str()),
+            Some(err.render(OutputFormat::Json).as_str())
+        );
     }
 
     #[test]
     fn ac031_is_retryable_true_direction() {
-        let err = Error::Domain(DomainError::new(ErrorCode::Unavailable, "down").retryable(true));
+        let err = DomainError::new(ErrorCode::Unavailable, "down").retryable(true);
         assert!(err.is_retryable(), "Transient-classified error must be retryable");
-    }
-
-    #[test]
-    fn ac031_invalid_input_and_not_found_variants_are_never_retryable() {
-        assert!(!Error::InvalidInput(String::new()).is_retryable());
-        assert!(!Error::InvalidInput("msg".into()).is_retryable());
-        assert!(!Error::NotFound(String::new()).is_retryable());
-        assert!(!Error::NotFound("msg".into()).is_retryable());
     }
 
     #[test]
     fn ac032_all_transient_default_codes_are_transient_and_retryable() {
         use ErrorCode::*;
         for code in [RateLimited, Unavailable] {
-            let err = Error::Domain(DomainError::new(code, "m"));
+            let err = DomainError::new(code, "m");
             assert_eq!(err.class(), ErrorClass::Transient, "{code:?}");
             assert!(err.is_retryable(), "{code:?}");
         }
@@ -1223,10 +1255,9 @@ mod tests {
         for code in [ErrorCode::Timeout, ErrorCode::ExternalFailure] {
             let d = DomainError::new(code, "POST /charge timed out");
             assert!(!d.retryable, "{code:?}");
-            assert!(d.render_json().contains("\"retryable\":false"), "{code:?}");
-            let err = Error::Domain(d);
-            assert!(!err.is_retryable(), "{code:?}");
-            let idempotent = Error::Domain(DomainError::new(code, "GET /items timed out").retryable(true));
+            assert!(d.render(OutputFormat::Json).contains("\"retryable\":false"), "{code:?}");
+            assert!(!d.is_retryable(), "{code:?}");
+            let idempotent = DomainError::new(code, "GET /items timed out").retryable(true);
             assert_eq!(idempotent.class(), ErrorClass::Transient, "{code:?} opt-in");
             assert!(idempotent.is_retryable(), "{code:?} opt-in");
         }
@@ -1238,7 +1269,7 @@ mod tests {
     fn a_timeout_is_ambiguous_and_says_to_verify_first() {
         let t = DomainError::new(ErrorCode::Timeout, "POST /charge timed out");
         assert_eq!(t.hints.iter().map(Hint::as_str).collect::<Vec<_>>(), [MAY_HAVE_TAKEN_EFFECT_HINT]);
-        assert_eq!(Error::Domain(t).class(), ErrorClass::Ambiguous);
+        assert_eq!(t.class(), ErrorClass::Ambiguous);
         let idempotent = DomainError::new(ErrorCode::Timeout, "GET /items timed out").retryable(true);
         assert!(idempotent.hints.is_empty(), "an idempotent operation needs no verify-first hint");
         let back = DomainError::new(ErrorCode::Timeout, "x").retryable(true).retryable(false);
@@ -1246,14 +1277,14 @@ mod tests {
         let walk = DomainError::new(ErrorCode::ExternalFailure, "walk failed");
         assert!(walk.hints.is_empty());
         assert!(!walk.retryable);
-        assert_eq!(Error::Domain(walk).class(), ErrorClass::Internal);
+        assert_eq!(walk.class(), ErrorClass::Internal);
     }
 
     #[test]
     fn ac033_all_user_default_codes_are_user_and_not_retryable() {
         use ErrorCode::*;
         for code in [InvalidInput, NotFound, Unauthorized, Forbidden, Conflict] {
-            let err = Error::Domain(DomainError::new(code, "m"));
+            let err = DomainError::new(code, "m");
             assert_eq!(err.class(), ErrorClass::User, "{code:?}");
             assert!(!err.is_retryable(), "{code:?}");
         }
@@ -1263,8 +1294,7 @@ mod tests {
     fn ac034_display_impls_agree_on_the_exact_format() {
         let d = DomainError::new(ErrorCode::RateLimited, "slow down");
         assert_eq!(format!("{d}"), "rate_limited: slow down");
-        let e = Error::Domain(d);
-        assert_eq!(format!("{e}"), "rate_limited: slow down");
+        assert_eq!(format!("{}", ErrorCode::RateLimited), "rate_limited");
     }
 
     // A repeated param key must not produce a JSON object with a duplicate key (parsers keep one value silently).
@@ -1273,7 +1303,7 @@ mod tests {
         let mut r = RecoveryHint::new("t");
         r.params.push(("x".to_string(), crate::kv::KvValue::Int(1)));
         r.params.push(("x".to_string(), crate::kv::KvValue::Int(2)));
-        let json = DomainError::new(ErrorCode::NotFound, "m").recovery(r).render_json();
+        let json = DomainError::new(ErrorCode::NotFound, "m").recovery(r).render(OutputFormat::Json);
         assert!(json.contains("\"params\":{\"x\":2}"), "got: {json}");
     }
 
@@ -1283,7 +1313,7 @@ mod tests {
             .param("zebra", crate::kv::KvValue::Int(1))
             .param("alpha", crate::kv::KvValue::Int(2));
         let e = DomainError::new(ErrorCode::NotFound, "m").recovery(r);
-        let json = e.render_json();
+        let json = e.render(OutputFormat::Json);
         let zebra_pos = json.find("\"zebra\"").expect("zebra key present");
         let alpha_pos = json.find("\"alpha\"").expect("alpha key present");
         assert!(zebra_pos < alpha_pos, "zebra (added first) must appear before alpha, got: {json}");
@@ -1300,9 +1330,9 @@ mod tests {
             .param("zebra", crate::kv::KvValue::Int(1))
             .param("alpha", crate::kv::KvValue::Int(2));
         let e = DomainError::new(ErrorCode::NotFound, "m").hint("a").hint("b").recovery(r);
-        let raw = e.render_json();
+        let raw = e.render(OutputFormat::Json);
         let parsed: serde_json::Value = serde_json::from_str(&raw).expect("must be valid JSON");
         assert_eq!(parsed["hints"], serde_json::json!(["a", "b"]));
-        assert_eq!(parsed["recovery"]["params"], serde_json::json!({"zebra": 1, "alpha": 2}));
+        assert_eq!(parsed["recovery"][0]["params"], serde_json::json!({"zebra": 1, "alpha": 2}));
     }
 }

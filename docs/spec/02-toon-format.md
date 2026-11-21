@@ -39,7 +39,7 @@ escape       ::= '\\' | '\"' | '\n' | '\r' | '\t' | '\u00' hex hex   (lowercase 
 number       ::= canonical decimal, or exponent form outside 1e-6 <= |n| < 1e21   (§2)
 ```
 
-The type name is the list's key; `totalCount`, `help`, `recovery` and `truncated` are the keys michi composes next to it (`AgentResponse` appends `recovery`), so they are reserved and rejected as type names (`ToonError::InvalidTypeName`). A repeated field name is rejected too (`ToonError::InvalidFieldName`). Any other name is valid: names outside `^[A-Za-z_][A-Za-z0-9_.]*$` — including the empty name, non-ASCII names and names with spaces or punctuation — are quoted.
+The type name is the list's key; the root keys michi writes itself (`totalCount`, `help`, `recovery`, `truncated`, `budget`, `sections`, `provenance`, `error`, `message`, `causes`, `exit_code`; see the trust model below) are reserved and rejected as type names (`ToonError::InvalidTypeName`). A repeated field name is rejected too (`ToonError::InvalidFieldName`). Any other name is valid: names outside `^[A-Za-z_][A-Za-z0-9_.]*$` — including the empty name, non-ASCII names and names with spaces or punctuation — are quoted.
 
 ## Examples
 
@@ -54,7 +54,7 @@ totalCount: 47
 help[2]: Call get_issue with number=<number> for full detail,Call list_issues with state=open to filter
 ```
 
-**Truncated field value** (`.max_cell_len(40).truncation_hint("full=true")`, descriptions of 75 and 73 chars):
+**Truncated field value** (`AgentResponse::truncate_cells_at(40).truncation_hint("full=true")`, descriptions of 75 and 73 chars):
 
 ```
 components[2]{name,description,tokens}:
@@ -75,6 +75,8 @@ totalCount: 0
 help[1]: Try list_issues with a broader filter
 ```
 
+This is the one definitive empty state: a response with no section and a list section with no rows both render `name: []` and `totalCount: 0`, so a reader sees "zero results" and not a list that might have been dropped. There is no separate empty-state function. A larger `totalCount` the caller set stays as set (everything was cut). `render_toon` alone writes just `name: []`, since `totalCount` belongs to the response.
+
 **Quoted keys, nulls and numbers:**
 
 ```
@@ -94,9 +96,9 @@ A dedicated `recovery[N]` table, not folded into `help[]`: hints are strings, re
 
 ## Agent-facing blocks
 
-Every block michi renders for an agent — not only lists — is a TOON 4.4 root object with the default options, so an agent parses one format. Each renderer returns a finished document with no trailing newline; `append_hints` and `append_recovery` join a block onto a document with exactly one LF (none when the buffer is empty or already ends in one). Composition keeps keys unique: a list's type name and a KV key may not be `totalCount`, `help` or `recovery`, and KV keys may not repeat (`ToonError::InvalidTypeName`, `KvError`). Strings and keys are quoted per [Strings](#strings); numbers follow [Numbers, booleans and null](#numbers-booleans-and-null).
+Every block michi renders for an agent — not only lists — is a TOON 4.4 root object, so an agent parses one format. Each renderer returns a finished document with no trailing newline; `append_hints` and `append_recovery` join a block onto a document with exactly one LF (none when the buffer is empty or already ends in one). Composition keeps keys unique: a list's type name and a KV key may not be `totalCount`, `help` or `recovery`, and KV keys may not repeat (`ToonError::InvalidTypeName`, `KvError`). Strings and keys are quoted per [Strings](#strings); numbers follow [Numbers, booleans and null](#numbers-booleans-and-null).
 
-**Key-value (`kv::render_kv`, `AgentResponse` KV sections)** — one `key: value` field per item (§8), exactly one space after the colon (no column alignment), then `totalCount` and `help`:
+**Key-value (`kv::render_kv`, `AgentResponse` KV sections)** — one `key: value` field per item (§8), exactly one space after the colon (no column alignment). `render_kv` writes the lines; `AgentResponse` adds `totalCount` and `help`:
 
 ```
 id: abc-123
@@ -118,7 +120,7 @@ recovery[2]{tool,params,reason}:
   reload_cache,"{}",null
 ```
 
-**Errors (`DomainError::render`, `Error::render`)**:
+**Errors (`DomainError::render`, `AgentResponse::error`)**:
 
 ```
 error: not_found
@@ -130,7 +132,7 @@ recovery[1]{tool,params,reason}:
   list_issues,"{\"state\":\"open\"}",null
 ```
 
-`causes[N]` is an inline array of strings (§9.1), present only when the error has causes: why it happened, outermost first. `help[N]` is what to do next. Keeping them under separate keys lets an agent tell diagnosis from guidance. `Error::InvalidInput(m)` and `Error::NotFound(m)` render the same shape with `error: invalid_input` / `error: not_found` and `message: m`. `AgentResponse`'s validation failures are `error: toon_validation_failed` / `error: kv_validation_failed` plus a quoted `message`.
+`causes[N]` is an inline array of strings (§9.1), present only when the error has causes: why it happened, outermost first. `help[N]` is what to do next. Keeping them under separate keys lets an agent tell diagnosis from guidance. In a response with sections the error lines come first, then the sections, then the one `help` and `recovery` block (see "One response" below). `AgentResponse`'s validation failures are `error: toon_validation_failed` / `error: kv_validation_failed` plus a quoted `message`.
 
 **Status (`StatusResponse::render`)** — item keys are cells of a table, not root keys, so any key is valid; `health` is `ok`, `degraded`, `error`, or `null` for no signal, and `reason` is `null` unless degraded or error:
 
@@ -144,7 +146,7 @@ items[3]{key,value,health,reason}:
 help[1]: Call get_status for detail
 ```
 
-With no items the table is `items: []`.
+With no items the table is `items: []` and `totalCount: 0`, the definitive empty list.
 
 **Already done (`resilience::render_already_done`)**:
 
@@ -155,19 +157,35 @@ summary: item 42 was deleted in run abc
 help[1]: Call get_item with id=42 to confirm
 ```
 
-**Partial success (`PartialSuccess::render`)** — the summary is a quoted string, and `completed`, `failed` and `skipped` are tables (§9.3) whose first column is the op's `index` in the caller's batch; empty categories are omitted. A skipped op's `reason` column is `null` when it has none:
+**Partial success (`PartialSuccess::render`, `AgentResponse::partial_success`)** — one table (§9.3), a row per op sorted by its `index` in the caller's batch. `status` is `completed`, `failed` or `skipped`; `reason` is the failure reason, the skip token, or `null`. The failed ops' recovery hints are the document's one `recovery` table. No ops render `partial_success: []` and `totalCount: 0`:
 
 ```
-partial_success: "2 completed, 1 failed, 1 skipped"
-completed[2]{index,operation}:
-  0,create_issue
-  1,add_label
-failed[1]{index,operation,reason}:
-  2,assign_user,User 'ghost' not found
-skipped[1]{index,operation,reason}:
-  3,notify_team,budget_exhausted
+partial_success[4]{index,operation,status,reason}:
+  0,create_issue,completed,null
+  1,add_label,completed,null
+  2,assign_user,failed,User 'ghost' not found
+  3,notify_team,skipped,budget_exhausted
 recovery[1]{tool,params,reason}:
   assign_user,"{\"user\":\"alice\"}",null
+```
+
+**Pipeline (`Pipeline::render`, `AgentResponse::pipeline`)** — `step[N]{id,name,status,reason}:`, a row per step; `step: []` and `totalCount: 0` with no steps.
+
+**One response.** Each block above is also a part of an `AgentResponse`, rendered by the same writer, so a batch with results, per-op outcomes and an error is one document with one `help` and one `recovery` key. The error leads; the sections follow in call order:
+
+```
+error: external_failure
+message: refs is not indexed
+exit_code: 1
+symbols[1]{name,kind}:
+  RetryPolicy,struct
+ops[3]{index,operation,status,reason}:
+  0,symbols,completed,null
+  1,refs,failed,not indexed
+  2,search,skipped,budget_exhausted
+help[1]: run index_workspace first
+recovery[1]{tool,params,reason}:
+  index_workspace,"{}",null
 ```
 
 `crates/michi-core/tests/toon_blocks.rs` pins each form and checks every block with the strict validator in `tests/support/toon_parser.rs`. Why each form was chosen: [06-decisions.md](06-decisions.md) ("Every agent-facing block is TOON 4.4").
@@ -191,6 +209,8 @@ michi guarantees a syntactic property and nothing more.
 
 **What michi guarantees.** One value cannot create extra lines, fields or cells. A line break, tab or any other C0 control in a value is escaped (`\n`, `\t`, `\u00xx`), and a comma, colon, quote, bracket or leading `-` forces quotes, so a cell stays one cell of one row. Text inside a cell therefore cannot produce michi's own lines either: `truncated[…]`, `totalCount`, `help[…]`, `recovery[…]`, `causes[…]` and `error:` are written by michi, from structure the caller supplied, and a cell that spells one of them stays a quoted cell.
 
+No caller name can take one of those keys either. The root keys michi writes itself — `totalCount`, `help`, `recovery`, `truncated`, `budget`, `sections`, `provenance`, and the error document's `error`, `message`, `causes` and `exit_code` — are one reserved list, checked for type names, KV keys and section names alike, so a success response can never render an `error:`/`message:` document while `isError` is false. A provenance label may not be `fingerprint`, set or not.
+
 **What michi does not do.**
 
 - It cannot stop prompt injection. A cell is still text the agent reads; "ignore previous instructions" inside a cell is rendered faithfully, as data.
@@ -199,7 +219,7 @@ michi guarantees a syntactic property and nothing more.
 - Truncation cuts on `char` boundaries, not grapheme clusters, so it can split a multi-part emoji or a flag pair. The output is valid UTF-8 and cannot panic, but the cut character may render oddly.
 - `human_content` is the caller's text for the user. It is not escaped or validated.
 
-**The rule for callers.** Hints, recovery hints, error messages and causes, type names, field names and the truncation hint come from the tool author, written in the tool's code, never from data. Cells are data. Do not build a hint or an error message out of a file, web page, issue body or any other value an outside party controls; if a hint must point at a value, use a placeholder such as `<id>`. The same goes for secrets: `DomainError::from_error` keeps only the top-level message and leaves the `source()` chain out unless you call `from_error_with_causes`, because a cause often holds a URL with a token or an internal path.
+**The rule for callers.** Hints, recovery hints, error messages and causes, type names, section names, KV keys, provenance labels, field names and the truncation hint come from the tool author, written in the tool's code, never from data. Cells are data. Do not build a hint or an error message out of a file, web page, issue body or any other value an outside party controls; if a hint must point at a value, use a placeholder such as `<id>`. The same goes for secrets: `DomainError::from_error` keeps only the top-level `Display` and leaves the `source()` chain out unless you call `from_error_with_causes`, because a cause often holds a URL with a token or an internal path. Leaving the chain out does not make the top-level text safe: HTTP clients such as `reqwest` put the full URL, query string included, in the top-level `Display`. Both constructors therefore pass the text through `michi_core::redact::redact_common_shapes`, which is best effort (URL userinfo, secret-named `key=value` pairs and a few token prefixes; see `03-rust-api.md` for the list and for what it misses). It narrows a leak, it does not prove the text is free of secrets. Text from a pipeline step (an HTTP body, a `failed()` message, a panic payload) is data: the `ExecutionError` conversion keeps it out of `message` and puts it, redacted and cut to at most 512 bytes (the `…` marker included), in one `causes` entry.
 
 ## Truncation
 
@@ -207,7 +227,7 @@ A string cell longer than `max_cell_len` chars (default 200) is cut, and the cut
 
 - The cell keeps its first `max_cell_len - 1` chars and ends with a plain `…`, so a cut cell is exactly `max_cell_len` chars. A cap of 1 gives `…` and a cap of 0 gives the empty string `""`. The cell never carries a message.
 - A `truncated[N]{row,field,removed}:` block follows the list and lists every cut cell, in row then field order: `row` is the 0-based row index, `field` the field name, and `removed` the number of chars cut. Kept chars (not counting the `…`) plus `removed` equal the original char count. The block is omitted when nothing was cut. A cell that ends in `…` with no entry in the block is just data.
-- When the caller sets `ToonOptions::truncation_hint` (`AgentResponse::truncation_hint`, NAPI `truncationHint`) and a cell was cut, michi adds one line to `help[]`, after the caller's own hints: `Cut cells are listed in the truncated block; use {hint} for the full value`. michi does not know the calling tool's parameters, so it never invents a hint; an empty hint is the same as none. The hint is tool-author text and travels in the trusted `help` channel, not in a cell.
+- When the caller sets `AgentResponse::truncation_hint` (NAPI `truncationHint`) and a cell was cut, michi adds one line to `help[]`, after the caller's own hints: `Cut cells are listed in the truncated block; use {hint} for the full value`. michi does not know the calling tool's parameters, so it never invents a hint; an empty hint is the same as none. The hint is tool-author text and travels in the trusted `help` channel, not in a cell.
 - The cap counts chars **before** escaping and quoting: a cut cell is then quoted and escaped by the rules above, so a cell holding `"`, `\`, a line break or a comma is written longer than `max_cell_len`.
 - Numbers, booleans and `null` are never truncated.
 - `truncate::truncate()` (and NAPI `truncate`) cuts one free-text string the same way and reports the cut in `Truncated::removed`, not in the text, so the text never carries a message that data could imitate.
@@ -220,11 +240,11 @@ A string cell longer than `max_cell_len` chars (default 200) is cut, and the cut
 | --- | --- | --- |
 | At most 1,000 header fields | `MAX_FIELDS` | `ToonError::TooManyFields { count, max }` |
 | At most 1,000,000 cells (`rows × fields`; a list with no fields counts one cell per row) | `MAX_CELLS` | `ToonError::TooManyCells { rows, fields, max }` |
-| A `truncation_hint` of at most 256 chars | `MAX_TRUNCATION_HINT_CHARS` | `ToonError::TruncationHintTooLong { len, max }` |
+| An `AgentResponse::truncation_hint` of at most 256 chars | `MAX_TRUNCATION_HINT_CHARS` | `ToonError::TruncationHintTooLong { len, max }` |
 
-- Checks run in a fixed order and the first failure wins: reserved type name, field count, repeated field, cell count, truncation hint length, row length.
+- Checks run in a fixed order and the first failure wins: reserved type name, field count, repeated field, cell count, truncation hint length (a response only), row length.
 - Every check is linear: repeated field names are found with a set, so the largest accepted header costs 1,000 lookups instead of ~500,000 comparisons.
-- serde `list()` checks the field and cell limits against the union of the items' keys before it builds any row, so a sparse item set (each item with a few distinct keys) cannot expand into a huge table of `null` cells.
+- serde `list()` checks the field and cell limits against the union of the items' keys before it pads any row, so a sparse item set (each item with a few distinct keys) cannot expand into a huge table of `null` cells. It turns each item into cells as it parses it, so only one parsed JSON tree is alive at a time.
 - `AgentResponse` reports a violation like any other validation failure: an `error: toon_validation_failed` body with `isError` set on the text, JSON and MCP surfaces.
 - The truncation hint is one short instruction, which is why its length is capped. The renderer builds its help line once per document.
 

@@ -11,7 +11,7 @@ use napi::{JsString, JsValue as _, ValueType};
 
 use super::hints::JsRecoveryHint;
 use super::num::JsCount;
-use super::outcome::{JsFailedOp, JsOpRef, JsPipelineStep};
+use super::outcome::{JsCompletedOp, JsFailedOp, JsPipelineStep, JsSkippedOp};
 use super::toon::JsStatusItem;
 use super::value::{JsKvItem, JsToonValue};
 
@@ -30,19 +30,36 @@ pub(crate) const MAX_CELLS: usize = 1_000_000;
 /// Most UTF-8 bytes of string data one call may pass, summed over every string argument and nested string, and most
 /// one `AgentResponse` may hold across all its calls.
 ///
-/// This bounds the OUTPUT as well as the input. Rendering writes each string more than once, and a control character
-/// is the worst case: `\u0001` is six bytes in the text, thirteen in the JSON (`\\u0001` inside the body, plus the
-/// raw `sections` copy), and nineteen in `toCallToolResult` (the text plus the parsed JSON). So `n` held bytes render
-/// to at most `19 * n` (see [`MAX_OUTPUT_FACTOR`]). At the old 64 MiB that was 1.2 GiB per call on Node's event loop,
-/// and a response over V8's string limit (about 512 MiB) failed only after rendering it. At 16 MiB it is at most
-/// 304 MiB, under that limit, so a response either renders or is rejected here, before anything is rendered.
+/// This bounds the OUTPUT as well as the input: a render is at most [`MAX_OUTPUT_FACTOR`] times the bytes held, plus
+/// [`OUTPUT_ENVELOPE`], on every surface. Rendering writes a string in more than one place, and a control character
+/// is the worst case: `\u0001` is six bytes in the text, seven in the JSON `body` (the text, escaped again) and six in
+/// the raw `sections`, `error` and `hints` copies, so one held byte is at most 6 + 7 + 6 = 19 output bytes across the
+/// text and the JSON that `toCallToolResult` returns together. A name is written in more places than that (a
+/// `truncated` row repeats the field name and the section name for every cut cell, and a `totalCount` row repeats the
+/// section name), so the bytes held count a name once for every place it can be written (see [`super::cost`]). At the
+/// old 64 MiB that was 1.2 GiB per call on Node's event loop, and a response over V8's string limit (about 512 MiB)
+/// failed only after rendering it. At 16 MiB it is at most 304 MiB, under that limit, so a response either renders or
+/// is rejected here, before anything is rendered.
+///
+/// The one-shot renders write text only: at most 6 bytes per byte charged, and what the counts allow beyond that (see
+/// [`STANDALONE_OUTPUT_MAX`]).
 pub(crate) const MAX_INPUT_BYTES: usize = 16 * 1024 * 1024;
-/// Largest ratio of any render's output to the string bytes held (see [`MAX_INPUT_BYTES`]); a test pins it.
+/// Largest ratio of any render's output to the bytes held (see [`MAX_INPUT_BYTES`]); tests measure it.
 pub(crate) const MAX_OUTPUT_FACTOR: usize = 19;
+/// Bytes of output that no held byte pays for: the fixed parts of the envelope (the `help[]`, `recovery[]` and
+/// `totalCount` headers, the JSON keys).
+pub(crate) const OUTPUT_ENVELOPE: usize = 4096;
 /// V8's longest string, in characters, on 64-bit builds (`2^29 - 24`). A string longer than this cannot be handed to
 /// JavaScript, so every output must stay under it.
 pub(crate) const V8_MAX_STRING_LEN: usize = (1 << 29) - 24;
-const _: () = assert!(MAX_INPUT_BYTES * MAX_OUTPUT_FACTOR < V8_MAX_STRING_LEN);
+const _: () = assert!(MAX_INPUT_BYTES * MAX_OUTPUT_FACTOR + OUTPUT_ENVELOPE < V8_MAX_STRING_LEN);
+/// The most text one of the one-shot renders (`renderToon`, `renderKv`, `renderStatus`, `renderPartialSuccess`,
+/// `renderPipeline`, ...) can write: 6 bytes for each string byte charged, 26 for each cell (a float is at most 24
+/// chars, and the comma), 4 for each row, and 400 for each other entry (a KV or status item holds a float written to
+/// 330 places; a hint, an operation or a step is a short row).
+pub(crate) const STANDALONE_OUTPUT_MAX: usize =
+    6 * MAX_INPUT_BYTES + 26 * MAX_CELLS + 4 * MAX_ROWS + 400 * (MAX_FIELDS + MAX_HINTS + 3 * MAX_STEPS);
+const _: () = assert!(STANDALONE_OUTPUT_MAX < V8_MAX_STRING_LEN);
 /// Longest single cell value, hint, reason, description or message, in UTF-8 bytes.
 pub(crate) const MAX_STRING_BYTES: usize = 1024 * 1024;
 /// Longest type name, field name, key, tool name, error code, truncation hint or other identifier, in UTF-8 bytes.
@@ -155,6 +172,20 @@ impl Budget {
         Ok(())
     }
 
+    /// Charge `n` bytes, failing once the call's total passes [`MAX_INPUT_BYTES`]. Strings are charged by their length
+    /// as they are read; a table's names are charged here for each cell they can be written beside (see
+    /// [`super::cost`]).
+    pub(crate) fn charge_bytes(&mut self, n: usize) -> napi::Result<()> {
+        self.bytes = self.bytes.saturating_add(n);
+        if self.bytes > MAX_INPUT_BYTES {
+            return Err(napi::Error::from_reason(format!(
+                "input byte total {} exceeds maximum of {MAX_INPUT_BYTES}",
+                self.bytes
+            )));
+        }
+        Ok(())
+    }
+
     /// Copy the JS string `value` out after checking it is a string of at most `max` UTF-8 bytes and charging its
     /// length to the call's byte budget. The UTF-16 length rejects most oversize strings without scanning them,
     /// since a string never has fewer UTF-8 bytes than UTF-16 units.
@@ -173,13 +204,7 @@ impl Budget {
         if len > max {
             return Err(napi::Error::from_reason(format!("{what} byte length {len} exceeds maximum of {max}")));
         }
-        self.bytes = self.bytes.saturating_add(len);
-        if self.bytes > MAX_INPUT_BYTES {
-            return Err(napi::Error::from_reason(format!(
-                "input byte total {} exceeds maximum of {MAX_INPUT_BYTES}",
-                self.bytes
-            )));
-        }
+        self.charge_bytes(len)?;
         s.into_utf8()?.into_owned()
     }
 
@@ -331,16 +356,35 @@ impl Budget {
         Ok(out)
     }
 
-    /// `JsOpRef[]`, at most `max` items. `reason` may be absent, `undefined` or `null`.
-    pub(crate) fn op_refs(&mut self, ops: &List<'_>, what: &str, max: usize) -> napi::Result<Vec<JsOpRef>> {
-        check_len(what, ops.len(), max)?;
+    /// `JsCompletedOp[]`, at most `max` items. A `reason` that is not absent, `undefined` or `null` is rejected: a
+    /// completed operation renders none, so it used to be dropped without a word.
+    pub(crate) fn completed_ops(&mut self, ops: &List<'_>, max: usize) -> napi::Result<Vec<JsCompletedOp>> {
+        check_len("completed", ops.len(), max)?;
         let mut out = Vec::with_capacity(ops.len());
         for i in 0..ops.len {
-            let obj = object(ops.get(i)?, "OpRef")?;
+            let obj = object(ops.get(i)?, "CompletedOp")?;
+            let index = typed_prop::<JsCount>(&obj, "index")?.ok_or_else(|| missing("index"))?;
+            let operation = self.string_prop(&obj, "operation", "operation", MAX_NAME_BYTES)?;
+            if let Some(reason) = prop(&obj, "reason")? {
+                if !is_nullish(reason)? {
+                    return Err(napi::Error::from_reason("a completed operation takes no `reason`"));
+                }
+            }
+            out.push(JsCompletedOp { index, operation });
+        }
+        Ok(out)
+    }
+
+    /// `JsSkippedOp[]`, at most `max` items. `reason` may be absent, `undefined` or `null`.
+    pub(crate) fn skipped_ops(&mut self, ops: &List<'_>, max: usize) -> napi::Result<Vec<JsSkippedOp>> {
+        check_len("skipped", ops.len(), max)?;
+        let mut out = Vec::with_capacity(ops.len());
+        for i in 0..ops.len {
+            let obj = object(ops.get(i)?, "SkippedOp")?;
             let index = typed_prop::<JsCount>(&obj, "index")?.ok_or_else(|| missing("index"))?;
             let operation = self.string_prop(&obj, "operation", "operation", MAX_NAME_BYTES)?;
             let reason = self.nullable_string_prop(&obj, "reason", MAX_NAME_BYTES)?;
-            out.push(JsOpRef { index, operation, reason });
+            out.push(JsSkippedOp { index, operation, reason });
         }
         Ok(out)
     }
@@ -368,5 +412,23 @@ impl Budget {
             out.push(self.recovery_hint(hints.get(i)?)?);
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn charged_bytes_add_up_and_fail_past_the_cap_with_the_total() {
+        let mut budget = Budget::new();
+        budget.charge_bytes(MAX_INPUT_BYTES - 1).expect("under the cap");
+        budget.charge_bytes(1).expect("exactly the cap");
+        let err = budget.charge_bytes(5).expect_err("past the cap");
+        assert_eq!(
+            err.reason,
+            format!("input byte total {} exceeds maximum of {MAX_INPUT_BYTES}", MAX_INPUT_BYTES + 5)
+        );
+        assert!(Budget::new().charge_bytes(usize::MAX).is_err(), "saturates instead of overflowing");
     }
 }

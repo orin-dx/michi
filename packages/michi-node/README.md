@@ -13,12 +13,11 @@ npm installs the matching prebuilt binary as an optional dependency; see [Suppor
 ## Quick start
 
 ```typescript
-import { renderToon } from "@orin-dx/michi";
+import { AgentResponse } from "@orin-dx/michi";
 
-const out = renderToon({
-  typeName: "issues",
-  fields: ["number", "title", "state"],
-  rows: [
+const response = new AgentResponse("issues");
+response.items(
+  [
     [
       { type: "int", intVal: 51815 },
       { type: "str", strVal: "[Bug]: Telegram plugin" },
@@ -30,11 +29,12 @@ const out = renderToon({
       { type: "str", strVal: "open" },
     ],
   ],
-  totalCount: 8771,
-  hints: ["Run `gh-axi issue view <number>` to view an issue"],
-});
+  ["number", "title", "state"],
+  8771,
+);
+response.hint("Run `gh-axi issue view <number>` to view an issue");
 
-process.stdout.write(out);
+process.stdout.write(response.renderText());
 ```
 
 ```text
@@ -53,18 +53,16 @@ Every string these functions return for an agent is a TOON 4.4 document with no 
 
 | Function | Signature |
 | --- | --- |
-| `renderToon` | `(opts: ToonOptions) => string` — TOON list rendering |
-| `emptyState` | `(typeName: string) => string` — definitive empty-state block |
-| `emptyStateWithHints` | `(typeName: string, hints: string[]) => string` — the empty-state block plus `help[N]: …`; like `emptyState`, throws `toon_validation_failed: …` for a `totalCount`/`help`/`recovery` type name |
+| `renderToon` | `(opts: ToonOptions) => string` — one TOON list (`typeName`, `fields`, `rows`): the entry and a `truncated[N]{row,field,removed}:` block for any cut cell. `totalCount`, `help[]` and the truncation hint belong to `AgentResponse` |
 | `renderHints` | `(hints: string[]) => string` — the inline array `help[N]: h1,h2` |
 | `appendHints` | `(body: string, hints: string[]) => string` — append `help[N]: …` to a document, on its own line |
 | `renderRecovery` | `(hints: RecoveryHint[]) => string` — the table `recovery[N]{tool,params,reason}:` (`params` is `"{}"` here; an absent reason is `null`) |
-| `renderKv` | `(items: KvItem[], totalCount: number | null | undefined, hints: string[]) => string`—`key: value`lines; throws`kv_validation_failed: …`for a repeated key or a`totalCount`/`help`/`recovery` key |
-| `renderDomainError` | `(code, message, hints, githubAnnotation?, causes?) => string` — `error`, `message`, `causes`, `exit_code`, `help` |
+| `renderKv` | `(items: KvItem[]) => string` — `key: value` lines; throws `kv_validation_failed: …` for a repeated key or a reserved key (a root key michi writes, such as `help` or `message`) |
+| `renderDomainError` | `(code, message, hints, githubAnnotation?, causes?) => string` — `error`, `message`, `causes`, `exit_code`, `help`. For the JSON or an MCP result, use `AgentResponse.error()`, which renders the same text |
 | `renderStatus` | `(toolName, description, items, hints?) => string` — `tool`, `description`, the table `items[N]{key,value,health,reason}:`, `help` |
 | `renderAlreadyDone` | `(operation, summary, hints) => string` — `operation`, `status: already_done`, `summary`, `help` |
 | `alreadyDone` | `(stored?: string \| null) => { done: boolean, result?: string }` — classify an idempotency lookup: any stored string (even empty) is done |
-| `renderPartialSuccess` | `(completed: OpRef[], failed: FailedOp[], skipped: OpRef[]) => string` — the summary, the `completed[N]{index,operation}:`, `failed[N]{index,operation,reason}:` and `skipped[N]{index,operation,reason}:` tables (`index` is the op's position in your batch; a skipped op's `reason` is a machine token, `null` when absent) and the failed ops' `recovery[N]{tool,params,reason}:` table |
+| `renderPartialSuccess` | `(completed: CompletedOp[], failed: FailedOp[], skipped: SkippedOp[]) => string` (throws when an `index` repeats) — one `partial_success[N]{index,operation,status,reason}:` table, a row per op sorted by `index` (the op's position in your batch; `status` is `completed`, `failed` or `skipped`; `reason` is the failure reason, the skip token or `null`), then the failed ops' `recovery[N]{tool,params,reason}:` table |
 | `renderPipeline` | `(steps: PipelineStep[]) => string` — the table `step[N]{id,name,status,reason}:`; `status` is a `StepStatus` label (`completed`, `outcome_unknown`, …) and `reason` is required exactly for `outcome_unknown`, `skipped` and `not_run` |
 | `truncate` | `(content: string, maxChars: number) => { content, originalChars, removed, wasTruncated }` — text that fits comes back unchanged; a longer text keeps its first `maxChars - 1` chars and ends in `…`, and the cut is reported in `removed` and `wasTruncated`, never inside `content`. Add your own hint, for example `cut ${removed} of ${originalChars} chars; pass full=true`, to the response's `help[]`. |
 | `parseRetryAfter` | `(headerValue: string) => number \| null` — an RFC 9110 `Retry-After` value (delay-seconds or HTTP-date) in seconds; a past date is `0`, a malformed value `null` |
@@ -73,7 +71,7 @@ Every string these functions return for an agent is a TOON 4.4 document with no 
 
 ### `AgentResponse` class
 
-The primary integration point — a builder that composes TOON/KV rendering, hints, and recovery into one response.
+The primary integration point — a builder that composes TOON/KV rendering, hints, and recovery into one response. Errors, batch outcomes, pipeline state, status and already-done reports are parts of it too, so a batch with results, per-op outcomes and an error is one document, one JSON object and one MCP result.
 
 Setters return `void`, not `this`, so call them as sequential statements rather than a chain. (Chaining isn't supported across the NAPI boundary — see `docs/spec/04-mcp-and-napi.md` in the main repo for why.)
 
@@ -84,10 +82,15 @@ Setters return `void`, not `this`, so call them as sequential statements rather 
 | `.kvItems` | `(items: KvItem[], totalCount?: number \| null) => void` — appends a key-value section the same way |
 | `.hint` | `(hint: string) => void` |
 | `.recoveryHint` | `(tool: string, reason?: string) => void` |
-| `.truncationHint` | `(hint: string) => void` — the caller's instruction for getting a cut cell in full (same as `ToonOptions.truncationHint`). Cut cells end in `…` and are listed in a `truncated[N]{row,field,removed}:` block; when a cell was cut, the hint adds one `help[]` line after your own hints. Without it the block still reports each cut |
+| `.truncationHint` | `(hint: string) => void` — the caller's instruction for getting a cut cell in full. Cut cells end in `…` and are listed in a `truncated[N]{row,field,removed}:` block; when a cell was cut, the hint adds one `help[]` line after your own hints. Without it the block still reports each cut |
 | `.asError` | `() => void` |
+| `.error` | `(code, message, causes?, retryable?) => void` — report a classified error: it renders first (`error`, `message`, `causes`, `exit_code`), `isError` is true everywhere, and the JSON carries `error: {code, message, causes, retryable}` beside `hints` and `recovery`. One per response |
+| `.partialSuccess` | `(name, completed, failed, skipped) => void` — append a batch's outcomes as the list `name[N]{index,operation,status,reason}:`; failed ops' recovery hints join the one `recovery` table |
+| `.pipeline` | `(name, steps: PipelineStep[]) => void` — append `name[N]{id,name,status,reason}:` |
+| `.status` | `(toolName, description, items: StatusItem[]) => void` — append `tool`, `description` and `items[N]{key,value,health,reason}:` |
+| `.alreadyDone` | `(operation, summary) => void` — append `operation`, `status: already_done`, `summary` |
 | `.renderText` | `() => string` — the sections in call order, then `help[]` and `recovery[]` |
-| `.renderJson` | `() => string` — compact JSON: `{"body":...,"sections":[...],"hints":[...],"recovery":[...],"isError":bool}` |
+| `.renderJson` | `() => string` — compact JSON: `{"body":...,"error":{...},"sections":[...],"hints":[...],"recovery":[...],"isError":bool}` (`error` and `sections` only when set) |
 | `.renderHintsOnly` | `() => string` — just the `help[N]: …` line |
 | `.humanContent` | `(text: string) => void` — attach a `user`-audience companion block for `toCallToolResult()` |
 | `.hasHumanContent` | `() => boolean` — whether `.humanContent()` was set |

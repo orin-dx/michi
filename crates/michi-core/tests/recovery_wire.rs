@@ -31,8 +31,8 @@ fn serde_matches_the_agent_response_companion() {
 fn serde_matches_the_domain_error_companion() {
     let hint = hints().remove(0);
     let err = DomainError::new(ErrorCode::NotFound, "m").recovery(hint.clone());
-    let companion: serde_json::Value = serde_json::from_str(&err.render_json()).expect("JSON");
-    assert_eq!(serde_json::to_value(&hint).expect("serializes"), companion["recovery"]);
+    let companion: serde_json::Value = serde_json::from_str(&err.render(michi_core::OutputFormat::Json)).expect("JSON");
+    assert_eq!(serde_json::to_value(&hint).expect("serializes"), companion["recovery"][0]);
 }
 
 #[test]

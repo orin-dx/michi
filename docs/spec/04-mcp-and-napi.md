@@ -17,9 +17,19 @@ pub struct ContentBlock {
 pub struct CallToolResult {
     pub content: Vec<ContentBlock>,
     pub is_error: bool,
-    pub structured_content: String,   // JSON text; see field doc for what's actually structured
+    pub structured_content: Option<JsonObject>,   // None = no structuredContent
+}
+
+/// The text of one JSON object, checked when built (in every build, no serde needed).
+pub struct JsonObject(/* private */);
+impl JsonObject {
+    pub fn try_new(text: impl Into<String>) -> Result<Self, StructuredContentError>; // also FromStr
+    pub fn as_str(&self) -> &str;
+    pub fn into_string(self) -> String;
 }
 ```
+
+`structured_content` used to be a `String` where empty meant none, so a default-feature caller could build a result that could not serialize (validity was checked only by `try_new` or at serialization, both behind `serde`). A `JsonObject` is checked when it is made: michi's own renderers make it from their JSON writers, anything else goes through `JsonObject::try_new`, a strict RFC 8259 checker written in `mcp.rs` with `serde_json`'s limits (at most 127 levels of nesting, no lone surrogate escapes, every number finite as an f64), so the default build needs no JSON dependency and a checked object always serializes. A property test checks the checker against `serde_json`. The wire shape is unchanged.
 
 `audience` is a `Vec`, not a scalar.
 
@@ -38,8 +48,8 @@ Under the `serde` feature, `ContentBlock`/`CallToolResult` don't derive `Seriali
 
 The wire rules, for output and input:
 
-- **Output:** `structuredContent` is the parsed JSON object and is omitted when `structured_content` is empty. MCP requires an object there, so serializing a `CallToolResult` whose `structured_content` is neither empty nor the text of a JSON object fails with a serde error (no `null`, array or double-encoded string is ever emitted). `CallToolResult::try_new` runs the same check up front and returns `StructuredContentError::InvalidJson` or `NotAnObject`.
-- **Input is tolerant where MCP is:** only `content` is required. `isError` defaults to `false`; an absent or `null` `structuredContent` becomes the empty string; `annotations` and `annotations.audience` are optional and default to no audience; other annotation fields (such as `priority`) are ignored. Still rejected: a `structuredContent` that is not an object, and a content block whose `type` is not `"text"`.
+- **Output:** `structuredContent` is the parsed JSON object and is omitted when `structured_content` is `None` (no `null`, array or double-encoded string is ever emitted). A non-object cannot get that far: `JsonObject::try_new` returns `StructuredContentError::InvalidJson` or `NotAnObject`.
+- **Input is tolerant where MCP is:** only `content` is required. `isError` defaults to `false`; an absent or `null` `structuredContent` becomes `None`; `annotations` and `annotations.audience` are optional and default to no audience; other annotation fields (such as `priority`) are ignored. Still rejected: a `structuredContent` that is not an object, and a content block whose `type` is not `"text"`.
 
 `AgentResponse::to_call_tool_result()` (see [03-rust-api.md](03-rust-api.md)) is the only intended constructor. It builds:
 
@@ -172,7 +182,7 @@ const out = new AgentResponse("issues")
 
 Any `#[napi]` function returning `napi::Result<T>` throws a JS `Error` on `Err`. Two practices apply here:
 
-- Wrap fallible conversions (row shape mismatches, oversized inputs) in `Result` and surface them as `napi::Error::from_reason(...)`. Inputs that cannot form a valid TOON document throw with a prefixed message: `toon_validation_failed: …` from `renderToon`, `emptyState` and `emptyStateWithHints` (a reserved `typeName`), `kv_validation_failed: …` from `renderKv` (a duplicate key, or a reserved `totalCount`/`help`/`recovery` key). `renderPipeline` throws for a status or reason that does not name a `StepStatus` (`unknown step status "done": expected one of pending, …`, `step status "skipped" needs a reason: prerequisite_failed or cancelled`, `step status "completed" takes no reason, got "timeout"`).
+- Wrap fallible conversions (row shape mismatches, oversized inputs) in `Result` and surface them as `napi::Error::from_reason(...)`. Inputs that cannot form a valid TOON document throw with a prefixed message: `toon_validation_failed: …` from `renderToon` (a reserved `typeName`), `kv_validation_failed: …` from `renderKv` (a duplicate key, or a reserved root key such as `help` or `message`; the list is in [02](02-toon-format.md#trust-model)). `renderPipeline` throws for a status or reason that does not name a `StepStatus` (`unknown step status "done": expected one of pending, …`, `step status "skipped" needs a reason: prerequisite_failed or cancelled`, `step status "completed" takes no reason, got "timeout"`).
 - Annotate exports that call into non-trivial rendering with `#[napi(catch_unwind)]`.
   - Without it: **a Rust panic crashes the entire Node process** — there's no isolation boundary.
   - With it: a panic becomes a thrown JS `Error` (or a rejected `Promise` for async) instead of process death.
@@ -181,15 +191,15 @@ Any `#[napi]` function returning `napi::Result<T>` throws a JS `Error` on `Err`.
 
 `catch_unwind` does not stop a single call from blocking Node's event loop with a huge allocation, so every export that takes caller collections bounds the work before doing it. napi-derive converts a typed parameter such as `Vec<Vec<JsToonValue>>` or `String` in full before the export's body runs; a check in the body comes too late (a rejected 100,001 × 100 `rows` array cost 3.4 s and 2.6 GiB that way, and 10k × 10 cells sharing one 100 KB JS string were copied out once per cell, ~10 GB). These exports therefore take untyped napi values and convert them incrementally (`crates/michi-core/src/napi/input.rs`):
 
-- `renderToon`, `renderHints`, `appendHints`, `renderRecovery`, `renderKv`, `renderAlreadyDone`, `renderDomainError`, `renderStatus`, `emptyStateWithHints`, `renderPartialSuccess`, `renderPipeline`, `alreadyDone`, and `AgentResponse.items` / `AgentResponse.kvItems`.
+- `renderToon`, `renderHints`, `appendHints`, `renderRecovery`, `renderKv`, `renderAlreadyDone`, `renderDomainError`, `renderStatus`, `renderPartialSuccess`, `renderPipeline`, `alreadyDone`, and `AgentResponse.items` / `kvItems` / `error` / `partialSuccess` / `pipeline` / `status` / `alreadyDone`, which take the same limits as the standalone function for the same input.
 - Array lengths are checked first: at most 100,000 rows, 1,000 fields, values per row, KV items or status items, 10,000 hints, 10,000 `renderDomainError` causes, and 10,000 entries in each of `renderPartialSuccess`' `completed`, `failed` and `skipped` and `renderPipeline`'s `steps`. For rows, every row's length is read and summed before any cell is converted.
 - Then each value is converted against a per-call budget: at most **1,000,000 cells** and **16 MiB of string data** in all (see "Output size" below). A string's UTF-8 length is read, and charged, before it is copied, so a JS string referenced many times is counted every time it is used.
 - Per-string caps: **1 MiB** for a cell value (`strVal`), hint, `renderDomainError` cause, recovery or failed-op `reason`, status `description`/`health`, error `message`, `summary` or pipeline step `name`; **4 KiB** for `typeName`, a field name, a KV or status key, `truncationHint`, a recovery `tool`, `toolName`, an error `code`, `operation`, a completed or skipped step id, and a pipeline step's `id`, `status` and `reason`. `appendHints`' `body` and `alreadyDone`'s `stored` count toward the 16 MiB budget only.
 - Errors keep the usual wording: `rows length 100001 exceeds maximum of 100000`, `cell count 1000100 exceeds maximum of 1000000`, `input byte total 16777226 exceeds maximum of 16777216`, `strVal byte length 1200000 exceeds maximum of 1048576`. A string whose UTF-16 length already exceeds the cap is rejected without scanning it, reported as `byte length (at least N)`.
 - Only the payload a cell's `type` names is read (`strVal` for `"str"`, `floatVal` and `decimalsVal` for `"float"`, …). As before, an object field set to `null` is a wrong-typed value, not an absent one.
-- The single-string `AgentResponse` members (the constructor's `typeName`, `hint`, `recoveryHint`, `truncationHint`, `humanContent`) and `emptyState` keep plain `string` parameters, since napi copies their one argument exactly once; they reject a value over the caps after the copy: 4 KiB for `typeName`, a recovery `tool` and `truncationHint`, 1 MiB for a hint, a recovery `reason` and `humanContent`. `AgentResponse.hint`/`recoveryHint` also keep their cumulative 10,000-call caps.
-- **Cumulative budget per `AgentResponse`:** one object holds at most **16 MiB** of caller strings across all its calls: the type name, `items` fields and cells, `kvItems` keys and values, hints, recovery tools and reasons, the truncation hint and `humanContent`. `items`, `kvItems`, `hint` and `recoveryHint` each add a block, so their bytes add to the total; `truncationHint` and `humanContent` replace their slot, so the old value's bytes come back first. A call that would pass the total throws `cumulative byte total 16777217 exceeds maximum of 16777216` and leaves the builder unchanged. Before, each call had its own budget, so 65 separate 1 MiB hints were accepted and rendered 68 MB synchronously.
-- **Output size:** the byte budget bounds what a render writes, not only what it reads. A control character is the worst case: six bytes in the text (`\u0001`), thirteen in the JSON (escaped again inside the body, plus the raw `sections` copy) and nineteen in `toCallToolResult()` (the text plus the parsed JSON). So `n` held bytes render to at most `19 n`, and a unit test pins that factor for every ASCII byte. At the old 64 MiB cap a maximal response (60 one-MiB control-character values) wrote 377 MB of text on a 1.2 GiB heap; a `renderJson()` string over V8's limit (about 512 MiB, `2^29 - 24` characters) failed with `GenericFailure: Failed to convert rust String into napi string` after it was rendered; and `toCallToolResult()` took 25 s and 3.2 GiB. At 16 MiB the worst case is 304 MiB, under the string limit, so a response either renders in every format or is rejected by the budget before anything is rendered. The largest accepted one (15 one-MiB control-character values) took 0.6 s and 348 MiB for `renderText()`, 2.8 s and 648 MiB for `renderJson()`, and 5.5 s and 838 MiB for `toCallToolResult()`, in a debug build.
+- The single-string `AgentResponse` members (the constructor's `typeName`, `hint`, `recoveryHint`, `truncationHint`, `humanContent`) keep plain `string` parameters, since napi copies their one argument exactly once; they reject a value over the caps after the copy: 4 KiB for `typeName`, a recovery `tool` and `truncationHint`, 1 MiB for a hint, a recovery `reason` and `humanContent`. `AgentResponse.hint`/`recoveryHint` also keep their cumulative 10,000-call caps.
+- **Cumulative budget per `AgentResponse`:** one object holds at most **16 MiB** across all its calls: the caller strings (the type name, `items` fields and cells, `kvItems` keys and values, hints, recovery tools and reasons, the truncation hint and `humanContent`), the storage rows and cells keep, and the repeats the output writes (see "Output size"). `items`, `kvItems`, `hint` and `recoveryHint` each add a block, so their bytes add to the total; `truncationHint` and `humanContent` replace their slot, so the old value's bytes come back first. A call that would pass the total throws `cumulative byte total 16777217 exceeds maximum of 16777216` and leaves the builder unchanged. Before, each call had its own budget, so 65 separate 1 MiB hints were accepted and rendered 68 MB synchronously.
+- **Output size:** the byte budget bounds what a render writes, not only what it reads. On every surface, a render is at most **19 times the bytes held, plus 4 KiB**. A control character is the worst case for a string: six bytes in the text (`\u0001`), seven in the JSON `body` (the text, escaped again) and six in the raw `sections`, `error` and `hints` copies, so one held byte is at most 6 + 7 + 6 = 19 bytes across the text and the JSON that `toCallToolResult()` returns together. A name is written in more places than that, so the budget charges each name for every place a writer can put it, not once: a `truncated` row writes the cell's field name, and, when two or more sections are cut, its section name, again for every cut cell (a string cell longer than 200 chars; no export changes that cap), so a field name is charged once per cut-capable cell of its column, and the type name or an outcome section's name once per cut-capable cell of its table; a section's name is charged twice (its `name[N]{…}:` header or `name: []` line and its row of the `totalCount` table; the type name's second charge is the one made when the response is built); a hint is charged one byte more than its length and a recovery hint four, for the row and the JSON object that hold them. Before, each name was charged once, and a 4 KiB field name with 1,000 rows of one 201-char cell (261 KB held) rendered to 24.8 MB of text and 29.1 MB of JSON, 95 and 112 times what it held; at 60,000 rows, under the old cap, `renderText()` failed with `Failed to convert rust String into napi string`. That table now holds about 4.4 KB per row, so 3,859 rows fit and 60,000 are rejected with `cumulative byte total N exceeds maximum of 16777216` (`input byte total N …` for `renderToon`, which charges the same names for its one list). The one-shot renders write text only: at most 6 bytes per byte charged, 26 per cell, 4 per row and 400 per other entry, which the counts cap under 200 MiB (a compile-time assertion). The tests render a matrix of hostile responses (every escape trigger and multi-byte characters; 4 KiB type, section and field names; cut cells in every composed section; numbers at their widest; each tiny item at its cap, alone) and assert that no surface passes the bound, with mutants (a factor of 18, a field or section name left uncharged) failing it; the Node suite builds the largest hostile table the budget accepts and measures all three formats against V8's string limit (about 512 MiB, `2^29 - 24` characters). At the old 64 MiB cap a maximal response (60 one-MiB control-character values) wrote 377 MB of text on a 1.2 GiB heap, and `toCallToolResult()` took 25 s and 3.2 GiB; at 16 MiB the worst case is 304 MiB, under the string limit, so a response either renders in every format or is rejected by the budget before anything is rendered. The largest accepted plain one (15 one-MiB control-character values) took 0.6 s and 348 MiB for `renderText()`, 2.8 s and 648 MiB for `renderJson()`, and 5.5 s and 838 MiB for `toCallToolResult()`, in a debug build.
 - michi-core's own shape caps (1,000 fields, 1,000,000 cells, a 256-char truncation hint; see [02 — Size limits](02-toon-format.md#size-limits)) still apply after conversion and surface as `toon_validation_failed: …`.
 
 Each export converts its arguments through `input` and then calls a private function that renders from the converted values. The limits are enforced in `input` only, and the Node tests (`count caps`) check each one at the cap and one past it. The private functions are not public Rust API: they used to be (`render_toon(JsToonOptions)`, `JsAgentResponse::items(Vec<Vec<JsToonValue>>, Vec<String>)` and a dozen more), each repeating the length checks. `ErrorCode` and `StepStatus` label parsing lives in michi-core (`ErrorCode::from_str`, `StepStatus::from_labels`, both searching the `ALL` tables that `label()` and `reason()` write), so a new variant cannot be left out of the JS surface unnoticed.
@@ -198,7 +208,7 @@ Each export converts its arguments through `input` and then calls a private func
 
 Every JavaScript number that crosses into a rendering or resilience call is validated at the boundary through a newtype in `crates/michi-core/src/napi/num.rs` before any michi code runs; an out-of-domain value throws a JS `Error` instead of being narrowed. `napi_get_value_double` (a non-coercing read) is used for every converted position, so `napi_get_value_int32`'s `ToInt32` wraparound is never in the path.
 
-- `totalCount` (`JsToonOptions.totalCount`, `renderKv`'s `totalCount` parameter, and the optional `totalCount` argument of `AgentResponse.items` and `kvItems`) is rejected unless it is a finite, non-negative integer no greater than `Number.MAX_SAFE_INTEGER` (2^53 - 1).
+- `totalCount` (the optional argument of `AgentResponse.items` and `kvItems`) is rejected unless it is a finite, non-negative integer no greater than `Number.MAX_SAFE_INTEGER` (2^53 - 1).
 - `decimalsVal` is rejected unless it is a finite integer in `[0, 20]`. When it is absent, a KV or status float keeps every digit it needs (the rule `RecoveryHint` deserialization uses), so `1e-7` renders `1e-7` and `5e-324` renders `5e-324`. When it is given, the float rounds to that many places, as asked: `1e-7` with `decimalsVal: 2` renders `0`.
 - `maxChars` (`truncate`'s parameter) is rejected unless it is a finite, non-negative integer no greater than `Number.MAX_SAFE_INTEGER`.
 - `intVal` is rejected unless it is a finite integer in `[-9007199254740991, 9007199254740991]` — the range over which a JS number and an `i64` agree exactly.
@@ -247,7 +257,7 @@ The first published release was 0.3.1 (0.3.0 was never published). The four pack
 
 This is auto-generated, never hand-written — `napi build` regenerates it from the `#[napi]` attributes in `crates/michi-core/src/napi.rs` every time.
 
-- Object types export without a prefix: `ToonValue`, `ToonOptions`, `KvItem`, `RecoveryHint`, `StatusItem`, `FailedOp`, `OpRef`, `PipelineStep`, `AlreadyDone`, `ContentBlock`, `Annotations`, `CallToolResult`, `Truncated`. Their Rust structs keep a `Js` prefix (`JsToonValue`, ...) and are renamed with `js_name`.
+- Object types export without a prefix: `ToonValue`, `ToonOptions`, `KvItem`, `RecoveryHint`, `StatusItem`, `FailedOp`, `CompletedOp`, `SkippedOp`, `PipelineStep`, `AlreadyDone`, `ContentBlock`, `Annotations`, `CallToolResult`, `Truncated`. Their Rust structs keep a `Js` prefix (`JsToonValue`, ...) and are renamed with `js_name`.
 - There's no unprefixed `ToonValue`/`CallToolResult`/etc. in the real output, whatever an older sketch of this section might have suggested.
 
 What's actually in `packages/michi-node/index.d.ts` today (rendering-domain surface; the resilience-, status-, and error-domain functions follow further down):
@@ -273,25 +283,14 @@ export interface ToonOptions {
   fields: Array<string>;
   /** Rows, each parallel to `fields`. Capped at MAX_ROWS rows, MAX_FIELDS values per row. */
   rows: Array<Array<ToonValue>>;
-  totalCount?: number;
-  /** Required, not optional — pass an empty array for no hints. Capped at MAX_HINTS. */
-  hints: Array<string>;
-  /** The caller's instruction for getting a truncated cell in full (e.g. `"full=true"`), appended as
-   * `" — use {hint}"`. Omitted: the suffix only reports how many chars were cut. */
-  truncationHint?: string;
 }
 
-/** Throws if rows/fields/hints, or any row, exceed this module's per-call size
- * limits — protects Node's single-threaded event loop from unbounded
+/** One TOON list: the entry and a `truncated[N]{row,field,removed}:` block for any cut cell. `totalCount`,
+ * `help[]` and the truncation hint belong to `AgentResponse`, which also renders the definitive empty state
+ * (`new AgentResponse("issue").renderText()` is `issue: []\ntotalCount: 0`). Throws if rows/fields, or any
+ * row, exceed this module's per-call size limits — protects Node's single-threaded event loop from unbounded
  * synchronous allocation on a crafted call. */
 export declare function renderToon(opts: ToonOptions): string;
-
-/** Render a definitive empty-state TOON response: `typeName: []\ntotalCount: 0` (no trailing newline).
- * Throws `toon_validation_failed: …` for a reserved `typeName` (`totalCount`, `help`, `recovery`, `truncated`), like `renderToon`. */
-export declare function emptyState(typeName: string): string;
-
-/** `emptyState` plus a `help[N]: …` block; the same `toon_validation_failed` error for a reserved `typeName`. */
-export declare function emptyStateWithHints(typeName: string, hints: Array<string>): string;
 
 /** The TOON 4.4 inline array `help[N]: h1,h2` (no trailing newline); an empty string when hints is empty. */
 export declare function renderHints(hints: Array<string>): string;
@@ -368,6 +367,38 @@ export declare class AgentResponse {
   truncationHint(hint: string): void;
   /** Marks this response as an error state, reflected in `renderJson()`'s `isError` field. */
   asError(): void;
+  /** Reports a classified error. It renders first (`error`, `message`, `causes[N]`, `exit_code: 1`) and is the JSON
+   * object `error: {code, message, causes, retryable}` beside `hints` and `recovery`; `isError` is true everywhere.
+   * `retryable` defaults to the code's. A second call replaces the first. */
+  error(
+    code:
+      | "invalid_input"
+      | "not_found"
+      | "unauthorized"
+      | "forbidden"
+      | "conflict"
+      | "rate_limited"
+      | "unavailable"
+      | "timeout"
+      | "external_failure",
+    message: string,
+    causes?: Array<string> | undefined | null,
+    retryable?: boolean | undefined | null,
+  ): void;
+  /** Appends a batch's outcomes as the list section `name[N]{index,operation,status,reason}:`, rows sorted by
+   * `index`; the failed operations' recovery hints join `recovery`. Throws when an index has two outcomes. */
+  partialSuccess(
+    name: string,
+    completed: Array<CompletedOp>,
+    failed: Array<FailedOp>,
+    skipped: Array<SkippedOp>,
+  ): void;
+  /** Appends pipeline state as the list section `name[N]{id,name,status,reason}:`. */
+  pipeline(name: string, steps: Array<PipelineStep>): void;
+  /** Appends `tool`, `description` and `items[N]{key,value,health,reason}:`. Hints go through `hint()`. */
+  status(toolName: string, description: string, items: Array<StatusItem>): void;
+  /** Appends `operation`, `status: already_done` and `summary`. */
+  alreadyDone(operation: string, summary: string): void;
   /** Attaches a `user`-audience companion block, included by `toCallToolResult()`
    * and readable via `renderFor("user")`. */
   humanContent(text: string): void;
@@ -377,9 +408,10 @@ export declare class AgentResponse {
   renderFor(audience: string): string;
   /** Whether `.humanContent()` was set on this builder. */
   hasHumanContent(): boolean;
-  /** The sections in call order, then `help[]` and `recovery[]` — see 03-rust-api.md. */
+  /** The error block, the sections in call order, then `help[]` and `recovery[]` — see 03-rust-api.md. */
   renderText(): string;
-  /** Returns a JSON *string* — `{"body":...,"sections":[...],"hints":[...],"recovery":[...],"isError":bool}`
+  /** Returns a JSON *string* — `{"body":...,"error":{...},"sections":[...],"hints":[...],"recovery":[...],"isError":bool}`
+   * (`error` and `sections` only when set)
    * — not a parsed value; kept as hand-built text for consistency with the Rust side's
    * `render(OutputFormat::Json)`, which stays `serde_json`-free (see the `mcp` module
    * section above for where this crate *does* use `serde_json`, and why). */
@@ -433,7 +465,8 @@ export declare function renderAlreadyDone(
 
 /** Render a classified `DomainError` as a TOON 4.4 document (`error`, `message`, `causes`, `exit_code`, `help`), or
  * a GitHub Actions annotation (message only) when `githubAnnotation` is true. `causes` are why it happened, outermost
- * first, rendered as their own `causes[N]: …` key; `hints` are what to do next. */
+ * first, rendered as their own `causes[N]: …` key; `hints` are what to do next. For the JSON or an MCP result, use
+ * `AgentResponse.error()`, which renders the same text. */
 export declare function renderDomainError(
   code: string,
   message: string,
@@ -470,22 +503,29 @@ export interface FailedOp {
   recovery?: RecoveryHint | null;
 }
 
-/** One completed or skipped operation for `renderPartialSuccess`. */
-export interface OpRef {
+/** One completed operation for `renderPartialSuccess`. A non-null `reason` on it is rejected. */
+export interface CompletedOp {
   /** Position in the caller's op slice. */
   index: number;
   operation: string;
-  /** A machine token such as `budget_exhausted`. Rendered for skipped ops only (`null` when absent). */
+}
+
+/** One skipped operation for `renderPartialSuccess`. */
+export interface SkippedOp {
+  /** Position in the caller's op slice. */
+  index: number;
+  operation: string;
+  /** A machine token such as `budget_exhausted`; `null` when absent. */
   reason?: string | null;
 }
 
-/** Render `PartialSuccess`: a quoted summary, then the `completed[N]{index,operation}:`,
- * `failed[N]{index,operation,reason}:` and `skipped[N]{index,operation,reason}:` tables (empty categories omitted),
- * then one `recovery[N]{tool,params,reason}:` table. */
+/** Render `PartialSuccess`: one `partial_success[N]{index,operation,status,reason}:` table, a row per operation
+ * sorted by `index`, then one `recovery[N]{tool,params,reason}:` table (`partial_success: []` and `totalCount: 0` with
+ * no operations). Throws when one `index` appears twice across the three lists. */
 export declare function renderPartialSuccess(
-  completed: Array<OpRef>,
+  completed: Array<CompletedOp>,
   failed: Array<FailedOp>,
-  skipped: Array<OpRef>,
+  skipped: Array<SkippedOp>,
 ): string;
 
 /** One step for `renderPipeline`: the labels `StepStatus::label` and `StepStatus::reason` write. */
@@ -516,7 +556,7 @@ export interface PipelineStep {
     | null;
 }
 
-/** Render pipeline state as `step[N]{id,name,status,reason}:`, or `step: []` with no steps. */
+/** Render pipeline state as `step[N]{id,name,status,reason}:`, or `step: []` and `totalCount: 0` with no steps. */
 export declare function renderPipeline(steps: Array<PipelineStep>): string;
 
 export interface AlreadyDone {

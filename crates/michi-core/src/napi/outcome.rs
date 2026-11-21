@@ -25,12 +25,14 @@ pub fn render_already_done(operation: Unknown<'_>, summary: Unknown<'_>, hints: 
     input::check_len("hints", hints.len(), MAX_HINTS)?;
     let operation = budget.string(operation, "operation", MAX_NAME_BYTES)?;
     let summary = budget.string(summary, "summary", MAX_STRING_BYTES)?;
-    let hints = budget.strings(&hints, "hints", MAX_HINTS, "hint", MAX_STRING_BYTES)?;
+    let hints: Vec<crate::hints::Hint> =
+        budget.strings(&hints, "hints", MAX_HINTS, "hint", MAX_STRING_BYTES)?.into_iter().map(Into::into).collect();
     Ok(crate::resilience::render_already_done(&operation, &summary, &hints))
 }
 
 /// Render a classified `DomainError` as a TOON 4.4 document (`error`, `message`, `causes`, `exit_code`, `help`), or
-/// as a GitHub Actions annotation (`::error title={code}::{message}`, without hints or causes).
+/// as a GitHub Actions annotation (`::error title={code}::{message}`, without hints or causes). For its JSON or an MCP
+/// result, or to report it next to data, use `AgentResponse.error()`: the same text, one JSON shape.
 ///
 /// `causes` (optional) are why the error happened, outermost first, rendered as their own `causes[N]: …` key after the
 /// message; `hints` are what to do next.
@@ -70,6 +72,21 @@ pub fn render_domain_error(
     domain_error(&code, message, hints, github_annotation.unwrap_or(false), causes)
 }
 
+/// A `DomainError` from its code label, message and causes. Shared by `renderDomainError` and `AgentResponse.error`.
+pub(super) fn build_domain_error(
+    code: &str,
+    message: String,
+    causes: Vec<String>,
+) -> napi::Result<crate::error::DomainError> {
+    let code: crate::error::ErrorCode =
+        code.parse().map_err(|e: crate::error::UnknownErrorCode| napi::Error::from_reason(e.to_string()))?;
+    let mut err = crate::error::DomainError::new(code, message);
+    for c in causes {
+        err = err.cause(c);
+    }
+    Ok(err)
+}
+
 fn domain_error(
     code: &str,
     message: String,
@@ -77,14 +94,11 @@ fn domain_error(
     github_annotation: bool,
     causes: Vec<String>,
 ) -> napi::Result<String> {
-    let code: crate::error::ErrorCode =
-        code.parse().map_err(|e: crate::error::UnknownErrorCode| napi::Error::from_reason(e.to_string()))?;
-    let mut err = crate::error::DomainError::new(code, message);
-    err.causes = causes;
+    let mut err = build_domain_error(code, message, causes)?;
     for h in hints {
         err = err.hint(h);
     }
-    Ok(if github_annotation { err.render_github_annotation() } else { err.render() })
+    Ok(if github_annotation { err.render_github_annotation() } else { err.render(crate::response::OutputFormat::Text) })
 }
 
 /// One failed operation for `renderPartialSuccess` (JavaScript-friendly).
@@ -103,34 +117,47 @@ pub struct JsFailedOp {
     pub recovery: Option<JsRecoveryHint>,
 }
 
-/// One completed or skipped operation for `renderPartialSuccess` (JavaScript-friendly).
-#[napi(object, js_name = "OpRef")]
+/// One completed operation for `renderPartialSuccess` (JavaScript-friendly). It takes no `reason`.
+#[napi(object, js_name = "CompletedOp")]
 #[derive(Debug, Clone)]
-pub struct JsOpRef {
+pub struct JsCompletedOp {
     /// Position in the caller's op slice. `results[index]` answers `ops[index]`.
     #[napi(ts_type = "number")]
     pub index: JsCount,
     /// Display name for the operation.
     pub operation: String,
-    /// A stable machine token such as `budget_exhausted`, never prose. Rendered for skipped operations only.
+}
+
+/// One skipped operation for `renderPartialSuccess` (JavaScript-friendly).
+#[napi(object, js_name = "SkippedOp")]
+#[derive(Debug, Clone)]
+pub struct JsSkippedOp {
+    /// Position in the caller's op slice. `results[index]` answers `ops[index]`.
+    #[napi(ts_type = "number")]
+    pub index: JsCount,
+    /// Display name for the operation.
+    pub operation: String,
+    /// A stable machine token such as `budget_exhausted`, never prose; `null` when absent.
     #[napi(ts_type = "string | null")]
     pub reason: Option<String>,
 }
 
-/// Render a partial-success report: a quoted summary, then `completed[N]{index,operation}:`,
-/// `failed[N]{index,operation,reason}:` and `skipped[N]{index,operation,reason}:` tables (empty categories omitted),
-/// then the failed operations' recovery hints as one `recovery[N]{tool,params,reason}:` table. A skipped operation
-/// without a `reason` renders `null` there.
+/// Render a partial-success report: one `partial_success[N]{index,operation,status,reason}:` table, a row per
+/// operation sorted by `index` (`status` is `completed`, `failed` or `skipped`; `reason` is the failure reason, the
+/// skip token or `null`), then the failed operations' recovery hints as one `recovery[N]{tool,params,reason}:` table.
+/// No operations render `partial_success: []` and `totalCount: 0`. To put the table next to a batch's results, use
+/// `AgentResponse.partialSuccess()`.
 ///
 /// # Errors
 ///
-/// Rejects more than 10,000 entries in `completed`, `failed` or `skipped`, an `operation`, an `OpRef` `reason` or a
-/// recovery `tool` over 4 KiB, a failed `reason` over 1 MiB, an `index` that is not an integer in `0..=2^53-1`, and
-/// more than 16 MiB of strings per call.
+/// Rejects an `index` that appears more than once across the three lists (each operation has one outcome), a
+/// completed operation with a `reason`, more than 10,000 entries in `completed`, `failed` or `skipped`, an
+/// `operation`, a skipped `reason` or a recovery `tool` over 4 KiB, a failed `reason` over 1 MiB, an `index` that is
+/// not an integer in `0..=2^53-1`, and more than 16 MiB of strings per call.
 #[napi(
     catch_unwind,
     js_name = "renderPartialSuccess",
-    ts_args_type = "completed: Array<OpRef>, failed: Array<FailedOp>, skipped: Array<OpRef>"
+    ts_args_type = "completed: Array<CompletedOp>, failed: Array<FailedOp>, skipped: Array<SkippedOp>"
 )]
 pub fn render_partial_success(
     completed: Unknown<'_>,
@@ -144,13 +171,27 @@ pub fn render_partial_success(
     input::check_len("completed", completed.len(), MAX_STEPS)?;
     input::check_len("failed", failed.len(), MAX_STEPS)?;
     input::check_len("skipped", skipped.len(), MAX_STEPS)?;
-    let completed = budget.op_refs(&completed, "completed", MAX_STEPS)?;
+    let completed = budget.completed_ops(&completed, MAX_STEPS)?;
     let failed = budget.failed_ops(&failed, MAX_STEPS)?;
-    let skipped = budget.op_refs(&skipped, "skipped", MAX_STEPS)?;
-    Ok(partial_success(completed, failed, skipped))
+    let skipped = budget.skipped_ops(&skipped, MAX_STEPS)?;
+    partial_success(completed, failed, skipped)
 }
 
-fn partial_success(completed: Vec<JsOpRef>, failed: Vec<JsFailedOp>, skipped: Vec<JsOpRef>) -> String {
+fn partial_success(
+    completed: Vec<JsCompletedOp>,
+    failed: Vec<JsFailedOp>,
+    skipped: Vec<JsSkippedOp>,
+) -> napi::Result<String> {
+    Ok(build_partial_success(completed, failed, skipped)?.render())
+}
+
+/// A `PartialSuccess` from its three lists; an index with more than one outcome is an error. Shared by
+/// `renderPartialSuccess` and `AgentResponse.partialSuccess`.
+pub(super) fn build_partial_success(
+    completed: Vec<JsCompletedOp>,
+    failed: Vec<JsFailedOp>,
+    skipped: Vec<JsSkippedOp>,
+) -> napi::Result<crate::idempotency::PartialSuccess> {
     let failed = failed
         .into_iter()
         .map(|f| {
@@ -161,18 +202,20 @@ fn partial_success(completed: Vec<JsOpRef>, failed: Vec<JsFailedOp>, skipped: Ve
             }
         })
         .collect();
-    let op_refs = |ops: Vec<JsOpRef>| -> Vec<crate::idempotency::OpRef> {
-        ops.into_iter()
-            .map(|o| {
-                let op = crate::idempotency::OpRef::new(o.index.get(), o.operation);
-                match o.reason {
-                    Some(r) => op.reason(r),
-                    None => op,
-                }
-            })
-            .collect()
-    };
-    crate::idempotency::PartialSuccess::new(op_refs(completed), failed, op_refs(skipped)).render()
+    let completed =
+        completed.into_iter().map(|o| crate::idempotency::CompletedOp::new(o.index.get(), o.operation)).collect();
+    let skipped = skipped
+        .into_iter()
+        .map(|o| {
+            let op = crate::idempotency::SkippedOp::new(o.index.get(), o.operation);
+            match o.reason {
+                Some(r) => op.reason(r),
+                None => op,
+            }
+        })
+        .collect();
+    crate::idempotency::PartialSuccess::try_new(completed, failed, skipped)
+        .map_err(|e| napi::Error::from_reason(e.to_string()))
 }
 
 /// One pipeline step for `renderPipeline` (JavaScript-friendly).
@@ -197,7 +240,8 @@ pub struct JsPipelineStep {
     pub reason: Option<String>,
 }
 
-/// Render pipeline state as the TOON 4.4 table `step[N]{id,name,status,reason}:`, or `step: []` with no steps.
+/// Render pipeline state as the TOON 4.4 table `step[N]{id,name,status,reason}:`, or `step: []` and `totalCount: 0`
+/// with no steps. To put it next to other sections, use `AgentResponse.pipeline()`.
 ///
 /// # Errors
 ///
@@ -213,6 +257,12 @@ pub fn render_pipeline(steps: Unknown<'_>) -> napi::Result<String> {
 }
 
 fn pipeline_table(steps: Vec<JsPipelineStep>) -> napi::Result<String> {
+    Ok(build_pipeline(steps)?.render())
+}
+
+/// A `Pipeline` from its steps, each status and reason parsed by the core label table. Shared by `renderPipeline` and
+/// `AgentResponse.pipeline`.
+pub(super) fn build_pipeline(steps: Vec<JsPipelineStep>) -> napi::Result<crate::pipeline::Pipeline> {
     let steps = steps
         .into_iter()
         .map(|s| {
@@ -221,7 +271,7 @@ fn pipeline_table(steps: Vec<JsPipelineStep>) -> napi::Result<String> {
             Ok(crate::pipeline::PipelineStep::new(s.id, s.name, status))
         })
         .collect::<napi::Result<Vec<_>>>()?;
-    Ok(crate::pipeline::Pipeline::new(String::new(), steps).render())
+    Ok(crate::pipeline::Pipeline::new(steps))
 }
 
 /// The result of `alreadyDone` (JavaScript-friendly).
@@ -302,6 +352,21 @@ mod tests {
         assert!(out.contains("summary: already deleted"), "got: {out}");
     }
 
+    fn count(n: usize) -> JsCount {
+        JsCount::try_from(f64::from(u32::try_from(n).expect("small"))).expect("a valid count")
+    }
+
+    #[test]
+    fn partial_success_rejects_two_outcomes_for_one_index() {
+        let completed = vec![JsCompletedOp { index: count(0), operation: "a".into() }];
+        let failed = vec![JsFailedOp { index: count(0), operation: "a".into(), reason: "boom".into(), recovery: None }];
+        let err = partial_success(completed.clone(), failed, vec![]).expect_err("index 0 twice");
+        assert_eq!(err.reason, "operation index 0 has more than one outcome");
+        let skipped = vec![JsSkippedOp { index: count(1), operation: "b".into(), reason: None }];
+        let out = partial_success(completed, vec![], skipped).expect("distinct indices");
+        assert_eq!(out, "partial_success[2]{index,operation,status,reason}:\n  0,a,completed,null\n  1,b,skipped,null");
+    }
+
     #[test]
     fn domain_error_rejects_unknown_code_with_enumerated_message() {
         let err = domain_error("bogus_code", "msg".into(), vec![], false, vec![]).expect_err("unknown code");
@@ -354,10 +419,7 @@ mod tests {
                 reason: status.reason().map(Into::into),
             };
             let out = pipeline_table(vec![step]).expect("every label pair parses");
-            let want = crate::pipeline::Pipeline::new(
-                String::new(),
-                vec![crate::pipeline::PipelineStep::new("a", "n", status)],
-            );
+            let want = crate::pipeline::Pipeline::new(vec![crate::pipeline::PipelineStep::new("a", "n", status)]);
             assert_eq!(out, want.render());
         }
         let bad = JsPipelineStep { id: "a".into(), name: "n".into(), status: "skipped".into(), reason: None };

@@ -14,7 +14,7 @@ fn retry_config_compares_by_value() {
 
 #[test]
 fn toon_options_compare_by_value() {
-    let build = || ToonOptions::new("issues", vec!["n".into()], vec![vec![Value::Int(1)]]).total_count(Some(1));
+    let build = || ToonOptions::new("issues", vec!["n".into()], vec![vec![Value::Int(1)]]);
     assert_eq!(build(), build());
-    assert_ne!(build(), build().total_count(Some(2)));
+    assert_ne!(build(), build().max_cell_len(2));
 }

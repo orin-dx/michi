@@ -14,10 +14,9 @@ async fn main() {
         "issues",
         vec!["number".to_string(), "title".to_string()],
         vec![vec![Value::Int(1), Value::from("first")], vec![Value::Int(2), Value::from("second")]],
-    )
-    .total_count(Some(2));
+    );
     let toon = render_toon(&opts).expect("valid toon input");
-    assert_eq!(toon, "issues[2]{number,title}:\n  1,first\n  2,second\ntotalCount: 2");
+    assert_eq!(toon, "issues[2]{number,title}:\n  1,first\n  2,second");
 
     // michi-pipeline: a two-step plan on tokio.
     let fetch = StepId::try_new("fetch").expect("valid id");

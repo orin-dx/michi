@@ -161,13 +161,9 @@ impl std::fmt::Display for Value {
     }
 }
 
-/// Root-object keys michi composes next to a TOON list (`totalCount`, `help`, `recovery`, `truncated`), which a type
-/// name therefore must not take: TOON 4.4 §14.3 forbids duplicate sibling keys.
-pub(crate) const RESERVED_TYPE_NAMES: [&str; 4] = ["totalCount", "help", "recovery", "truncated"];
-
 /// Cut `s` to at most `max_cell_len` chars: `max_cell_len - 1` kept chars and a plain `…`, or the empty string for a
 /// cap of 0. Returns the cell and the number of chars cut off, or `None` when `s` fits. The cell never carries a
-/// message: the cut is reported in the `truncated` block (see `push_truncated`).
+/// message: the cut is reported in the `truncated` block (see [`super::table::push_truncated`]).
 fn cut_cell(s: &str, max_cell_len: usize) -> Option<(String, usize)> {
     // Byte length is always >= char count, so a string that fits in bytes fits in chars: skip the UTF-8 scan.
     if s.len() <= max_cell_len {
@@ -219,30 +215,24 @@ fn push_cell(out: &mut String, cell: &Value, max_cell_len: usize) -> Option<usiz
 /// - otherwise the tabular form `key[N]{f1,f2}:` with one row per line at depth 1 (§9.3).
 ///
 /// Returns the cells that were cut, as `(row, field index, chars removed)`.
-fn push_list(out: &mut String, opts: &crate::toon::ToonOptions) -> Vec<(usize, usize, usize)> {
+fn push_list(out: &mut String, opts: &crate::toon::ListRef<'_>) -> Vec<(usize, usize, usize)> {
     use std::fmt::Write as _;
     let mut cut = Vec::new();
-    out.push_str(&escape_key(&opts.type_name));
     if opts.rows.is_empty() {
+        out.push_str(&escape_key(opts.type_name));
         out.push_str(": []\n");
         return cut;
     }
-    let _ = write!(out, "[{}]", opts.rows.len());
     if opts.fields.is_empty() {
-        out.push_str(":\n");
-        for _ in &opts.rows {
+        out.push_str(&escape_key(opts.type_name));
+        let _ = writeln!(out, "[{}]:", opts.rows.len());
+        for _ in opts.rows {
             out.push_str("  -\n");
         }
         return cut;
     }
-    out.push('{');
-    for (i, field) in opts.fields.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        out.push_str(&escape_key(field));
-    }
-    out.push_str("}:\n");
+    super::table::push_header(out, opts.type_name, opts.rows.len(), opts.fields);
+    out.push('\n');
     for (r, row) in opts.rows.iter().enumerate() {
         out.push_str("  ");
         for (i, cell) in row.iter().enumerate() {
@@ -258,82 +248,31 @@ fn push_list(out: &mut String, opts: &crate::toon::ToonOptions) -> Vec<(usize, u
     cut
 }
 
-/// Append the `truncated[N]{row,field,removed}:` block that reports every cut cell (nothing when none was cut). It is
-/// michi's own signal: cell text is quoted and escaped, so no cell can produce this block or one of its rows.
-fn push_truncated(out: &mut String, opts: &crate::toon::ToonOptions, cut: &[(usize, usize, usize)]) {
-    use std::fmt::Write as _;
-    if cut.is_empty() {
-        return;
-    }
-    let _ = writeln!(out, "truncated[{}]{{row,field,removed}}:", cut.len());
-    for &(row, field, removed) in cut {
-        let name = opts.fields.get(field).map_or("", String::as_str);
-        let _ = writeln!(out, "  {row},{},{removed}", escape_value(name));
-    }
+/// What [`ToonDocument::render_list`] produces: the list entry and what it cut, before the blocks that follow a list.
+pub(crate) struct RenderedList {
+    /// The list entry, with no trailing newline.
+    pub(crate) text: String,
+    /// Cut cells as `(row, field index, chars removed)`.
+    pub(crate) cuts: Vec<(usize, usize, usize)>,
+    /// The `help[]` line michi adds when it cut a cell and the caller set a truncation hint.
+    pub(crate) extra_hint: Option<String>,
 }
 
-/// Owns [`ToonDocument`] in a module of its own -- containing nothing else
-/// -- so the invariant "only `validate` can produce one" is enforced by
-/// Rust's own field-privacy rule, not by scanning source text for known
-/// bypass shapes. `opts` is visible only inside this module and its
-/// descendants; since this module declares no descendants and nothing
-/// besides `validate`/`render`, no code anywhere else in this crate --
-/// regardless of what shape it takes (a free function, a second impl
-/// block, a `From`/`TryFrom` impl, a type alias, or a module gated behind
-/// an unanticipated `#[cfg(...)]`) -- can write the struct-literal
-/// `ToonDocument { opts }` and have it compile. This module is `mod`, not
-/// `pub`, so external code cannot even name `render::proof::ToonDocument`
-/// directly; the type is reachable only through the `pub use` re-export
-/// below.
-///
-/// This guarantee holds only GIVEN two preconditions that Rust's type
-/// system does not itself enforce, and that are each pinned by a
-/// dedicated assertion in `sole_constructor_for_toon_document` rather than
-/// left as a precondition nothing verifies: (1) `opts` stays genuinely
-/// bare-private -- widening its visibility to reach the rest of this
-/// module is a one-token, entirely ordinary-looking edit that would grant
-/// field access to all of `render.rs` and let a constructor live outside
-/// `proof` entirely, defeating the guarantee above while every OTHER
-/// check here stays green; and (2) `proof`'s true extent is what the
-/// scanning code believes it is -- found, historically, to be defeatable
-/// by a multi-line string literal (e.g. inside a `#[doc = "..."]`
-/// attribute) containing a bare `}`, which an earlier, purely line-based
-/// brace-matcher mistook for the module's real close. `find_closing_line`
-/// now tracks actual lexical structure (string and char literals,
-/// comments) rather than taking for granted that a closing brace is
-/// always alone on its rustfmt-normalized line, closing that specific
-/// hole; a companion assertion additionally pins the literal line
-/// immediately following `proof`'s close, as
-/// defense in depth against a future defect in that scan.
-///
-/// **Known, accepted residual:** none of the above closes a bypass hidden
-/// behind `macro_rules!` expansion -- a `some_macro!();` item-position
-/// invocation inside this module's own `impl` block is, after expansion,
-/// code that genuinely lives inside `proof` and therefore has real field
-/// access, the same way `validate` does. No text scan can see through
-/// macro expansion (`include_str!`, which every guard test here reads
-/// from, captures source as written, before expansion), so this is a
-/// limit of the mechanism, not a missed pattern. Per this invariant's own
-/// design record, the property being enforced is that a maintainer
-/// *following this codebase's patterns* cannot reintroduce the defect by
-/// accident; a maintainer deliberately writing macro-hidden field access
-/// to evade this exact module boundary is choosing to defeat it, not
-/// accidentally tripping over it, and is outside what a source-level
-/// guard can mechanically prevent. Closing that residual for real would
-/// mean asserting over post-expansion, cfg-resolved output (e.g. via
-/// `cargo-expand`) rather than unexpanded source text -- a deliberate
-/// scope decision, not an oversight.
+/// Holds [`ToonDocument`] alone, so its private field is visible only here and `validate` is the one way to build
+/// one. The compiler enforces that; `tests/ui-fail/toon_document_no_field_construction.rs` and
+/// `toon_document_no_new_constructor.rs` prove it from outside the crate.
 mod proof {
+    use crate::toon::ListRef;
+
     /// Proof that a `ToonOptions` value has passed structural validation.
     ///
-    /// The only function that produces a `ToonDocument` is
-    /// [`ToonDocument::validate`] -- see this module's own doc comment for
-    /// why no other function anywhere in the crate can construct one.
-    /// Borrows `&'a ToonOptions` immutably, so the validated options cannot
-    /// be mutated while the proof is live.
+    /// The only functions that produce a `ToonDocument` are [`ToonDocument::validate`] and the crate-internal
+    /// `validate_list` it calls -- see this module's own doc comment for why no other function anywhere in the crate
+    /// can construct one. It borrows the list immutably, so the validated rows cannot be mutated while the proof is
+    /// live.
     #[derive(Debug)]
     pub struct ToonDocument<'a> {
-        opts: &'a crate::toon::ToonOptions,
+        list: ListRef<'a>,
     }
 
     impl<'a> ToonDocument<'a> {
@@ -348,38 +287,42 @@ mod proof {
         ///
         /// Checks run in this order and the first failure is returned:
         /// [`crate::toon::ToonError::InvalidTypeName`] if `type_name` is a
-        /// reserved root key (`totalCount`, `help`, `recovery` or `truncated`),
+        /// reserved root key (see that variant),
         /// [`crate::toon::ToonError::TooManyFields`] past
         /// [`crate::toon::MAX_FIELDS`] fields,
         /// [`crate::toon::ToonError::InvalidFieldName`] if a field name appears
         /// more than once, [`crate::toon::ToonError::TooManyCells`] if
-        /// `rows × fields` (at least one cell per row) is past [`crate::toon::MAX_CELLS`],
-        /// [`crate::toon::ToonError::TruncationHintTooLong`] if the truncation
-        /// hint is past [`crate::toon::MAX_TRUNCATION_HINT_CHARS`] chars, and
+        /// `rows × fields` (at least one cell per row) is past [`crate::toon::MAX_CELLS`], and
         /// [`crate::toon::ToonError::RowLengthMismatch`] if any row's length
         /// differs from `fields.len()`. Every check is linear in the input.
         pub fn validate(opts: &'a crate::toon::ToonOptions) -> Result<Self, crate::toon::ToonError> {
+            Self::validate_list(opts.list_ref())
+        }
+
+        /// [`validate`](Self::validate) for a borrowed list, which also checks the truncation hint
+        /// ([`crate::toon::ToonError::TruncationHintTooLong`], after the cell cap and before row arity).
+        pub(crate) fn validate_list(list: ListRef<'a>) -> Result<Self, crate::toon::ToonError> {
             use crate::toon::{ToonError, MAX_CELLS, MAX_FIELDS, MAX_TRUNCATION_HINT_CHARS};
-            if super::RESERVED_TYPE_NAMES.contains(&opts.type_name.as_str()) {
-                return Err(ToonError::InvalidTypeName { name: opts.type_name.clone() });
+            if crate::toon::is_reserved_root_key(list.type_name) {
+                return Err(ToonError::InvalidTypeName { name: list.type_name.to_string() });
             }
-            if opts.fields.len() > MAX_FIELDS {
-                return Err(ToonError::TooManyFields { count: opts.fields.len(), max: MAX_FIELDS });
+            if list.fields.len() > MAX_FIELDS {
+                return Err(ToonError::TooManyFields { count: list.fields.len(), max: MAX_FIELDS });
             }
-            let mut seen = std::collections::HashSet::with_capacity(opts.fields.len());
-            for field in &opts.fields {
+            let mut seen = std::collections::HashSet::with_capacity(list.fields.len());
+            for field in list.fields {
                 if !seen.insert(field.as_str()) {
                     return Err(ToonError::InvalidFieldName { name: field.clone() });
                 }
             }
-            if crate::toon::cell_count(opts.rows.len(), opts.fields.len()) > MAX_CELLS {
+            if crate::toon::cell_count(list.rows.len(), list.fields.len()) > MAX_CELLS {
                 return Err(ToonError::TooManyCells {
-                    rows: opts.rows.len(),
-                    fields: opts.fields.len(),
+                    rows: list.rows.len(),
+                    fields: list.fields.len(),
                     max: MAX_CELLS,
                 });
             }
-            if let Some(hint) = &opts.truncation_hint {
+            if let Some(hint) = list.truncation_hint {
                 // A hint of at most MAX bytes has at most MAX chars, so only a longer one needs counting.
                 if hint.len() > MAX_TRUNCATION_HINT_CHARS {
                     let len = hint.chars().count();
@@ -388,116 +331,92 @@ mod proof {
                     }
                 }
             }
-            for (i, row) in opts.rows.iter().enumerate() {
-                if row.len() != opts.fields.len() {
+            for (i, row) in list.rows.iter().enumerate() {
+                if row.len() != list.fields.len() {
                     return Err(ToonError::RowLengthMismatch {
                         row_index: i,
-                        expected: opts.fields.len(),
+                        expected: list.fields.len(),
                         actual: row.len(),
                     });
                 }
             }
-            Ok(Self { opts })
+            Ok(Self { list })
         }
 
-        /// Render `self` to a TOON 4.4 document: the list entry, then
-        /// `totalCount: N` and the inline `help[N]: …` array when present,
-        /// with no trailing newline (§12). Infallible and total by
-        /// construction: row arity was already proven equal to
-        /// `fields.len()` by `validate`, so rows and fields are iterated in
+        /// Render `self` to a TOON 4.4 list: the list entry, then the `truncated[N]{row,field,removed}:` block when a
+        /// cell was cut to `max_cell_len`, with no trailing newline (§12). Infallible and total by construction: row
+        /// arity was already proven equal to `fields.len()` by `validate`, so rows and fields are iterated in
         /// lockstep instead of indexed by position, which could fail.
         ///
-        /// Cells cut to `max_cell_len` end in `…` and are reported in a `truncated[N]{row,field,removed}:` block
-        /// after the list. When [`ToonOptions::truncation_hint`](crate::toon::ToonOptions::truncation_hint) is set
-        /// and a cell was cut, michi adds one line to `help[]` pointing at that block and the caller's instruction.
+        /// Cut cells end in `…`. `totalCount`, `help[]` and the truncation hint are not written here:
+        /// [`AgentResponse`](crate::AgentResponse) owns them for the whole response.
         #[must_use]
         pub fn render(&self) -> String {
-            let (mut out, _, extra) = self.render_parts(true);
-            let hints = self.opts.hints.iter().map(String::as_str).chain(extra.as_deref());
-            let hints: Vec<&str> = hints.collect();
-            crate::hints::append_help_block(&mut out, hints.into_iter());
+            let list = self.render_list();
+            let mut out = list.text;
+            let cuts: Vec<crate::toon::table::Cut<'_>> = list
+                .cuts
+                .iter()
+                .map(|&(row, field, removed)| crate::toon::table::Cut {
+                    section: self.list.type_name,
+                    row,
+                    field: self.list.fields.get(field).map_or("", String::as_str),
+                    removed,
+                })
+                .collect();
+            crate::toon::table::push_truncated(&mut out, &cuts, false);
             out
         }
 
-        /// The document without its `help` block, plus the `help[]` line michi adds when it cut a cell and the
-        /// caller set a truncation hint. [`AgentResponse`](crate::AgentResponse) merges that line into its own
-        /// hints so a response keeps a single `help` key.
-        ///
-        /// With `inline` the `truncated` block and `totalCount` line follow the list and the cut list returned is
-        /// empty. Without it the text is the list entry alone and the cuts come back as `(row, field name, chars
-        /// removed)`, so a multi-section response can merge the cuts of every block into one `truncated` table.
-        pub(crate) fn render_parts(&self, inline: bool) -> (String, Vec<(usize, String, usize)>, Option<String>) {
-            let opts = self.opts;
-            let capacity = 60 + opts.rows.len() * (opts.fields.len() * 12 + 10);
-            let mut out = String::with_capacity(capacity);
-            let cut = super::push_list(&mut out, opts);
-            let extra = match opts.truncation_hint.as_deref() {
-                Some(hint) if !cut.is_empty() && !hint.is_empty() => {
+        /// The list entry alone, the cells it cut and the `help[]` line michi adds when it cut a cell and the caller
+        /// set a truncation hint. [`render`](Self::render) puts the `truncated` block after it;
+        /// [`AgentResponse`](crate::AgentResponse) places that block, `totalCount` and `help` itself, so several
+        /// sections share one of each.
+        pub(crate) fn render_list(&self) -> super::RenderedList {
+            let list = &self.list;
+            let capacity = 60 + list.rows.len() * (list.fields.len() * 12 + 10);
+            let mut text = String::with_capacity(capacity);
+            let cuts = super::push_list(&mut text, list);
+            if text.ends_with('\n') {
+                text.pop();
+            }
+            let extra_hint = match list.truncation_hint {
+                Some(hint) if !cuts.is_empty() && !hint.is_empty() => {
                     Some(format!("Cut cells are listed in the truncated block; use {hint} for the full value"))
                 }
                 _ => None,
             };
-            let mut cuts = Vec::new();
-            if inline {
-                super::push_truncated(&mut out, opts, &cut);
-                if let Some(total) = opts.total_count {
-                    out.push_str("totalCount: ");
-                    out.push_str(&total.to_string());
-                    out.push('\n');
-                }
-            } else {
-                cuts = cut
-                    .into_iter()
-                    .map(|(row, field, removed)| (row, opts.fields.get(field).cloned().unwrap_or_default(), removed))
-                    .collect();
-            }
-            if out.ends_with('\n') {
-                out.pop();
-            }
-            (out, cuts, extra)
+            super::RenderedList { text, cuts, extra_hint }
         }
     }
 }
 pub use proof::ToonDocument;
-
-#[allow(dead_code)]
-fn _assert_render_signature(doc: &ToonDocument<'_>) -> String {
-    doc.render()
-}
 
 #[cfg(test)]
 mod tests {
     use super::Value;
     use compact_str::CompactString;
 
-    fn render(
-        type_name: &str,
-        fields: &[String],
-        rows: &[Vec<Value>],
-        total_count: Option<usize>,
-        hints: &[String],
-        max_cell_len: usize,
-    ) -> String {
+    fn render(type_name: &str, fields: &[String], rows: &[Vec<Value>], max_cell_len: usize) -> String {
         let opts = crate::toon::ToonOptions {
             type_name: type_name.to_string(),
             fields: fields.to_vec(),
             rows: rows.to_vec(),
-            total_count,
-            hints: hints.to_vec(),
             max_cell_len,
-            truncation_hint: None,
         };
         crate::toon::ToonDocument::validate(&opts).expect("test render() shim: options must validate").render()
     }
 
-    /// One string cell `content` under field `a`, rendered with `max_cell_len` and an optional truncation hint.
+    /// One string cell `content` under field `a`, rendered by a response with `max_cell_len` and an optional
+    /// truncation hint: the hint is the response's, so the `help[]` line it adds appears here and not in `render`.
     fn render_cell(content: &str, max_cell_len: usize, hint: Option<&str>) -> String {
-        let mut opts = crate::toon::ToonOptions::new("t", vec!["a".to_string()], vec![vec![Value::from(content)]])
-            .max_cell_len(max_cell_len);
+        let mut response = crate::AgentResponse::new("t")
+            .truncate_cells_at(max_cell_len)
+            .items(vec![vec![Value::from(content)]], &["a"]);
         if let Some(hint) = hint {
-            opts = opts.truncation_hint(hint);
+            response = response.truncation_hint(hint);
         }
-        crate::toon::render_toon(&opts).expect("one-cell document validates")
+        response.render(crate::OutputFormat::Text)
     }
 
     #[test]
@@ -516,7 +435,7 @@ mod tests {
     fn non_finite_floats_render_as_null() {
         // TOON 4.4 §3: NaN and ±Infinity normalize to null.
         for f in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            let out = render("t", &["v".to_string()], &[vec![Value::Float(f)]], None, &[], 200);
+            let out = render("t", &["v".to_string()], &[vec![Value::Float(f)]], 200);
             assert_eq!(out, "t[1]{v}:\n  null", "{f}");
         }
     }
@@ -532,17 +451,9 @@ mod tests {
     }
 
     #[test]
-    fn hint_with_newline_is_escaped() {
-        let out = render("t", &[], &[], None, &["line1\nline2".to_string()], 200);
-        // The hint is quoted and its LF written as `\n`, so it cannot inject a line.
-        assert_eq!(out, "t: []\nhelp[1]: \"line1\\nline2\"");
-        assert_eq!(out.lines().count(), 2, "hint newline must not inject a line, got: {out:?}");
-    }
-
-    #[test]
     fn ac011_truncated_cell_content_is_exact() {
         // 199 chars are kept and a plain `…` fills the 200-char cap; the other 301 are reported in the block.
-        let out = render("t", &["a".to_string()], &[vec![Value::from("a".repeat(500))]], None, &[], 200);
+        let out = render("t", &["a".to_string()], &[vec![Value::from("a".repeat(500))]], 200);
         let expected_prefix = "a".repeat(199);
         assert_eq!(
             out,
@@ -575,7 +486,8 @@ mod tests {
 
     #[test]
     fn spec_02_truncated_field_value_example_is_real_output() {
-        let opts = crate::toon::ToonOptions::new(
+        use crate::{AgentResponse, OutputFormat, Section};
+        let section = Section::toon(
             "components",
             vec!["name".to_string(), "description".to_string(), "tokens".to_string()],
             vec![
@@ -591,12 +503,14 @@ mod tests {
                 ],
             ],
         )
-        .total_count(Some(84))
-        .hints(vec!["Call get_component with name=<name> and full=true for complete description".to_string()])
-        .max_cell_len(40)
-        .truncation_hint("full=true");
+        .total_count(Some(84));
+        let response = AgentResponse::new("components")
+            .section(section)
+            .hint("Call get_component with name=<name> and full=true for complete description")
+            .truncate_cells_at(40)
+            .truncation_hint("full=true");
         assert_eq!(
-            crate::toon::render_toon(&opts).unwrap(),
+            response.render(OutputFormat::Text),
             "components[2]{name,description,tokens}:\n  \
              Button,Primary action element used to submit f…,12\n  \
              Icon,Scalable vector glyphs that inherit col…,8\n\
@@ -620,7 +534,7 @@ mod tests {
         // cut cell is quoted and each LF written as `\n`.
         let content = "a\n".repeat(300);
         assert_eq!(content.chars().count(), 600);
-        let out = render("t", &["a".to_string()], &[vec![Value::from(content)]], None, &[], 200);
+        let out = render("t", &["a".to_string()], &[vec![Value::from(content)]], 200);
         let expected_prefix = format!("{}a", "a\\n".repeat(99));
         assert_eq!(
             out,
@@ -637,7 +551,7 @@ mod tests {
         let content = "日".repeat(100);
         assert_eq!(content.chars().count(), 100);
         assert_eq!(content.len(), 300);
-        let out = render("t", &["a".to_string()], &[vec![Value::from(content.clone())]], None, &[], 200);
+        let out = render("t", &["a".to_string()], &[vec![Value::from(content.clone())]], 200);
         assert_eq!(
             out,
             format!("t[1]{{a}}:\n  {content}"),
@@ -648,7 +562,7 @@ mod tests {
     #[test]
     fn ac011c_max_cell_len_smaller_than_suffix_falls_back_to_ellipsis() {
         // The cell is always `max_cell_len - 1` kept chars and an ellipsis, however small the cap.
-        let out = render("t", &["a".to_string()], &[vec![Value::from("a".repeat(50))]], None, &[], 10);
+        let out = render("t", &["a".to_string()], &[vec![Value::from("a".repeat(50))]], 10);
         assert_eq!(out, "t[1]{a}:\n  aaaaaaaaa…\ntruncated[1]{row,field,removed}:\n  0,a,41");
         let out = render_cell(&"a".repeat(50), 1, None);
         assert_eq!(out, "t[1]{a}:\n  …\ntruncated[1]{row,field,removed}:\n  0,a,50");
@@ -658,13 +572,13 @@ mod tests {
 
     #[test]
     fn ac008_render_level_comma_cell_is_quoted_when_untruncated() {
-        let out = render("t", &["a".to_string()], &[vec![Value::from("x,y")]], None, &[], 200);
+        let out = render("t", &["a".to_string()], &[vec![Value::from("x,y")]], 200);
         assert_eq!(out, "t[1]{a}:\n  \"x,y\"");
     }
 
     #[test]
     fn ac009_render_level_quote_cell_is_wrapped_and_escaped_when_untruncated() {
-        let out = render("t", &["a".to_string()], &[vec![Value::from(r#"say "hi""#)]], None, &[], 200);
+        let out = render("t", &["a".to_string()], &[vec![Value::from(r#"say "hi""#)]], 200);
         assert_eq!(out, "t[1]{a}:\n  \"say \\\"hi\\\"\"");
     }
 
@@ -672,7 +586,7 @@ mod tests {
     fn ac008b_ac011d_truncated_cell_with_comma_in_kept_prefix_is_quoted() {
         let content = "a,".repeat(300);
         assert_eq!(content.chars().count(), 600);
-        let out = render("t", &["a".to_string()], &[vec![Value::from(content)]], None, &[], 200);
+        let out = render("t", &["a".to_string()], &[vec![Value::from(content)]], 200);
         let expected_kept: String = "a,".repeat(300).chars().take(199).collect();
         let expected =
             format!("t[1]{{a}}:\n  \"{expected_kept}\u{2026}\"\ntruncated[1]{{row,field,removed}}:\n  0,a,401");
@@ -698,10 +612,7 @@ mod tests {
     #[test]
     fn ac012c_toon_options_new_defaults() {
         let opts = crate::toon::ToonOptions::new("t", vec![], vec![]);
-        assert_eq!(opts.total_count, None);
-        assert!(opts.hints.is_empty());
         assert_eq!(opts.max_cell_len, 200);
-        assert_eq!(opts.truncation_hint, None);
     }
 
     #[test]
@@ -715,14 +626,8 @@ mod tests {
 
     #[test]
     fn ac021_leading_space_in_cell_content_is_quoted() {
-        let out = render("t", &["a".to_string()], &[vec![Value::from(" x")]], None, &[], 200);
+        let out = render("t", &["a".to_string()], &[vec![Value::from(" x")]], 200);
         assert_eq!(out, "t[1]{a}:\n  \" x\"");
-    }
-
-    #[test]
-    fn ac023_leading_space_in_hint_is_quoted() {
-        let out = render("t", &[], &[], None, &[" h".to_string()], 200);
-        assert_eq!(out, "t: []\nhelp[1]: \" h\"");
     }
 
     #[test]
@@ -735,14 +640,14 @@ mod tests {
         assert_eq!(v, Value::Int(i64::MAX));
         let v: Value = (i64::MAX as u64 + 1).into();
         assert_eq!(v, Value::UInt(i64::MAX as u64 + 1));
-        let out = render("t", &["n".to_string()], &[vec![u64::MAX.into()]], None, &[], 200);
+        let out = render("t", &["n".to_string()], &[vec![u64::MAX.into()]], 200);
         assert_eq!(out, "t[1]{n}:\n  18446744073709551615");
     }
 
     #[test]
     fn ac013_numeric_cells_ignore_max_cell_len() {
         let fields = ["n".to_string(), "m".to_string()];
-        let out = render("t", &fields, &[vec![u64::MAX.into(), Value::Int(i64::MIN)]], None, &[], 5);
+        let out = render("t", &fields, &[vec![u64::MAX.into(), Value::Int(i64::MIN)]], 5);
         assert_eq!(out, "t[1]{n,m}:\n  18446744073709551615,-9223372036854775808");
     }
 
@@ -752,14 +657,8 @@ mod tests {
         assert_eq!(v, Value::Int(42));
         let v: Value = 42usize.into();
         assert_eq!(v, Value::Int(42));
-        let out = render("t", &["n".to_string()], &[vec![42u64.into()]], None, &[], 200);
+        let out = render("t", &["n".to_string()], &[vec![42u64.into()]], 200);
         assert_eq!(out, "t[1]{n}:\n  42");
-    }
-
-    #[test]
-    fn ac023_empty_hints_produce_no_help_line() {
-        let out = render("t", &[], &[], None, &[], 200);
-        assert_eq!(out, "t: []");
     }
 
     #[test]
@@ -769,20 +668,14 @@ mod tests {
             let err = crate::toon::render_toon(&opts).unwrap_err();
             assert_eq!(err, crate::toon::ToonError::InvalidTypeName { name: name.to_string() });
         }
-        let out = render(
-            "t",
-            &["help".to_string(), "totalCount".to_string()],
-            &[vec![Value::Int(1), Value::Int(2)]],
-            None,
-            &[],
-            200,
-        );
+        let out =
+            render("t", &["help".to_string(), "totalCount".to_string()], &[vec![Value::Int(1), Value::Int(2)]], 200);
         assert_eq!(out, "t[1]{help,totalCount}:\n  1,2");
     }
 
     #[test]
     fn ac022_type_name_with_a_colon_is_quoted_not_rejected() {
-        let out = render("totalCount:", &[], &[], None, &[], 200);
+        let out = render("totalCount:", &[], &[], 200);
         assert_eq!(out, "\"totalCount:\": []");
     }
 
@@ -797,7 +690,7 @@ mod tests {
     #[test]
     fn ac044_a_cut_cell_is_exactly_max_cell_len_chars_and_kept_plus_removed_is_the_input() {
         for (len, cap) in [(500usize, 200usize), (50, 10), (11, 10), (3, 2)] {
-            let out = render("t", &["a".to_string()], &[vec![Value::from("a".repeat(len))]], None, &[], cap);
+            let out = render("t", &["a".to_string()], &[vec![Value::from("a".repeat(len))]], cap);
             let cell = out.lines().nth(1).unwrap().trim_start();
             assert_eq!(cell.chars().count(), cap, "len={len} cap={cap}");
             let removed: usize = out.lines().nth(3).unwrap().rsplit(',').next().unwrap().parse().unwrap();
@@ -812,363 +705,17 @@ mod tests {
         let none_via_option: Value = None::<String>.into();
         assert_eq!(none_via_option, Value::Null);
 
-        let out_some = render(
-            "t",
-            &["a".to_string(), "b".to_string()],
-            &[vec![some_via_option, Value::from("y")]],
-            None,
-            &[],
-            200,
-        );
-        let out_str = render(
-            "t",
-            &["a".to_string(), "b".to_string()],
-            &[vec![Value::from("x"), Value::from("y")]],
-            None,
-            &[],
-            200,
-        );
+        let out_some =
+            render("t", &["a".to_string(), "b".to_string()], &[vec![some_via_option, Value::from("y")]], 200);
+        let out_str =
+            render("t", &["a".to_string(), "b".to_string()], &[vec![Value::from("x"), Value::from("y")]], 200);
         assert_eq!(out_some, out_str);
 
-        let out_none = render(
-            "t",
-            &["a".to_string(), "b".to_string()],
-            &[vec![none_via_option, Value::from("y")]],
-            None,
-            &[],
-            200,
-        );
-        let out_null =
-            render("t", &["a".to_string(), "b".to_string()], &[vec![Value::Null, Value::from("y")]], None, &[], 200);
+        let out_none =
+            render("t", &["a".to_string(), "b".to_string()], &[vec![none_via_option, Value::from("y")]], 200);
+        let out_null = render("t", &["a".to_string(), "b".to_string()], &[vec![Value::Null, Value::from("y")]], 200);
         assert_eq!(out_none, out_null);
         assert_eq!(out_null, "t[1]{a,b}:\n  null,y");
-    }
-}
-
-/// Text-based scanning helpers shared by this crate's structural guard
-/// tests. `pub(crate)` (not private) so both `render`'s own guard tests
-/// and `toon/mod.rs`'s (the AC-013 docs guard) can reuse the same,
-/// independently-hardened implementation instead of each maintaining its
-/// own copy that can drift out of sync or regress individually.
-#[cfg(test)]
-pub(crate) mod test_scan {
-    /// Finds the byte offset, within `src`, of the `{` that opens
-    /// `lines[open_line_idx]`'s block -- the first `{` on or after that
-    /// line's start.
-    fn brace_byte_offset(lines: &[&str], open_line_idx: usize) -> usize {
-        let line_start: usize = lines[..open_line_idx].iter().map(|l| l.len() + 1).sum();
-        line_start + lines[open_line_idx].find('{').expect("opening line must contain '{'")
-    }
-
-    /// Finds the real nesting depth's matching `}` for the `{` at
-    /// `open_brace_idx` in `src`, and returns the index of the LINE
-    /// containing that `}` (via a byte-offset -> line-index scan over
-    /// `lines`).
-    ///
-    /// Tracks actual lexical structure -- string literals (including ones
-    /// that span multiple lines, e.g. inside a `#[doc = "..."]` value),
-    /// raw strings with any number of `#`s, char literals (including
-    /// `'\u{XXXX}'` escapes), and `//`/`/* */` comments -- rather than
-    /// assuming a block's closing brace is always alone on its own
-    /// rustfmt-normalized line. That assumption is false: rustfmt does not
-    /// reformat the CONTENTS of a string literal, so a multi-line string
-    /// (a pasted JSON/TOON example inside a doc comment, for instance)
-    /// containing a bare `}` at column 0 previously fooled the
-    /// line-alone-ness check into treating it as the block's real close,
-    /// silently truncating everything scanned after it -- proven by
-    /// exit-gate review, which used exactly that shape to hide a second
-    /// constructor inside what this scan believed was `proof`'s full body.
-    pub(crate) fn find_closing_line(src: &str, lines: &[&str], open_line_idx: usize, indent: usize) -> usize {
-        let _ = indent; // kept in the signature for call-site stability; no longer load-bearing
-        let open_brace_idx = brace_byte_offset(lines, open_line_idx);
-
-        #[derive(Clone, Copy, PartialEq)]
-        enum State {
-            Normal,
-            InString,
-            InRawString(usize),
-            InLineComment,
-            InBlockComment,
-        }
-
-        let chars: Vec<char> = src[open_brace_idx..].char_indices().map(|(_, c)| c).collect();
-        let byte_of: Vec<usize> = src[open_brace_idx..].char_indices().map(|(i, _)| i).collect();
-        let mut state = State::Normal;
-        let mut depth = 0i32;
-        let mut i = 0usize;
-        while i < chars.len() {
-            let c = chars[i];
-            match state {
-                State::Normal => {
-                    if c == '"' {
-                        state = State::InString;
-                        i += 1;
-                    } else if c == 'r' && matches!(chars.get(i + 1), Some('"') | Some('#')) {
-                        let mut hashes = 0usize;
-                        let mut j = i + 1;
-                        while chars.get(j) == Some(&'#') {
-                            hashes += 1;
-                            j += 1;
-                        }
-                        if chars.get(j) == Some(&'"') {
-                            state = State::InRawString(hashes);
-                            i = j + 1;
-                        } else {
-                            i += 1;
-                        }
-                    } else if c == '\'' {
-                        // A char literal, not a lifetime, only if a closing
-                        // `'` is found either 2 chars later (plain, e.g.
-                        // '{') or after a `\...` escape (e.g. '\\', '\'',
-                        // '\u{XXXX}'). A lifetime ('a, 'static) never has a
-                        // `'` two-or-few characters later in valid syntax.
-                        if chars.get(i + 1) == Some(&'\\') {
-                            if chars.get(i + 2) == Some(&'u') && chars.get(i + 3) == Some(&'{') {
-                                let close = (i + 4..chars.len())
-                                    .find(|&k| chars[k] == '}')
-                                    .expect("unclosed \\u{ escape in char literal");
-                                i = close + 2; // skip past '}' and the closing '
-                            } else {
-                                i += 4; // ' \ x '
-                            }
-                        } else if chars.get(i + 2) == Some(&'\'') {
-                            i += 3; // ' x '
-                        } else {
-                            i += 1; // a lifetime; not a char literal
-                        }
-                    } else if c == '/' && chars.get(i + 1) == Some(&'/') {
-                        state = State::InLineComment;
-                        i += 2;
-                    } else if c == '/' && chars.get(i + 1) == Some(&'*') {
-                        state = State::InBlockComment;
-                        i += 2;
-                    } else if c == '{' {
-                        depth += 1;
-                        i += 1;
-                    } else if c == '}' {
-                        depth -= 1;
-                        if depth == 0 {
-                            let close_byte = open_brace_idx + byte_of[i];
-                            return src[..close_byte].matches('\n').count();
-                        }
-                        i += 1;
-                    } else {
-                        i += 1;
-                    }
-                }
-                State::InString => {
-                    if c == '\\' {
-                        i += 2;
-                    } else if c == '"' {
-                        state = State::Normal;
-                        i += 1;
-                    } else {
-                        i += 1;
-                    }
-                }
-                State::InRawString(hashes) => {
-                    if c == '"' && (1..=hashes).all(|k| chars.get(i + k) == Some(&'#')) {
-                        state = State::Normal;
-                        i += 1 + hashes;
-                    } else {
-                        i += 1;
-                    }
-                }
-                State::InLineComment => {
-                    if c == '\n' {
-                        state = State::Normal;
-                    }
-                    i += 1;
-                }
-                State::InBlockComment => {
-                    if c == '*' && chars.get(i + 1) == Some(&'/') {
-                        state = State::Normal;
-                        i += 2;
-                    } else {
-                        i += 1;
-                    }
-                }
-            }
-        }
-        panic!("no matching closing brace found for the block opened at line {open_line_idx}");
-    }
-
-    pub(crate) fn indent_of(line: &str) -> usize {
-        line.len() - line.trim_start().len()
-    }
-
-    /// Strips every `#[cfg(test)]`/`#[cfg(all(test, ...))]`-gated
-    /// `mod ... { ... }` block from `src`, not via a first-occurrence
-    /// prefix split -- a prefix split silently stops scanning at the first
-    /// test module even if real (non-test) code follows it later in the
-    /// file.
-    ///
-    /// `is_test_cfg_attr` requires `test` as the leading, positive conjunct
-    /// of an `all(...)` -- `#[cfg(all(test, ...))]` -- rather than merely
-    /// checking whether the attribute's text contains the substring
-    /// `"test"` anywhere. A substring check is a real, previously-shipped
-    /// bug: `#[cfg(all(not(test), ...))]` also contains `"test"`, so it
-    /// would be misclassified as test-only and stripped from this scan,
-    /// even though rustc compiles it into every *non*-test build -- the
-    /// opposite of test-only. Any other `#[cfg(` line whose text contains
-    /// `"test"` and isn't one of the two recognized positive forms trips
-    /// the assertion below instead of being silently mishandled in either
-    /// direction.
-    pub(crate) fn strip_test_modules(src: &str) -> String {
-        fn is_recognized_test_cfg_attr(trimmed: &str) -> bool {
-            trimmed == "#[cfg(test)]"
-                || trimmed.starts_with("#[cfg(all(test,")
-                || trimmed.starts_with("#[cfg(all(test)")
-        }
-
-        let lines: Vec<&str> = src.lines().collect();
-        let mut kept: Vec<&str> = Vec::with_capacity(lines.len());
-        let mut i = 0usize;
-        while i < lines.len() {
-            let trimmed = lines[i].trim_start();
-            if trimmed.starts_with("#[cfg(") && trimmed.contains("test") {
-                assert!(
-                    is_recognized_test_cfg_attr(trimmed),
-                    "unrecognized cfg attribute mentioning \"test\": {trimmed:?} -- add it to \
-                     is_recognized_test_cfg_attr only if it is genuinely test-only; a `not(test)` \
-                     predicate must NOT be treated as test-only"
-                );
-                let mod_line = i + 1;
-                assert!(
-                    lines[mod_line].trim_start().contains("mod ") && lines[mod_line].ends_with('{'),
-                    "expected a `[pub(...)] mod ... {{` line immediately after a test cfg attribute, got: {:?}",
-                    lines[mod_line]
-                );
-                let close = find_closing_line(src, &lines, mod_line, indent_of(lines[i]));
-                i = close + 1;
-            } else {
-                kept.push(lines[i]);
-                i += 1;
-            }
-        }
-        kept.join("\n")
-    }
-}
-
-#[cfg(test)]
-mod invariant_guard_tests {
-    use super::test_scan::{find_closing_line, indent_of, strip_test_modules};
-
-    #[test]
-    fn sole_constructor_for_toon_document() {
-        // ToonDocument's private field is declared inside `mod proof`, a
-        // module containing nothing else. Rust's own field-privacy rule --
-        // visible only to the declaring module and its descendants -- is
-        // what actually prevents every bypass shape three rounds of
-        // adversarial review found (a free fn, a second impl block, a
-        // From/TryFrom impl, a type alias, and a module gated behind an
-        // unanticipated #[cfg(...)]): none of them can compile unless
-        // they're written inside `proof` itself, regardless of what shape
-        // they take. That guarantee doesn't need a text scan; rustc enforces
-        // it the moment anyone tries. What a text scan still needs to pin
-        // down is the two things privacy alone doesn't cover: that `proof`
-        // stays exactly as narrow as this reasoning requires (nothing else
-        // declared inside it, no descendant module of its own), and that no
-        // extra method sneaks into ToonDocument's own impl block from
-        // within its rightful scope (proven possible in round 3: a
-        // `pub fn rebind(&self, opts) -> ToonDocument` inside the impl
-        // block itself evaded a fn count that filtered out every
-        // self-taking method).
-        //
-        // This test cannot see through macro_rules! expansion -- an item-
-        // position macro invocation inside proof's impl block expands to
-        // real code with real field access, but include_str! (which this
-        // test and strip_test_modules both read from) captures source
-        // exactly as written, before expansion. See `proof`'s own doc
-        // comment for why this is an accepted, documented scope boundary
-        // rather than a gap this test is meant to close.
-        let render_src = strip_test_modules(include_str!("render.rs"));
-
-        let lines: Vec<&str> = render_src.lines().collect();
-        let mod_line = lines
-            .iter()
-            .position(|l| l.trim_end() == "mod proof {")
-            .expect("ToonDocument must live in a private (non-pub) `mod proof` in render.rs");
-        let close = find_closing_line(&render_src, &lines, mod_line, indent_of(lines[mod_line]));
-        let proof_body = lines[mod_line + 1..close].join("\n");
-
-        assert_eq!(
-            proof_body.matches("mod ").count(),
-            0,
-            "proof must declare no descendant module -- a descendant would inherit access to the private field"
-        );
-        // Exactly three fns may exist anywhere in `proof`: validate, render and render_parts (a `&self` method that
-        // returns text, never a `Self`; `AgentResponse` needs it to merge the truncation hint into its own help
-        // block). This is a total count over every `fn`, with no
-        // self-receiver exemption -- the exemption is exactly what let
-        // `rebind` (a &self method) through in round 3.
-        let fn_names: Vec<&str> =
-            proof_body.split("fn ").skip(1).map(|rest| rest.split(['(', '<']).next().unwrap_or(rest).trim()).collect();
-        assert_eq!(
-            fn_names,
-            vec!["validate", "render", "render_parts"],
-            "proof's impl block must contain exactly these three fns, in this order; found: {fn_names:?}"
-        );
-        // fn_names only sees items introduced by the literal token `fn `.
-        // A `const`/`static` item, or a function-pointer-typed const
-        // (`fn(...)  ->  ToonDocument`, no space before the paren) can
-        // produce a ToonDocument without ever containing that token --
-        // proven by exit-gate review: `pub const MAKE: for<'x> fn(&'x
-        // ToonOptions) -> ToonDocument<'x> = |o| ToonDocument { opts: o };`
-        // compiled, passed every check above, and rendered unvalidated
-        // data through a crate-internal caller.
-        for banned in ["const ", "static ", "fn("] {
-            assert_eq!(
-                proof_body.matches(banned).count(),
-                0,
-                "proof may declare no {banned:?} item -- a const/static/fn-pointer can produce \
-                 a ToonDocument without ever introducing a `fn ` token for the fn-name check above to see"
-            );
-        }
-
-        // Module privacy only closes external bypass shapes AS LONG AS the
-        // field itself stays bare-private (no `pub`/`pub(in ...)`/
-        // `pub(crate)` etc.) -- widening it to `pub(in crate::toon::render)` is a
-        // one-token edit that grants field access to all of render.rs,
-        // letting a constructor live entirely outside proof while every
-        // other assertion here stays green (proven by exit-gate review).
-        assert!(
-            proof_body.contains("\n        opts: &'a crate::toon::ToonOptions,\n"),
-            "ToonDocument's field must stay bare-private (no visibility modifier); \
-             found a different declaration in proof_body: {proof_body:?}"
-        );
-        assert_eq!(
-            render_src.matches("pub(in ").count(),
-            0,
-            "no item in render.rs may use a `pub(in ...)` visibility -- it can widen field access \
-             beyond proof without tripping any other check here"
-        );
-
-        assert!(
-            render_src.contains("\npub use proof::ToonDocument;"),
-            "ToonDocument must be re-exported from proof via `pub use`, not by widening proof's own visibility"
-        );
-        // Defense in depth: pin what immediately follows proof's own
-        // closing brace, so even an unanticipated future defect in the
-        // string/comment-aware scan above that find_closing_line performs
-        // fails loudly here instead of silently accepting a truncated or
-        // extended proof_body.
-        assert_eq!(
-            lines[close + 1],
-            "pub use proof::ToonDocument;",
-            "the line immediately after proof's closing brace must be its pub use re-export"
-        );
-
-        let lib_src = strip_test_modules(include_str!("mod.rs"));
-        let escape_src = strip_test_modules(include_str!("escape.rs"));
-        for (file, src) in
-            [("render.rs", render_src.as_str()), ("lib.rs", lib_src.as_str()), ("escape.rs", escape_src.as_str())]
-        {
-            let scan = src.to_lowercase().replace("unsafe_code", "");
-            for bad in ["unchecked", "unsafe", "raw", "assume"] {
-                assert!(!scan.contains(bad), "escape-hatch name pattern {bad:?} must not appear in {file}");
-            }
-        }
     }
 
     #[test]
@@ -1177,41 +724,25 @@ mod invariant_guard_tests {
             "t",
             vec!["a".to_string(), "b".to_string()],
             vec![vec![crate::toon::Value::from("x"), crate::toon::Value::Int(1)]],
-        )
-        .total_count(Some(5))
-        .hints(vec!["h".to_string()]);
+        );
         let doc = super::ToonDocument::validate(&opts).expect("valid options must validate");
-        assert_eq!(doc.render(), "t[1]{a,b}:\n  x,1\ntotalCount: 5\nhelp[1]: h");
+        assert_eq!(doc.render(), "t[1]{a,b}:\n  x,1");
     }
 
+    // The response and the standalone renderer place the `truncated` block themselves, from the same list entry and
+    // cut list, so a one-section response renders exactly what `render_toon` does, plus the `totalCount` that only the
+    // response writes.
     #[test]
-    fn no_loose_parameter_render_fn() {
-        let src = include_str!("render.rs");
-        assert!(
-            !src.contains("fields: &[String],\n    rows: &[Vec<Value>],"),
-            "the loose-parameter render(type_name, fields, rows, ...) function must not exist"
-        );
-    }
-
-    #[test]
-    fn no_profile_dependent_behavior() {
-        let non_test = strip_test_modules(include_str!("render.rs"));
-        let debug_assert_needle = ["debug", "_", "assert", "!"].concat();
-        let debug_assert_eq_needle = ["debug", "_", "assert", "_", "eq", "!"].concat();
-        let debug_assert_ne_needle = ["debug", "_", "assert", "_", "ne", "!"].concat();
-        let cfg_debug_needle = ["cfg", "(", "debug_assertions", ")"].concat();
-        for token in [&debug_assert_needle, &debug_assert_eq_needle, &debug_assert_ne_needle, &cfg_debug_needle] {
-            assert!(!non_test.contains(token.as_str()), "found profile-dependent token {token:?} in render.rs");
+    fn a_one_section_response_renders_what_render_toon_does() {
+        use crate::{AgentResponse, OutputFormat, Section};
+        let rows = vec![vec![Value::from("a".repeat(50)), Value::Int(1)], vec![Value::from("b,c"), Value::Null]];
+        let opts = crate::toon::ToonOptions::new("t", vec!["x".into(), "y".into()], rows.clone()).max_cell_len(10);
+        let list = crate::toon::render_toon(&opts).expect("valid");
+        for total in [None, Some(9)] {
+            let section = Section::toon("t", vec!["x".into(), "y".into()], rows.clone()).total_count(total);
+            let r = AgentResponse::new("t").truncate_cells_at(10).section(section);
+            let expected = total.map_or_else(|| list.clone(), |n| format!("{list}\ntotalCount: {n}"));
+            assert_eq!(r.render(OutputFormat::Text), expected, "{total:?}");
         }
-    }
-
-    #[test]
-    fn render_has_no_missing_cell_path() {
-        let non_test = strip_test_modules(include_str!("render.rs"));
-        let row_get_needle = ["row", ".", "get", "("].concat();
-        assert!(
-            !non_test.contains(&row_get_needle),
-            "ToonDocument::render must iterate cells directly, not via row.get(i)"
-        );
     }
 }

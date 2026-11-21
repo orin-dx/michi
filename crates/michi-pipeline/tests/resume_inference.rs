@@ -92,7 +92,7 @@ async fn a_prerequisite_recorded_failed_under_a_completed_dependent_is_refused()
         "{err:?}"
     );
     let domain: michi_core::DomainError = err.into();
-    assert_eq!(domain.code, michi_core::ErrorCode::Conflict);
+    assert_eq!(domain.code(), michi_core::ErrorCode::Conflict);
 }
 
 #[cfg(feature = "serde")]

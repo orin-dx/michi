@@ -1,22 +1,46 @@
-/// One operation's identity within a batch: where it sat in the caller's op slice, what it was called, and (for
-/// skipped operations) why it did not run.
+use crate::toon::Value;
+
+/// The columns of the table a [`PartialSuccess`] renders as.
+pub(crate) const FIELDS: [&str; 4] = ["index", "operation", "status", "reason"];
+
+/// An operation that completed within a batch: where it sat in the caller's op slice and what it was called.
 ///
-/// `#[non_exhaustive]`: build it with [`OpRef::new`] (and [`OpRef::reason`]); the fields stay public.
+/// `#[non_exhaustive]`: build it with [`CompletedOp::new`]; the fields stay public. It has no reason: a completed
+/// operation renders none, so it cannot carry one that would be silently dropped.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
-pub struct OpRef {
+pub struct CompletedOp {
+    /// Position in the caller's op slice. `results[index]` answers `ops[index]`.
+    pub index: usize,
+    /// Display name for the operation.
+    pub operation: String,
+}
+
+impl CompletedOp {
+    /// A completed operation at `index`.
+    #[must_use]
+    pub fn new(index: usize, operation: impl Into<String>) -> Self {
+        Self { index, operation: operation.into() }
+    }
+}
+
+/// An operation that was not attempted within a batch, optionally with why.
+///
+/// `#[non_exhaustive]`: build it with [`SkippedOp::new`] (and [`SkippedOp::reason`]); the fields stay public.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SkippedOp {
     /// Position in the caller's op slice. `results[index]` answers `ops[index]`.
     pub index: usize,
     /// Display name for the operation.
     pub operation: String,
     /// A stable machine token such as `budget_exhausted`, `deadline` or `not_indexed`, never prose. michi does not
-    /// define the vocabulary; the caller does. Rendered for skipped operations only; completed operations have no
-    /// reason column.
+    /// define the vocabulary; the caller does. `None` renders `null`.
     pub reason: Option<String>,
 }
 
-impl OpRef {
-    /// An operation at `index` with no reason.
+impl SkippedOp {
+    /// A skipped operation at `index` with no reason.
     #[must_use]
     pub fn new(index: usize, operation: impl Into<String>) -> Self {
         Self { index, operation: operation.into(), reason: None }
@@ -70,102 +94,143 @@ impl FailedOp {
 /// For a fully-completed prior call, see [`crate::resilience::AlreadyDone`]
 /// and [`crate::resilience::already_done`].
 ///
-/// `#[non_exhaustive]`: build it with [`PartialSuccess::new`] or [`PartialSuccess::default`]; the fields stay
-/// public.
+/// Build it with [`PartialSuccess::try_new`] (or [`PartialSuccess::default`] for an empty batch) and read it with the
+/// getters. Each index has exactly one outcome: the fields are private, so a report that lists an operation as both
+/// completed and failed cannot be built.
+///
+/// ```compile_fail,E0616
+/// let mut ps = michi_core::PartialSuccess::default();
+/// ps.completed.push(michi_core::CompletedOp::new(0, "a"));
+/// ```
 #[derive(Debug, Clone, Default, PartialEq)]
 #[non_exhaustive]
 pub struct PartialSuccess {
-    /// Steps that completed successfully.
-    pub completed: Vec<OpRef>,
-    /// Steps that failed, with reason and optional recovery hint.
-    pub failed: Vec<FailedOp>,
-    /// Steps that were not attempted, each optionally with the reason it was skipped.
-    pub skipped: Vec<OpRef>,
+    completed: Vec<CompletedOp>,
+    failed: Vec<FailedOp>,
+    skipped: Vec<SkippedOp>,
 }
 
+/// [`PartialSuccess::try_new`] was given two outcomes for one operation index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub struct DuplicateOpIndex {
+    /// The index that appeared more than once across `completed`, `failed` and `skipped`.
+    pub index: usize,
+}
+
+impl std::fmt::Display for DuplicateOpIndex {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "operation index {} has more than one outcome", self.index)
+    }
+}
+
+impl std::error::Error for DuplicateOpIndex {}
+
 impl PartialSuccess {
-    /// A partial-success report from the completed steps, the failed operations and the skipped steps.
-    #[must_use]
-    pub fn new(completed: Vec<OpRef>, failed: Vec<FailedOp>, skipped: Vec<OpRef>) -> Self {
-        Self { completed, failed, skipped }
+    /// A partial-success report from the completed, failed and skipped operations, each kept in the order given.
+    ///
+    /// # Errors
+    ///
+    /// [`DuplicateOpIndex`] naming the first index (in completed, failed, skipped order) that appears more than once,
+    /// within one list or across them.
+    pub fn try_new(
+        completed: Vec<CompletedOp>,
+        failed: Vec<FailedOp>,
+        skipped: Vec<SkippedOp>,
+    ) -> Result<Self, DuplicateOpIndex> {
+        let indices = completed
+            .iter()
+            .map(|c| c.index)
+            .chain(failed.iter().map(|f| f.index))
+            .chain(skipped.iter().map(|s| s.index));
+        let mut seen = std::collections::HashSet::with_capacity(completed.len() + failed.len() + skipped.len());
+        for index in indices {
+            if !seen.insert(index) {
+                return Err(DuplicateOpIndex { index });
+            }
+        }
+        Ok(Self { completed, failed, skipped })
     }
 
-    /// Render as a TOON 4.4 root object, with no trailing newline: a quoted summary, one tabular array per non-empty
-    /// outcome category, then the failed operations' recovery hints as a `recovery[N]{tool,params,reason}:` table
-    /// (see [`crate::recovery::render_recovery`]).
+    /// The operations that completed, in the order given.
+    #[must_use]
+    pub fn completed(&self) -> &[CompletedOp] {
+        &self.completed
+    }
+
+    /// The operations that failed, in the order given.
+    #[must_use]
+    pub fn failed(&self) -> &[FailedOp] {
+        &self.failed
+    }
+
+    /// The operations that were not attempted, in the order given.
+    #[must_use]
+    pub fn skipped(&self) -> &[SkippedOp] {
+        &self.skipped
+    }
+
+    /// Render as a TOON 4.4 document, with no trailing newline: the response
+    /// `AgentResponse::new("partial_success").partial_success("partial_success", ps)` with no cell cap, so it is the
+    /// same writer a composed response uses (see [`crate::AgentResponse::partial_success`]).
     ///
-    /// Format:
     /// ```text
-    /// partial_success: "2 completed, 1 failed, 1 skipped"
-    /// completed[2]{index,operation}:
-    ///   0,create_issue
-    ///   1,add_label
-    /// failed[1]{index,operation,reason}:
-    ///   2,assign_user,User 'ghost' not found
-    /// skipped[1]{index,operation,reason}:
-    ///   3,notify_team,budget_exhausted
+    /// partial_success[4]{index,operation,status,reason}:
+    ///   0,create_issue,completed,null
+    ///   1,add_label,completed,null
+    ///   2,assign_user,failed,User 'ghost' not found
+    ///   3,notify_team,skipped,budget_exhausted
     /// recovery[1]{tool,params,reason}:
     ///   assign_user,"{\"user\":\"alice\"}",null
     /// ```
     ///
-    /// Rows keep the order of the vectors, and `index` is written as given (never renumbered). Every string is quoted
-    /// per §7.2; a skipped step with no reason renders `null` in the `reason` column. A completed step's `reason` is
-    /// not rendered. Empty categories are omitted.
+    /// One row per operation, sorted by `index` (never renumbered); `status` is `completed`, `failed` or `skipped`,
+    /// and `reason` is the failure reason, the skip token, or `null`. The failed operations' recovery hints are the
+    /// document's one `recovery` table. An empty report is `partial_success: []` and `totalCount: 0`.
     #[must_use]
     pub fn render(&self) -> String {
-        let mut out = String::with_capacity(
-            64 + self.completed.iter().map(|s| s.operation.len() + 24).sum::<usize>()
-                + self.failed.iter().map(|f| f.operation.len() + f.reason.len() + 80).sum::<usize>()
-                + self
-                    .skipped
-                    .iter()
-                    .map(|s| s.operation.len() + s.reason.as_ref().map_or(4, String::len) + 24)
-                    .sum::<usize>(),
-        );
-        out.push_str("partial_success: \"");
-        out.push_str(&self.completed.len().to_string());
-        out.push_str(" completed, ");
-        out.push_str(&self.failed.len().to_string());
-        out.push_str(" failed, ");
-        out.push_str(&self.skipped.len().to_string());
-        out.push_str(" skipped\"");
+        crate::AgentResponse::new("partial_success")
+            .truncate_cells_at(usize::MAX)
+            .partial_success("partial_success", self.clone())
+            .render(crate::OutputFormat::Text)
+    }
 
-        if !self.completed.is_empty() {
-            push_table_header(&mut out, "completed", self.completed.len(), "index,operation");
-            for c in &self.completed {
-                push_row_start(&mut out, c.index);
-                out.push_str(&crate::toon::escape_value(&c.operation));
-            }
+    /// The table a composed response renders: one row per operation, sorted by index.
+    pub(crate) fn rows(&self) -> Vec<Vec<Value>> {
+        let mut rows: Vec<(usize, Vec<Value>)> =
+            Vec::with_capacity(self.completed.len() + self.failed.len() + self.skipped.len());
+        for c in &self.completed {
+            rows.push((
+                c.index,
+                vec![Value::from(c.index), Value::from(c.operation.as_str()), "completed".into(), Value::Null],
+            ));
         }
-
-        if !self.failed.is_empty() {
-            push_table_header(&mut out, "failed", self.failed.len(), "index,operation,reason");
-            for f in &self.failed {
-                push_row_start(&mut out, f.index);
-                out.push_str(&crate::toon::escape_value(&f.operation));
-                out.push(',');
-                out.push_str(&crate::toon::escape_value(&f.reason));
-            }
+        for f in &self.failed {
+            let row = vec![
+                Value::from(f.index),
+                Value::from(f.operation.as_str()),
+                "failed".into(),
+                f.reason.as_str().into(),
+            ];
+            rows.push((f.index, row));
         }
-
-        if !self.skipped.is_empty() {
-            push_table_header(&mut out, "skipped", self.skipped.len(), "index,operation,reason");
-            for s in &self.skipped {
-                push_row_start(&mut out, s.index);
-                out.push_str(&crate::toon::escape_value(&s.operation));
-                out.push(',');
-                match &s.reason {
-                    Some(r) => out.push_str(&crate::toon::escape_value(r)),
-                    None => out.push_str("null"),
-                }
-            }
+        for s in &self.skipped {
+            let reason = s.reason.as_deref().map_or(Value::Null, Value::from);
+            rows.push((
+                s.index,
+                vec![Value::from(s.index), Value::from(s.operation.as_str()), "skipped".into(), reason],
+            ));
         }
+        // Indices are unique (`try_new`), so the order is total.
+        rows.sort_unstable_by_key(|(index, _)| *index);
+        rows.into_iter().map(|(_, row)| row).collect()
+    }
 
-        let recovery_hints: Vec<crate::recovery::RecoveryHint> =
-            self.failed.iter().filter_map(|f| f.recovery.clone()).collect();
-        crate::recovery::append_recovery(&mut out, &recovery_hints);
-
-        out
+    /// The failed operations' recovery hints, in index order.
+    pub(crate) fn recovery_hints(&self) -> Vec<crate::recovery::RecoveryHint> {
+        let mut failed: Vec<&FailedOp> = self.failed.iter().filter(|f| f.recovery.is_some()).collect();
+        failed.sort_unstable_by_key(|f| f.index);
+        failed.into_iter().filter_map(|f| f.recovery.clone()).collect()
     }
 
     /// `0` when all operations completed or were skipped; `1` when any failed.
@@ -175,169 +240,163 @@ impl PartialSuccess {
     }
 }
 
-/// Append `\n{key}[N]{columns}:`, the header of a TOON 4.4 tabular array (§9.3).
-fn push_table_header(out: &mut String, key: &str, len: usize, columns: &str) {
-    out.push('\n');
-    out.push_str(key);
-    out.push('[');
-    out.push_str(&len.to_string());
-    out.push_str("]{");
-    out.push_str(columns);
-    out.push_str("}:");
-}
-
-/// Append `\n  {index},`, the start of a table row.
-fn push_row_start(out: &mut String, index: usize) {
-    out.push_str("\n  ");
-    out.push_str(&index.to_string());
-    out.push(',');
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::kv::KvValue;
     use crate::recovery::RecoveryHint;
 
+    const HEAD: &str = "{index,operation,status,reason}:";
+
     fn fail(index: usize, operation: &str, reason: &str) -> FailedOp {
         FailedOp::new(index, operation, reason)
     }
 
+    fn ps(completed: Vec<CompletedOp>, failed: Vec<FailedOp>, skipped: Vec<SkippedOp>) -> PartialSuccess {
+        PartialSuccess::try_new(completed, failed, skipped).expect("no index repeats")
+    }
+
     #[test]
     fn partial_success_full_example_matches_spec() {
-        let ps = PartialSuccess::new(
-            vec![OpRef::new(0, "create_issue"), OpRef::new(1, "add_label")],
+        let ps = ps(
+            vec![CompletedOp::new(0, "create_issue"), CompletedOp::new(1, "add_label")],
             vec![fail(2, "assign_user", "User 'ghost' not found")
                 .recovery(RecoveryHint::new("assign_user").param("user", KvValue::Text("alice".into())))],
-            vec![OpRef::new(3, "notify_team").reason("budget_exhausted")],
+            vec![SkippedOp::new(3, "notify_team").reason("budget_exhausted")],
         );
         assert_eq!(
             ps.render(),
-            "partial_success: \"2 completed, 1 failed, 1 skipped\"\ncompleted[2]{index,operation}:\n  0,create_issue\n  \
-             1,add_label\nfailed[1]{index,operation,reason}:\n  2,assign_user,User 'ghost' not found\n\
-             skipped[1]{index,operation,reason}:\n  3,notify_team,budget_exhausted\n\
-             recovery[1]{tool,params,reason}:\n  assign_user,\"{\\\"user\\\":\\\"alice\\\"}\",null"
+            format!(
+                "partial_success[4]{HEAD}\n  0,create_issue,completed,null\n  1,add_label,completed,null\n  \
+                 2,assign_user,failed,User 'ghost' not found\n  3,notify_team,skipped,budget_exhausted\n\
+                 recovery[1]{{tool,params,reason}}:\n  assign_user,\"{{\\\"user\\\":\\\"alice\\\"}}\",null"
+            )
         );
     }
 
-    // The spec 07 example, verbatim.
+    // The spec 07 batch, as one table.
     #[test]
     fn spec_07_example_renders_exactly() {
-        let ps = PartialSuccess::new(
-            vec![OpRef::new(0, "symbols"), OpRef::new(1, "dependents")],
+        let ps = ps(
+            vec![CompletedOp::new(0, "symbols"), CompletedOp::new(1, "dependents")],
             vec![fail(2, "refs", "symbol not found: RetryPolicy")],
-            vec![OpRef::new(3, "search").reason("budget_exhausted")],
+            vec![SkippedOp::new(3, "search").reason("budget_exhausted")],
         );
         assert_eq!(
             ps.render(),
-            "partial_success: \"2 completed, 1 failed, 1 skipped\"\ncompleted[2]{index,operation}:\n  0,symbols\n  \
-             1,dependents\nfailed[1]{index,operation,reason}:\n  2,refs,\"symbol not found: RetryPolicy\"\n\
-             skipped[1]{index,operation,reason}:\n  3,search,budget_exhausted"
+            format!(
+                "partial_success[4]{HEAD}\n  0,symbols,completed,null\n  1,dependents,completed,null\n  \
+                 2,refs,failed,\"symbol not found: RetryPolicy\"\n  3,search,skipped,budget_exhausted"
+            )
         );
     }
 
+    // AC-032 (superseded): a report with no operation is the definitive empty list.
     #[test]
-    fn partial_success_empty_categories_omitted() {
-        let ps = PartialSuccess::new(vec![OpRef::new(0, "a")], vec![], vec![]);
-        let out = ps.render();
-        assert!(!out.contains("failed["), "empty failed category must be omitted, got: {out}");
-        assert!(!out.contains("skipped["), "empty skipped category must be omitted, got: {out}");
+    fn ac032_fully_empty_partial_success_is_the_empty_list() {
+        assert_eq!(ps(vec![], vec![], vec![]).render(), "partial_success: []\ntotalCount: 0");
     }
 
-    // AC-032: fully-empty PartialSuccess — exact first line, no section
-    // headers at all (not just failed/skipped omitted, as the test above
-    // checks — completed[] must also be absent here since it's empty too).
+    // AC-033 (superseded): two completed, nothing else.
     #[test]
-    fn ac032_fully_empty_partial_success_has_exact_summary_and_no_sections() {
-        let ps = PartialSuccess::new(vec![], vec![], vec![]);
-        let out = ps.render();
-        assert_eq!(out, "partial_success: \"0 completed, 0 failed, 0 skipped\"");
-        assert!(!out.contains("completed["), "got: {out}");
-        assert!(!out.contains("failed["), "got: {out}");
-        assert!(!out.contains("skipped["), "got: {out}");
+    fn ac033_two_completed_only_is_two_rows() {
+        let ps = ps(vec![CompletedOp::new(0, "a"), CompletedOp::new(1, "b")], vec![], vec![]);
+        assert_eq!(ps.render(), format!("partial_success[2]{HEAD}\n  0,a,completed,null\n  1,b,completed,null"));
     }
 
-    // AC-033: two completed, nothing else — exact first line, exact
-    // completed[2] table listing both in order, no failed/skipped sections.
+    // The index is the caller's slice position, written as given: never renumbered, and gaps survive. Rows sort by
+    // it, so row order follows the caller's ops whatever order the three lists were built in.
     #[test]
-    fn ac033_two_completed_only_has_exact_summary_and_section() {
-        let ps = PartialSuccess::new(vec![OpRef::new(0, "a"), OpRef::new(1, "b")], vec![], vec![]);
-        let out = ps.render();
-        assert_eq!(
-            out,
-            "partial_success: \"2 completed, 0 failed, 0 skipped\"\ncompleted[2]{index,operation}:\n  0,a\n  1,b"
-        );
-    }
-
-    // The index is the caller's slice position, written as given: not renumbered, not sorted, and gaps survive.
-    #[test]
-    fn index_and_order_are_preserved_not_renumbered() {
-        let ps = PartialSuccess::new(
-            vec![OpRef::new(7, "x"), OpRef::new(2, "y")],
+    fn index_is_preserved_and_rows_sort_by_it() {
+        let ps = ps(
+            vec![CompletedOp::new(7, "x"), CompletedOp::new(2, "y")],
             vec![fail(5, "f", "r"), fail(1, "g", "s")],
-            vec![OpRef::new(9, "k"), OpRef::new(4, "j")],
+            vec![SkippedOp::new(9, "k"), SkippedOp::new(4, "j")],
         );
         assert_eq!(
             ps.render(),
-            "partial_success: \"2 completed, 2 failed, 2 skipped\"\ncompleted[2]{index,operation}:\n  7,x\n  2,y\n\
-             failed[2]{index,operation,reason}:\n  5,f,r\n  1,g,s\n\
-             skipped[2]{index,operation,reason}:\n  9,k,null\n  4,j,null"
+            format!(
+                "partial_success[6]{HEAD}\n  1,g,failed,s\n  2,y,completed,null\n  4,j,skipped,null\n  \
+                 5,f,failed,r\n  7,x,completed,null\n  9,k,skipped,null"
+            )
         );
+    }
+
+    #[test]
+    fn recovery_hints_follow_the_index_order() {
+        let ps = ps(
+            vec![],
+            vec![
+                fail(5, "f", "r").recovery(RecoveryHint::new("five")),
+                fail(1, "g", "s").recovery(RecoveryHint::new("one")),
+                fail(3, "h", "t"),
+            ],
+            vec![],
+        );
+        let tools: Vec<String> = ps.recovery_hints().into_iter().map(|r| r.tool).collect();
+        assert_eq!(tools, ["one", "five"]);
     }
 
     #[test]
     fn large_index_renders_in_full() {
-        let ps = PartialSuccess::new(vec![OpRef::new(usize::MAX, "a")], vec![], vec![]);
-        assert!(ps.render().ends_with(&format!("\n  {},a", usize::MAX)));
+        let ps = ps(vec![CompletedOp::new(usize::MAX, "a")], vec![], vec![]);
+        assert!(ps.render().ends_with(&format!("\n  {},a,completed,null", usize::MAX)), "{}", ps.render());
     }
 
     #[test]
     fn skipped_reason_is_rendered_and_a_missing_one_is_null() {
-        let ps = PartialSuccess::new(vec![], vec![], vec![OpRef::new(0, "a").reason("deadline"), OpRef::new(1, "b")]);
-        assert_eq!(
-            ps.render(),
-            "partial_success: \"0 completed, 0 failed, 2 skipped\"\nskipped[2]{index,operation,reason}:\n  \
-             0,a,deadline\n  1,b,null"
-        );
+        let ps = ps(vec![], vec![], vec![SkippedOp::new(0, "a").reason("deadline"), SkippedOp::new(1, "b")]);
+        assert_eq!(ps.render(), format!("partial_success[2]{HEAD}\n  0,a,skipped,deadline\n  1,b,skipped,null"));
     }
 
-    // A literal "null" reason must not read back as the absent marker: escape_value quotes it.
+    // A literal "null" reason must not read back as the absent marker: it is quoted.
     #[test]
     fn skipped_reason_that_spells_null_is_quoted() {
-        let ps = PartialSuccess::new(vec![], vec![], vec![OpRef::new(0, "a").reason("null")]);
-        assert!(ps.render().ends_with("\n  0,a,\"null\""), "got: {}", ps.render());
+        let ps = ps(vec![], vec![], vec![SkippedOp::new(0, "a").reason("null")]);
+        assert!(ps.render().ends_with("\n  0,a,skipped,\"null\""), "got: {}", ps.render());
+    }
+
+    // Each index has one outcome: a repeat within a list or across lists is rejected, naming the index.
+    #[test]
+    fn duplicate_index_is_rejected() {
+        let dup = |c: Vec<CompletedOp>, f: Vec<FailedOp>, s: Vec<SkippedOp>| PartialSuccess::try_new(c, f, s);
+        assert_eq!(
+            dup(vec![CompletedOp::new(0, "a")], vec![fail(0, "a", "boom")], vec![]),
+            Err(DuplicateOpIndex { index: 0 })
+        );
+        assert_eq!(
+            dup(vec![], vec![fail(4, "a", "x")], vec![SkippedOp::new(4, "a")]),
+            Err(DuplicateOpIndex { index: 4 })
+        );
+        assert_eq!(
+            dup(vec![CompletedOp::new(2, "a"), CompletedOp::new(2, "b")], vec![], vec![]),
+            Err(DuplicateOpIndex { index: 2 })
+        );
+        assert_eq!(DuplicateOpIndex { index: 2 }.to_string(), "operation index 2 has more than one outcome");
+        assert!(dup(vec![CompletedOp::new(0, "a")], vec![fail(1, "b", "x")], vec![SkippedOp::new(2, "c")]).is_ok());
     }
 
     #[test]
-    fn completed_reason_is_not_rendered() {
-        let ps = PartialSuccess::new(vec![OpRef::new(0, "a").reason("because")], vec![], vec![]);
-        assert!(!ps.render().contains("because"), "got: {}", ps.render());
-    }
-
-    #[test]
-    fn hostile_operation_and_reason_strings_are_quoted_in_every_table() {
+    fn hostile_operation_and_reason_strings_are_quoted_in_every_row() {
         let hostile = "a,b\n\"c\"\r: [d] {e}";
-        let ps = PartialSuccess::new(
-            vec![OpRef::new(0, hostile)],
+        let ps = ps(
+            vec![CompletedOp::new(0, hostile)],
             vec![fail(1, hostile, hostile)],
-            vec![OpRef::new(2, hostile).reason(hostile)],
+            vec![SkippedOp::new(2, hostile).reason(hostile)],
         );
         let q = crate::toon::escape_value(hostile);
         assert!(q.starts_with('"'), "fixture must need quoting, got: {q}");
         assert_eq!(
             ps.render(),
-            format!(
-                "partial_success: \"1 completed, 1 failed, 1 skipped\"\ncompleted[1]{{index,operation}}:\n  0,{q}\n\
-                 failed[1]{{index,operation,reason}}:\n  1,{q},{q}\nskipped[1]{{index,operation,reason}}:\n  2,{q},{q}"
-            )
+            format!("partial_success[3]{HEAD}\n  0,{q},completed,null\n  1,{q},failed,{q}\n  2,{q},skipped,{q}")
         );
         assert!(!ps.render().contains('\r'), "no raw CR may survive");
-        assert_eq!(ps.render().lines().count(), 7, "hostile text must not add lines");
+        assert_eq!(ps.render().lines().count(), 4, "hostile text must not add lines");
     }
 
     #[test]
     fn partial_success_exit_code_zero_when_no_failures() {
-        let ps = PartialSuccess::new(vec![OpRef::new(0, "a")], vec![], vec![OpRef::new(1, "b")]);
+        let ps = ps(vec![CompletedOp::new(0, "a")], vec![], vec![SkippedOp::new(1, "b")]);
         assert_eq!(ps.exit_code(), 0);
     }
 
@@ -345,13 +404,13 @@ mod tests {
     // just the completed+skipped-both-nonempty combination above.
     #[test]
     fn ac036_exit_code_zero_holds_when_completed_and_skipped_are_also_empty() {
-        let ps = PartialSuccess::new(vec![], vec![], vec![]);
+        let ps = ps(vec![], vec![], vec![]);
         assert_eq!(ps.exit_code(), 0);
     }
 
     #[test]
     fn partial_success_exit_code_one_when_any_failed() {
-        let ps = PartialSuccess::new(vec![], vec![fail(0, "x", "y")], vec![]);
+        let ps = ps(vec![], vec![fail(0, "x", "y")], vec![]);
         assert_eq!(ps.exit_code(), 1);
     }
 
@@ -359,19 +418,19 @@ mod tests {
     // — the existing test above only proves the 1-entry case.
     #[test]
     fn ac037_exit_code_one_holds_for_five_failed_entries() {
-        let ps = PartialSuccess::new(vec![], (0..5).map(|i| fail(i, &format!("op{i}"), "y")).collect(), vec![]);
+        let ps = ps(vec![], (0..5).map(|i| fail(i, &format!("op{i}"), "y")).collect(), vec![]);
         assert_eq!(ps.exit_code(), 1);
     }
 
     #[test]
     fn failed_op_without_recovery_produces_no_help_block() {
-        let ps = PartialSuccess::new(vec![], vec![fail(0, "x", "y")], vec![]);
+        let ps = ps(vec![], vec![fail(0, "x", "y")], vec![]);
         assert!(!ps.render().contains("help["));
     }
 
     #[test]
     fn operation_with_comma_is_escaped() {
-        let ps = PartialSuccess::new(vec![], vec![fail(0, "create_issue, retry 2", "timeout")], vec![]);
+        let ps = ps(vec![], vec![fail(0, "create_issue, retry 2", "timeout")], vec![]);
         let out = ps.render();
         // operation contains comma — must be quoted to avoid breaking TOON column parsing
         assert!(out.contains(r#""create_issue, retry 2""#), "operation must be quoted, got: {out}");
@@ -381,9 +440,9 @@ mod tests {
     // triggers quoting and renders as the \n / \r escapes inside the quotes.
     #[test]
     fn ac034_newline_and_cr_in_operation_are_quoted_and_escaped() {
-        let ps = PartialSuccess::new(vec![], vec![fail(3, "step\none\rtwo", "y")], vec![]);
+        let ps = ps(vec![], vec![fail(3, "step\none\rtwo", "y")], vec![]);
         let out = ps.render();
-        assert!(out.ends_with("\n  3,\"step\\none\\rtwo\",y"), "got: {out:?}");
+        assert!(out.ends_with("\n  3,\"step\\none\\rtwo\",failed,y"), "got: {out:?}");
         assert!(!out.contains('\r'), "no raw CR may survive, got: {out:?}");
     }
 
@@ -391,7 +450,7 @@ mod tests {
     // render_recovery, not a help[] block, since help is the inline array of strings.
     #[test]
     fn ac035_recovery_hints_render_as_one_recovery_table() {
-        let ps = PartialSuccess::new(vec![], vec![fail(0, "x", "y").recovery(RecoveryHint::new("retry_x"))], vec![]);
+        let ps = ps(vec![], vec![fail(0, "x", "y").recovery(RecoveryHint::new("retry_x"))], vec![]);
         let out = ps.render();
         let recovery = crate::recovery::render_recovery(&[RecoveryHint::new("retry_x")]);
         assert!(out.ends_with(&format!("\n{recovery}")), "got: {out}");

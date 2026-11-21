@@ -71,27 +71,21 @@ fn total_count_renders_only_when_it_exceeds_the_returned_count() {
 }
 
 #[test]
-fn returned_count_is_derived_for_toon_and_kv_and_declared_for_text() {
-    assert_eq!(symbols().returned_count, 2);
-    assert_eq!(symbols().returned_count(99).count(), 2, "setter is ignored for Toon");
-    assert_eq!(Section::kv("k", vec![kv("a", 1)]).returned_count(9).count(), 1);
+fn count_is_derived_for_toon_and_kv_and_declared_for_text() {
+    // There is no count to set for a list or a KV body: it is the rows or items, and the fields are private.
+    assert_eq!(symbols().count(), 2);
+    assert_eq!(Section::kv("k", vec![kv("a", 1)]).count(), 1);
     assert_eq!(Section::text("t", "x").count(), 1);
     assert_eq!(Section::text("t", "").count(), 0);
-    assert_eq!(Section::text("t", "a\nb\nc").returned_count(3).count(), 3);
-    // A hand-edited field cannot disagree with the body: neither 0 nor 99 changes what renders.
-    for bad in [0, 99] {
-        let mut s = refs().total_count(Some(1));
-        s.returned_count = bad;
-        assert_eq!(s.count(), 1);
-        assert_eq!(AgentResponse::new("t").section(s).render(OutputFormat::Text), REFS_TEXT, "bad {bad}");
-    }
+    assert_eq!(Section::text_with_count("t", "a\nb\nc", 3).count(), 3);
+    assert_eq!((symbols().name(), symbols().total()), ("brief.symbols", Some(40)));
 }
 
 #[test]
 fn a_section_with_no_rows_renders_an_empty_list_and_keeps_its_total() {
     let empty = Section::toon("hits", fields(&["a"]), vec![]);
     let r = AgentResponse::new("t").section(empty.clone()).section(refs());
-    assert_eq!(r.render(OutputFormat::Text), format!("hits: []\n{REFS_TEXT}"));
+    assert_eq!(r.render(OutputFormat::Text), format!("hits: []\ntotalCount: 0\n{REFS_TEXT}"));
     let r = AgentResponse::new("t").section(empty.total_count(Some(3)));
     assert_eq!(r.render(OutputFormat::Text), "hits: []\ntotalCount: 3");
     let r = AgentResponse::new("t").section(Section::kv("k", vec![])).section(refs());
@@ -176,5 +170,6 @@ fn json_carries_the_sections_between_body_and_hints() {
 
 #[test]
 fn section_body_is_matchable() {
-    assert!(matches!(symbols().body, SectionBody::Toon { .. }));
+    assert!(matches!(symbols().body(), SectionBody::Toon { .. }));
+    assert!(matches!(Section::text("n", "x").body(), SectionBody::Text { text, count: 1 } if text == "x"));
 }

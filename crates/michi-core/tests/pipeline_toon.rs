@@ -27,7 +27,6 @@ fn every_status() -> Vec<StepStatus> {
 fn every_status_renders_a_conformant_status_and_reason_cell() {
     let statuses = every_status();
     let pipeline = Pipeline::new(
-        "run-1",
         statuses.iter().enumerate().map(|(i, s)| PipelineStep::new(format!("s{i}"), format!("Step {i}"), *s)).collect(),
     );
     let out = pipeline.render();

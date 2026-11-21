@@ -1,7 +1,7 @@
 #![cfg(feature = "serde")]
 
 use michi_core::audience::Audience;
-use michi_core::mcp::{CallToolResult, ContentBlock};
+use michi_core::mcp::{CallToolResult, ContentBlock, JsonObject};
 use proptest::prelude::*;
 
 fn audience_strategy() -> impl Strategy<Value = Audience> {
@@ -15,7 +15,7 @@ fn content_block_strategy() -> impl Strategy<Value = ContentBlock> {
 
 fn call_tool_result_strategy() -> impl Strategy<Value = CallToolResult> {
     (proptest::collection::vec(content_block_strategy(), 1..3), any::<bool>())
-        .prop_map(|(content, is_error)| CallToolResult::new(content, is_error, "{}"))
+        .prop_map(|(content, is_error)| CallToolResult::new(content, is_error, "{}".parse().ok()))
 }
 
 proptest! {
@@ -36,15 +36,19 @@ proptest! {
     }
 
     #[test]
-    fn call_tool_result_with_non_object_structured_content_fails_to_serialize(
-        content in proptest::collection::vec(content_block_strategy(), 1..3),
-        is_error in any::<bool>(),
+    fn non_object_text_is_not_a_json_object(
         garbage in "[^{][^}]{0,40}", // never a JSON object: does not start with `{`
     ) {
-        // MCP requires `structuredContent` to be an object, so anything else is a serialization error (never a
-        // panic, never a string or number on the wire), and `try_new` reports the same thing up front.
-        let r = CallToolResult::new(content.clone(), is_error, &garbage);
-        prop_assert!(serde_json::to_string(&r).is_err(), "{garbage:?} must not serialize");
-        prop_assert!(CallToolResult::try_new(content, is_error, &garbage).is_err());
+        // MCP requires `structuredContent` to be an object; anything else is rejected when the value is built, so a
+        // `CallToolResult` cannot hold it.
+        prop_assert!(JsonObject::try_new(garbage.as_str()).is_err(), "{garbage:?} must be rejected");
+    }
+
+    // Differential check: michi's checker (used in every build) and serde_json agree on what is a JSON object.
+    #[test]
+    fn json_object_check_agrees_with_serde_json(text in r#"\{[ {}\[\]":,0-9a-z.eE+\-\\]{0,30}\}?"#) {
+        let ours = JsonObject::try_new(text.as_str()).is_ok();
+        let theirs = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&text).is_ok();
+        prop_assert_eq!(ours, theirs, "{:?}", text);
     }
 }

@@ -10,21 +10,28 @@
 
 use std::time::Duration;
 
+use crate::hints::Hint;
+
 mod budget;
 pub use budget::RetryBudget;
 
 /// Configuration for automatic retry behaviour.
+///
+/// Build it with [`RetryConfig::new`] (clamps), [`RetryConfig::try_new`] (rejects) or [`RetryConfig::default`], and
+/// read it with the getters. The fields are private so the checks those constructors make hold for the life of the
+/// value: a `max_delay` set to zero after `try_new` used to cap a server's `Retry-After: 60` at 0 ns, a hot retry.
+///
+/// ```compile_fail,E0616
+/// let mut cfg = michi_core::RetryConfig::default();
+/// cfg.max_delay = std::time::Duration::ZERO;
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct RetryConfig {
-    /// Maximum number of retry attempts (not counting the initial attempt).
-    pub max_retries: u32,
-    /// Base delay for exponential back-off.
-    pub base_delay: Duration,
-    /// Maximum delay cap — back-off never exceeds this.
-    pub max_delay: Duration,
-    /// Jitter factor in `[0.0, 1.0]`. `0.0` = no jitter, `1.0` = full jitter.
-    pub jitter_factor: f64,
+    max_retries: u32,
+    base_delay: Duration,
+    max_delay: Duration,
+    jitter_factor: f64,
 }
 
 /// Error returned by [`RetryConfig::try_new()`] when parameters are out of range.
@@ -111,6 +118,30 @@ impl RetryConfig {
             return Err(RetryConfigError::JitterFactorOutOfRange { factor: jitter_factor });
         }
         Ok(Self { max_retries, base_delay, max_delay, jitter_factor })
+    }
+
+    /// Maximum number of retry attempts (not counting the initial attempt).
+    #[must_use]
+    pub fn max_retries(&self) -> u32 {
+        self.max_retries
+    }
+
+    /// Base delay for exponential back-off; never more than [`max_delay`](Self::max_delay).
+    #[must_use]
+    pub fn base_delay(&self) -> Duration {
+        self.base_delay
+    }
+
+    /// Maximum delay cap: back-off never exceeds it. Never zero.
+    #[must_use]
+    pub fn max_delay(&self) -> Duration {
+        self.max_delay
+    }
+
+    /// Jitter factor in `[0.0, 1.0]`. `0.0` = no jitter, `1.0` = full jitter.
+    #[must_use]
+    pub fn jitter_factor(&self) -> f64 {
+        self.jitter_factor
     }
 }
 
@@ -426,15 +457,28 @@ pub fn already_done(stored: Option<String>) -> AlreadyDone {
 /// Render an already-done response as a TOON 4.4 root object, with no trailing newline:
 /// `operation: …`, `status: already_done`, `summary: …`, then the inline `help[N]: …` array when `hints` is non-empty.
 /// `operation` and `summary` are quoted per §7.2.
+///
+/// It is the response `AgentResponse::new("already_done").already_done(operation, summary).hints(hints)`, so it is the
+/// same writer a composed response uses (see [`crate::AgentResponse::already_done`]).
 #[must_use]
-pub fn render_already_done(operation: &str, summary: &str, hints: &[String]) -> String {
-    let mut out = String::with_capacity(64 + operation.len() + summary.len() + hints.len() * 50);
-    out.push_str("operation: ");
-    out.push_str(&crate::toon::escape_value(operation));
-    out.push_str("\nstatus: already_done\nsummary: ");
-    out.push_str(&crate::toon::escape_value(summary));
-    crate::hints::append_help_block(&mut out, hints.iter().map(String::as_str));
-    out
+pub fn render_already_done(operation: &str, summary: &str, hints: &[Hint]) -> String {
+    crate::AgentResponse::new("already_done")
+        .already_done(operation, summary)
+        .hints(hints.to_vec())
+        .render(crate::OutputFormat::Text)
+}
+
+/// The KV section a composed already-done report is: `operation`, `status: already_done`, `summary`.
+pub(crate) fn already_done_section(operation: String, summary: String) -> crate::section::Section {
+    use crate::kv::{KvItem, KvValue};
+    crate::section::Section::kv(
+        "already_done",
+        vec![
+            KvItem::new("operation", KvValue::Text(operation)),
+            KvItem::new("status", KvValue::Text("already_done".into())),
+            KvItem::new("summary", KvValue::Text(summary)),
+        ],
+    )
 }
 
 fn fnv1a_64(data: &[u8]) -> u64 {
@@ -456,24 +500,19 @@ mod tests {
     fn first_retry_uses_base_delay() {
         let config = RetryConfig::default();
         let delay = next_retry_delay(&config, 0, 0.0, None).expect("first retry delay calculated");
-        assert_eq!(delay, config.base_delay);
+        assert_eq!(delay, config.base_delay());
     }
 
     #[test]
     fn second_retry_doubles() {
-        let config = RetryConfig { jitter_factor: 0.0, ..Default::default() };
+        let config = RetryConfig::new(3, Duration::from_millis(500), Duration::from_secs(30), 0.0);
         let delay = next_retry_delay(&config, 1, 0.0, None).expect("attempt 1 is within max_retries");
-        assert_eq!(delay, config.base_delay * 2);
+        assert_eq!(delay, config.base_delay() * 2);
     }
 
     #[test]
     fn delay_is_capped_at_max() {
-        let config = RetryConfig {
-            base_delay: Duration::from_secs(1),
-            max_delay: Duration::from_secs(5),
-            jitter_factor: 0.0,
-            max_retries: 10,
-        };
+        let config = RetryConfig::new(10, Duration::from_secs(1), Duration::from_secs(5), 0.0);
         let delay = next_retry_delay(&config, 5, 0.0, None).expect("attempt 5 is within max_retries=10");
         assert_eq!(delay, Duration::from_secs(5));
     }
@@ -505,20 +544,15 @@ mod tests {
 
     #[test]
     fn jitter_never_exceeds_max_delay_when_base_already_capped() {
-        let config = RetryConfig {
-            base_delay: Duration::from_secs(1),
-            max_delay: Duration::from_secs(5),
-            jitter_factor: 1.0,
-            max_retries: 10,
-        };
+        let config = RetryConfig::new(10, Duration::from_secs(1), Duration::from_secs(5), 1.0);
         let delay = next_retry_delay(&config, 5, 1.0, None).expect("attempt 5 within max_retries=10");
-        assert!(delay <= config.max_delay, "delay {delay:?} exceeded max_delay {:?}", config.max_delay);
+        assert!(delay <= config.max_delay(), "delay {delay:?} exceeded max_delay {:?}", config.max_delay());
     }
 
     #[test]
     fn extreme_duration_saturates_instead_of_wrapping() {
         let huge = Duration::from_secs(18_446_744_073_709_552);
-        let config = RetryConfig { base_delay: huge, max_delay: huge, jitter_factor: 0.0, max_retries: 100 };
+        let config = RetryConfig::new(100, huge, huge, 0.0);
         // attempt=64 (not 63): 2^63 is well within u64::MAX and needs no saturation at
         // all, so it doesn't exercise saturating_pow's overflow behavior. 2^64 does
         // overflow a non-saturating u64::pow, making 64 the real boundary.
@@ -529,9 +563,9 @@ mod tests {
                 "attempt {attempt}: delay {delay:?} wrapped to a tiny value"
             );
             assert!(
-                delay <= config.max_delay,
+                delay <= config.max_delay(),
                 "attempt {attempt}: delay {delay:?} exceeded max_delay {:?}",
-                config.max_delay
+                config.max_delay()
             );
         }
     }
@@ -580,7 +614,7 @@ mod tests {
 
     #[test]
     fn retry_after_wins_when_larger_than_backoff() {
-        let config = RetryConfig { jitter_factor: 0.0, ..Default::default() };
+        let config = RetryConfig::new(3, Duration::from_millis(500), Duration::from_secs(30), 0.0);
         let delay =
             next_retry_delay(&config, 0, 0.0, Some(Duration::from_secs(5))).expect("attempt 0 within max_retries");
         assert_eq!(delay, Duration::from_secs(5));
@@ -588,12 +622,7 @@ mod tests {
 
     #[test]
     fn ac016_retry_after_strictly_exceeding_backoff_wins_exactly() {
-        let config = RetryConfig {
-            jitter_factor: 0.0,
-            base_delay: Duration::from_secs(1),
-            max_delay: Duration::from_secs(30),
-            max_retries: 3,
-        };
+        let config = RetryConfig::new(3, Duration::from_secs(1), Duration::from_secs(30), 0.0);
         // backoff at attempt=0 is 1000ms; retry_after=2000ms is strictly greater.
         let delay =
             next_retry_delay(&config, 0, 0.0, Some(Duration::from_secs(2))).expect("attempt 0 within max_retries");
@@ -602,7 +631,7 @@ mod tests {
 
     #[test]
     fn backoff_wins_when_larger_than_retry_after() {
-        let config = RetryConfig { jitter_factor: 0.0, base_delay: Duration::from_secs(10), ..Default::default() };
+        let config = RetryConfig::new(3, Duration::from_secs(10), Duration::from_secs(30), 0.0);
         let delay =
             next_retry_delay(&config, 0, 0.0, Some(Duration::from_secs(1))).expect("attempt 0 within max_retries");
         assert_eq!(delay, Duration::from_secs(10));
@@ -610,7 +639,7 @@ mod tests {
 
     #[test]
     fn retry_after_still_capped_at_max_delay() {
-        let config = RetryConfig { jitter_factor: 0.0, max_delay: Duration::from_secs(5), ..Default::default() };
+        let config = RetryConfig::new(3, Duration::from_millis(500), Duration::from_secs(5), 0.0);
         let delay =
             next_retry_delay(&config, 0, 0.0, Some(Duration::from_secs(999))).expect("attempt 0 within max_retries");
         assert_eq!(delay, Duration::from_secs(5), "retry_after must not bypass max_delay");
@@ -618,7 +647,7 @@ mod tests {
 
     #[test]
     fn retry_after_wins_over_backoff_with_jitter_applied() {
-        let config = RetryConfig { jitter_factor: 1.0, base_delay: Duration::from_secs(1), ..Default::default() };
+        let config = RetryConfig::new(3, Duration::from_secs(1), Duration::from_secs(30), 1.0);
         let delay =
             next_retry_delay(&config, 0, 1.0, Some(Duration::from_secs(5))).expect("attempt 0 within max_retries");
         assert_eq!(delay, Duration::from_secs(5));
@@ -626,7 +655,7 @@ mod tests {
 
     #[test]
     fn jittered_backoff_wins_over_smaller_retry_after() {
-        let config = RetryConfig { jitter_factor: 1.0, base_delay: Duration::from_secs(1), ..Default::default() };
+        let config = RetryConfig::new(3, Duration::from_secs(1), Duration::from_secs(30), 1.0);
         let delay =
             next_retry_delay(&config, 0, 1.0, Some(Duration::from_millis(500))).expect("attempt 0 within max_retries");
         assert_eq!(delay, Duration::from_secs(2));
@@ -996,33 +1025,33 @@ mod tests {
     #[test]
     fn new_clamps_jitter_factor_above_one() {
         let c = RetryConfig::new(3, Duration::from_millis(500), Duration::from_secs(30), 2.5);
-        assert_eq!(c.jitter_factor, 1.0, "jitter_factor must clamp to exactly 1.0, got {}", c.jitter_factor);
+        assert_eq!(c.jitter_factor(), 1.0, "jitter_factor must clamp to exactly 1.0, got {}", c.jitter_factor());
     }
 
     #[test]
     fn new_clamps_negative_jitter_to_zero() {
         let c = RetryConfig::new(3, Duration::from_millis(500), Duration::from_secs(30), -0.5);
-        assert_eq!(c.jitter_factor, 0.0, "jitter_factor must be clamped to 0.0, got {}", c.jitter_factor);
+        assert_eq!(c.jitter_factor(), 0.0, "jitter_factor must be clamped to 0.0, got {}", c.jitter_factor());
     }
 
     #[test]
     fn new_clamps_non_finite_jitter_to_zero() {
         let c_nan = RetryConfig::new(3, Duration::from_millis(500), Duration::from_secs(30), f64::NAN);
-        assert_eq!(c_nan.jitter_factor, 0.0, "NaN jitter_factor must clamp to 0.0");
+        assert_eq!(c_nan.jitter_factor(), 0.0, "NaN jitter_factor must clamp to 0.0");
         let c_inf = RetryConfig::new(3, Duration::from_millis(500), Duration::from_secs(30), f64::INFINITY);
-        assert_eq!(c_inf.jitter_factor, 0.0, "INFINITY jitter_factor must clamp to 0.0");
+        assert_eq!(c_inf.jitter_factor(), 0.0, "INFINITY jitter_factor must clamp to 0.0");
     }
 
     #[test]
     fn new_clamps_base_delay_exceeding_max() {
         let c = RetryConfig::new(3, Duration::from_secs(1), Duration::from_millis(500), 0.2);
-        assert_eq!(c.base_delay, Duration::from_millis(500), "base_delay must clamp down to max_delay exactly");
+        assert_eq!(c.base_delay(), Duration::from_millis(500), "base_delay must clamp down to max_delay exactly");
     }
 
     #[test]
     fn new_floors_zero_max_delay_to_one_ms() {
         let c = RetryConfig::new(3, Duration::ZERO, Duration::ZERO, 0.0);
-        assert_eq!(c.max_delay, Duration::from_millis(1), "max_delay=0 must be floored to exactly 1ms");
+        assert_eq!(c.max_delay(), Duration::from_millis(1), "max_delay=0 must be floored to exactly 1ms");
     }
 
     #[test]
@@ -1063,10 +1092,10 @@ mod tests {
     fn try_new_accepts_valid_config() {
         let result = RetryConfig::try_new(3, Duration::from_millis(500), Duration::from_secs(30), 0.2);
         let config = result.expect("valid config");
-        assert_eq!(config.max_retries, 3);
-        assert_eq!(config.base_delay, Duration::from_millis(500));
-        assert_eq!(config.max_delay, Duration::from_secs(30));
-        assert_eq!(config.jitter_factor, 0.2);
+        assert_eq!(config.max_retries(), 3);
+        assert_eq!(config.base_delay(), Duration::from_millis(500));
+        assert_eq!(config.max_delay(), Duration::from_secs(30));
+        assert_eq!(config.jitter_factor(), 0.2);
     }
 
     #[test]
@@ -1086,10 +1115,10 @@ mod tests {
     #[test]
     fn default_config_values() {
         let c = RetryConfig::default();
-        assert_eq!(c.max_retries, 3);
-        assert_eq!(c.base_delay, Duration::from_millis(500));
-        assert_eq!(c.max_delay, Duration::from_secs(30));
-        assert_eq!(c.jitter_factor, 0.2);
+        assert_eq!(c.max_retries(), 3);
+        assert_eq!(c.base_delay(), Duration::from_millis(500));
+        assert_eq!(c.max_delay(), Duration::from_secs(30));
+        assert_eq!(c.jitter_factor(), 0.2);
     }
 
     #[test]
@@ -1110,13 +1139,13 @@ mod tests {
 
     #[test]
     fn render_already_done_with_hints() {
-        let out = render_already_done("my_op", "did the thing", &["hint one".to_string()]);
+        let out = render_already_done("my_op", "did the thing", &[Hint::new("hint one")]);
         assert_eq!(out, "operation: my_op\nstatus: already_done\nsummary: did the thing\nhelp[1]: hint one");
     }
 
     #[test]
     fn render_already_done_multiple_hints() {
-        let hints = ["hint a".to_string(), "hint b".to_string()];
+        let hints = [Hint::new("hint a"), Hint::new("hint b")];
         let out = render_already_done("op", "done", &hints);
         assert_eq!(out, "operation: op\nstatus: already_done\nsummary: done\nhelp[2]: hint a,hint b");
     }

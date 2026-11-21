@@ -23,7 +23,7 @@ fn invalid_rows_render_an_error_body() {
 fn invalid_rows_set_is_error_on_the_mcp_result() {
     let result = invalid_rows().to_call_tool_result();
     assert!(result.is_error, "MCP isError must be true when the body is an error");
-    assert_eq!(structured_is_error(&result.structured_content), serde_json::json!(true));
+    assert_eq!(structured_is_error(result.structured_content.as_ref().expect("set").as_str()), serde_json::json!(true));
 }
 
 #[test]
@@ -36,5 +36,8 @@ fn valid_rows_stay_a_success() {
     let response = AgentResponse::new("issues").items(vec![vec![Value::Int(1), Value::from("open")]], &["id", "state"]);
     let result = response.to_call_tool_result();
     assert!(!result.is_error);
-    assert_eq!(structured_is_error(&result.structured_content), serde_json::json!(false));
+    assert_eq!(
+        structured_is_error(result.structured_content.as_ref().expect("set").as_str()),
+        serde_json::json!(false)
+    );
 }

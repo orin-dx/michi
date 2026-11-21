@@ -78,7 +78,7 @@ impl From<RecoveryHint> for RecoveryHintWire {
             .map(|(k, v)| {
                 // Same writer as the hand-built companions, so the two shapes cannot drift.
                 let mut json = String::new();
-                crate::kv::kv_value_to_json(&mut json, v);
+                crate::json::push_kv_value(&mut json, v);
                 (k.clone(), serde_json::from_str(&json).unwrap_or(serde_json::Value::String(json)))
             })
             .collect();
@@ -201,56 +201,22 @@ pub fn render_recovery(hints: &[RecoveryHint]) -> String {
 /// Like [`crate::hints::append_hints`], one LF is inserted first when `out` is non-empty and does not already end in
 /// one, and nothing follows the block. Does nothing for an empty slice.
 pub fn append_recovery(out: &mut String, hints: &[RecoveryHint]) {
+    use crate::toon::table::{self, Cell};
     if hints.is_empty() {
         return;
     }
-    crate::hints::start_block(out);
-    out.push_str("recovery[");
-    out.push_str(&hints.len().to_string());
-    out.push_str("]{tool,params,reason}:");
+    table::push_header(out, "recovery", hints.len(), ["tool", "params", "reason"]);
     for hint in hints {
-        out.push_str("\n  ");
-        out.push_str(&crate::toon::escape_value(&hint.tool));
-        out.push(',');
-        out.push_str(&crate::toon::escape_value(&params_json(&hint.params)));
-        out.push(',');
-        match &hint.reason {
-            Some(reason) => out.push_str(&crate::toon::escape_value(reason)),
-            None => out.push_str("null"),
-        }
+        let params = params_json(&hint.params);
+        table::push_row(out, &[Cell::Str(&hint.tool), Cell::Str(&params), Cell::opt_str(hint.reason.as_deref())]);
     }
 }
 
 /// The parameters as a compact JSON object, written by the same writer as the JSON companions.
 pub(crate) fn params_json(params: &[(String, KvValue)]) -> String {
     let mut json = String::with_capacity(2 + params.iter().map(|(k, _)| k.len() + 16).sum::<usize>());
-    push_params_json(&mut json, params);
+    crate::json::push_params(&mut json, params);
     json
-}
-
-/// Append the parameters as a compact JSON object. A repeated key is written once, at its first position, with its
-/// last value -- what [`RecoveryHint::param`] would have produced -- so the object never holds a duplicate key.
-pub(crate) fn push_params_json(out: &mut String, params: &[(String, KvValue)]) {
-    out.push('{');
-    // Each key's last value, then one pass in order writing a key the first time it is seen: O(P), not O(P²).
-    // Internal lookup state only; the output order comes from `params`.
-    #[allow(clippy::disallowed_types)]
-    let mut last: std::collections::HashMap<&str, &KvValue> = std::collections::HashMap::with_capacity(params.len());
-    for (k, v) in params {
-        last.insert(k.as_str(), v);
-    }
-    let mut first = true;
-    for (k, _) in params {
-        let Some(v) = last.remove(k.as_str()) else { continue };
-        if !first {
-            out.push(',');
-        }
-        first = false;
-        crate::kv::json_escape_str(out, k);
-        out.push(':');
-        crate::kv::kv_value_to_json(out, v);
-    }
-    out.push('}');
 }
 
 #[cfg(test)]

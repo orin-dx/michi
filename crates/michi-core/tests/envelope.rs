@@ -2,7 +2,7 @@
 
 use michi_core::kv::{KvItem, KvValue};
 use michi_core::toon::Value;
-use michi_core::{AgentResponse, BudgetSummary, OutputFormat, ProvenanceBlock, RecoveryHint, Section, SectionCost};
+use michi_core::{AgentResponse, BudgetSummary, OutputFormat, ProvenanceBlock, RecoveryHint, Section};
 use proptest::prelude::*;
 
 mod support;
@@ -35,10 +35,7 @@ fn json(r: &AgentResponse) -> serde_json::Value {
 
 #[test]
 fn full_envelope_renders_in_the_documented_order() {
-    let budget = BudgetSummary::new()
-        .tokens_used(10)
-        .section(SectionCost::new("brief.symbols", 1).total(40))
-        .section(SectionCost::new("brief.refs", 1));
+    let budget = BudgetSummary::new().tokens_used(10);
     let r = AgentResponse::new("brief")
         .section(symbols())
         .section(refs())
@@ -59,12 +56,15 @@ fn full_envelope_renders_in_the_documented_order() {
 
 #[test]
 fn sugar_and_sections_all_count_as_blocks_for_the_rollup() {
-    let budget = || BudgetSummary::new().section(SectionCost::new("a", 1));
+    let budget = || BudgetSummary::new().max_items(5);
     // `items()` is a section: it plus one more is two blocks, in call order, roll-up shown.
     let two = AgentResponse::new("t").items(vec![vec![Value::Int(1)]], &["n"]).section(refs()).budget(budget());
     let out = two.render(OutputFormat::Text);
     assert!(out.starts_with("t[1]{n}:\n  1\nbrief.refs[1]{symbol}:"), "{out}");
-    assert!(out.contains("sections[1]{name,returned,total,truncated}:"), "{out}");
+    assert!(
+        out.ends_with("sections[2]{name,returned,total,truncated}:\n  t,1,null,false\n  brief.refs,1,null,false"),
+        "{out}"
+    );
     // An empty KV section is still a section: two blocks, roll-up shown.
     let empty_kv = AgentResponse::new("t").kv_items(vec![]).section(refs()).budget(budget());
     assert!(empty_kv.render(OutputFormat::Text).contains("sections["), "{}", empty_kv.render(OutputFormat::Text));
@@ -86,7 +86,7 @@ fn budget_or_provenance_alone_has_no_empty_list_line() {
 
 #[test]
 fn a_response_with_no_section_renders_the_empty_list() {
-    assert_eq!(AgentResponse::new("t").render(OutputFormat::Text), "t: []");
+    assert_eq!(AgentResponse::new("t").render(OutputFormat::Text), "t: []\ntotalCount: 0");
     let r = AgentResponse::new("t")
         .section(Section::toon("t", fields(&["n"]), vec![vec![Value::Int(1)]]).total_count(Some(9)));
     assert_eq!(r.render(OutputFormat::Text), "t[1]{n}:\n  1\ntotalCount: 9");
@@ -142,10 +142,10 @@ fn several_totals_share_one_valid_table() {
 #[test]
 fn json_carries_sections_budget_and_provenance_in_camel_case() {
     let r = AgentResponse::new("t")
-        .section(symbols().truncated(true))
+        .section(symbols())
         .section(Section::kv("receipt", vec![KvItem::new("id", KvValue::Int(7))]))
-        .section(Section::text("note", "hi").returned_count(1))
-        .budget(BudgetSummary::new().max_tokens(8).section(SectionCost::new("brief.symbols", 1).total(40)))
+        .section(Section::text("note", "hi"))
+        .budget(BudgetSummary::new().max_tokens(8))
         .provenance(ProvenanceBlock::new().entry("analyzer", "ra").fingerprint("fp"));
     let v = json(&r);
     assert_eq!(
@@ -159,11 +159,12 @@ fn json_carries_sections_budget_and_provenance_in_camel_case() {
     assert_eq!(v["sections"][1]["items"], serde_json::json!([{"key": "id", "value": 7}]));
     assert_eq!(v["sections"][2]["text"], "hi");
     assert!(v["sections"][2].get("totalCount").is_none());
-    assert_eq!(v["budget"]["maxTokens"], 8);
-    assert_eq!(v["budget"]["sections"][0]["total"], 40);
+    // The budget carries no per-section list of its own: `sections` above is the one copy of those counts.
+    assert_eq!(v["budget"], serde_json::json!({"maxTokens": 8, "truncated": true}));
     assert_eq!(v["provenance"]["entries"][0], serde_json::json!({"label": "analyzer", "value": "ra"}));
     assert_eq!(v["provenance"]["fingerprint"], "fp");
-    let structured: serde_json::Value = serde_json::from_str(&r.to_call_tool_result().structured_content).unwrap();
+    let structured: serde_json::Value =
+        serde_json::from_str(r.to_call_tool_result().structured_content.unwrap().as_str()).unwrap();
     assert_eq!(structured, v);
 }
 
@@ -171,7 +172,8 @@ fn json_carries_sections_budget_and_provenance_in_camel_case() {
 fn structured_content_has_the_four_keys_and_gains_sections_only_with_a_section() {
     let kv = AgentResponse::new("t").kv_items(vec![KvItem::new("k", KvValue::Int(1))]);
     let keys_of = |r: &AgentResponse| {
-        let v: serde_json::Value = serde_json::from_str(&r.to_call_tool_result().structured_content).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(r.to_call_tool_result().structured_content.unwrap().as_str()).unwrap();
         let mut keys: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
         keys.sort_unstable();
         keys
@@ -234,7 +236,7 @@ proptest! {
             let rows = cells.iter().map(|c| vec![Value::from(c.clone())]).collect();
             r = r.section(Section::toon("root", fields(&["c"]), rows).total_count(Some(7)));
         }
-        let mut budget = BudgetSummary::new().max_tokens(1).truncated(true);
+        let budget = BudgetSummary::new().max_tokens(1).truncated(true);
         for (i, name) in names.iter().enumerate() {
             // The index prefix keeps names distinct and off every reserved key; the rest is hostile.
             let name = format!("s{i}{name}");
@@ -250,8 +252,7 @@ proptest! {
                 ),
                 _ => Section::text(name.clone(), format!("note{i}: ok")),
             };
-            r = r.section(section.total_count(totals[i % totals.len()]).truncated(i % 2 == 0));
-            budget = budget.section(SectionCost::new(name, i as u64));
+            r = r.section(section.total_count(totals[i % totals.len()]));
         }
         let mut prov = ProvenanceBlock::new();
         for (i, (l, v)) in labels.iter().enumerate() {
@@ -267,5 +268,10 @@ proptest! {
         let v = json(&r);
         prop_assert_eq!(v["sections"].as_array().map(Vec::len), Some(names.len() + usize::from(slot)));
         prop_assert_eq!(v["body"].as_str().map(|b| text.starts_with(b)), Some(true));
+        // `truncated` is never a separate claim: it is exactly "the total exceeds the count", in every section.
+        for s in v["sections"].as_array().into_iter().flatten() {
+            let cut = s["totalCount"].as_u64().is_some_and(|t| Some(t) > s["returnedCount"].as_u64());
+            prop_assert_eq!(s["truncated"].as_bool(), Some(cut), "{}", s);
+        }
     }
 }

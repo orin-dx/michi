@@ -6,8 +6,9 @@
 ///
 /// `#[non_exhaustive]`: start from [`ProvenanceBlock::new`] or `Default` and use the builder methods.
 ///
-/// Labels are keys of the rendered block, so they must be distinct, and none may be `fingerprint` when a fingerprint is
-/// set. A response with a repeated key renders the `toon_validation_failed` error naming it, never invalid TOON.
+/// Labels are keys of the rendered block, so they must be distinct, and none may be `fingerprint`, set or not: that
+/// line is the one a freshness check compares, and only [`fingerprint`](Self::fingerprint) writes it. A response with
+/// a repeated or reserved label renders the `toon_validation_failed` error naming it, never invalid TOON.
 ///
 /// # Stability
 ///
@@ -83,38 +84,63 @@ pub(crate) fn render_provenance_block(p: &ProvenanceBlock) -> String {
         out.push_str(&crate::toon::escape_value(&e.value));
     }
     if let Some(f) = &p.fingerprint {
-        out.push_str("\n  fingerprint: ");
+        out.push_str("\n  ");
+        out.push_str(FINGERPRINT);
+        out.push_str(": ");
         out.push_str(&crate::toon::escape_value(f));
     }
     out
 }
 
-/// The provenance as a JSON object: `entries` always present, `fingerprint` only when set.
-pub(crate) fn provenance_json(p: &ProvenanceBlock) -> String {
-    let mut out = String::with_capacity(32 + p.entries.len() * 48);
-    out.push_str("{\"entries\":[");
-    for (i, e) in p.entries.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
+/// The first label the block cannot render: one repeated, or the reserved `fingerprint`. A label is a key of the
+/// block, so a repeat would be invalid TOON (§14.3); `fingerprint` is the one line a freshness check compares, so an
+/// entry may not take it whether or not a fingerprint is set, or caller data could pose as the real one.
+pub(crate) fn label_collision(p: &ProvenanceBlock) -> Option<&str> {
+    let mut labels: std::collections::HashSet<&str> = std::collections::HashSet::with_capacity(p.entries.len() + 1);
+    labels.insert(FINGERPRINT);
+    p.entries.iter().map(|e| e.label.as_str()).find(|label| !labels.insert(label))
+}
+
+/// The key the fingerprint renders under.
+const FINGERPRINT: &str = "fingerprint";
+
+/// Append the provenance as a JSON object: `entries` always present, `fingerprint` only when set.
+pub(crate) fn push_provenance_json(out: &mut String, p: &ProvenanceBlock) {
+    out.push_str("{\"entries\":");
+    crate::json::push_array(out, &p.entries, |out, e| {
         out.push_str("{\"label\":");
-        crate::kv::json_escape_str(&mut out, &e.label);
+        crate::json::push_str(out, &e.label);
         out.push_str(",\"value\":");
-        crate::kv::json_escape_str(&mut out, &e.value);
+        crate::json::push_str(out, &e.value);
         out.push('}');
-    }
-    out.push(']');
+    });
     if let Some(f) = &p.fingerprint {
         out.push_str(",\"fingerprint\":");
-        crate::kv::json_escape_str(&mut out, f);
+        crate::json::push_str(out, f);
     }
     out.push('}');
-    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn provenance_json(p: &ProvenanceBlock) -> String {
+        let mut out = String::new();
+        push_provenance_json(&mut out, p);
+        out
+    }
+
+    #[test]
+    fn fingerprint_is_a_reserved_label_with_or_without_a_fingerprint() {
+        assert_eq!(label_collision(&ProvenanceBlock::new().entry("fingerprint", "x")), Some("fingerprint"));
+        assert_eq!(
+            label_collision(&ProvenanceBlock::new().entry("fingerprint", "x").fingerprint("y")),
+            Some("fingerprint")
+        );
+        assert_eq!(label_collision(&ProvenanceBlock::new().entry("a", "1").entry("a", "2")), Some("a"));
+        assert_eq!(label_collision(&ProvenanceBlock::new().entry("a", "1").fingerprint("f")), None);
+    }
 
     fn spec_example() -> ProvenanceBlock {
         ProvenanceBlock::new()

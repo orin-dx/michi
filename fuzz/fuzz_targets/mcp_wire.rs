@@ -70,18 +70,17 @@ fuzz_target!(|data: &[u8]| {
     if let Some(result) = round_trip::<CallToolResult>(data) {
         let again: CallToolResult = serde_json::from_str(&serde_json::to_string(&result).unwrap()).unwrap();
         assert_eq!(result, again);
-        // Whatever it accepted, `structuredContent` is empty or the text of a JSON object.
-        if !result.structured_content.is_empty() {
-            let parsed: serde_json::Value = serde_json::from_str(&result.structured_content).unwrap();
-            assert!(parsed.is_object(), "structuredContent {:?}", result.structured_content);
+        // Whatever it accepted, `structuredContent` is absent or the text of a JSON object.
+        if let Some(object) = &result.structured_content {
+            let parsed: serde_json::Value = serde_json::from_str(object.as_str()).unwrap();
+            assert!(parsed.is_object(), "structuredContent {object:?}");
+            michi_core::JsonObject::try_new(object.as_str()).expect("an accepted object passes the checker");
         }
-        CallToolResult::try_new(result.content.clone(), result.is_error, result.structured_content.clone())
-            .expect("an accepted result passes try_new");
     }
 
     // Accepted wire values go through the renderers: line breaks in caller text must not make lines.
     if let Some(value) = round_trip::<KvValue>(data) {
-        if let Ok(out) = render_kv(&[KvItem::new("k", value)], None, &[]) {
+        if let Ok(out) = render_kv(&[KvItem::new("k", value)]) {
             assert!(!out.contains('\r'), "raw CR in {out:?}");
             assert_eq!(out.matches('\n').count(), 0, "one field is one line: {out:?}");
         }
@@ -124,10 +123,11 @@ fuzz_target!(|data: &[u8]| {
     assert_eq!(parsed.content[0].audience, want_audience);
     match &object {
         Some(object) => {
-            let back: serde_json::Value = serde_json::from_str(&parsed.structured_content).unwrap();
+            let back: serde_json::Value =
+                serde_json::from_str(parsed.structured_content.as_ref().expect("present").as_str()).unwrap();
             assert_eq!(back, serde_json::Value::Object(object.clone()));
         }
-        None => assert_eq!(parsed.structured_content, ""),
+        None => assert_eq!(parsed.structured_content, None),
     }
 
     // And these are rejected: a non-text block, a non-object structuredContent.

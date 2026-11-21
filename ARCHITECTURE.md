@@ -40,7 +40,7 @@ michi is a response contract (totals, truncation reports, hints, recovery steps,
 | Crate / Package | Responsibility | Runtime Dependencies |
 | --- | --- | --- |
 | `michi-core` | All sync AXI primitives. `toon`: TOON list rendering (no public parser) with stack-inlined `CompactString` cells. `truncate`: UTF-8 char-boundary content truncation (`floor_char_boundary`). `truncation`: `TruncationOutcome`, the report of what a list cap cut. `resilience`: retry back-off math, `Retry-After` HTTP date parsing, FNV-1a idempotency keys. Response DTOs: `AgentResponse`, `DomainError`, `StatusResponse`, `CallToolResult`, and the `Pipeline` data type. The public `resilience`, `truncate` and `truncation` items are re-exported at the crate root by explicit list. | `thiserror`, `compact_str` (Optional: `serde`, `serde_json`, `schemars`, `miette`, `napi`, `napi-derive`) |
-| `michi-pipeline` | Async execution of a validated `Plan` of steps: one `JoinSet` scheduler (sequential or capped parallel, with optional per-key concurrency limits), shared deadline groups, poll steps (`poll_step`) and blocking steps (`step_blocking`), a returned `RunRecord` whose statuses are `michi-core`'s `StepStatus`, `resume` from a record, a keyed `BreakerRegistry`, a per-run `RetryBudget`, `CancellationToken` and a `StepObserver`. Own `ExecutionError` and `PlanError` types, converting into `DomainError` via `From` — not variants of `michi_core::Error`. See `docs/spec/08-pipeline-execution.md`. | `michi-core`, `michi-graph`, `tokio`, `tokio-util`, `thiserror` (optional: `serde`) |
+| `michi-pipeline` | Async execution of a validated `Plan` of steps: one `JoinSet` scheduler (sequential or capped parallel, with optional per-key concurrency limits), shared deadline groups, poll steps (`poll_step`) and blocking steps (`step_blocking`), a returned `RunRecord` whose statuses are `michi-core`'s `StepStatus`, `resume` from a record, a keyed `BreakerRegistry`, a per-run `RetryBudget`, `CancellationToken` and a `StepObserver`. Own `ExecutionError` and `PlanError` types, converting into `DomainError` via `From` — not variants of `DomainError`. See `docs/spec/08-pipeline-execution.md`. | `michi-core`, `michi-graph`, `tokio`, `tokio-util`, `thiserror` (optional: `serde`) |
 | `michi-graph` | MIT, `no_std` + `alloc`. Deterministic dependency graphs: `GraphBuilder` declares nodes and kinded edges, `Graph` may hold cycles, and validation returns a `Dag` or every violation at once. A `Dag<K, E>` keeps each edge's kind, so `ready_by_edge` can judge edges by kind. Topological order, layers, ready sets, ancestors and descendants, all following one caller-chosen tie-break. See `docs/spec/09-graph.md`. | none |
 | `packages/michi-node` | NAPI cdylib shim for `@orin-dx/michi`. Not published to crates.io. | `michi-core` (`napi` feature), `napi`, `napi-derive` |
 
@@ -49,7 +49,7 @@ michi is a response contract (totals, truncation reports, hints, recovery steps,
 `michi` provides two main entry points for formatting output:
 
 1. **`response::AgentResponse` (Fluent Builder)**: Composes TOON lists, KV items, `help[]` hints, and recovery guidance into a unified output buffer. Supports assistant/user audience routing and direct conversion to MCP `CallToolResult`.
-2. **Standalone DTOs**: `DomainError`, `StatusResponse`, `AlreadyDone`, and `empty_state()` render themselves directly into agent-readable KV blocks or GitHub Actions annotations without passing through `AgentResponse`.
+2. **Standalone DTOs**: `DomainError`, `StatusResponse` and `AlreadyDone` render themselves directly into agent-readable KV blocks or GitHub Actions annotations without passing through `AgentResponse`.
 
 ```mermaid
 flowchart TB
@@ -79,12 +79,10 @@ flowchart TB
     subgraph standalone["Standalone Renderers"]
         err["DomainError"]
         status["StatusResponse"]
-        empty["empty_state()"]
     end
 
     err --> text
     status --> text
-    empty --> text
 ```
 
 ## Node.js / NAPI Bridge (`packages/michi-node`)
@@ -107,4 +105,4 @@ The NAPI boundary (`crates/michi-core/src/napi.rs`) has a specific constructor d
 
 This asymmetry is intentional. The NAPI layer operates in a "be maximally resilient to JS input, fail loudly only for truly unrecoverable cases" mode; the Rust library layer operates in a "signal problems explicitly through types" mode.
 
-**Error output path:** When you hold a `DomainError`, call `domain_error.to_call_tool_result()` directly. Do not wrap it in `AgentResponse::as_error()` — that double-wraps the render and loses the typed `error`/`retryable` fields from `structured_content`. Both `AgentResponse::to_call_tool_result()` and `DomainError::to_call_tool_result()` produce structurally compatible `structured_content` JSON (same top-level keys).
+**Error output path:** an error is a part of a response. `DomainError::to_call_tool_result()` is `AgentResponse::new(..).error(e).to_call_tool_result()`, and a response with data adds the error with `.error(e)`. Either way `structured_content` has one shape: `{body, error: {code, message, causes, retryable}, sections?, hints, recovery, isError}`. `as_error()` marks a response failed without a typed error.

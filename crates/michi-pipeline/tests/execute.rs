@@ -556,7 +556,7 @@ async fn a_panicking_observer_neither_aborts_the_run_nor_loses_the_record() {
 async fn an_empty_plan_succeeds_immediately() {
     let record = execute(&plan(vec![]), rid("r"), &ExecOptions::new()).await;
     assert_eq!(record.outcome(), RunOutcome::Succeeded);
-    assert_eq!(record.render(), "step: []");
+    assert_eq!(record.render(), "step: []\ntotalCount: 0");
 }
 
 #[tokio::test(start_paused = true)]

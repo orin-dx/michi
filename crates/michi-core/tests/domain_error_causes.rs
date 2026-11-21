@@ -1,7 +1,7 @@
 //! `DomainError` cause chains: diagnosis kept apart from `help[]` guidance (docs/spec/06-decisions.md, "Cause chains
 //! are their own field, not hints").
 
-use michi_core::{DomainError, Error, ErrorCode};
+use michi_core::{DomainError, ErrorCode, OutputFormat};
 
 mod support;
 use support::toon_parser::{decode, Node, Prim};
@@ -34,7 +34,7 @@ fn conformant(out: &str) -> support::toon_parser::Doc {
 }
 
 fn causes(e: &DomainError) -> Vec<&str> {
-    e.causes.iter().map(String::as_str).collect()
+    e.causes().iter().map(String::as_str).collect()
 }
 
 // --- from_error ------------------------------------------------------------------------------------------------------
@@ -42,19 +42,19 @@ fn causes(e: &DomainError) -> Vec<&str> {
 #[test]
 fn from_error_with_causes_keeps_the_message_and_one_cause_per_link_outermost_first() {
     let e = DomainError::from_error_with_causes(ErrorCode::ExternalFailure, &walk());
-    assert_eq!(e.code, ErrorCode::ExternalFailure);
-    assert_eq!(e.message, "walk failed");
+    assert_eq!(e.code(), ErrorCode::ExternalFailure);
+    assert_eq!(e.message(), "walk failed");
     assert_eq!(causes(&e), ["io error", "permission denied"]);
-    assert!(e.hints.is_empty(), "causes are diagnosis, never hints");
-    assert!(!e.retryable, "retryable still defaults from the code (external_failure: not retryable)");
+    assert!(e.hints().is_empty(), "causes are diagnosis, never hints");
+    assert!(!e.is_retryable(), "retryable still defaults from the code (external_failure: not retryable)");
 }
 
 #[test]
 fn from_error_with_causes_without_a_source_has_no_causes() {
     let e = DomainError::from_error_with_causes(ErrorCode::Forbidden, &Denied);
-    assert_eq!(e.message, "permission denied");
-    assert!(e.causes.is_empty());
-    assert_eq!(e.render(), "error: forbidden\nmessage: permission denied\nexit_code: 1");
+    assert_eq!(e.message(), "permission denied");
+    assert!(e.causes().is_empty());
+    assert_eq!(e.render(OutputFormat::Text), "error: forbidden\nmessage: permission denied\nexit_code: 1");
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -73,13 +73,13 @@ struct WalkEmbedsAll(#[source] IoEmbeds);
 fn from_error_with_causes_skips_a_link_whose_text_the_previous_text_already_contains() {
     // `walk failed: io error` already says `io error`; `permission denied` is new.
     let e = DomainError::from_error_with_causes(ErrorCode::ExternalFailure, &WalkEmbeds(Io { source: Denied }));
-    assert_eq!(e.message, "walk failed: io error");
+    assert_eq!(e.message(), "walk failed: io error");
     assert_eq!(causes(&e), ["permission denied"]);
 
     // Every link embeds its source, so the message already holds the whole chain.
     let e = DomainError::from_error_with_causes(ErrorCode::ExternalFailure, &WalkEmbedsAll(IoEmbeds(Denied)));
-    assert_eq!(e.message, "walk failed: io error: permission denied");
-    assert!(e.causes.is_empty(), "got {:?}", e.causes);
+    assert_eq!(e.message(), "walk failed: io error: permission denied");
+    assert!(e.causes().is_empty(), "got {:?}", e.causes());
 }
 
 /// A link that does not embed its source keeps the next one, even when an earlier text did.
@@ -93,7 +93,7 @@ fn from_error_with_causes_compares_against_the_last_text_kept() {
     struct Read(#[source] Denied);
 
     let e = DomainError::from_error_with_causes(ErrorCode::InvalidInput, &Parse(Read(Denied)));
-    assert_eq!(e.message, "parse failed: read config");
+    assert_eq!(e.message(), "parse failed: read config");
     assert_eq!(causes(&e), ["permission denied"]);
 }
 
@@ -106,8 +106,8 @@ fn from_error_with_causes_skips_links_the_message_already_spells_out() {
     struct WalkSpellsOut(#[source] Io);
 
     let e = DomainError::from_error_with_causes(ErrorCode::ExternalFailure, &WalkSpellsOut(Io { source: Denied }));
-    assert_eq!(e.message, "walk failed: io error: permission denied");
-    assert!(e.causes.is_empty(), "got {:?}", e.causes);
+    assert_eq!(e.message(), "walk failed: io error: permission denied");
+    assert!(e.causes().is_empty(), "got {:?}", e.causes());
 }
 
 #[derive(Debug)]
@@ -130,8 +130,8 @@ impl std::error::Error for Cycle {
 #[test]
 fn from_error_with_causes_stops_on_a_cyclic_source_chain() {
     let e = DomainError::from_error_with_causes(ErrorCode::ExternalFailure, &Cycle);
-    assert_eq!(e.message, "cycle");
-    assert!(e.causes.is_empty(), "every link repeats the message");
+    assert_eq!(e.message(), "cycle");
+    assert!(e.causes().is_empty(), "every link repeats the message");
 }
 
 #[test]
@@ -146,14 +146,14 @@ fn from_error_with_causes_keeps_the_chain_as_text_only() {
 fn cause_builder_appends_in_call_order() {
     let e = DomainError::new(ErrorCode::NotFound, "m").cause("a").cause(String::from("b"));
     assert_eq!(causes(&e), ["a", "b"]);
-    assert!(DomainError::new(ErrorCode::NotFound, "m").causes.is_empty());
+    assert!(DomainError::new(ErrorCode::NotFound, "m").causes().is_empty());
 }
 
 #[test]
 fn render_puts_causes_after_the_message_as_an_inline_array() {
     let e = DomainError::from_error_with_causes(ErrorCode::ExternalFailure, &walk())
         .hint("check the directory permissions");
-    let out = e.render();
+    let out = e.render(OutputFormat::Text);
     assert_eq!(
         out,
         "error: external_failure\nmessage: walk failed\ncauses[2]: io error,permission denied\nexit_code: 1\n\
@@ -167,7 +167,7 @@ fn render_puts_causes_after_the_message_as_an_inline_array() {
 #[test]
 fn a_multi_line_cause_renders_as_one_escaped_entry() {
     let e = DomainError::new(ErrorCode::ExternalFailure, "build failed").cause("line one\nline two, with: punctuation");
-    let out = e.render();
+    let out = e.render(OutputFormat::Text);
     assert_eq!(
         out,
         "error: external_failure\nmessage: build failed\ncauses[1]: \"line one\\nline two, with: punctuation\"\nexit_code: 1"
@@ -179,20 +179,12 @@ fn a_multi_line_cause_renders_as_one_escaped_entry() {
 #[test]
 fn empty_and_quoted_causes_are_conformant() {
     let e = DomainError::new(ErrorCode::Conflict, "m").cause("").cause("\"q\"").cause("-dash").cause("42");
-    let out = e.render();
+    let out = e.render(OutputFormat::Text);
     let doc = conformant(&out);
     assert_eq!(
         doc.get("causes"),
         Some(&Node::Inline(vec![Prim::str(""), Prim::str("\"q\""), Prim::str("-dash"), Prim::str("42")]))
     );
-}
-
-#[test]
-fn error_domain_render_passes_causes_through() {
-    let d = DomainError::from_error_with_causes(ErrorCode::ExternalFailure, &walk());
-    let out = Error::Domain(d.clone()).render();
-    assert_eq!(out, d.render());
-    assert!(out.contains("causes[2]: io error,permission denied"), "{out}");
 }
 
 #[test]
@@ -206,11 +198,11 @@ fn github_annotation_stays_message_only() {
 #[test]
 fn render_json_carries_causes_and_an_empty_array_when_there_are_none() {
     let e = DomainError::from_error_with_causes(ErrorCode::ExternalFailure, &walk());
-    let json = e.render_json();
+    let json = e.render(OutputFormat::Json);
     assert!(json.contains(",\"message\":\"walk failed\",\"causes\":[\"io error\",\"permission denied\"],"), "{json}");
-    let none = DomainError::new(ErrorCode::NotFound, "m").render_json();
+    let none = DomainError::new(ErrorCode::NotFound, "m").render(OutputFormat::Json);
     assert!(none.contains(",\"message\":\"m\",\"causes\":[],"), "{none}");
-    let escaped = DomainError::new(ErrorCode::NotFound, "m").cause("a\n\"b\"").render_json();
+    let escaped = DomainError::new(ErrorCode::NotFound, "m").cause("a\n\"b\"").render(OutputFormat::Json);
     assert!(escaped.contains("\"causes\":[\"a\\n\\\"b\\\"\"]"), "{escaped}");
 }
 
@@ -218,8 +210,8 @@ fn render_json_carries_causes_and_an_empty_array_when_there_are_none() {
 #[cfg(feature = "serde")]
 fn render_json_causes_round_trip_exactly() {
     let e = DomainError::new(ErrorCode::NotFound, "m").cause("a\nb").cause("c\td");
-    let parsed: serde_json::Value = serde_json::from_str(&e.render_json()).expect("render_json is JSON");
-    assert_eq!(parsed["causes"], serde_json::json!(["a\nb", "c\td"]));
+    let parsed: serde_json::Value = serde_json::from_str(&e.render(OutputFormat::Json)).expect("render_json is JSON");
+    assert_eq!(parsed["error"]["causes"], serde_json::json!(["a\nb", "c\td"]));
     assert_eq!(serde_json::to_value(&e).expect("serializes"), parsed);
 }
 
@@ -261,31 +253,31 @@ struct Sync {
 #[test]
 fn from_error_keeps_only_the_top_level_message() {
     let e = DomainError::from_error(ErrorCode::ExternalFailure, &Sync { source: Upstream });
-    assert_eq!(e.message, "sync failed");
-    assert!(e.causes.is_empty(), "the cause chain is opt-in");
-    let out = e.render();
+    assert_eq!(e.message(), "sync failed");
+    assert!(e.causes().is_empty(), "the cause chain is opt-in");
+    let out = e.render(OutputFormat::Text);
     assert_eq!(out, "error: external_failure\nmessage: sync failed\nexit_code: 1");
     assert!(!out.contains("sk-live-123"), "a token in a cause must not reach the agent: {out}");
-    assert!(!e.render_json().contains("sk-live-123"));
+    assert!(!e.render(OutputFormat::Json).contains("sk-live-123"));
 }
 
 #[test]
 fn from_error_with_causes_renders_the_chain_as_causes_not_hints() {
     let e = DomainError::from_error_with_causes(ErrorCode::ExternalFailure, &Sync { source: Upstream });
     assert_eq!(
-        e.render(),
+        e.render(OutputFormat::Text),
         "error: external_failure\nmessage: sync failed\n\
-         causes[1]: \"GET https://api.example.com/v1/items?token=sk-live-123 returned 401 for /home/ci/.netrc\"\n\
+         causes[1]: \"GET https://api.example.com/v1/items?token=[REDACTED] returned 401 for /home/ci/.netrc\"\n\
          exit_code: 1"
     );
-    assert!(e.hints.is_empty());
+    assert!(e.hints().is_empty());
 }
 
 #[test]
 fn from_error_with_causes_is_from_error_plus_the_chain() {
     let plain = DomainError::from_error(ErrorCode::ExternalFailure, &walk());
     let full = DomainError::from_error_with_causes(ErrorCode::ExternalFailure, &walk());
-    assert_eq!(plain.message, full.message);
-    assert!(plain.causes.is_empty());
+    assert_eq!(plain.message(), full.message());
+    assert!(plain.causes().is_empty());
     assert_eq!(causes(&full), ["io error", "permission denied"]);
 }

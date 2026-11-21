@@ -43,7 +43,7 @@
 - Virtual Cargo workspace: the root `Cargo.toml` has no `[package]` and no shared version; Callisto writes each crate's `version` and keeps `michi-core`, `michi-graph`, `michi-pipeline` and the npm package equal (fixed group `michi`, lockstep releases, checked by CI version-sync)
 - `crates/michi-core/` — pure sync rendering library, every primitive (default features: only `thiserror` + `compact_str`). Integration tests, divan benches and examples live in `crates/michi-core/{tests,benches,examples}` (`cargo run -p michi-core --example basic_toon`)
 - `crates/michi-graph/` — **MIT**, no dependencies, `no_std` + `alloc`: deterministic dependency graphs (`GraphBuilder` → `Graph` → `Dag`; validation reports every problem at once; topological order, layers, ready sets, closures; `Dag<K, E>` keeps edge kinds for `ready_by_edge`). Depends on nothing in michi, releases with the fixed group, and must never gain a non-permissive dependency (`just check-graph-license`). API: `docs/spec/09-graph.md`.
-- `crates/michi-pipeline/` — async pipeline execution (shipped): validated `Plan` of `ExecStep`s, `execute`/`resume` returning a `RunRecord`, keyed `BreakerRegistry`, retry budget, per-key concurrency limits, deadline groups, `poll_step`, `step_blocking`, `CancellationToken` (wraps tokio-util), `StepObserver`, its own `ExecutionError` (not a `michi_core::Error` variant — see `docs/spec/06-decisions.md`). API: `docs/spec/08-pipeline-execution.md`. Depends on `michi-core` (exact `=` version pin), `michi-graph` (exact `=` pin; no michi-graph type in its public API) + `tokio` + `tokio-util`; not re-exported through `michi-core`.
+- `crates/michi-pipeline/` — async pipeline execution (shipped): validated `Plan` of `ExecStep`s, `execute`/`resume` returning a `RunRecord`, keyed `BreakerRegistry`, retry budget, per-key concurrency limits, deadline groups, `poll_step`, `step_blocking`, `CancellationToken` (wraps tokio-util), `StepObserver`, its own `ExecutionError` (converts into `DomainError`, not a variant of it — see `docs/spec/06-decisions.md`). API: `docs/spec/08-pipeline-execution.md`. Depends on `michi-core` (exact `=` version pin), `michi-graph` (exact `=` pin; no michi-graph type in its public API) + `tokio` + `tokio-util`; not re-exported through `michi-core`.
 - `packages/michi-node/` — thin NAPI cdylib shim (`publish = false`), npm package name `@orin-dx/michi`; the exports themselves live in `crates/michi-core/src/napi.rs` behind michi-core's `napi` feature and are re-exported via `pub use michi_core::napi::*;`
 - Published crates: `michi-core`, `michi-pipeline` and `michi-graph`. There is no `michi` crate (the name on crates.io belongs to an unrelated project)
 - Feature flags (on `michi-core`): `napi`, `serde` (opt-in Serialize/Deserialize + `toon::list()`), `schemars`, `miette`. Execution layers (`pipeline`, `fuzzy`, `cache`, `cli`) land as separate crates, never as features here — `michi-pipeline` shipped this way (see above); `fuzzy`/`cache`/`cli` are not built anywhere. See `docs/spec/01-overview-and-setup.md`'s Cargo.toml section for the current split.
@@ -61,14 +61,16 @@ All modules live in `crates/michi-core/src/`.
 | `hints` | `help[]` hint blocks |
 | `truncate` | Token-safe content truncation |
 | `truncation` | `TruncationOutcome`: what a cap on a list cut, however the caller chose the survivors |
-| `empty` | Definitive empty state responses |
-| `error` | Unified `michi_core::Error` type with agent rendering |
+| `error` | `DomainError` (with `ErrorCode`/`ErrorClass`): the one agent-facing error, with agent rendering |
 | `idempotency` | Partial-success reporting (`PartialSuccess`/`FailedOp`) — despite the name, idempotency keys and already-done detection live in `resilience` (`AlreadyDone`/`already_done()`), not here |
 | `resilience` | Retry config, delay calculation, retry-after parsing |
-| `redact` | Best-effort redaction: known secrets and URL userinfo; applied by `DomainError::from_error` |
+| `redact` | Best-effort redaction: known secrets, URL userinfo and common credential shapes (`redact_common_shapes`); applied by `DomainError::from_error` |
 | `status` | Health/status response rendering |
 | `recovery` | Recovery hint blocks |
 | `response` | `AgentResponse` builder — composes all primitives |
+| `section` | `Section` (TOON list, KV or text): one block of a response, with its reported total |
+| `budget` | `BudgetSummary`: the budget block and the per-section roll-up |
+| `provenance` | Provenance block: labelled values plus the one string a freshness check compares |
 | `mcp` | MCP `CallToolResult` assembly — always compiled, no feature gate |
 | `audience` | `Audience` (assistant/user) — shared by `mcp` and `response::render_for()` |
 | `pipeline` | Pipeline pure data type + render (execution lives in `crates/michi-pipeline`, not `crates/michi-core`) |

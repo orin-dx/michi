@@ -1,0 +1,48 @@
+error[E0433]: cannot find `SectionCost` in `michi_core`
+  --> tests/ui-fail/section_facts_are_derived.rs:11:54
+   |
+11 |     let _ = BudgetSummary::new().section(michi_core::SectionCost::new("ghost", 99));
+   |                                                      ^^^^^^^^^^^ could not find `SectionCost` in `michi_core`
+   |
+help: an enum with a similar name exists
+   |
+11 -     let _ = BudgetSummary::new().section(michi_core::SectionCost::new("ghost", 99));
+11 +     let _ = BudgetSummary::new().section(michi_core::SectionBody::new("ghost", 99));
+   |
+
+error[E0615]: attempted to take value of method `truncated` on type `Section`
+ --> tests/ui-fail/section_facts_are_derived.rs:8:7
+  |
+8 |     s.truncated = false;
+  |       ^^^^^^^^^ method, not a field
+  |
+  = help: methods are immutable and cannot be assigned to
+
+error[E0609]: no field `returned_count` on type `Section`
+ --> tests/ui-fail/section_facts_are_derived.rs:9:7
+  |
+9 |     s.returned_count = 50;
+  |       ^^^^^^^^^^^^^^ unknown field
+
+error[E0061]: this method takes 0 arguments but 1 argument was supplied
+  --> tests/ui-fail/section_facts_are_derived.rs:10:23
+   |
+10 |     let _ = s.clone().truncated(false);
+   |                       ^^^^^^^^^ ----- unexpected argument of type `bool`
+   |
+note: method defined here
+  --> src/section.rs
+   |
+   |     pub fn truncated(&self) -> bool {
+   |            ^^^^^^^^^
+help: remove the extra argument
+   |
+10 -     let _ = s.clone().truncated(false);
+10 +     let _ = s.clone().truncated();
+   |
+
+error[E0599]: no method named `section` found for struct `BudgetSummary` in the current scope
+  --> tests/ui-fail/section_facts_are_derived.rs:11:34
+   |
+11 |     let _ = BudgetSummary::new().section(michi_core::SectionCost::new("ghost", 99));
+   |                                  ^^^^^^^ method not found in `BudgetSummary`
