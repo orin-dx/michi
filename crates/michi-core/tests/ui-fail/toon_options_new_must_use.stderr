@@ -1,0 +1,15 @@
+error: unused return value of `ToonOptions::new` that must be used
+ --> tests/ui-fail/toon_options_new_must_use.rs:5:5
+  |
+5 |     michi_core::toon::ToonOptions::new("t", vec![], vec![]);
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+note: the lint level is defined here
+ --> tests/ui-fail/toon_options_new_must_use.rs:1:9
+  |
+1 | #![deny(unused_must_use)]
+  |         ^^^^^^^^^^^^^^^
+help: use `let _ = ...` to ignore the resulting value
+  |
+5 |     let _ = michi_core::toon::ToonOptions::new("t", vec![], vec![]);
+  |     +++++++

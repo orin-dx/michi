@@ -103,3 +103,30 @@ fn resuming_a_finished_run_is_linear_in_steps() {
         },
     );
 }
+
+/// Converting an error whose step text is a 1 MiB body of URLs must finish in about a second. The text is redacted
+/// whole before it is cut (a cut through a secret would leave its prefix, which no longer matches a shape), so the
+/// redaction itself has to be linear: a rescan per URL took minutes here. The work runs on its own thread and a timeout
+/// fails the test instead of hanging it.
+#[test]
+fn converting_a_one_mebibyte_body_of_urls_is_bounded() {
+    const LIMIT: Duration = Duration::from_secs(20);
+    // Each unit ends a URL differently (whitespace, nothing, a quote), and one carries a password to find.
+    for unit in ["https://u:SECRET@host/p ", "a://", "a://\"", "x://h/a://b/ ", "%3A%2F%2Fu%3ASECRET%40h "] {
+        let body = unit.repeat((1 << 20) / unit.len());
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let started = Instant::now();
+            let err = michi_pipeline::ExecutionError::Http { status: 502, message: body, retry_after: None };
+            let converted: michi_core::DomainError = err.into();
+            // The receiver is gone after a timeout.
+            let _ = done.send((started.elapsed(), converted));
+        });
+        let (took, converted) =
+            finished.recv_timeout(LIMIT).unwrap_or_else(|_| panic!("{unit:?}: no result within {LIMIT:?}"));
+        assert!(took < LIMIT, "{unit:?}: took {took:?}");
+        let cause = converted.causes().first().expect("the body is a cause");
+        assert!(cause.len() <= 512, "{unit:?}: the cause is cut to 512 bytes, got {}", cause.len());
+        assert!(!cause.contains("SECRET"), "{unit:?}: the password survived: {cause}");
+    }
+}

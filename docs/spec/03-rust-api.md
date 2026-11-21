@@ -5,14 +5,13 @@
 `michi-core` is the one crate holding every sync primitive. Each primitive is a module (`michi_core::toon`, `michi_core::kv`, `michi_core::truncate`, `michi_core::resilience`, …), and the most-used types are re-exported at the crate root:
 
 ```rust
-pub use error::{DomainError, Error, ErrorClass, ErrorCode, Sensitive, MAY_HAVE_TAKEN_EFFECT_HINT};
+pub use error::{DomainError, ErrorClass, ErrorCode, Sensitive, MAY_HAVE_TAKEN_EFFECT_HINT};
 pub use response::{AgentResponse, OutputFormat};
 pub use kv::{render_kv, KvError, KvItem, KvValue};
 pub use audience::Audience;
-pub use empty::{empty_state, empty_state_with_hints, try_empty_state, try_empty_state_with_hints};
 pub use hints::{append_hints, render_hints, Hint};
-pub use idempotency::{FailedOp, PartialSuccess};
-pub use mcp::{CallToolResult, ContentBlock, StructuredContentError};
+pub use idempotency::{CompletedOp, DuplicateOpIndex, FailedOp, PartialSuccess, SkippedOp};
+pub use mcp::{CallToolResult, ContentBlock, JsonObject, StructuredContentError};
 pub use recovery::{append_recovery, render_recovery, RecoveryHint};
 pub use status::{Health, StatusItem, StatusResponse};
 pub use resilience::{
@@ -21,9 +20,20 @@ pub use resilience::{
 };
 pub use truncate::{truncate, Truncated};
 pub use truncation::{truncate_by_count, truncate_by_size, TruncationOutcome};
-
-pub type Result<T> = std::result::Result<T, Error>;
 ```
+
+There is no crate-wide `Error` enum or `Result` alias: every fallible function returns its own error type (`ToonError`, `KvError`, `RetryConfigError`, `StructuredContentError`, `DuplicateOpIndex`, …), and `DomainError` is the one agent-facing error.
+
+### API conventions
+
+One rule for every builder and getter, so 1.0 freezes one shape (see "Invariants live behind private fields" in [06-decisions.md](06-decisions.md)):
+
+- **Builders** consume `self`, are `#[must_use]` and are named for what they set, with no prefix: `x(v)` sets one value or appends one entry (`hint`, `cause`, `recovery`, `retryable`); the plural `xs(vec)` replaces a whole list (`hints`).
+- **Getters** take `&self` and are named for the field; a `bool` reads `is_x()`. When a builder of the same type already uses the field's name, the getter is `get_x()`, as in `std::process::Command::get_args` (`DomainError::get_recovery`, `get_retry_after`).
+- **Construction:** `new` never fails; a constructor that checks is `try_new` and returns its own error type. Arguments go identity first (`code`, `index`, `id`, `key`), then name or text, then data; anything optional is a builder call.
+- **Hints** are passed as `&[Hint]` (a slice) or `Vec<Hint>` (a replacing builder), never `&[String]`.
+- **Rendering:** a type with more than one output format renders through `render(OutputFormat)`; a text-only type has `render()`. Other targets get their own named method (`render_github_annotation`).
+- **Fields:** a type whose fields carry a cross-field invariant keeps them private (`DomainError`, `RetryConfig`, `PartialSuccess`, `Section`); a plain record keeps them public (`KvItem`, `FailedOp`, `CompletedOp`, `SkippedOp`, `RecoveryHint`, `StatusItem`, `StatusResponse`, `PipelineStep`, `Pipeline`, `CallToolResult`).
 
 The root re-exports are explicit lists (0.4.0 replaced the `resilience::*` and `truncate::*` globs), so a new item in a module does not appear at the root by accident. `toon`, `pipeline` and `telemetry` are not re-exported at the root; their items are reached as `michi_core::toon::ToonOptions`, `michi_core::toon::list()`, `michi_core::pipeline::StepStatus`, and so on. There is no `michi` crate (the name on crates.io belongs to an unrelated project); consumers who prefer `michi::` paths rename the dependency with `michi = { package = "michi-core", version = "0.7" }`.
 
@@ -31,42 +41,39 @@ The root re-exports are explicit lists (0.4.0 replaced the `resilience::*` and `
 
 `michi_core::toon` formats tabular lists using Token-Oriented Object Notation (**AXI P1**). Small cell strings (≤ 24 bytes) are stack-inlined via `compact_str::CompactString`.
 
+`ToonOptions` and `render_toon` write one list: the entry and the `truncated` block for any cut cell. `totalCount`, `help[]` and the truncation hint are the composer's (`AgentResponse`), which places each once however many sections a response has, so the standalone renderer takes none of them. To add hints to a standalone list, use `append_hints`.
+
 ```rust
 #[non_exhaustive]
 pub struct ToonOptions {
     pub type_name: String,
     pub fields: Vec<String>,
     pub rows: Vec<Vec<Value>>,
-    pub total_count: Option<usize>,
-    pub hints: Vec<String>,
     /// Max string cell length in chars, counted before escaping/quoting (default 200). A longer cell keeps its
     /// first `max_cell_len - 1` chars and ends in a plain `…`; each cut is listed in a
     /// `truncated[N]{row,field,removed}:` block after the list.
     pub max_cell_len: usize,
-    /// The caller's "get it in full" instruction (default None). When set and a cell was cut, michi adds one
-    /// `help[]` line naming the `truncated` block and this instruction. Tool-author text, never data.
-    pub truncation_hint: Option<String>,
 }
 
 impl ToonOptions {
     pub fn new(type_name: impl Into<String>, fields: Vec<String>, rows: Vec<Vec<Value>>) -> Self;
-    pub fn total_count(self, total: Option<usize>) -> Self;
-    pub fn hints(self, hints: Vec<String>) -> Self;
     pub fn max_cell_len(self, len: usize) -> Self;
-    pub fn truncation_hint(self, hint: impl Into<String>) -> Self;
     /// Validate structural invariants before rendering; rendering consumes the returned proof.
-    /// Returns Err if type_name is a reserved document key (`totalCount`, `help`, `recovery`, `truncated`),
+    /// Returns Err if type_name is a reserved document key (`totalCount`, `help`, `recovery`, `truncated`,
+    /// `budget`, `sections`, `provenance`, `error`, `message`, `causes`, `exit_code`),
     /// there are more than MAX_FIELDS fields, a field name is repeated, rows × fields is more than
-    /// MAX_CELLS, truncation_hint is longer than MAX_TRUNCATION_HINT_CHARS chars, or any row's length
-    /// differs from fields.len() (checked in that order). Any other name is valid and is quoted per TOON 4.4 §7.3.
+    /// MAX_CELLS, or any row's length differs from fields.len() (checked in that order; `AgentResponse` also
+    /// checks its `truncation_hint` against MAX_TRUNCATION_HINT_CHARS chars, before the row lengths). Any other name is valid and is quoted per TOON 4.4 §7.3.
     pub fn validate(&self) -> Result<ToonDocument<'_>, ToonError>;
 }
 impl Default for ToonOptions { ... } // empty type name, no fields or rows, max_cell_len 200
 
 /// Proof that the options validated; only `ToonOptions::validate()` (or `ToonDocument::validate`) builds one.
+/// `AgentResponse` validates and renders through a borrowed view of its section's rows, so neither copies them.
 pub struct ToonDocument<'a> { /* private */ }
 impl<'a> ToonDocument<'a> {
     pub fn validate(opts: &'a ToonOptions) -> Result<Self, ToonError>;
+    /// The list entry, then the `truncated` block when a cell was cut. No `totalCount`, no `help`.
     pub fn render(&self) -> String;
 }
 
@@ -126,7 +133,7 @@ pub fn list<T: serde::Serialize>(
 ) -> Result<String, ToonError>;
 ```
 
-Items are serialized to JSON text and read back (so an `f32` field keeps its own shortest digits, `0.1` rather than `0.10000000149011612`) and must produce JSON objects (structs or maps). Non-object items and a reserved `type_name` (`totalCount`, `help`, `recovery`) return `Err(ToonError)`, and so does a key union wider than `MAX_FIELDS` or an `items.len() × fields` table larger than `MAX_CELLS` (checked before any row is built). A key missing from some items renders as `null` in those rows; nested arrays/objects become their compact JSON text, quoted.
+Items are serialized to JSON text and read back (so an `f32` field keeps its own shortest digits, `0.1` rather than `0.10000000149011612`) and must produce JSON objects (structs or maps). Non-object items and a reserved `type_name` (the same list `validate` rejects) return `Err(ToonError)`, and so does a key union wider than `MAX_FIELDS` or an `items.len() × fields` table larger than `MAX_CELLS` (checked before any row is built). A key missing from some items renders as `null` in those rows; nested arrays/objects become their compact JSON text, quoted.
 
 ## Response Compositor (`error`, `response`, `idempotency`)
 
@@ -135,20 +142,10 @@ Items are serialized to JSON text and read back (so an `f32` field keeps its own
 `DomainError` provides classified domain error responses (**AXI P6**):
 
 ```rust
+/// Fields are private: the builder keeps MAY_HAVE_TAKEN_EFFECT_HINT in step with the code and the retry flag.
 #[non_exhaustive]
-pub struct DomainError {
-    pub code: ErrorCode,
-    pub message: String,
-    /// Why it happened, outermost first (diagnosis). Rendered as `causes[N]: …`.
-    pub causes: Vec<String>,
-    /// What to do next (guidance). Rendered as `help[N]: …`.
-    pub hints: Vec<Hint>,
-    pub recovery: Option<RecoveryHint>,
-    /// Calling again is expected to help without repeating an effect. Defaults to true only for
-    /// RateLimited and Unavailable; see below.
-    pub retryable: bool,
-    pub retry_after: Option<Duration>,
-}
+#[derive(Debug, Clone, PartialEq)]
+pub struct DomainError { /* code, message, causes, hints, recovery, retryable, retry_after */ }
 
 impl DomainError {
     pub fn new(code: ErrorCode, message: impl Into<String>) -> Self;
@@ -161,15 +158,31 @@ impl DomainError {
     pub fn hint(self, hint: impl Into<String>) -> Self;
     pub fn recovery(self, r: RecoveryHint) -> Self;
     pub fn retryable(self, retryable: bool) -> Self;
-    pub fn retry_after(self, d: Duration) -> Self;
+    /// `None` clears it.
+    pub fn retry_after(self, d: impl Into<Option<Duration>>) -> Self;
+    /// message becomes "{context}: {message}"; everything else is kept.
+    pub fn context(self, context: impl Display) -> Self;
+
+    pub fn code(&self) -> ErrorCode;
+    pub fn message(&self) -> &str;
+    /// Why it happened, outermost first (diagnosis). Rendered as `causes[N]: …`.
+    pub fn causes(&self) -> &[String];
+    /// What to do next (guidance). Rendered as `help[N]: …`.
+    pub fn hints(&self) -> &[Hint];
+    pub fn get_recovery(&self) -> Option<&RecoveryHint>;
+    pub fn get_retry_after(&self) -> Option<Duration>;
+    /// Calling again is expected to help without repeating an effect; see below.
+    pub fn is_retryable(&self) -> bool;
+    /// Transient when retryable, otherwise `code().default_class()`.
+    pub fn class(&self) -> ErrorClass;
     /// Always returns `1`.
     pub fn exit_code(&self) -> i32;
-    pub fn render(&self) -> String;
+    pub fn render(&self, format: OutputFormat) -> String;
     pub fn render_github_annotation(&self) -> String;
-    pub fn render_json(&self) -> String;
     pub fn to_call_tool_result(&self) -> CallToolResult;
 }
 impl Display for DomainError { ... } // "{code label}: {message}"
+impl Display for ErrorCode { ... }   // the label
 
 #[non_exhaustive]
 pub enum ErrorCode {
@@ -184,43 +197,31 @@ impl ErrorCode {
 }
 
 #[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ErrorClass { User, Internal, Transient, Ambiguous }
 
 pub const MAY_HAVE_TAKEN_EFFECT_HINT: &str =
     "the operation may have taken effect; verify whether it completed before retrying, unless it is idempotent";
 
-/// The crate's unified error. Display: "Invalid input: {m}", "Not found: {m}", "{code}: {message}".
-#[non_exhaustive]
-pub enum Error {
-    InvalidInput(String),
-    NotFound(String),
-    Domain(DomainError), // From<DomainError>
-}
-impl Error {
-    pub fn render(&self) -> String;
-    pub fn exit_code(&self) -> i32; // always 1
-    pub fn class(&self) -> ErrorClass;
-    pub fn is_retryable(&self) -> bool; // class() == Transient
-}
-
 /// Omits its content from Debug and Display (both print "<redacted>").
 pub struct Sensitive<T>(pub T);
 ```
 
-- `render()` outputs a TOON 4.4 document: `error: <code>`, `message: …` (quoted per §7.2), `causes[N]: …` when there are causes, `exit_code: 1`, then `help[N]: …` and `recovery[1]{tool,params,reason}:` when set. `Error::render()` uses the same shape for every variant (`error: invalid_input` / `error: not_found` for the non-domain variants). See [02-toon-format.md](02-toon-format.md#agent-facing-blocks).
+- `render(OutputFormat::Text)` outputs a TOON 4.4 document: `error: <code>`, `message: …` (quoted per §7.2), `causes[N]: …` when there are causes, `exit_code: 1`, then `help[N]: …` and `recovery[1]{tool,params,reason}:` when set. See [02-toon-format.md](02-toon-format.md#agent-facing-blocks).
 - `render_github_annotation()` outputs a GitHub Actions annotation (`::error title=code::message`). The message is encoded as workflow command data (`%` → `%25` first, then CR → `%0D`, LF → `%0A`); the title also encodes `:` and `,`.
-- `retryable` means calling again is expected to help without repeating an effect. `DomainError::new` sets it from `ErrorCode::is_retryable_by_default()`: `true` for `RateLimited` and `Unavailable` (the request was not processed), `false` for every other code. A `Timeout` or `ExternalFailure` may have taken effect, so mark it `.retryable(true)` only when the operation is idempotent. `Error::is_retryable()` and `ErrorClass::Transient` follow the field.
+- `retryable` means calling again is expected to help without repeating an effect. `DomainError::new` sets it from `ErrorCode::is_retryable_by_default()`: `true` for `RateLimited` and `Unavailable` (the request was not processed), `false` for every other code. A `Timeout` or `ExternalFailure` may have taken effect, so mark it `.retryable(true)` only when the operation is idempotent. `is_retryable()` and `class() == ErrorClass::Transient` always agree.
 - A `Timeout` that is not marked retryable is `ErrorClass::Ambiguous` (no answer came back, so the operation may or may not have taken effect: not the caller's fault and not an internal error), and `DomainError::new` gives it the hint `MAY_HAVE_TAKEN_EFFECT_HINT` ("the operation may have taken effect; verify whether it completed before retrying, unless it is idempotent"). `.retryable(true)` makes it `Transient` and removes that hint; `.retryable(false)` puts it back. `ExternalFailure` covers too much (a failed local walk, a server error) to say, so it stays `Internal` with no automatic hint; add your own when you know the operation may have applied.
-- `render_json()` outputs a JSON object: `{"isError":true,"error":"...","message":"...","causes":[...],"retryable":bool,"hints":[...],"recovery":null|{...}}`. `causes` and `hints` are always present, `[]` when empty; serde and the `schemars` schema match it.
-- `from_error(code, err)` sets `message` to `err.to_string()` and nothing else: the `source()` chain stays out of the agent's view because causes often carry URLs with tokens, file paths and other internals. The top-level `Display` is still agent-visible, so check it too, or use `DomainError::new` with a message you wrote.
+- `render(format)` and `to_call_tool_result()` are those of `AgentResponse::new(..).error(self)`: an error alone and an error inside a larger response are written by one writer (see "Outcomes compose into one response" in [06-decisions.md](06-decisions.md)).
+- `render(OutputFormat::Json)` outputs the response's JSON object: `{"body":"error: …\nexit_code: 1","error":{"code":"...","message":"...","causes":[...],"retryable":bool},"hints":[...],"recovery":[...],"isError":true}`. `body` is the text before `help` and `recovery`, as in every response; `causes`, `hints` and `recovery` are always arrays, `[]` when empty. It is the one error shape: a response with sections and an error has the same `error` object. serde and the `schemars` schema match it.
+- `from_error(code, err)` sets `message` to `err.to_string()` and nothing else: the `source()` chain stays out of the agent's view because causes often carry URLs with tokens, file paths and other internals. The top-level `Display` is still agent-visible, so check it too, or use `DomainError::new` with a message you wrote. It is passed through `redact_common_shapes` first (best effort, see `redact`).
 - `from_error_with_causes(code, err)` is the opt-in: it does what `from_error` does, then walks `err.source()`, adding each link's `Display` to `causes` (the separate diagnosis field, never `help[]`). A link whose text the last kept text (the message or the previous kept cause) already contains is skipped, since `thiserror` messages often embed their source (`#[error("walk failed: {0}")]`). The walk stops after 128 links. Nothing is stored but text: `source()` on a `DomainError` stays `None`, and it stays `Clone + Send + Sync`. Line breaks stay inside their cause; `render()` escapes them.
 - With the `miette` feature, `Diagnostic::help()` lists the hints, then one `caused by: …` line per cause (`None` when there are neither). The GitHub annotation stays message-only.
-- `to_call_tool_result()` builds an MCP `CallToolResult` with `is_error:true` and the rendered JSON as `structured_content`.
-- When the `schemars` feature is enabled, `DomainError` implements schemars 1.x's `JsonSchema` (the schema of `render_json()`'s object, as JSON Schema 2020-12). Only types serde actually serializes have a schema: `StatusResponse`, `ToonOptions`, `ErrorClass` and the other render-only types do not.
+- `to_call_tool_result()` builds an MCP `CallToolResult` with `is_error:true` and the rendered JSON as `structured_content`. To report an error next to data, add it to that response with `AgentResponse::error` instead.
+- When the `schemars` feature is enabled, `DomainError` implements schemars 1.x's `JsonSchema` (the schema of the JSON render's object, as JSON Schema 2020-12). Only types serde actually serializes have a schema: `StatusResponse`, `ToonOptions`, `ErrorClass` and the other render-only types do not.
 
 ### `AgentResponse` Builder
 
-`AgentResponse` composes lists, key-value single items, hints, and audience routing. It is a **consuming** builder — every setter takes `self` by value and returns `Self`, so calls chain (`AgentResponse::new("t").items(...).hint(...)`), not `&mut self` mutation:
+`AgentResponse` composes an ordered list of sections (TOON lists, key-value blocks, text), hints, recovery hints and audience routing. It is a **consuming** builder — every setter takes `self` by value and returns `Self`, so calls chain (`AgentResponse::new("t").items(...).hint(...)`), not `&mut self` mutation:
 
 ```rust
 /// The default TOON cell cap, in chars (`michi_core::response::DEFAULT_TRUNCATE_CELLS`; not at the root).
@@ -235,31 +236,58 @@ pub struct AgentResponse { ... }
 
 impl AgentResponse {
     pub fn new(type_name: impl Into<String>) -> Self;
+    /// Sugar for `section(Section::toon(type_name, fields, rows))`. Every call appends.
     pub fn items(self, rows: Vec<Vec<Value>>, fields: &[&str]) -> Self;
-    pub fn total_count(self, n: usize) -> Self;
-    /// total_count = outcome.total_before; appends outcome.hint(guidance) only when something was cut.
-    pub fn truncation<T>(self, outcome: &TruncationOutcome<T>, guidance: impl Into<String>) -> Self;
+    /// Sugar for `section(Section::kv(type_name, items))`. Every call appends.
     pub fn kv_items(self, items: Vec<KvItem>) -> Self;
+    /// Appends a section; sections render in call order.
+    pub fn section(self, section: Section) -> Self;
+    /// Appends a `Toon` section whose rows are `outcome.kept` (each mapped by `row`) and whose total is
+    /// `outcome.total_before`, and `outcome.hint(guidance)` to the hints only when something was cut.
+    pub fn truncated_section<T>(
+        self,
+        name: impl Into<String>,
+        fields: Vec<String>,
+        outcome: &TruncationOutcome<T>,
+        row: impl FnMut(&T) -> Vec<Value>,
+        guidance: impl Into<String>,
+    ) -> Self;
     pub fn hint(self, hint: impl Into<String>) -> Self;
-    /// Replaces the full hint list (contrast `hint()`, which appends).
+    /// Replaces the hints added with `hint()` and `hints()` (contrast `hint()`, which appends). Hints a part brought
+    /// (a `status()` report's, a `truncated_section()`'s `showing N of M` line, the error's) keep their place.
     pub fn hints(self, hints: Vec<Hint>) -> Self;
     pub fn recovery_hint(self, r: RecoveryHint) -> Self;
-    /// Overrides the default TOON cell truncation limit (200 chars, counted before escaping/quoting); TOON path only.
+    /// Overrides the default TOON cell truncation limit (200 chars, counted before escaping/quoting); every `Toon`
+    /// section, never `Kv` or `Text`.
     pub fn truncate_cells_at(self, limit: usize) -> Self;
-    /// Passed through to `ToonOptions::truncation_hint`; unset by default.
+    /// The caller's "get it in full" instruction for every `Toon` section; unset by default. When a cell was cut,
+    /// michi adds one `help[]` line naming the `truncated` block and this instruction (after your own hints, once for
+    /// the response). At most MAX_TRUNCATION_HINT_CHARS chars. Tool-author text, never data.
     pub fn truncation_hint(self, hint: impl Into<String>) -> Self;
     pub fn as_error(self) -> Self;
     pub fn human_content(self, text: impl Into<String>) -> Self;
 
-    /// Dispatches on which of `.items()`/`.kv_items()` was called last.
+    // Every outcome is a part of the response (see "Outcomes compose into one response" below).
+    /// The error block: rendered first; its hints and recovery lead `help[]` and `recovery[]`. A second call replaces.
+    /// A validation failure of the response's shape never hides it: the failure becomes its last cause.
+    pub fn error(self, error: DomainError) -> Self;
+    /// A `Toon` section `name[N]{index,operation,status,reason}:`, rows sorted by index; failed ops' recovery hints are
+    /// appended to the response's.
+    pub fn partial_success(self, name: impl Into<String>, outcome: PartialSuccess) -> Self;
+    /// A `Kv` section `status` (`tool`, `description`) and a `Toon` section `items`; the hints are appended.
+    pub fn status(self, status: StatusResponse) -> Self;
+    /// A `Toon` section `name[N]{id,name,status,reason}:`.
+    pub fn pipeline(self, name: impl Into<String>, pipeline: Pipeline) -> Self;
+    /// A `Kv` section `already_done`: `operation`, `status: already_done`, `summary`.
+    pub fn already_done(self, operation: impl Into<String>, summary: impl Into<String>) -> Self;
+
+    /// The one render path: the error block, every section in call order, then `budget:`, `provenance:`, `help[]`,
+    /// `recovery[]`.
     pub fn render(&self, format: OutputFormat) -> String;
-    /// Reads the TOON slot unconditionally, regardless of which builder path was last set.
-    pub fn render_toon(&self) -> String;
-    /// Reads the KV slot unconditionally, regardless of which builder path was last set.
-    pub fn render_kv(&self) -> String;
-    /// Just the `help[N]: …` document for `.hint()`/`.hints()`.
+    /// Just the `help[N]: …` document: the error's hints, then `.hint()`/`.hints()`.
     pub fn render_hints_only(&self) -> String;
-    /// `as_error()` was called, or the TOON rows / KV items fail validation. Validates without rendering.
+    /// `as_error()` or `error()` was called, or a section's TOON rows / KV items fail validation. Validates without
+    /// rendering.
     pub fn is_error(&self) -> bool;
     /// `"user"` falls back to `render(OutputFormat::Text)` when `.human_content()` was never set.
     pub fn render_for(&self, audience: Audience) -> String;
@@ -268,49 +296,180 @@ impl AgentResponse {
 }
 ```
 
-`render_json()` is not part of the public API — it's reached only via `render(OutputFormat::Json)`.
+There is no `render_json()` on any type: JSON is `render(OutputFormat::Json)`, and only `AgentResponse` writes it.
 
-The TOON slot is stored as a `ToonOptions` and validated and rendered by reference, so a render never copies the rows. `is_error()` validates without rendering. Hints and recovery are appended to the rendered body in place. `render(OutputFormat::Json)` is `{"body":…,"hints":[…],"recovery":[…],"isError":bool}`, the same object `to_call_tool_result()` puts in `structured_content`.
+A response keeps its body in one place, an ordered `Vec<Section>`. `items()` and `kv_items()` are shorthand that append a section named for the response's type, so mixing them renders every body in call order. Because a section is a root key of the document, the shorthand serves one list (and one KV block) per response: a second `items()` call repeats the key and renders the `toon_validation_failed` error, never invalid TOON. For several lists use `section(Section::toon(distinct_name, ..))`. There is no response-level `total_count`: a total belongs to the section it counts, set with `Section::total_count`. `is_error()` validates without rendering. Hints and recovery are appended to the rendered body in place. `render(OutputFormat::Json)` is `{"body":…,"error":{…},"sections":[…],"hints":[…],"recovery":[…],"isError":bool}`, the same object `to_call_tool_result()` puts in `structured_content`; `error` appears when one was set or the response failed validation (see "A validation failure" below), `sections` once the response has a section.
 
-`truncation(&outcome, guidance)` sets the count and the cut hint in one call, so `totalCount` and `help[]` always describe the same cut. It does not touch the rows: `AgentResponse` holds TOON `Value` rows, not the caller's `T`, so pass `outcome.kept` (converted) to `.items(...)`. A later `.total_count()` or `.hints()` still overrides it.
+#### Outcomes compose into one response
 
-`total_count` applies to both paths. On the KV path with no items the body is just `totalCount: N` (the free `render_kv` still returns `""` for empty items), so a count the caller set is never dropped; with neither items nor a count the body is empty.
+Every outcome michi renders is a part of `AgentResponse`, so a batch with results, per-op outcomes and an error is one valid TOON document, one JSON object and one MCP result, written by one writer on every surface (text, JSON, `render_for`, `to_call_tool_result`, NAPI):
+
+| Outcome | Added with | Becomes | Root contributions |
+| --- | --- | --- | --- |
+| `DomainError` | `error(e)` | the error block, first: `error`, `message`, `causes`, `exit_code` (michi's reserved keys) | its hints lead `help[]`, its recovery leads `recovery[]`; `isError` true |
+| `PartialSuccess` | `partial_success(name, ps)` | `Toon` section `name[N]{index,operation,status,reason}:`, sorted by index | failed ops' recovery hints join `recovery[]` |
+| `StatusResponse` | `status(s)` | `Kv` section `status` (`tool`, `description`), `Toon` section `items` | its hints join `help[]` |
+| `Pipeline` (and `michi-pipeline`'s `RunRecord::to_pipeline()`) | `pipeline(name, p)` | `Toon` section `name[N]{id,name,status,reason}:` | none |
+| already done | `already_done(operation, summary)` | `Kv` section `already_done` (`operation`, `status`, `summary`) | none |
+
+None of them writes a root key of its own beyond the error block's, so they never collide with the reserved list. Their names are section names, checked like any other: two parts that write one root key (two `pipeline("step", …)` calls, say) render the `toon_validation_failed` error naming it. A partial batch is not an error by itself; call `error()` or `as_error()` when the call failed as a whole.
+
+**A validation failure** is a problem with the response's own shape: a section whose rows or KV items are invalid, or two blocks writing one root key. It is reported the same way on every surface (text, JSON, `render_for`, `to_call_tool_result`, NAPI), and `is_error()` and `isError` are true:
+
+- Without a caller's error, the failure is the error block, as `error: toon_validation_failed` (or `kv_validation_failed`) and `message: …`. A failed section's lines take its place among the sections; a collision replaces the whole body. The JSON `error` is `{"code": "toon_validation_failed", "message": …, "causes": [], "retryable": false}`, the same four keys as a `DomainError`, so there is one error shape.
+- With a caller's error, that error leads and stays the JSON `error` (its code, message and `retryable`). The failure is added as its last cause, `<code>: <message>` (`causes[1]: "toon_validation_failed: row 0 has 2 values but 1 fields declared"`), and a failed section writes no lines of its own. A collision still drops the sections, so the body is the error block alone. The caller's error is never hidden, and the failure is never lost.
+
+Several failures are still one error object. Every failed section and the first root-key collision is a failure; the caller's error, or without one the first failure, is the error, and the other failures are its causes after any it already had (`causes[2]: …`), on every surface. Two failed sections are not a collision on `error`: a failed section writes no key of its own.
+
+Each type's own render is this writer: `DomainError::render(f)` is `AgentResponse::new(..).error(e).render(f)`, `PartialSuccess::render()` is the response with `partial_success("partial_success", ps)`, `StatusResponse::render()` with `status(s)`, `Pipeline::render()` with `pipeline("step", p)`, and `render_already_done(op, summary, hints)` with `already_done(op, summary).hints(hints)`. The standalone renders turn the cell cap off (`truncate_cells_at(usize::MAX)`), as they never cut a cell; inside a response the response's cap applies to their tables like any other `Toon` section.
+
+A response with no section, budget or provenance renders `type_name: []` and `totalCount: 0`, the definitive empty list: the same text an empty `Toon` section renders, and the only empty-state API (there is no `empty_state()`). An empty KV section renders nothing (or `totalCount: n` when a larger total is set).
+
+`truncated_section(name, fields, &outcome, row, guidance)` builds the section from `outcome.kept` (each item turned into a row by `row`), sets its total to `outcome.total_before` and adds the cut hint, in one call. Because michi builds the rows itself, the list's `[N]`, its `totalCount`, the JSON `returnedCount`/`truncated` and the `showing N of M` hint cannot describe different cuts.
+
+### Budget and provenance types (`budget`, `provenance`)
+
+Plain data types for the envelope in [07-wisp-and-monokl-envelope.md](07-wisp-and-monokl-envelope.md) §2 and §3. All three are `#[non_exhaustive]`, derive `Debug`, `Clone`, `Default` (where it makes sense), `PartialEq` and `Eq`, and have builder methods. Behind `serde` they derive `Serialize` with camelCase keys (absent `Option`s skipped); behind `schemars` they derive `JsonSchema`.
+
+- `BudgetSummary`: optional `max_tokens`, `max_bytes`, `max_items`, `tokens_used`, `bytes_used`; `truncated: bool` (the budget dropped something the sections cannot show). Builders: `new`, `max_tokens`, `max_bytes`, `max_items`, `tokens_used`, `bytes_used`, `truncated`. It holds only what michi cannot know: there is no per-section list (see below).
+- `ProvenanceBlock`: ordered `entries: Vec<ProvenanceEntry>` and optional `fingerprint`. Builders: `new`, `entry(label, value)`, `fingerprint`.
+- `ProvenanceEntry`: `label`, `value`; `new(label, value)`.
+
+Attach them with `AgentResponse::budget(BudgetSummary)` and `AgentResponse::provenance(ProvenanceBlock)` (see [Envelope on `AgentResponse`](#envelope-on-agentresponse)). The `budget:` block lists `tokensUsed`, `bytesUsed`, `maxTokens`, `maxBytes`, `maxItems` when set, then `truncated`, which is true when the caller set it or any section of the response was cut. The `sections[n]{name,returned,total,truncated}:` roll-up follows only when the response has two or more sections, and michi writes it from those sections at render time: one row per section, its name, `count()`, total (an unknown `total` is a `null` cell) and `truncated()`. It cannot name a section the response does not hold. The budget's JSON is the numbers and `truncated`; the response's `sections` array already carries each section's counts. The `provenance:` block lists entries in order, then `fingerprint`. Labels are encoded as TOON keys and values as TOON strings, so newlines and colons in caller text cannot start a line of their own. A label may not be `fingerprint`, with or without a fingerprint set.
+
+### Sections (`section`)
+
+A response holds its body as sections. `AgentResponse::section(Section)` appends one; sections render in call order, before `budget:`, `provenance:`, `help[]` and `recovery[]`. The caller owns the order. `items()` and `kv_items()` are shorthand for a `Toon` or `Kv` section named for the response's type, so there is one storage model and one render path.
+
+```rust
+#[derive(Debug, Clone)]
+pub struct Section { /* private: name, body, total */ }
+
+#[non_exhaustive] #[derive(Debug, Clone)]
+pub enum SectionBody {
+    Toon { fields: Vec<String>, rows: Vec<Vec<Value>> },
+    Kv(Vec<KvItem>),
+    Text { text: String, count: usize },
+}
+
+impl Section {
+    pub fn toon(name: impl Into<String>, fields: Vec<String>, rows: Vec<Vec<Value>>) -> Self;
+    pub fn kv(name: impl Into<String>, items: Vec<KvItem>) -> Self;
+    /// Count 1 for non-empty text, 0 for empty.
+    pub fn text(name: impl Into<String>, body: impl Into<String>) -> Self;
+    /// A text section that stands for `count` items.
+    pub fn text_with_count(name: impl Into<String>, body: impl Into<String>, count: usize) -> Self;
+    /// The one fact a caller sets: how many existed before a cut.
+    pub fn total_count(self, total: Option<usize>) -> Self;
+    pub fn name(&self) -> &str;
+    pub fn body(&self) -> &SectionBody;
+    /// rows.len() / items.len() for Toon and Kv, the constructor's count for Text.
+    pub fn count(&self) -> usize;
+    pub fn total(&self) -> Option<usize>;
+    /// Derived: total() > count().
+    pub fn truncated(&self) -> bool;
+}
+```
+
+- `Toon` bodies render as a TOON list named `name`, with the response's `truncate_cells_at` cap and `truncation_hint` applied. `Kv` bodies render as `key: value` lines (the name is not printed). `Text` bodies are one string value, `name: <escaped value>`, escaped like any TOON string and never raw, so prose cannot forge a `help[]` line. A `totalCount` renders for a `Text` section as for the others.
+- `totalCount: n` follows a section only when `total_count` is `Some(n)` with `n` above the section's count: a total equal to the rows returned (or below them) says nothing new. An empty `Toon` section reports `totalCount: 0` (below). One rule, in one place (`Section::reported_total`, crate-internal), gives the text's `totalCount`, the JSON section's `totalCount` and the budget roll-up's `total` column, so the three cannot disagree. `total()` still returns the value as given.
+- The fields are private, and each fact has one source: the count is the body's rows or items (a `Text` body carries the count its constructor was given), the total is what `total_count` set, and `truncated()` is `total > count`. Text and JSON read the same three, so a section cannot print `totalCount: 5` while its JSON says `"truncated": false`.
+- An empty `Toon` section is the definitive empty state: `name: []` and `totalCount: 0` (or the larger `totalCount: n` the caller set); it takes part in the merged `totalCount` table like any section with a total. Its JSON `sections` entry says the same: `returnedCount: 0` and `totalCount: 0` (or the larger total). An empty `Kv` section renders nothing (or `totalCount: n` when a larger total is set).
+- A section that fails validation renders an `error:` block (`toon_validation_failed` or `kv_validation_failed`), or a cause of the caller's error when there is one, and makes `is_error()` true (see "A validation failure" above).
+- `render(Json)` adds a `sections` array; see [Envelope on `AgentResponse`](#envelope-on-agentresponse). Cut-cell `help[]` lines from every section merge into the one `help` block, once.
+
+### Envelope on `AgentResponse`
+
+```rust
+impl AgentResponse {
+    /// One per response; a second call replaces the first.
+    #[must_use] pub fn budget(self, b: BudgetSummary) -> Self;
+    /// One per response; a second call replaces the first.
+    #[must_use] pub fn provenance(self, p: ProvenanceBlock) -> Self;
+}
+```
+
+Text order: the sections in call order, `budget:`, `provenance:`, `help[]`, `recovery[]`. A response with no section, budget or provenance renders `type: []`. With a budget or provenance and no section it renders no empty list, so `AgentResponse::new("t").budget(b)` is just the `budget:` block.
+
+- The budget roll-up (`sections[n]{...}`) renders only when the response has two or more sections, and is derived from them.
+- `truncated` and `totalCount` are root keys, and a TOON object may not repeat a key. When one block has cut cells (or a `totalCount`) it renders inline after its list. When two or more do, each becomes one table after the last block, with a leading `section` column: `truncated[N]{section,row,field,removed}:` and `totalCount[N]{section,total}:`. michi's own "Cut cells are listed in the truncated block" help line is added once.
+- Section names and KV keys are root keys, beside the names michi writes itself. Those are one reserved list shared by every writer: `totalCount`, `help`, `recovery`, `truncated`, `budget`, `sections`, `provenance`, and the error document's `error`, `message`, `causes` and `exit_code`, reserved even on success so caller data cannot render an error document while `isError` is false. Validity never depends on caller data: a reserved name, two blocks writing one root key, or two equal provenance labels (or a label `fingerprint`, with or without a fingerprint) renders the whole body as the `toon_validation_failed` (or `kv_validation_failed`) error naming the key (a cause of the caller's error when the response has one; any failed sections are causes too), the JSON `error` object says the same, and `is_error()`, the JSON `isError` and MCP `isError` are true. The JSON `sections` still carry the data as given.
+- JSON (`render(Json)` and `structured_content`): `body`, then `error` (the caller's error or a validation failure), `sections`, `budget`, `provenance` only when set (`sections` is set by `items()` and `kv_items()` too), then `hints`, `recovery`, `isError`. A section is `{name, kind, ...}` with `kind` `toon` (`fields`, `rows` of typed values), `kv` (`items` of `{key, value}`) or `text` (`text`), then `returnedCount`, `totalCount` when the section reports one (the text's rule), and `truncated`. Rows carry the full values: the cell cap (`truncate_cells_at`) shapes only the text render, and `structured_content` is the canonical, uncapped data. Keys are camelCase and hand-built, so the default build needs no `serde_json`.
 
 ### Idempotency
 
 ```rust
-// In michi_core::idempotency (also at michi_core::PartialSuccess, michi_core::FailedOp)
+// In michi_core::idempotency (also at the root: PartialSuccess, CompletedOp, SkippedOp, FailedOp, DuplicateOpIndex)
 #[non_exhaustive]
-#[derive(Default)]
-pub struct PartialSuccess {
-    pub completed: Vec<String>,
-    pub failed: Vec<FailedOp>,
-    pub skipped: Vec<String>,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompletedOp {
+    /// Position in the caller's op slice: `results[index]` answers `ops[index]`.
+    pub index: usize,
+    pub operation: String,
+}
+impl CompletedOp {
+    pub fn new(index: usize, operation: impl Into<String>) -> Self;
 }
 
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkippedOp {
+    pub index: usize,
+    pub operation: String,
+    /// A caller-defined machine token (`budget_exhausted`, `deadline`); `null` when absent.
+    pub reason: Option<String>,
+}
+impl SkippedOp {
+    pub fn new(index: usize, operation: impl Into<String>) -> Self;
+    pub fn reason(self, reason: impl Into<String>) -> Self;
+}
+
+/// Fields are private: each index has exactly one outcome.
+#[non_exhaustive]
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PartialSuccess { /* completed, failed, skipped */ }
+
 impl PartialSuccess {
-    pub fn new(completed: Vec<String>, failed: Vec<FailedOp>, skipped: Vec<String>) -> Self;
+    /// Err names the first index that appears twice, within one list or across them.
+    pub fn try_new(completed: Vec<CompletedOp>, failed: Vec<FailedOp>, skipped: Vec<SkippedOp>)
+        -> Result<Self, DuplicateOpIndex>;
+    pub fn completed(&self) -> &[CompletedOp];
+    pub fn failed(&self) -> &[FailedOp];
+    pub fn skipped(&self) -> &[SkippedOp];
     pub fn render(&self) -> String;
     pub fn exit_code(&self) -> i32;   // 0 = no failures, 1 = any failed
 }
 
+/// Display: "operation index {index} has more than one outcome".
+#[non_exhaustive]
+pub struct DuplicateOpIndex { pub index: usize }
+
 #[non_exhaustive]
 pub struct FailedOp {
+    pub index: usize,
     pub operation: String,
     pub reason: String,
     pub recovery: Option<RecoveryHint>,
 }
 
 impl FailedOp {
-    pub fn new(operation: impl Into<String>, reason: impl Into<String>) -> Self;
+    pub fn new(index: usize, operation: impl Into<String>, reason: impl Into<String>) -> Self;
     pub fn recovery(self, hint: RecoveryHint) -> Self;
 }
+
+// PartialSuccess::render: one row per operation, sorted by index (never renumbered):
+// partial_success[4]{index,operation,status,reason}:
+//   0,symbols,completed,null
+//   1,dependents,completed,null
+//   2,refs,failed,"symbol not found: RetryPolicy"
+//   3,search,skipped,budget_exhausted        <- `null` when the SkippedOp has no reason
+// recovery[N]{tool,params,reason}: follows when a failed op has a recovery hint
 
 // In michi_core::resilience (also at michi_core::already_done, michi_core::AlreadyDone)
 #[non_exhaustive]
 pub enum AlreadyDone { Yes { result: String }, No }
 pub fn already_done(stored: Option<String>) -> AlreadyDone;
-pub fn render_already_done(operation: &str, summary: &str, hints: &[String]) -> String;
+pub fn render_already_done(operation: &str, summary: &str, hints: &[Hint]) -> String;
 pub struct IdempotencyKey(pub String); // also From<String>, From<&str>
 impl IdempotencyKey {
     pub fn new(s: impl Into<String>) -> Self;
@@ -320,7 +479,7 @@ impl IdempotencyKey {
 }
 ```
 
-### Key-value, hints, recovery, empty, status and pipeline blocks
+### Key-value, hints, recovery, status and pipeline blocks
 
 Every block renderer returns a finished TOON 4.4 document with no trailing newline; the `append_*` helpers join a block onto a document with one LF. The forms are listed in [02-toon-format.md](02-toon-format.md#agent-facing-blocks).
 
@@ -334,9 +493,9 @@ pub enum KvValue { Text(String), Int(i64), Float(f64, u8), Bool(bool), Duration(
 impl KvValue { pub const FULL_PRECISION: u8 = u8::MAX; }
 #[non_exhaustive]
 pub enum KvError { ReservedKey { key: String }, DuplicateKey { key: String } }
-/// `key: value` lines, then `totalCount` and `help`. Err for a repeated key or a reserved
-/// `totalCount`/`help`/`recovery` key (a duplicate root key, §14.3). Empty items: Ok("").
-pub fn render_kv(items: &[KvItem], total_count: Option<usize>, hints: &[Hint]) -> Result<String, KvError>;
+/// `key: value` lines. Err for a repeated key (§14.3) or a key michi writes itself (the reserved list, e.g.
+/// `help`, `error`, `message`). Empty items: Ok(""). `totalCount` and `help` come from `AgentResponse`.
+pub fn render_kv(items: &[KvItem]) -> Result<String, KvError>;
 
 // michi_core::hints
 pub struct Hint(pub String); // also From<&str>, From<String>, Display
@@ -358,14 +517,6 @@ impl RecoveryHint {
 pub fn render_recovery(hints: &[RecoveryHint]) -> String;    // recovery[N]{tool,params,reason}:
 pub fn append_recovery(out: &mut String, hints: &[RecoveryHint]);
 
-// michi_core::empty
-pub fn empty_state(type_name: &str) -> String;                    // type_name: []\ntotalCount: 0
-pub fn empty_state_with_hints(type_name: &str, hints: &[Hint]) -> String; // … then help[N]
-/// Err(ToonError::InvalidTypeName) for totalCount/help/recovery; the non-try forms render the
-/// `error: toon_validation_failed` block instead.
-pub fn try_empty_state(type_name: &str) -> Result<String, ToonError>;
-pub fn try_empty_state_with_hints(type_name: &str, hints: &[Hint]) -> Result<String, ToonError>;
-
 // michi_core::status
 #[non_exhaustive]
 pub enum Health { Ok, Degraded(String), Error(String) } // reason in the String
@@ -379,8 +530,9 @@ impl StatusItem {
 pub struct StatusResponse { pub tool_name: String, pub description: String, pub items: Vec<StatusItem>, pub hints: Vec<Hint> }
 impl StatusResponse {
     pub fn new(tool_name: impl Into<String>, description: impl Into<String>, items: Vec<StatusItem>) -> Self;
-    pub fn with_hints(self, hints: Vec<Hint>) -> Self;
-    pub fn render(&self) -> String;                           // tool, description, items[N]{key,value,health,reason}:, help
+    /// Replaces the hint list.
+    pub fn hints(self, hints: Vec<Hint>) -> Self;
+    pub fn render(&self) -> String;                           // tool, description, items[N]{key,value,health,reason}: (or items: [] and totalCount: 0), help
 }
 
 // michi_core::pipeline
@@ -405,10 +557,10 @@ pub struct PipelineStep { pub id: String, pub name: String, pub status: StepStat
 impl PipelineStep { pub fn new(id: impl Into<String>, name: impl Into<String>, status: StepStatus) -> Self; }
 #[non_exhaustive]
 #[derive(Default)]
-pub struct Pipeline { pub id: String, pub steps: Vec<PipelineStep> }
+pub struct Pipeline { pub steps: Vec<PipelineStep> } // no run id: nothing rendered one
 impl Pipeline {
-    pub fn new(id: impl Into<String>, steps: Vec<PipelineStep>) -> Self;
-    pub fn render(&self) -> String;                           // step[N]{id,name,status,reason}:, or step: []
+    pub fn new(steps: Vec<PipelineStep>) -> Self;
+    pub fn render(&self) -> String;                           // step[N]{id,name,status,reason}:, or step: [] and totalCount: 0
 }
 
 // michi_core::audience
@@ -424,7 +576,7 @@ impl NoopProvider {
 }
 ```
 
-The structs above are `#[non_exhaustive]` from 0.4.0: build them with their constructors, then read or assign their public fields as before. Struct literals and exhaustive destructuring work only inside michi-core, so adding a field later is not a breaking change. `Value`, `KvValue`, `AlreadyDone`, `RetryConfigError` and the other enums marked `#[non_exhaustive]` above need a `_` arm in a `match` outside michi-core.
+The structs above are `#[non_exhaustive]` from 0.4.0: build them with their constructors, then read or assign their public fields as before (`PartialSuccess` is read through its getters). Struct literals and exhaustive destructuring work only inside michi-core, so adding a field later is not a breaking change. `Value`, `KvValue`, `AlreadyDone`, `RetryConfigError` and the other enums marked `#[non_exhaustive]` above need a `_` arm in a `match` outside michi-core.
 
 `KvValue::Float(f, decimals)` rounds `f` to `decimals` places and writes the rounded value in canonical TOON number form, so `Float(1.5, 3)` is `1.5`, not `1.500`; `KvValue::FULL_PRECISION` (255) never rounds, so `Float(5e-324, KvValue::FULL_PRECISION)` is `5e-324` in TOON and in the JSON companions, while a smaller count rounds as asked (`Float(1e-300, 2)` is `0`); `Missing` is `null`; `Duration` is the string `1.5s`. `AgentResponse`'s KV path turns a `KvError` into a `kv_validation_failed` error body and sets `is_error`, like `toon_validation_failed` on the TOON path.
 
@@ -507,25 +659,23 @@ pub const REDACTED: &str = "[REDACTED]";
 
 pub fn redact_secrets(text: &str, secrets: &[&str]) -> String;
 pub fn redact_url_userinfo(text: &str) -> String;
+pub fn redact_common_shapes(text: &str) -> String;
 ```
 
 Not re-exported at the crate root; use `michi_core::redact::…`.
 
-- `redact_secrets` replaces each known secret with `[REDACTED]`. Empty secrets are ignored, the longest secret wins when one contains another, and the text is scanned once, so the marker is never searched again and redacting twice changes nothing.
-- `redact_url_userinfo` replaces the `user:password@` part of every `scheme://…` URL. A URL ends at whitespace, a quote, a backtick, `<` or `>`; everything up to the last `@` inside it is userinfo, so a password containing `@` or `/` is removed whole. A URL with no userinfo but an `@` later in its path (`https://host/pkg@1.2`) is over-redacted; that is the safe direction. Email addresses are not URLs and pass through.
-- Neither finds secrets in general. They are a second line of defense after keeping secrets out of messages. `DomainError::from_error` and `from_error_with_causes` apply `redact_url_userinfo` to the error text they copy, because URLs with credentials are the common leak in errors from HTTP and database clients. `DomainError::new`, `cause` and `hint` take tool-author text and do not redact it.
+- `redact_secrets` replaces each known secret with `[REDACTED]`. Empty secrets are ignored and the text is scanned once, left to right. At each position a known secret that matches there is replaced, longest first (so the longest wins when one contains another). Only where no secret matches is a `[REDACTED]` already in the text copied through, so no secret is matched starting inside the marker (`RED` leaves `[REDACTED]` alone), while a secret that starts with or contains the marker (`[REDACTED]private-tail`, `private[REDACTED]`) is removed whole. Two guarantees, with their limits. (1) A known secret never survives in the output except next to a marker: any occurrence overlaps a `[REDACTED]`, and for a secret with no `[` or `]` it lies entirely inside a marker that was already in the text. (2) Redacting twice changes nothing, provided no secret contains `[`; a secret starting with `[` can match the marker the first pass wrote (secrets `tok` and `[REDACTED]x` on `tokx`: the first pass gives `[REDACTED]x`, the second `[REDACTED]`).
+- `redact_url_userinfo` replaces the `user:password@` part of every `scheme://…` URL. A URL ends at whitespace, a quote, a backtick, `<` or `>`; everything up to the last `@` inside it is userinfo, so a password containing `@` or `/` is removed whole. A URL with no userinfo but an `@` later in its path (`https://host/pkg@1.2`) is over-redacted; that is the safe direction. Email addresses are not URLs and pass through. Also matched: the JSON-escaped separator `:\/\/`, the percent-encoded separator `%3A%2F%2F` (userinfo ends at the last `@` or `%40`), and a `"` or `'` inside the password (the text after the quote is searched for an `@` until a `/`, `\`, `?` or `#`; `"https://host","k":"a@b"` is over-redacted).
+- `redact_common_shapes` is `redact_url_userinfo` plus the value of any `key=value` pair or `Key: value` header whose key names a secret, plus well-known token shapes. Keys: `key`, `sig`, `auth`, `pwd`, anything ending `_key`, `_sig` or `_auth`, starting `auth_`, or containing `token`, `secret`, `passw`, `signature`, `apikey`, `api_key`, `credential`, `authoriz` or `cookie` (case-insensitive, `-` read as `_`). The separator may be `=`, `:`, or their fullwidth forms, with blanks around it, and the key may be quoted or JSON-escaped, so `{"password": "x"}`, `'token': 'x'`, `\"token\":\"x\"`, `X-Api-Key: x` and `a=1&token=x` are all covered. A quoted value runs to its closing quote (`\` escapes honored, a newline ends an unclosed one) and keeps its quotes. After a scheme word (`Basic`, `Bearer`, `Token`, `Negotiate`, `NTLM`, `Bot`, `Digest`) the credential is redacted and the word kept: `Authorization: Basic [REDACTED]`. `Digest` and cookie keys (`Cookie:`, `Set-Cookie:`) take the rest of the line. Any other value runs to whitespace, `&`, a quote, a backtick, `)`, `<` or `>`. `key://` is a URL, not a pair. The work is linear in the text, URLs included (`tests/scaling.rs`): `redact_url_userinfo` is one forward pass that looks for the next separator form, a URL's end and its last `@` without rescanning text it already examined, and `tests/redact_differential.rs` pins its output to the simple per-URL version it replaced. Token shapes: `ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`, `github_pat_`, `npm_` and `pypi-` followed by 16 or more token characters, and `Bearer ` followed by 16 or more. It repeats until the text stops changing, so redacting twice equals redacting once. A fuzz target (`fuzz/fuzz_targets/redact.rs`) checks that and that a planted secret does not survive in any covered shape.
+- **Not covered.** A secret containing a space (`token=a b` loses only `a`), a value on the line after its key (YAML), a command-line flag (`--password hunter2`), an encoded separator (`token%3Dvalue`), a key spelled with lookalike letters or zero-width characters, a bare JWT, cloud key (`AKIA...`) or PEM private key block, a connection string without `://`, a secret in a URL path segment, a key or token with another prefix, an encoded or split value, and a value under a key the list above does not name (`session=`). Nested JSON under a secret-named key (`"auth":{"token":"x"}`) is over-redacted, which is the safe direction. These helpers are a second line of defense after keeping secrets out of messages; "redacted" means "known shapes removed", not "safe to show".
+- `DomainError::from_error` and `from_error_with_causes` apply `redact_common_shapes` to the error text they copy, because URLs with credentials and tokens in the query are the common leak in errors from HTTP and database clients (`reqwest` puts the whole URL in its top-level `Display`). The pipeline's `From<ExecutionError> for DomainError` does the same to step text (see `08-pipeline-execution.md`). `DomainError::new`, `cause` and `hint` take tool-author text and do not redact it.
 
 ## `resilience` — Retry & Idempotency Primitives
 
 ```rust
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
-pub struct RetryConfig {
-    pub max_retries: u32,
-    pub base_delay: Duration,
-    pub max_delay: Duration,
-    pub jitter_factor: f64,
-}
+pub struct RetryConfig { /* private: the constructors' checks hold for the value's life */ }
 
 impl RetryConfig {
     /// Normalizing constructor — clamps out-of-range values.
@@ -533,6 +683,10 @@ impl RetryConfig {
     /// Strict constructor — returns Err for out-of-range values.
     pub fn try_new(max_retries: u32, base_delay: Duration, max_delay: Duration, jitter_factor: f64)
         -> Result<Self, RetryConfigError>;
+    pub fn max_retries(&self) -> u32;
+    pub fn base_delay(&self) -> Duration;   // never more than max_delay
+    pub fn max_delay(&self) -> Duration;    // never zero
+    pub fn jitter_factor(&self) -> f64;     // in [0.0, 1.0]
 }
 impl Default for RetryConfig { ... } // 3 retries, 500ms base, 30s max, jitter 0.2
 

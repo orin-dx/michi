@@ -83,7 +83,7 @@ fn render_kv_is_linear_in_items() {
         1_000,
         |n| (0..n).map(|i| KvItem::new(format!("key{i}"), KvValue::Text(format!("value {i}")))).collect::<Vec<_>>(),
         |items| {
-            black_box(render_kv(items, None, &[]).expect("valid items"));
+            black_box(render_kv(items).expect("valid items"));
         },
     );
 }
@@ -110,4 +110,324 @@ fn truncate_by_size_is_linear_in_items() {
             black_box(truncate_by_size(items.clone(), items.len() * 2, |i| i % 7 + 1));
         },
     );
+}
+
+#[test]
+fn envelope_render_is_linear_in_section_count() {
+    use michi_core::{AgentResponse, BudgetSummary, OutputFormat, Section};
+    // Every section carries a cut cell and a total, so the merged `truncated` and `totalCount` tables, the budget
+    // roll-up (derived from the sections) and the JSON `sections` array all grow with the section count.
+    for format in [OutputFormat::Text, OutputFormat::Json] {
+        assert_linear(
+            "AgentResponse sections",
+            300,
+            |n| {
+                let mut r = AgentResponse::new("t").truncate_cells_at(8).truncation_hint("full=true");
+                for i in 0..n {
+                    let name = format!("section.{i}");
+                    let rows = vec![vec![Value::from(format!("a long cell value {i}")), Value::Int(i as i64)]];
+                    r = r.section(Section::toon(name, vec!["a".into(), "b".into()], rows).total_count(Some(n)));
+                }
+                r.budget(BudgetSummary::new().tokens_used(1))
+            },
+            |r| {
+                black_box(r.render(format));
+            },
+        );
+    }
+}
+
+#[test]
+fn response_render_is_linear_in_rows() {
+    use michi_core::{AgentResponse, OutputFormat, Section};
+    // Every row has a cell over the cap, so the list and the cut list (and so the `truncated` block) grow with the row
+    // count, and the JSON `sections` array carries every row in full.
+    for format in [OutputFormat::Text, OutputFormat::Json] {
+        assert_linear(
+            "AgentResponse rows",
+            1_000,
+            |n| {
+                let rows = (0..n)
+                    .map(|i| vec![Value::Int(i as i64), Value::from(format!("a title cell that is cut, number {i}"))])
+                    .collect();
+                AgentResponse::new("t")
+                    .truncate_cells_at(12)
+                    .truncation_hint("full=true")
+                    .section(Section::toon("t", vec!["n".into(), "title".into()], rows).total_count(Some(n * 2)))
+            },
+            |r| {
+                black_box(r.render(format));
+            },
+        );
+    }
+}
+
+#[test]
+fn response_to_call_tool_result_and_is_error_are_linear_in_rows() {
+    use michi_core::{AgentResponse, Section};
+    assert_linear(
+        "AgentResponse::to_call_tool_result rows",
+        1_000,
+        |n| {
+            let rows = (0..n).map(|i| vec![Value::Int(i as i64), Value::from(format!("title {i}"))]).collect();
+            AgentResponse::new("t").section(Section::toon("t", vec!["n".into(), "title".into()], rows))
+        },
+        |r| {
+            black_box(r.is_error());
+            black_box(r.to_call_tool_result());
+        },
+    );
+}
+
+// ---- Composed outcomes: each part is built and rendered inside the timed region, so a quadratic row builder, cause
+// writer or hint merge shows up, not only a quadratic render. ----
+
+fn causes_error(n: usize) -> michi_core::DomainError {
+    let mut e = michi_core::DomainError::new(michi_core::ErrorCode::ExternalFailure, "upstream failed");
+    for i in 0..n {
+        e = e.cause(format!("layer {i} said: connection reset, retry later"));
+    }
+    e
+}
+
+#[test]
+fn error_causes_render_linearly() {
+    use michi_core::{AgentResponse, OutputFormat};
+    for format in [OutputFormat::Text, OutputFormat::Json] {
+        assert_linear("DomainError causes", 1_000, causes_error, |e| {
+            black_box(AgentResponse::new("t").error(e.clone()).render(format));
+        });
+    }
+}
+
+fn ops(n: usize) -> michi_core::PartialSuccess {
+    use michi_core::{CompletedOp, FailedOp, PartialSuccess, RecoveryHint, SkippedOp};
+    let (mut completed, mut failed, mut skipped) = (Vec::new(), Vec::new(), Vec::new());
+    // Descending indices, so the composed table has to sort them.
+    for i in (0..n).rev() {
+        match i % 3 {
+            0 => completed.push(CompletedOp::new(i, format!("op{i}"))),
+            1 => failed.push(FailedOp::new(i, format!("op{i}"), "not indexed").recovery(RecoveryHint::new("index"))),
+            _ => skipped.push(SkippedOp::new(i, format!("op{i}")).reason("budget_exhausted")),
+        }
+    }
+    PartialSuccess::try_new(completed, failed, skipped).expect("distinct indices")
+}
+
+#[test]
+fn partial_success_composes_and_renders_linearly() {
+    use michi_core::{AgentResponse, OutputFormat};
+    for format in [OutputFormat::Text, OutputFormat::Json] {
+        assert_linear("PartialSuccess ops", 3_000, ops, |ps| {
+            black_box(AgentResponse::new("t").partial_success("ops", ps.clone()).render(format));
+        });
+    }
+}
+
+fn status(n: usize) -> michi_core::StatusResponse {
+    use michi_core::{Health, Hint, StatusItem, StatusResponse};
+    let items = (0..n)
+        .map(|i| {
+            StatusItem::new(format!("check{i}"), KvValue::Float(i as f64 / 7.0, 2))
+                .health(Health::Degraded(format!("slow {i}")))
+        })
+        .collect();
+    StatusResponse::new("tool", "does things", items)
+        .hints((0..n).map(|i| Hint::new(format!("look at check{i}"))).collect())
+}
+
+#[test]
+fn status_composes_and_renders_linearly() {
+    use michi_core::{AgentResponse, OutputFormat};
+    for format in [OutputFormat::Text, OutputFormat::Json] {
+        assert_linear("StatusResponse items", 1_000, status, |s| {
+            black_box(AgentResponse::new("t").status(s.clone()).render(format));
+        });
+    }
+}
+
+fn pipeline(n: usize) -> michi_core::pipeline::Pipeline {
+    use michi_core::pipeline::{Pipeline, PipelineStep, StepStatus};
+    Pipeline::new(
+        (0..n)
+            .map(|i| {
+                PipelineStep::new(
+                    format!("step{i}"),
+                    format!("Step, number {i}"),
+                    StepStatus::ALL[i % StepStatus::ALL.len()],
+                )
+            })
+            .collect(),
+    )
+}
+
+#[test]
+fn pipeline_composes_and_renders_linearly() {
+    use michi_core::{AgentResponse, OutputFormat};
+    for format in [OutputFormat::Text, OutputFormat::Json] {
+        assert_linear("Pipeline steps", 1_000, pipeline, |p| {
+            black_box(AgentResponse::new("t").pipeline("step", p.clone()).render(format));
+        });
+    }
+}
+
+#[test]
+fn a_response_mixing_every_outcome_renders_linearly() {
+    use michi_core::{AgentResponse, BudgetSummary, Hint, OutputFormat, RecoveryHint, Section};
+    // Every part grows with `n`: the error's causes, the batch, the status table and its hints, the pipeline, a data
+    // section, the caller's hints and recovery hints. The response is built and rendered on every surface.
+    assert_linear(
+        "AgentResponse mixed outcomes",
+        500,
+        |n| (causes_error(n), ops(n), status(n), pipeline(n), n),
+        |(e, ps, s, p, n)| {
+            let rows = (0..*n).map(|i| vec![Value::Int(i as i64), Value::from(format!("result {i}"))]).collect();
+            let mut r = AgentResponse::new("batch")
+                .error(e.clone())
+                .section(Section::toon("results", vec!["n".into(), "title".into()], rows).total_count(Some(n * 2)))
+                .partial_success("ops", ps.clone())
+                .status(s.clone())
+                .pipeline("step", p.clone())
+                .budget(BudgetSummary::new().tokens_used(1));
+            r = r.hints((0..*n).map(|i| Hint::new(format!("hint {i}"))).collect());
+            for i in 0..*n {
+                r = r.hint(format!("more {i}")).recovery_hint(RecoveryHint::new(format!("tool{i}")));
+            }
+            black_box(r.render(OutputFormat::Text));
+            black_box(r.render(OutputFormat::Json));
+            black_box(r.is_error());
+            black_box(r.to_call_tool_result());
+        },
+    );
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn toon_list_is_linear_in_items_and_sparse_keys() {
+    #[derive(serde::Serialize)]
+    struct Issue {
+        number: usize,
+        title: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        assignee: Option<String>,
+    }
+    assert_linear(
+        "toon::list items",
+        1_000,
+        |n| {
+            (0..n)
+                .map(|i| Issue {
+                    number: i,
+                    title: format!("Issue {i}"),
+                    assignee: (i % 3 == 0).then(|| format!("user{i}")),
+                })
+                .collect::<Vec<_>>()
+        },
+        |items| {
+            black_box(michi_core::toon::list("issue", items).expect("valid items"));
+        },
+    );
+}
+
+/// Fails, instead of hanging, when `work` does not finish within `limit`: a quadratic regression on a large input can
+/// run for minutes in a debug build, and a hung test says nothing. The work runs on its own thread, which is left to
+/// die with the test process on a timeout.
+fn finishes_within(label: &str, limit: Duration, work: impl FnOnce() + Send + 'static) {
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work));
+        // The receiver is gone after a timeout.
+        let _ = done.send(outcome);
+    });
+    match finished.recv_timeout(limit) {
+        Ok(Ok(())) => {}
+        Ok(Err(panic)) => std::panic::resume_unwind(panic),
+        Err(_) => panic!("{label}: did not finish within {limit:?}; linear work on this input takes about a second"),
+    }
+}
+
+#[test]
+fn redact_common_shapes_is_linear_in_pairs() {
+    // One long line of pairs: each quoted, unterminated or scheme value must be found without rescanning the rest of
+    // the text. A per-value scan to the end of the line was quadratic here. The size is small (5,000 pairs at most) and
+    // the whole check is bounded, because a quadratic regression on a large input runs for minutes in a debug build.
+    finishes_within("redact_common_shapes pairs", Duration::from_secs(10), || {
+        for unit in ["token=\"", "token: Basic ", "a:b=c ", "x=1&password='p'&", "Cookie: a=1; "] {
+            assert_linear(
+                unit,
+                500,
+                |n| unit.repeat(n),
+                |text| {
+                    black_box(michi_core::redact::redact_common_shapes(text));
+                },
+            );
+        }
+    });
+}
+
+/// Texts that each made `redact_url_userinfo` rescan the rest of the text once per URL: a form of separator that is
+/// absent from the text, a URL with no whitespace to end it, a quote that sends the scan past the URL, a last `@` that
+/// is never found.
+const URL_UNITS: [&str; 10] = [
+    "a://b ",
+    "a://",
+    "a://\"",
+    "a://x'",
+    "%3A%2F%2F\"",
+    "%3a%2f%2fb%40",
+    "a:\\/\\/b ",
+    "a://u:p@h ",
+    "a://p@\"",
+    "a://x%40\"",
+];
+
+#[test]
+fn redact_url_userinfo_is_linear_in_urls() {
+    // Bounded like the pairs test: a quadratic regression at a large size runs for minutes in a debug build.
+    finishes_within("redact_url_userinfo urls", Duration::from_secs(20), || {
+        for unit in URL_UNITS {
+            assert_linear(
+                unit,
+                500,
+                |n| unit.repeat(n),
+                |text| {
+                    black_box(michi_core::redact::redact_url_userinfo(text));
+                },
+            );
+        }
+    });
+}
+
+#[test]
+fn redact_secrets_is_linear_in_text_with_markers_and_overlapping_secrets() {
+    // Markers, secrets that start with or contain the marker, and near-misses that match a long prefix and then fail.
+    let secrets = ["[REDACTED]private-tail", "private[REDACTED]", "tok", "token-long", "[REDACTED"];
+    finishes_within("redact_secrets", Duration::from_secs(10), move || {
+        for unit in ["[REDACTED]", "[REDACTED]private-tai ", "private[REDACTED]x", "tokentoken-lon ", "[REDACTE "] {
+            assert_linear(
+                unit,
+                1_000,
+                |n| unit.repeat(n),
+                |text| {
+                    black_box(michi_core::redact::redact_secrets(text, &secrets));
+                },
+            );
+        }
+    });
+}
+
+#[test]
+fn redact_common_shapes_is_linear_in_urls() {
+    finishes_within("redact_common_shapes urls", Duration::from_secs(20), || {
+        for unit in URL_UNITS {
+            assert_linear(
+                unit,
+                500,
+                |n| unit.repeat(n),
+                |text| {
+                    black_box(michi_core::redact::redact_common_shapes(text));
+                },
+            );
+        }
+    });
 }

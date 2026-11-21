@@ -46,7 +46,7 @@ fn call_tool_result_schema_matches_its_wire_form() {
     let result = CallToolResult::new(
         vec![ContentBlock::new("body", vec![Audience::Assistant])],
         false,
-        r#"{"body":"x","isError":false}"#,
+        r#"{"body":"x","isError":false}"#.parse().ok(),
     );
     let value = serde_json::to_value(&result).expect("serializes");
     let root = serde_json::to_value(schemars::schema_for!(CallToolResult)).expect("schema serializes");
@@ -91,7 +91,7 @@ fn domain_errors() -> Vec<DomainError> {
     ]
 }
 
-/// The schema advertised for MCP `outputSchema` must describe what `render_json()` emits.
+/// The schema advertised for MCP `outputSchema` must describe what `render(OutputFormat::Json)` emits.
 #[test]
 fn domain_error_schema_matches_render_json() {
     let root = serde_json::to_value(schemars::schema_for!(DomainError)).expect("schema serializes");
@@ -109,7 +109,8 @@ fn domain_error_schema_matches_render_json() {
     .iter()
     .map(ErrorCode::label)
     .collect();
-    let error_schema = resolve(&root, &resolve(&root, &root)["properties"]["error"]);
+    let fields_schema = resolve(&root, &resolve(&root, &root)["properties"]["error"]);
+    let error_schema = resolve(&root, &fields_schema["properties"]["code"]);
     // Documented variants become a `oneOf` of `const` values; undocumented ones would be a plain `enum`.
     let values: Vec<&serde_json::Value> = match error_schema["oneOf"].as_array() {
         Some(alts) => alts.iter().map(|a| &a["const"]).collect(),
@@ -119,20 +120,19 @@ fn domain_error_schema_matches_render_json() {
     assert_eq!(allowed, codes, "error codes are the snake_case labels\n{error_schema:#}");
 
     for err in domain_errors() {
-        let value: serde_json::Value = serde_json::from_str(&err.render_json()).expect("render_json is JSON");
+        let value: serde_json::Value =
+            serde_json::from_str(&err.render(michi_core::OutputFormat::Json)).expect("render_json is JSON");
         assert_object_matches(&root, &root, &value);
+        assert_object_matches(&root, fields_schema, &value["error"]);
         let recovery = &resolve(&root, &root)["properties"]["recovery"];
-        if !value["recovery"].is_null() {
-            let recovery_schema = recovery["anyOf"]
-                .as_array()
-                .and_then(|alts| alts.iter().find(|a| a.get("$ref").is_some()))
-                .unwrap_or(recovery);
-            assert_object_matches(&root, recovery_schema, &value["recovery"]);
+        assert_eq!(recovery["type"], "array", "recovery is an array, as in every response: {recovery:#}");
+        for hint in value["recovery"].as_array().expect("recovery is an array") {
+            assert_object_matches(&root, &recovery["items"], hint);
         }
     }
 }
 
-/// Serializing a `DomainError` and calling `render_json()` produce the same JSON, so one schema covers both.
+/// Serializing a `DomainError` and calling `render(OutputFormat::Json)` produce the same JSON, so one schema covers both.
 #[test]
 fn domain_error_serializes_to_its_render_json_form() {
     let mut dup = RecoveryHint::new("t");
@@ -141,7 +141,8 @@ fn domain_error_serializes_to_its_render_json_form() {
     let mut errors = domain_errors();
     errors.push(DomainError::new(ErrorCode::Conflict, "a\nb \"q\"").retryable(true).recovery(dup));
     for err in errors {
-        let rendered: serde_json::Value = serde_json::from_str(&err.render_json()).expect("render_json is JSON");
+        let rendered: serde_json::Value =
+            serde_json::from_str(&err.render(michi_core::OutputFormat::Json)).expect("render_json is JSON");
         assert_eq!(serde_json::to_value(&err).expect("serializes"), rendered);
         assert_eq!(rendered["isError"], true);
     }

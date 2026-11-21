@@ -20,9 +20,10 @@
 //! ## Quick start
 //!
 //! ```
-//! use michi_core::toon::{render_toon, ToonOptions, Value};
+//! use michi_core::toon::Value;
+//! use michi_core::{AgentResponse, OutputFormat, Section};
 //!
-//! let opts = ToonOptions::new(
+//! let issues = Section::toon(
 //!     "issues",
 //!     vec!["number".to_string(), "title".to_string(), "state".to_string()],
 //!     vec![
@@ -33,11 +34,10 @@
 //! .total_count(Some(8771));
 //!
 //! assert_eq!(
-//!     render_toon(&opts)?,
+//!     AgentResponse::new("issues").section(issues).render(OutputFormat::Text),
 //!     "issues[2]{number,title,state}:\n  51815,\"[Bug]: Telegram plugin\",open\n  51812,dark mode request,open\n\
 //!      totalCount: 8771"
 //! );
-//! # Ok::<(), michi_core::toon::ToonError>(())
 //! ```
 //!
 //! ## Where to start
@@ -64,18 +64,19 @@
 
 /// Audience routing (`assistant` vs `user`).
 pub mod audience;
-/// Definitive empty states.
-pub mod empty;
+/// Response-level budget summary.
+pub mod budget;
 /// Unified domain errors.
 pub mod error;
 #[cfg(feature = "serde")]
 mod float_wire;
 /// Contextual usage hints (`help[]`).
 pub mod hints;
-/// Idempotency: partial-success state for multi-step operations.
+/// Partial-success state for multi-step operations.
 pub mod idempotency;
 #[cfg(feature = "schemars")]
 mod int_schema;
+mod json;
 /// Key-value single-item rendering (`key: value`).
 pub mod kv;
 /// MCP `CallToolResult` mapping.
@@ -86,6 +87,8 @@ pub mod mcp;
 pub mod napi;
 /// Pipeline step definitions and run state.
 pub mod pipeline;
+/// Response-level provenance block.
+pub mod provenance;
 /// Structured recovery hints (`recovery[]`).
 pub mod recovery;
 /// Best-effort redaction of known secrets and URL userinfo.
@@ -94,6 +97,8 @@ pub mod redact;
 pub mod resilience;
 /// `AgentResponse` builder.
 pub mod response;
+/// Repeatable response sections.
+pub mod section;
 /// Health and status response rendering.
 pub mod status;
 /// No-op telemetry provider.
@@ -109,14 +114,16 @@ pub mod truncation;
 pub(crate) mod test_support;
 
 pub use audience::Audience;
-pub use empty::{empty_state, empty_state_with_hints, try_empty_state, try_empty_state_with_hints};
-pub use error::{DomainError, Error, ErrorClass, ErrorCode, Sensitive, MAY_HAVE_TAKEN_EFFECT_HINT};
+pub use budget::BudgetSummary;
+pub use error::{DomainError, ErrorClass, ErrorCode, Sensitive, MAY_HAVE_TAKEN_EFFECT_HINT};
 pub use hints::{append_hints, render_hints, Hint};
-pub use idempotency::{FailedOp, PartialSuccess};
+pub use idempotency::{CompletedOp, DuplicateOpIndex, FailedOp, PartialSuccess, SkippedOp};
 pub use kv::{render_kv, KvError, KvItem, KvValue};
-pub use mcp::{CallToolResult, ContentBlock, StructuredContentError};
+pub use mcp::{CallToolResult, ContentBlock, JsonObject, StructuredContentError};
+pub use provenance::{ProvenanceBlock, ProvenanceEntry};
 pub use recovery::{append_recovery, render_recovery, RecoveryHint};
 pub use response::{AgentResponse, OutputFormat};
+pub use section::{Section, SectionBody};
 pub use status::{Health, StatusItem, StatusResponse};
 
 // Explicit lists, not globs: a glob would silently re-export every item later added to these modules at the crate
@@ -127,9 +134,6 @@ pub use resilience::{
 };
 pub use truncate::{truncate, Truncated};
 pub use truncation::{truncate_by_count, truncate_by_size, TruncationOutcome};
-
-/// Crate-level `Result` alias.
-pub type Result<T> = std::result::Result<T, Error>;
 
 #[cfg(test)]
 mod tests {
@@ -187,7 +191,7 @@ mod tests {
         let json = serde_json::to_string(&block).expect("ContentBlock serializes");
         assert_eq!(serde_json::from_str::<ContentBlock>(&json).expect("ContentBlock deserializes"), block);
 
-        let result = CallToolResult::new(vec![], false, "{}");
+        let result = CallToolResult::new(vec![], false, Some(JsonObject::try_new("{}").expect("an object")));
         let json = serde_json::to_string(&result).expect("CallToolResult serializes");
         assert!(serde_json::from_str::<CallToolResult>(&json).is_ok(), "CallToolResult deserializes");
     }

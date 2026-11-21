@@ -1,0 +1,6 @@
+# The scaling tests compare wall times, so CPU contention (a parallel build, a busy CI runner) can fail one even
+# though the code is linear: a 10x run is preempted more often than a 1x run. A real O(n^2) regression takes ~100x as
+# long on every attempt, so retrying costs nothing but the false alarms. Nextest reports a pass after a retry as FLAKY.
+[[profile.default.overrides]]
+filter = 'binary(scaling)'
+retries = 2

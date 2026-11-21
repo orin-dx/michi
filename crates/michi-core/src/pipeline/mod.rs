@@ -1,5 +1,3 @@
-use std::fmt::Write as _;
-
 /// Status of an individual pipeline step.
 ///
 /// Each terminal status maps to one recovery action an agent can take; see "Status model" in
@@ -126,7 +124,134 @@ impl StepStatus {
     pub fn is_success(&self) -> bool {
         matches!(self, Self::Completed | Self::CompletedEarlier)
     }
+
+    /// Every status with every reason, in declaration order. [`StepStatus::from_labels`] searches this list, so a
+    /// label is parsed by the same table that [`label`](Self::label) and [`reason`](Self::reason) write; a unit test
+    /// names every variant without a wildcard, so a new one fails to compile there until it is listed here.
+    pub const ALL: [Self; 16] = [
+        Self::Pending,
+        Self::Running,
+        Self::Completed,
+        Self::CompletedEarlier,
+        Self::Failed,
+        Self::OutcomeUnknown(UnknownCause::Timeout),
+        Self::OutcomeUnknown(UnknownCause::Gateway),
+        Self::OutcomeUnknown(UnknownCause::Cancelled),
+        Self::OutcomeUnknown(UnknownCause::Interrupted),
+        Self::OutcomeUnknown(UnknownCause::StepFailed),
+        Self::Skipped(SkipReason::PrerequisiteFailed),
+        Self::Skipped(SkipReason::Cancelled),
+        Self::NotRun(NotRunReason::CircuitOpen),
+        Self::NotRun(NotRunReason::Unverified),
+        Self::NotRun(NotRunReason::StartNotRecorded),
+        Self::Panicked,
+    ];
+
+    /// The status a [`label`](Self::label) and [`reason`](Self::reason) pair name: the inverse of those two methods.
+    ///
+    /// # Errors
+    ///
+    /// [`StepLabelError`] for an unknown status, a status that needs a reason and has none, an unknown reason, or a
+    /// reason on a status that takes none.
+    pub fn from_labels(status: &str, reason: Option<&str>) -> Result<Self, StepLabelError> {
+        let mut known = false;
+        for candidate in Self::ALL {
+            if candidate.label() != status {
+                continue;
+            }
+            known = true;
+            if candidate.reason() == reason {
+                return Ok(candidate);
+            }
+        }
+        let own = || status.to_string();
+        if !known {
+            return Err(StepLabelError::UnknownStatus { status: own() });
+        }
+        // The status exists but this reason does not fit: it either needs one or must not have one.
+        match reason {
+            None => Err(StepLabelError::MissingReason { status: own() }),
+            Some(r) if Self::reasons_of(status).next().is_none() => {
+                Err(StepLabelError::UnexpectedReason { status: own(), reason: r.to_string() })
+            }
+            Some(r) => Err(StepLabelError::UnknownReason { status: own(), reason: r.to_string() }),
+        }
+    }
+
+    /// The reason labels `status` takes, in declaration order; none for a status without a reason.
+    fn reasons_of(status: &str) -> impl Iterator<Item = &'static str> + '_ {
+        Self::ALL.into_iter().filter(move |s| s.label() == status).filter_map(|s| s.reason())
+    }
 }
+
+/// Why [`StepStatus::from_labels`] rejected a status and reason pair.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum StepLabelError {
+    /// The status label names no status.
+    UnknownStatus {
+        /// The label that was given.
+        status: String,
+    },
+    /// The status needs a reason and none was given.
+    MissingReason {
+        /// The status label.
+        status: String,
+    },
+    /// The status takes no reason and one was given.
+    UnexpectedReason {
+        /// The status label.
+        status: String,
+        /// The reason that was given.
+        reason: String,
+    },
+    /// The status takes a reason, but not this one.
+    UnknownReason {
+        /// The status label.
+        status: String,
+        /// The reason that was given.
+        reason: String,
+    },
+}
+
+/// `a, b, c` for the labels in `labels`, or `a, b or c` when `last_or` is set.
+fn join_labels(labels: impl Iterator<Item = &'static str>, last_or: bool) -> String {
+    let labels: Vec<&str> = labels.collect();
+    match (labels.split_last(), last_or) {
+        (Some((last, rest)), true) if !rest.is_empty() => format!("{} or {last}", rest.join(", ")),
+        _ => labels.join(", "),
+    }
+}
+
+impl std::fmt::Display for StepLabelError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownStatus { status } => {
+                // Each status once, in declaration order (a status with several reasons appears several times).
+                let mut seen: Vec<&'static str> = Vec::new();
+                for s in StepStatus::ALL {
+                    if !seen.contains(&s.label()) {
+                        seen.push(s.label());
+                    }
+                }
+                write!(f, "unknown step status {status:?}: expected one of {}", seen.join(", "))
+            }
+            Self::MissingReason { status } => {
+                let expected = join_labels(StepStatus::reasons_of(status), true);
+                write!(f, "step status {status:?} needs a reason: {expected}")
+            }
+            Self::UnexpectedReason { status, reason } => {
+                write!(f, "step status {status:?} takes no reason, got {reason:?}")
+            }
+            Self::UnknownReason { status, reason } => {
+                let expected = join_labels(StepStatus::reasons_of(status), true);
+                write!(f, "unknown reason {reason:?} for step status {status:?}: expected {expected}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for StepLabelError {}
 
 /// A pipeline step definition.
 ///
@@ -154,55 +279,55 @@ impl PipelineStep {
     }
 }
 
-/// A pipeline run state.
+/// A pipeline run state: its steps and their statuses.
+///
+/// It has no run id: nothing renders one, so a field for it would carry a value no reader ever sees. Put the id in the
+/// surrounding response if an agent needs it.
 ///
 /// `#[non_exhaustive]`: build it with [`Pipeline::new`] or [`Pipeline::default`]; the fields stay public.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Pipeline {
-    /// Pipeline identifier.
-    pub id: String,
     /// All steps in declaration order.
     pub steps: Vec<PipelineStep>,
 }
 
 impl Pipeline {
-    /// A pipeline with its id and steps in declaration order.
+    /// A pipeline with its steps in declaration order.
     #[must_use]
-    pub fn new(id: impl Into<String>, steps: Vec<PipelineStep>) -> Self {
-        Self { id: id.into(), steps }
+    pub fn new(steps: Vec<PipelineStep>) -> Self {
+        Self { steps }
     }
 
-    /// Render the pipeline state as a TOON 4.4 document: `step[N]{id,name,status,reason}:` with one row per step, or
-    /// `step: []` when there are no steps, with no trailing newline. `status` is [`StepStatus::label`] and `reason`
-    /// is [`StepStatus::reason`] or `null`. `id` and `name` are quoted when TOON's string rules (§7.2) require it.
+    /// Render the pipeline state as a TOON 4.4 document, with no trailing newline: the response
+    /// `AgentResponse::new("step").pipeline("step", self)` with no cell cap, so it is the same writer a composed
+    /// response uses (see [`crate::AgentResponse::pipeline`]). That is `step[N]{id,name,status,reason}:` with one row
+    /// per step, or `step: []` and `totalCount: 0` when there are no steps. `status` is [`StepStatus::label`] and
+    /// `reason` is [`StepStatus::reason`] or `null`. `id` and `name` are quoted when TOON's string rules (§7.2) require
+    /// it.
     #[must_use]
     pub fn render(&self) -> String {
-        let n = self.steps.len();
-        if n == 0 {
-            return String::from("step: []");
-        }
-        let capacity = 40 + n * 48;
-        let mut out = String::with_capacity(capacity);
+        crate::AgentResponse::new("step")
+            .truncate_cells_at(usize::MAX)
+            .pipeline("step", self.clone())
+            .render(crate::OutputFormat::Text)
+    }
 
-        out.push_str("step[");
-        let _ = write!(out, "{n}");
-        out.push_str("]{id,name,status,reason}:");
-
-        for step in &self.steps {
-            out.push_str("\n  ");
-            out.push_str(&crate::toon::escape_value(&step.id));
-            out.push(',');
-            out.push_str(&crate::toon::escape_value(&step.name));
-            out.push(',');
-            out.push_str(step.status.label());
-            out.push(',');
-            out.push_str(step.status.reason().unwrap_or("null"));
-        }
-
-        out
+    /// The table a composed response renders: one row per step, in declaration order.
+    pub(crate) fn rows(&self) -> Vec<Vec<crate::toon::Value>> {
+        use crate::toon::Value;
+        self.steps
+            .iter()
+            .map(|step| {
+                let reason = step.status.reason().map_or(Value::Null, Value::from);
+                vec![step.id.as_str().into(), step.name.as_str().into(), step.status.label().into(), reason]
+            })
+            .collect()
     }
 }
+
+/// The columns of the table a [`Pipeline`] renders as.
+pub(crate) const FIELDS: [&str; 4] = ["id", "name", "status", "reason"];
 
 #[cfg(test)]
 mod tests {
@@ -211,7 +336,6 @@ mod tests {
     #[test]
     fn renders_pipeline_steps() {
         let p = Pipeline {
-            id: "my-pipeline".into(),
             steps: vec![
                 PipelineStep { id: "fetch".into(), name: "Fetch Data".into(), status: StepStatus::Completed },
                 PipelineStep { id: "upload".into(), name: "Upload".into(), status: StepStatus::Pending },
@@ -224,17 +348,74 @@ mod tests {
         );
     }
 
+    // No wildcard arm: a new `StepStatus` variant fails to compile here until it is placed in `StepStatus::ALL`.
+    fn all_index(s: StepStatus) -> usize {
+        use {NotRunReason as N, SkipReason as S, StepStatus as T, UnknownCause as U};
+        match s {
+            T::Pending => 0,
+            T::Running => 1,
+            T::Completed => 2,
+            T::CompletedEarlier => 3,
+            T::Failed => 4,
+            T::OutcomeUnknown(U::Timeout) => 5,
+            T::OutcomeUnknown(U::Gateway) => 6,
+            T::OutcomeUnknown(U::Cancelled) => 7,
+            T::OutcomeUnknown(U::Interrupted) => 8,
+            T::OutcomeUnknown(U::StepFailed) => 9,
+            T::Skipped(S::PrerequisiteFailed) => 10,
+            T::Skipped(S::Cancelled) => 11,
+            T::NotRun(N::CircuitOpen) => 12,
+            T::NotRun(N::Unverified) => 13,
+            T::NotRun(N::StartNotRecorded) => 14,
+            T::Panicked => 15,
+        }
+    }
+
+    #[test]
+    fn step_status_all_lists_every_variant_once_in_order() {
+        for (i, s) in StepStatus::ALL.into_iter().enumerate() {
+            assert_eq!(all_index(s), i, "{s:?} is out of place in StepStatus::ALL");
+        }
+    }
+
+    #[test]
+    fn from_labels_inverts_label_and_reason_for_every_status() {
+        for status in StepStatus::ALL {
+            assert_eq!(StepStatus::from_labels(status.label(), status.reason()), Ok(status));
+        }
+    }
+
+    #[test]
+    fn from_labels_errors_say_what_is_wrong() {
+        let err = |s: &str, r: Option<&str>| StepStatus::from_labels(s, r).expect_err("rejected").to_string();
+        assert_eq!(
+            err("bogus", None),
+            "unknown step status \"bogus\": expected one of pending, running, completed, completed_earlier, failed, \
+             outcome_unknown, skipped, not_run, panicked"
+        );
+        assert_eq!(
+            err("outcome_unknown", None),
+            "step status \"outcome_unknown\" needs a reason: timeout, gateway, cancelled, interrupted or step_failed"
+        );
+        assert_eq!(
+            err("skipped", Some("nope")),
+            "unknown reason \"nope\" for step status \"skipped\": expected prerequisite_failed or cancelled"
+        );
+        assert_eq!(err("failed", Some("x")), "step status \"failed\" takes no reason, got \"x\"");
+        // A reason of another status is not accepted either.
+        assert!(StepStatus::from_labels("not_run", Some("timeout")).is_err());
+    }
+
     #[test]
     fn empty_pipeline_renders_zero_steps() {
-        let p = Pipeline { id: "empty".into(), steps: vec![] };
+        let p = Pipeline { steps: vec![] };
         let out = p.render();
-        assert_eq!(out, "step: []");
+        assert_eq!(out, "step: []\ntotalCount: 0");
     }
 
     #[test]
     fn failed_step_label() {
         let p = Pipeline {
-            id: "p".into(),
             steps: vec![PipelineStep { id: "build".into(), name: "Build".into(), status: StepStatus::Failed }],
         };
         assert!(p.render().ends_with(",failed,null"), "got: {}", p.render());
@@ -243,7 +424,6 @@ mod tests {
     #[test]
     fn skipped_step_label() {
         let p = Pipeline {
-            id: "p".into(),
             steps: vec![PipelineStep {
                 id: "lint".into(),
                 name: "Lint".into(),
@@ -255,14 +435,11 @@ mod tests {
 
     #[test]
     fn effect_model_reasons_render_snake_case_labels() {
-        let p = Pipeline::new(
-            "p",
-            vec![
-                PipelineStep::new("a", "A", StepStatus::OutcomeUnknown(UnknownCause::StepFailed)),
-                PipelineStep::new("b", "B", StepStatus::NotRun(NotRunReason::Unverified)),
-                PipelineStep::new("c", "C", StepStatus::NotRun(NotRunReason::StartNotRecorded)),
-            ],
-        );
+        let p = Pipeline::new(vec![
+            PipelineStep::new("a", "A", StepStatus::OutcomeUnknown(UnknownCause::StepFailed)),
+            PipelineStep::new("b", "B", StepStatus::NotRun(NotRunReason::Unverified)),
+            PipelineStep::new("c", "C", StepStatus::NotRun(NotRunReason::StartNotRecorded)),
+        ]);
         assert_eq!(
             p.render(),
             "step[3]{id,name,status,reason}:\n  a,A,outcome_unknown,step_failed\n  b,B,not_run,unverified\n  \
@@ -273,7 +450,6 @@ mod tests {
     #[test]
     fn step_id_with_comma_is_toon_escaped() {
         let p = Pipeline {
-            id: "p".into(),
             steps: vec![PipelineStep { id: "a,b".into(), name: "A,B Step".into(), status: StepStatus::Pending }],
         };
         let out = p.render();
@@ -334,20 +510,9 @@ mod tests {
     }
 
     #[test]
-    fn ac010_pipeline_default_has_empty_id_and_steps() {
+    fn ac010_pipeline_default_has_no_steps() {
         let p = Pipeline::default();
-        assert_eq!(p.id, "");
         assert_eq!(p.steps.len(), 0);
-    }
-
-    // AC-013: a distinctive, non-overlapping id must not leak into render()
-    // output for an empty-steps pipeline.
-    #[test]
-    fn ac013_distinctive_id_never_appears_in_empty_render_output() {
-        let p = Pipeline { id: "zzz-unique-marker-999".into(), steps: vec![] };
-        let out = p.render();
-        assert_eq!(out, "step: []");
-        assert!(!out.contains("zzz-unique-marker-999"), "got: {out}");
     }
 
     // AC-014: the existing step_id_with_comma_is_toon_escaped test above only
@@ -355,7 +520,6 @@ mod tests {
     #[test]
     fn ac014_comma_in_id_and_name_renders_exact_quoted_literal() {
         let p = Pipeline {
-            id: "p".into(),
             steps: vec![PipelineStep { id: "a,b".into(), name: "A,B Step".into(), status: StepStatus::Pending }],
         };
         assert_eq!(p.render(), "step[1]{id,name,status,reason}:\n  \"a,b\",\"A,B Step\",pending,null");
@@ -363,14 +527,11 @@ mod tests {
 
     #[test]
     fn ac017_render_is_idempotent_and_does_not_mutate() {
-        let p = Pipeline {
-            id: "p".into(),
-            steps: vec![PipelineStep { id: "s".into(), name: "n".into(), status: StepStatus::Completed }],
-        };
+        let p =
+            Pipeline { steps: vec![PipelineStep { id: "s".into(), name: "n".into(), status: StepStatus::Completed }] };
         let first = p.render();
         let second = p.render();
         assert_eq!(first, second);
-        assert_eq!(p.id, "p");
         assert_eq!(p.steps[0].id, "s");
         assert_eq!(p.steps[0].name, "n");
         assert_eq!(p.steps[0].status, StepStatus::Completed);
@@ -379,7 +540,6 @@ mod tests {
     #[test]
     fn ac018_step_order_is_preserved_not_reordered() {
         let p = Pipeline {
-            id: "p".into(),
             steps: vec![
                 PipelineStep { id: "C".into(), name: "c".into(), status: StepStatus::Completed },
                 PipelineStep { id: "A".into(), name: "a".into(), status: StepStatus::Completed },
@@ -395,7 +555,6 @@ mod tests {
     #[test]
     fn ac019_duplicate_ids_render_without_error_or_dedup() {
         let p = Pipeline {
-            id: "p".into(),
             steps: vec![
                 PipelineStep { id: "dup".into(), name: "first".into(), status: StepStatus::Completed },
                 PipelineStep { id: "dup".into(), name: "second".into(), status: StepStatus::Pending },
@@ -410,7 +569,6 @@ mod tests {
     #[test]
     fn ac020_empty_id_and_name_render_without_panic() {
         let p = Pipeline {
-            id: "p".into(),
             steps: vec![PipelineStep { id: String::new(), name: String::new(), status: StepStatus::Pending }],
         };
         assert_eq!(p.render(), "step[1]{id,name,status,reason}:\n  \"\",\"\",pending,null");
@@ -419,10 +577,7 @@ mod tests {
     #[test]
     fn ac025_embedded_newline_in_id_is_quoted_and_escaped() {
         let id: String = ['l', 'i', 'n', 'e', '1', '\n', 'l', 'i', 'n', 'e', '2'].into_iter().collect();
-        let p = Pipeline {
-            id: "p".into(),
-            steps: vec![PipelineStep { id, name: "ok".into(), status: StepStatus::Pending }],
-        };
+        let p = Pipeline { steps: vec![PipelineStep { id, name: "ok".into(), status: StepStatus::Pending }] };
         assert_eq!(p.render(), "step[1]{id,name,status,reason}:\n  \"line1\\nline2\",ok,pending,null");
     }
 
@@ -434,38 +589,29 @@ mod tests {
     #[test]
     fn ac025_embedded_newline_in_name_is_also_quoted_and_escaped() {
         let name: String = ['l', 'i', 'n', 'e', '1', '\n', 'l', 'i', 'n', 'e', '2'].into_iter().collect();
-        let p = Pipeline {
-            id: "p".into(),
-            steps: vec![PipelineStep { id: "ok".into(), name, status: StepStatus::Pending }],
-        };
+        let p = Pipeline { steps: vec![PipelineStep { id: "ok".into(), name, status: StepStatus::Pending }] };
         assert_eq!(p.render(), "step[1]{id,name,status,reason}:\n  ok,\"line1\\nline2\",pending,null");
     }
 
     #[test]
     fn ac026_embedded_quote_in_id_is_escaped_within_quoted_field() {
         let id: String = ['a', '"', 'b'].into_iter().collect();
-        let p = Pipeline {
-            id: "p".into(),
-            steps: vec![PipelineStep { id, name: "c".into(), status: StepStatus::Pending }],
-        };
+        let p = Pipeline { steps: vec![PipelineStep { id, name: "c".into(), status: StepStatus::Pending }] };
         assert_eq!(p.render(), "step[1]{id,name,status,reason}:\n  \"a\\\"b\",c,pending,null");
     }
 
     #[test]
     fn ac027_clone_is_deep_and_independent() {
-        let p = Pipeline {
-            id: "orig".into(),
-            steps: vec![PipelineStep { id: "s".into(), name: "n".into(), status: StepStatus::Completed }],
-        };
+        let p =
+            Pipeline { steps: vec![PipelineStep { id: "s".into(), name: "n".into(), status: StepStatus::Completed }] };
         let mut q = p.clone();
-        assert_eq!(q.id, "orig");
         assert_eq!(q.steps.len(), 1);
         assert_eq!(q.steps[0].id, "s");
         assert_eq!(q.steps[0].name, "n");
         assert_eq!(q.steps[0].status, StepStatus::Completed);
 
-        q.id = "changed".to_string();
-        assert_eq!(p.id, "orig", "mutating the clone must not affect the original");
+        q.steps[0].name = "changed".to_string();
+        assert_eq!(p.steps[0].name, "n", "mutating the clone must not affect the original");
     }
 
     #[test]
@@ -475,7 +621,7 @@ mod tests {
             format!("{:?}", PipelineStep { id: "s".into(), name: "n".into(), status: StepStatus::Failed }),
             "PipelineStep { id: \"s\", name: \"n\", status: Failed }"
         );
-        assert_eq!(format!("{:?}", Pipeline::default()), "Pipeline { id: \"\", steps: [] }");
+        assert_eq!(format!("{:?}", Pipeline::default()), "Pipeline { steps: [] }");
     }
 
     #[test]
@@ -487,10 +633,7 @@ mod tests {
     #[test]
     fn ac030_embedded_carriage_return_in_id_is_quoted_and_escaped() {
         let id: String = ['l', 'i', 'n', 'e', '1', '\r', 'l', 'i', 'n', 'e', '2'].into_iter().collect();
-        let p = Pipeline {
-            id: "p".into(),
-            steps: vec![PipelineStep { id, name: "ok".into(), status: StepStatus::Pending }],
-        };
+        let p = Pipeline { steps: vec![PipelineStep { id, name: "ok".into(), status: StepStatus::Pending }] };
         assert_eq!(p.render(), "step[1]{id,name,status,reason}:\n  \"line1\\rline2\",ok,pending,null");
     }
 }

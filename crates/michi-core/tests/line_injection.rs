@@ -4,8 +4,8 @@
 use michi_core::resilience::render_already_done;
 use michi_core::toon::{render_toon, ToonOptions, Value};
 use michi_core::{
-    empty_state, render_hints, render_kv, render_recovery, DomainError, ErrorCode, FailedOp, Hint, KvItem, KvValue,
-    PartialSuccess, RecoveryHint, StatusItem, StatusResponse,
+    render_hints, render_kv, render_recovery, AgentResponse, CompletedOp, DomainError, ErrorCode, FailedOp, Hint,
+    KvItem, KvValue, OutputFormat, PartialSuccess, RecoveryHint, SkippedOp, StatusItem, StatusResponse,
 };
 
 mod support;
@@ -45,7 +45,7 @@ fn assert_param_round_trips(hint: RecoveryHint, expected_params: serde_json::Val
 }
 
 fn kv(key: &str, value: &str) -> String {
-    render_kv(&[KvItem::new(key, KvValue::Text(value.into()))], None, &[]).expect("valid")
+    render_kv(&[KvItem::new(key, KvValue::Text(value.into()))]).expect("valid")
 }
 
 #[test]
@@ -54,21 +54,14 @@ fn hints() {
 }
 
 #[test]
-fn empty_state_type_name() {
-    assert_not_injected(&empty_state(INJECTED));
+fn empty_response_type_name() {
+    assert_not_injected(&AgentResponse::new(INJECTED).render(OutputFormat::Text));
 }
 
 #[test]
 fn domain_error_message_and_hint() {
-    assert_not_injected(&DomainError::new(ErrorCode::NotFound, INJECTED).render());
-    assert_not_injected(&DomainError::new(ErrorCode::NotFound, "m").hint(INJECTED).render());
-}
-
-#[test]
-fn unified_error_variants() {
-    assert_not_injected(&michi_core::Error::InvalidInput(INJECTED.into()).render());
-    assert_not_injected(&michi_core::Error::NotFound(INJECTED.into()).render());
-    assert_not_injected(&michi_core::Error::Domain(DomainError::new(ErrorCode::NotFound, INJECTED)).render());
+    assert_not_injected(&DomainError::new(ErrorCode::NotFound, INJECTED).render(OutputFormat::Text));
+    assert_not_injected(&DomainError::new(ErrorCode::NotFound, "m").hint(INJECTED).render(OutputFormat::Text));
 }
 
 #[test]
@@ -95,12 +88,17 @@ fn kv_key_and_value() {
 fn already_done_fields() {
     assert_not_injected(&render_already_done(INJECTED, "s", &[]));
     assert_not_injected(&render_already_done("op", INJECTED, &[]));
-    assert_not_injected(&render_already_done("op", "s", &[INJECTED.to_string()]));
+    assert_not_injected(&render_already_done("op", "s", &[Hint::new(INJECTED)]));
 }
 
 #[test]
 fn partial_success_operations() {
-    let ps = PartialSuccess::new(vec![INJECTED.into()], vec![FailedOp::new("op", INJECTED)], vec![]);
+    let ps = PartialSuccess::try_new(
+        vec![CompletedOp::new(0, INJECTED)],
+        vec![FailedOp::new(1, INJECTED, INJECTED)],
+        vec![SkippedOp::new(2, INJECTED).reason(INJECTED)],
+    )
+    .expect("distinct indices");
     assert_not_injected(&ps.render());
 }
 
@@ -113,15 +111,17 @@ fn status_fields() {
 
 #[test]
 fn toon_hint() {
-    let opts = ToonOptions::new("t", vec![], vec![]).hints(vec![INJECTED.to_string()]);
-    assert_not_injected(&render_toon(&opts).expect("renders"));
+    assert_not_injected(&AgentResponse::new("t").hint(INJECTED).render(OutputFormat::Text));
 }
 
 #[test]
 fn toon_hint_keeps_ordinary_punctuation() {
-    let opts = ToonOptions::new("t", vec![], vec![]).hints(vec!["Call get_issue with id=<id>, then {retry}".into()]);
+    let response = AgentResponse::new("t").hint("Call get_issue with id=<id>, then {retry}");
     // The punctuation is kept verbatim; TOON 4.4 §7.2 requires quoting for the comma and braces, nothing is dropped.
-    assert_eq!(render_toon(&opts).expect("renders"), "t: []\nhelp[1]: \"Call get_issue with id=<id>, then {retry}\"");
+    assert_eq!(
+        response.render(OutputFormat::Text),
+        "t: []\ntotalCount: 0\nhelp[1]: \"Call get_issue with id=<id>, then {retry}\""
+    );
 }
 
 #[test]

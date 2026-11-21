@@ -1,6 +1,7 @@
 //! The scheduler loop (one for both modes) and the per-step retry loop.
 
 use std::collections::BTreeSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -51,6 +52,10 @@ struct Job {
     budget: Option<Arc<Mutex<RetryBudget>>>,
     grace: Duration,
     attempts: Attempts,
+    /// With durable starts: the observer that must save the step's in-flight marker before anything else runs.
+    durable: Option<Arc<dyn crate::DurableObserver>>,
+    /// Set when `record_start` panicked, so the scheduler can count it in `observer_panics`.
+    start_panicked: Arc<AtomicBool>,
 }
 
 /// A step's terminal result, before the scheduler adds timing and attempts.
@@ -68,6 +73,7 @@ struct Running {
     dispatched: Instant,
     attempts: Attempts,
     replay: Replay,
+    start_panicked: Arc<AtomicBool>,
 }
 
 /// Runs `plan` from `initial` and returns the record. Owns its `JoinSet`, so no step outlives the call.
@@ -248,12 +254,9 @@ impl<'a> Scheduler<'a> {
                     self.deadline_passed(i);
                     continue;
                 }
-                if let Some(durable) = self.opts.durable.as_deref() {
-                    if let Err(reason) = self.record_start(durable, i) {
-                        self.start_not_recorded(i, &reason);
-                        continue;
-                    }
-                } else {
+                // With durable starts the marker is saved by the step's own task (see `run_step`), not here, so one
+                // slow save delays only its step.
+                if self.opts.durable.is_none() {
                     let opts = self.opts;
                     let step_id = self.plan.steps()[i].id();
                     if observe(opts, |o| o.on_step_started(&self.run_id, step_id)) {
@@ -366,37 +369,11 @@ impl<'a> Scheduler<'a> {
         }
     }
 
-    /// With durable starts: asks the observer to save step `i`'s in-flight marker. `Err` says why the step must not
-    /// run: the observer refused or panicked.
-    fn record_start(&mut self, observer: &dyn crate::DurableObserver, i: usize) -> Result<(), String> {
-        let step_id = self.plan.steps()[i].id();
-        // AssertUnwindSafe: as in `observe`, the scheduler's own state is untouched by the observer.
-        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| observer.record_start(&self.run_id, step_id))) {
-            Ok(result) => result,
-            Err(payload) => {
-                self.observer_panics = self.observer_panics.saturating_add(1);
-                Err(format!("record_start panicked: {}", panic_message(payload.as_ref())))
-            }
-        }
-    }
-
-    /// Step `i`'s start could not be recorded, so it was not dispatched: it ends `NotRun(StartNotRecorded)` and
-    /// counts as a failure (its dependents are skipped, and fail-fast stops the run).
-    fn start_not_recorded(&mut self, i: usize, reason: &str) {
-        let step = &self.plan.steps()[i];
-        let mut record = StepRecord::new(
-            step.id().clone(),
-            step.name().to_string(),
-            StepStatus::NotRun(NotRunReason::StartNotRecorded),
-        );
-        record.reason = Some(format!("its start could not be recorded, so it was not run: {reason}"));
-        self.failed(i, record);
-    }
-
     /// Builds the job for step `i` and the scheduler's bookkeeping for it.
     fn job(&self, i: usize) -> (Job, Running) {
         let step = &self.plan.steps()[i];
         let attempts: Attempts = Arc::default();
+        let start_panicked = Arc::new(AtomicBool::new(false));
         let replay = step.replay();
         let breaker = self.opts.breakers.as_ref().map(|registry| {
             let key = step.effective_breaker_key().to_string();
@@ -424,8 +401,10 @@ impl<'a> Scheduler<'a> {
             budget: self.budget.clone(),
             grace: self.opts.cancel_grace,
             attempts: Arc::clone(&attempts),
+            durable: self.opts.durable.clone(),
+            start_panicked: Arc::clone(&start_panicked),
         };
-        (job, Running { index: i, slot: self.slot_of[i], dispatched: Instant::now(), attempts, replay })
+        (job, Running { index: i, slot: self.slot_of[i], dispatched: Instant::now(), attempts, replay, start_panicked })
     }
 
     fn step_finished(&mut self, entry: Running, outcome: Outcome) {
@@ -434,6 +413,9 @@ impl<'a> Scheduler<'a> {
         let mut record = StepRecord::new(step.id().clone(), step.name().to_string(), outcome.status);
         record.reason = outcome.reason;
         record.error = outcome.error;
+        if entry.start_panicked.load(Ordering::Acquire) {
+            self.observer_panics = self.observer_panics.saturating_add(1);
+        }
         record.attempts = std::mem::take(&mut *lock(&entry.attempts));
         if outcome.status == StepStatus::Panicked {
             let attempt = u32::try_from(record.attempts.len()).unwrap_or(u32::MAX);
@@ -444,8 +426,11 @@ impl<'a> Scheduler<'a> {
                 elapsed: entry.dispatched.elapsed(),
             });
         }
-        record.started_at = Some(entry.dispatched.duration_since(self.run_start));
-        record.elapsed = Some(entry.dispatched.elapsed());
+        // A step whose start was never recorded was never invoked, so it has no start time or duration.
+        if outcome.status != StepStatus::NotRun(NotRunReason::StartNotRecorded) {
+            record.started_at = Some(entry.dispatched.duration_since(self.run_start));
+            record.elapsed = Some(entry.dispatched.elapsed());
+        }
 
         if record.status.is_success() {
             self.completion_order.push(record.step_id.clone());
@@ -662,14 +647,60 @@ async fn attempt_once(
     }
 }
 
+/// Saves the step's in-flight marker on a blocking thread, so a slow save (file or database I/O) ties up neither the
+/// scheduler nor the other steps. The step waits for it: nothing of the step runs until this returns `Ok`.
+async fn record_start(durable: Arc<dyn crate::DurableObserver>, job: &Job) -> Result<(), String> {
+    let (run_id, step_id) = (job.run_id.clone(), job.step_id.clone());
+    // AssertUnwindSafe: the observer is caller code and the scheduler's own state is not reachable from it.
+    let saved = tokio::task::spawn_blocking(move || {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| durable.record_start(&run_id, &step_id)))
+    })
+    .await;
+    match saved {
+        Ok(Ok(result)) => result,
+        Ok(Err(payload)) => {
+            job.start_panicked.store(true, Ordering::Release);
+            Err(format!("record_start panicked: {}", panic_message(payload.as_ref())))
+        }
+        // The blocking pool shut down under us (the runtime is being dropped).
+        Err(join_err) => Err(format!("record_start did not finish: {join_err}")),
+    }
+}
+
 /// Admission, the retry loop and classification for one step.
 async fn run_step(job: Job) -> Outcome {
+    let cancelled_before_start = || Outcome {
+        status: StepStatus::Skipped(SkipReason::Cancelled),
+        error: None,
+        reason: Some("run cancelled before the step started".to_string()),
+    };
     if job.token.is_cancelled() {
-        return Outcome {
-            status: StepStatus::Skipped(SkipReason::Cancelled),
-            error: None,
-            reason: Some("run cancelled before the step started".to_string()),
-        };
+        return cancelled_before_start();
+    }
+    if let Some(durable) = job.durable.clone() {
+        if let Err(reason) = record_start(durable, &job).await {
+            return Outcome {
+                status: StepStatus::NotRun(NotRunReason::StartNotRecorded),
+                error: None,
+                reason: Some(format!("its start could not be recorded, so it was not run: {reason}")),
+            };
+        }
+        // The save can take long enough for the run to change under the step: a cancel or a fail-fast stop lands, or
+        // its deadline group's window (opened at dispatch) ends. Look again, so the step ends as it would have had
+        // that happened just before dispatch, rather than starting work only to be interrupted.
+        if job.token.is_cancelled() {
+            return cancelled_before_start();
+        }
+        if let Some((end, key)) = &job.group_deadline {
+            if Instant::now() >= *end {
+                let message = format!("the window of deadline group {key} ended before the step started");
+                return Outcome {
+                    status: StepStatus::Failed,
+                    reason: Some(format!("{message}, so it was not run")),
+                    error: Some(ExecutionError::DeadlinePassed { message }),
+                };
+            }
+        }
     }
     let guard = match &job.breaker {
         Some((key, breaker)) => match breaker.admit() {

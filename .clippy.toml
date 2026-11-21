@@ -15,6 +15,11 @@ disallowed-macros = [
     { path = "std::println",  reason = "library code must not print to stdout" },
     { path = "std::eprintln", reason = "library code must not print to stderr" },
     { path = "std::dbg",      reason = "debug macro must not ship in library code" },
+    # Debug and release builds must behave the same (06-decisions, "Envelope implementation deviations"): render paths
+    # normalize or return an error instead of asserting in one profile only.
+    { path = "std::debug_assert",    reason = "debug and release must behave the same" },
+    { path = "std::debug_assert_eq", reason = "debug and release must behave the same" },
+    { path = "std::debug_assert_ne", reason = "debug and release must behave the same" },
 ]
 
 # CLAUDE.md: BTreeMap for output maps, HashMap for internal state only.

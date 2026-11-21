@@ -19,7 +19,7 @@ assert.equal(platformManifest.version, version, `${platformPackage} version`)
 console.log(`resolved platform package: ${platformManifest.name}@${platformManifest.version}`)
 
 // Loading the module loads the native binary: a missing or broken one throws here.
-const { renderToon, emptyState, AgentResponse } = require('@orin-dx/michi')
+const { renderToon, AgentResponse } = require('@orin-dx/michi')
 
 const toon = renderToon({
   typeName: 'issues',
@@ -36,8 +36,6 @@ const toon = renderToon({
       { type: 'str', strVal: 'open' },
     ],
   ],
-  totalCount: 8771,
-  hints: ['Run `gh-axi issue view <number>` to view an issue'],
 })
 assert.equal(
   toon,
@@ -45,12 +43,10 @@ assert.equal(
     'issues[2]{number,title,state}:',
     '  51815,"[Bug]: Telegram plugin",open',
     '  51812,dark mode request,open',
-    'totalCount: 8771',
-    'help[1]: Run `gh-axi issue view <number>` to view an issue',
   ].join('\n'),
 )
 
-assert.equal(emptyState('issues'), 'issues: []\ntotalCount: 0')
+assert.equal(new AgentResponse('issues').renderText(), 'issues: []\ntotalCount: 0')
 
 const response = new AgentResponse('issues')
 response.items(
@@ -63,14 +59,14 @@ response.items(
   ['id', 'name'],
 )
 response.hint('Run `next`')
-assert.equal(response.renderToon(), 'issues[1]{id,name}:\n  1,one\nhelp[1]: Run `next`')
+assert.equal(response.renderText(), 'issues[1]{id,name}:\n  1,one\nhelp[1]: Run `next`')
 const result = response.toCallToolResult()
 assert.equal(result.isError, false)
 assert.ok(result.content.length >= 1)
 
 // An error path crosses the native boundary as a catchable JS error.
 assert.throws(
-  () => renderToon({ typeName: 'help', fields: ['x'], rows: [[{ type: 'str', strVal: 'v' }]], hints: [] }),
+  () => renderToon({ typeName: 'help', fields: ['x'], rows: [[{ type: 'str', strVal: 'v' }]] }),
   /toon_validation_failed/,
 )
 

@@ -18,4 +18,5 @@ Use `Proposed` while a decision is under review and `Accepted` once it is implem
 | [0006](0006-toon-4-4-conformance.md) | Every agent-facing block is TOON 4.4 encoder output; no michi dialect. | Accepted |
 | [0007](0007-pipeline-plans-records-replay.md) | Run pipelines from a validated plan into a strict run record, with one replay rule for retries and resume. | Accepted; amended in 0.5 |
 | [0008](0008-capacity-limits.md) | Cap core document shapes and give every NAPI call a length and byte budget. | Accepted |
-| [0009](0009-v1-positioning-and-criteria.md) | Position michi as a response contract with a pluggable body encoding, and earn 1.0 by use. | Proposed |
+| [0009](0009-v1-positioning-and-criteria.md) | Position michi as a response contract with a pluggable body encoding, and earn 1.0 by use. | Proposed; envelope deferral superseded by ADR 10 |
+| [0010](0010-response-envelope-accepted.md) | Build the multi-section response envelope (sections, budget, provenance) now. Supersedes ADR 9's "stays a proposal" line. | Accepted |

@@ -9,8 +9,9 @@ use michi_core::resilience::render_already_done;
 use michi_core::response::{AgentResponse, OutputFormat};
 use michi_core::toon::Value;
 use michi_core::{
-    append_hints, append_recovery, empty_state_with_hints, render_hints, render_kv, render_recovery, DomainError,
-    ErrorCode, FailedOp, Health, Hint, KvItem, KvValue, PartialSuccess, RecoveryHint, StatusItem, StatusResponse,
+    append_hints, append_recovery, render_hints, render_kv, render_recovery, CompletedOp, DomainError, ErrorCode,
+    FailedOp, Health, Hint, KvItem, KvValue, PartialSuccess, RecoveryHint, Section, SkippedOp, StatusItem,
+    StatusResponse,
 };
 
 mod support;
@@ -26,7 +27,7 @@ fn kv(key: &str, value: KvValue) -> KvItem {
 }
 
 fn kv_doc(items: &[KvItem]) -> String {
-    render_kv(items, None, &[]).expect("valid KV items")
+    render_kv(items).expect("valid KV items")
 }
 
 // --- KV block --------------------------------------------------------------------------------------------------------
@@ -42,7 +43,11 @@ fn kv_block_is_a_root_object_with_one_space_after_each_colon() {
         kv("wait", KvValue::Duration(Duration::from_millis(1500))),
         kv("gone", KvValue::Missing),
     ];
-    let out = render_kv(&items, Some(10), &[Hint::new("a, b")]).expect("valid");
+    // `totalCount` and `help[]` come from the composer, which owns both.
+    let out = AgentResponse::new("t")
+        .section(Section::kv("k", items.to_vec()).total_count(Some(10)))
+        .hint("a, b")
+        .render(OutputFormat::Text);
     assert_eq!(
         out,
         "id: abc-123\ntitle: Fix login\ncount: 3\nratio: 0.5\nok: true\nwait: 1.5s\ngone: null\ntotalCount: 10\n\
@@ -99,28 +104,37 @@ fn kv_floats_round_to_the_given_decimals_then_render_canonically() {
 #[test]
 fn kv_duplicate_key_is_rejected() {
     let items = [kv("a", KvValue::Int(1)), kv("a", KvValue::Int(2))];
-    assert_eq!(render_kv(&items, None, &[]), Err(KvError::DuplicateKey { key: "a".into() }));
+    assert_eq!(render_kv(&items), Err(KvError::DuplicateKey { key: "a".into() }));
     assert_eq!(KvError::DuplicateKey { key: "a".into() }.to_string(), "key \"a\" appears more than once");
 }
 
 #[test]
 fn kv_reserved_root_keys_are_rejected_even_when_unused() {
-    for key in ["totalCount", "help", "recovery"] {
-        assert_eq!(
-            render_kv(&[kv(key, KvValue::Int(1))], None, &[]),
-            Err(KvError::ReservedKey { key: key.into() }),
-            "{key}"
-        );
+    let reserved = [
+        "totalCount",
+        "help",
+        "recovery",
+        "truncated",
+        "budget",
+        "sections",
+        "provenance",
+        "error",
+        "message",
+        "causes",
+        "exit_code",
+    ];
+    for key in reserved {
+        assert_eq!(render_kv(&[kv(key, KvValue::Int(1))]), Err(KvError::ReservedKey { key: key.into() }), "{key}");
     }
     assert_eq!(
         KvError::ReservedKey { key: "help".into() }.to_string(),
-        "key \"help\" is a reserved document key (totalCount, help, recovery)"
+        format!("key \"help\" is a reserved document key ({})", reserved.join(", "))
     );
 }
 
 #[test]
 fn kv_empty_items_is_the_empty_document() {
-    assert_eq!(render_kv(&[], Some(3), &[Hint::new("h")]), Ok(String::new()));
+    assert_eq!(render_kv(&[]), Ok(String::new()));
 }
 
 // --- help block and composition --------------------------------------------------------------------------------------
@@ -152,8 +166,8 @@ fn append_helpers_join_documents_with_one_lf_and_leave_no_trailing_newline() {
 }
 
 #[test]
-fn empty_state_with_hints_is_conformant() {
-    let out = empty_state_with_hints("issue", &[Hint::new("Try list_issues with a broader filter")]);
+fn an_empty_response_with_hints_is_conformant() {
+    let out = AgentResponse::new("issue").hint("Try list_issues with a broader filter").render(OutputFormat::Text);
     assert_eq!(out, "issue: []\ntotalCount: 0\nhelp[1]: Try list_issues with a broader filter");
     conformant(&out);
 }
@@ -223,7 +237,7 @@ fn status_items_are_a_tabular_array_with_health_and_reason_columns() {
             StatusItem::new("workers", KvValue::Int(4)),
         ],
     )
-    .with_hints(vec![Hint::new("Call get_status for detail")]);
+    .hints(vec![Hint::new("Call get_status for detail")]);
     let out = resp.render();
     assert_eq!(
         out,
@@ -237,7 +251,7 @@ fn status_items_are_a_tabular_array_with_health_and_reason_columns() {
 #[test]
 fn status_without_items_has_an_empty_items_array() {
     let out = StatusResponse::new("t", "d", vec![]).render();
-    assert_eq!(out, "tool: t\ndescription: d\nitems: []");
+    assert_eq!(out, "tool: t\ndescription: d\nitems: []\ntotalCount: 0");
     conformant(&out);
 }
 
@@ -245,7 +259,7 @@ fn status_without_items_has_an_empty_items_array() {
 #[test]
 fn status_item_keys_cannot_collide_with_root_keys() {
     let items = ["tool", "help", "help"].into_iter().map(|k| StatusItem::new(k, KvValue::Missing)).collect();
-    let out = StatusResponse::new("t", "a, b", items).with_hints(vec![Hint::new("h")]).render();
+    let out = StatusResponse::new("t", "a, b", items).hints(vec![Hint::new("h")]).render();
     assert_eq!(
         out,
         "tool: t\ndescription: \"a, b\"\nitems[3]{key,value,health,reason}:\n  tool,null,null,null\n  \
@@ -258,7 +272,7 @@ fn status_item_keys_cannot_collide_with_root_keys() {
 
 #[test]
 fn already_done_is_a_root_object() {
-    let out = render_already_done("delete_item", "item 42 was deleted in run abc", &["use get_item".to_string()]);
+    let out = render_already_done("delete_item", "item 42 was deleted in run abc", &[Hint::new("use get_item")]);
     assert_eq!(
         out,
         "operation: delete_item\nstatus: already_done\nsummary: item 42 was deleted in run abc\nhelp[1]: use get_item"
@@ -276,7 +290,7 @@ fn domain_error_is_a_root_object_with_help_and_recovery() {
     let e = DomainError::new(ErrorCode::NotFound, "Issue #9999 does not exist: check the number")
         .hint("Call list_issues to see available numbers")
         .recovery(RecoveryHint::new("list_issues").param("state", KvValue::Text("open".into())));
-    let out = e.render();
+    let out = e.render(OutputFormat::Text);
     assert_eq!(
         out,
         "error: not_found\nmessage: \"Issue #9999 does not exist: check the number\"\nexit_code: 1\n\
@@ -288,18 +302,8 @@ fn domain_error_is_a_root_object_with_help_and_recovery() {
 
 #[test]
 fn domain_error_without_hints_or_recovery() {
-    let out = DomainError::new(ErrorCode::RateLimited, "slow down").render();
+    let out = DomainError::new(ErrorCode::RateLimited, "slow down").render(OutputFormat::Text);
     assert_eq!(out, "error: rate_limited\nmessage: slow down\nexit_code: 1");
-    conformant(&out);
-}
-
-#[test]
-fn unified_error_variants_use_the_domain_error_shape() {
-    let out = michi_core::Error::InvalidInput("field 'name' is required".into()).render();
-    assert_eq!(out, "error: invalid_input\nmessage: field 'name' is required\nexit_code: 1");
-    conformant(&out);
-    let out = michi_core::Error::NotFound("issue 42".into()).render();
-    assert_eq!(out, "error: not_found\nmessage: issue 42\nexit_code: 1");
     conformant(&out);
 }
 
@@ -307,37 +311,45 @@ fn unified_error_variants_use_the_domain_error_shape() {
 
 #[test]
 fn partial_success_full_example() {
-    let ps = PartialSuccess::new(
-        vec!["create_issue".into(), "add_label".into()],
-        vec![FailedOp::new("assign_user", "User 'ghost' not found")
+    let ps = PartialSuccess::try_new(
+        vec![CompletedOp::new(0, "create_issue"), CompletedOp::new(1, "add_label")],
+        vec![FailedOp::new(2, "assign_user", "User 'ghost' not found")
             .recovery(RecoveryHint::new("assign_user").param("user", KvValue::Text("alice".into())))],
-        vec!["notify_team".into()],
-    );
+        vec![SkippedOp::new(3, "notify_team").reason("budget_exhausted")],
+    )
+    .expect("distinct indices");
     let out = ps.render();
     assert_eq!(
         out,
-        "partial_success: \"2 completed, 1 failed, 1 skipped\"\ncompleted[2]: create_issue,add_label\n\
-         failed[1]{operation,reason}:\n  assign_user,User 'ghost' not found\nskipped[1]: notify_team\n\
+        "partial_success[4]{index,operation,status,reason}:\n  0,create_issue,completed,null\n  \
+         1,add_label,completed,null\n  2,assign_user,failed,User 'ghost' not found\n  \
+         3,notify_team,skipped,budget_exhausted\n\
          recovery[1]{tool,params,reason}:\n  assign_user,\"{\\\"user\\\":\\\"alice\\\"}\",null"
     );
     conformant(&out);
 }
 
 #[test]
-fn partial_success_empty_is_just_the_summary() {
-    let ps = PartialSuccess::new(vec![], vec![], vec![]);
+fn partial_success_empty_is_the_empty_list() {
+    let ps = PartialSuccess::default();
     let out = ps.render();
-    assert_eq!(out, "partial_success: \"0 completed, 0 failed, 0 skipped\"");
+    assert_eq!(out, "partial_success: []\ntotalCount: 0");
     conformant(&out);
 }
 
 #[test]
-fn partial_success_operation_names_are_quoted_in_inline_arrays() {
-    let ps = PartialSuccess::new(vec!["a, b".into(), "-x".into()], vec![], vec!["".into()]);
+fn partial_success_operation_names_are_quoted_in_table_cells() {
+    let ps = PartialSuccess::try_new(
+        vec![CompletedOp::new(0, "a, b"), CompletedOp::new(1, "-x")],
+        vec![],
+        vec![SkippedOp::new(2, "").reason("")],
+    )
+    .expect("distinct indices");
     let out = ps.render();
     assert_eq!(
         out,
-        "partial_success: \"2 completed, 0 failed, 1 skipped\"\ncompleted[2]: \"a, b\",\"-x\"\nskipped[1]: \"\""
+        "partial_success[3]{index,operation,status,reason}:\n  0,\"a, b\",completed,null\n  \
+         1,\"-x\",completed,null\n  2,\"\",skipped,\"\""
     );
     conformant(&out);
 }
@@ -347,12 +359,14 @@ fn partial_success_operation_names_are_quoted_in_inline_arrays() {
 #[test]
 fn agent_response_kv_body_composes_with_help_and_recovery() {
     let r = AgentResponse::new("t")
-        .kv_items(vec![kv("k", KvValue::Missing), kv("n", KvValue::Float(1.0, 3))])
-        .total_count(2)
+        .section(
+            michi_core::Section::kv("t", vec![kv("k", KvValue::Missing), kv("n", KvValue::Float(1.0, 3))])
+                .total_count(Some(3)),
+        )
         .hint("h")
         .recovery_hint(RecoveryHint::new("r").reason("why"));
     let out = r.render(OutputFormat::Text);
-    assert_eq!(out, "k: null\nn: 1\ntotalCount: 2\nhelp[1]: h\nrecovery[1]{tool,params,reason}:\n  r,\"{}\",why");
+    assert_eq!(out, "k: null\nn: 1\ntotalCount: 3\nhelp[1]: h\nrecovery[1]{tool,params,reason}:\n  r,\"{}\",why");
     conformant(&out);
 }
 
@@ -380,7 +394,7 @@ fn agent_response_kv_duplicate_or_reserved_key_is_a_validation_error() {
     assert_eq!(
         out,
         "error: kv_validation_failed\nmessage: \"key \\\"recovery\\\" is a reserved document key (totalCount, help, \
-         recovery)\"\nhelp[1]: h"
+         recovery, truncated, budget, sections, provenance, error, message, causes, exit_code)\"\nhelp[1]: h"
     );
     assert!(reserved.to_call_tool_result().is_error);
     conformant(&out);

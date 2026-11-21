@@ -2,10 +2,10 @@
 source: crates/michi-core/tests/snapshot_tests.rs
 expression: ps.render()
 ---
-partial_success: "2 completed, 1 failed, 1 skipped"
-completed[2]: create_issue,add_label
-failed[1]{operation,reason}:
-  assign_user,User 'ghost' not found
-skipped[1]: notify_team
+partial_success[4]{index,operation,status,reason}:
+  0,create_issue,completed,null
+  1,add_label,completed,null
+  2,assign_user,failed,User 'ghost' not found
+  3,notify_team,skipped,budget_exhausted
 recovery[1]{tool,params,reason}:
   assign_user,"{\"user\":\"alice\"}",null

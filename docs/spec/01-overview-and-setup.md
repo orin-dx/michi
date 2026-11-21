@@ -13,15 +13,15 @@ michi encodes the subset of AXI that's pure, language-agnostic computation — t
 
 **Seven of the ten principles, as typed Rust:**
 
-| Principle                           | Module(s)                                             |
-| ----------------------------------- | ----------------------------------------------------- |
-| P1 — Token-Efficient Output         | `toon`, `kv`                                          |
-| P3 — Content Truncation             | `truncate`, `truncation`                              |
-| P4 — Pre-Computed Aggregates        | `ToonOptions::total_count`, `status` health summaries |
-| P5 — Definitive Empty States        | `empty`                                               |
-| P6 — Structured Errors & Exit Codes | `error`, `idempotency`                                |
-| P8 — Content First                  | `status`                                              |
-| P9 — Contextual Disclosure          | `hints`, `recovery`                                   |
+| Principle                           | Module(s)                                         |
+| ----------------------------------- | ------------------------------------------------- |
+| P1 — Token-Efficient Output         | `toon`, `kv`                                      |
+| P3 — Content Truncation             | `truncate`, `truncation`                          |
+| P4 — Pre-Computed Aggregates        | `Section::total_count`, `status` health summaries |
+| P5 — Definitive Empty States        | an empty `Section` / `AgentResponse`              |
+| P6 — Structured Errors & Exit Codes | `error`, `idempotency`                            |
+| P8 — Content First                  | `status`                                          |
+| P9 — Contextual Disclosure          | `hints`, `recovery`                               |
 
 The other three stay out of scope on purpose.
 
@@ -95,6 +95,8 @@ members = [
   "crates/michi-pipeline",
   "packages/michi-node",
 ]
+# fuzz/ is a standalone cargo-fuzz project (nightly only, own lockfile), kept out of the workspace.
+exclude = ["fuzz"]
 resolver = "2"
 
 [workspace.package]
@@ -106,8 +108,8 @@ license = "FSL-1.1-MIT"
 
 [workspace.dependencies]
 # Exact pin: workspace crates release in lockstep, so a mixed set must never resolve.
-michi-core = { path = "crates/michi-core", version = "=0.7.0" }
-michi-graph = { path = "crates/michi-graph", version = "=0.7.0" }
+michi-core = { path = "crates/michi-core", version = "=0.9.0" }
+michi-graph = { path = "crates/michi-graph", version = "=0.9.0" }
 thiserror = "2"
 compact_str = "0.10"
 serde = { version = "1.0.228", features = ["derive"] }
@@ -122,7 +124,7 @@ tokio = { version = "1", features = ["time"] }
 ```toml
 [package]
 name = "michi-core"
-version = "0.7.0" # written by Callisto
+version = "0.9.0" # written by Callisto
 
 [dependencies]
 compact_str = { workspace = true }
@@ -154,7 +156,7 @@ Default features add no runtime dependencies beyond `thiserror` and `compact_str
 - `preserve_order` keeps `toon::list()`'s field order matching each struct's declared order instead of alphabetizing it.
 - `schemars` (1.x, implies `serde`) derives `JsonSchema` on the types serde serializes, generating JSON Schema 2020-12; `miette` implements `miette::Diagnostic` for `DomainError`.
 
-Consumers who want to write `use michi::...` rename the dependency: `michi = { package = "michi-core", version = "0.7" }`.
+Consumers who want to write `use michi::...` rename the dependency: `michi = { package = "michi-core", version = "0.9" }`.
 
 `pipeline`/`fuzzy`/`cache`/`cli` **execution** is not a Cargo feature of `michi-core` at all, and never will be.
 
@@ -176,7 +178,7 @@ michi/                           (workspace root — virtual manifest, no packag
       src/
         lib.rs                   # module declarations, explicit root re-exports (incl. resilience and truncate items), Result<T>
         audience.rs              # Audience — always compiled
-        empty.rs                 # empty_state(), empty_state_with_hints() and their try_ forms
+        budget.rs                # BudgetSummary and its render/JSON (roll-up derived from the sections)
         error.rs                 # Error, ErrorCode, DomainError, ErrorClass, Sensitive<T>,
                                   # MAY_HAVE_TAKEN_EFFECT_HINT
         float_wire.rs            # serde wire form for non-finite floats (serde feature, private)
@@ -185,24 +187,34 @@ michi/                           (workspace root — virtual manifest, no packag
                                   # (that's resilience::AlreadyDone/already_done(); the
                                   # module name is a known, tracked naming staleness)
         int_schema.rs            # integer JSON Schemas (schemars feature, private)
+        json.rs                  # the hand-built JSON writers every structured companion shares (private)
         kv/mod.rs                # render_kv(), KvItem, KvValue, KvError
         mcp.rs                   # ContentBlock, CallToolResult, StructuredContentError — always compiled
-        napi.rs                  # #[napi] exports (napi feature only)
+        napi.rs                  # NAPI module root: docs, lints, module list (napi feature only)
         napi/
           num.rs                 # JsRanged/JsFloat/JsCount/... numeric-boundary newtype kernel
-          input.rs               # bounded, incremental conversion of collection and string arguments
+          input.rs               # bounded, incremental conversion of collection and string arguments; the caps
+          value.rs               # ToonValue / KvItem and their one conversion into core values
+          toon.rs                # renderToon, renderKv, renderStatus
+          hints.rs               # renderHints, appendHints, renderRecovery
+          outcome.rs             # renderDomainError, renderAlreadyDone, alreadyDone, renderPartialSuccess, renderPipeline
+          resilience.rs          # parseRetryAfter, nextRetryDelay, isRetryableStatus, truncate
+          response.rs            # the AgentResponse class, its cumulative budget, toCallToolResult
         pipeline/mod.rs          # Pipeline, PipelineStep, StepStatus and its reasons — data model + render only
+        provenance.rs            # ProvenanceBlock, ProvenanceEntry and their render/JSON
         recovery.rs              # RecoveryHint, render_recovery()
         resilience.rs            # RetryConfig, next_retry_delay(), parse_retry_after(),
                                   # is_retryable_status(), AlreadyDone, IdempotencyKey
         resilience/budget.rs     # RetryBudget
         response.rs              # AgentResponse builder, OutputFormat, DEFAULT_TRUNCATE_CELLS
+        section.rs               # Section, SectionBody (repeatable response blocks)
         status.rs                # StatusItem, StatusResponse, Health
         telemetry/mod.rs         # NoopProvider — zero-cost, always compiled
         toon/
           mod.rs                 # ToonOptions, ToonError, render_toon(), list() (serde feature), size limits
           escape.rs              # escape_value(), escape_value_quoted(), escape_key(); canonical numbers
           render.rs              # Value, ToonDocument; string assembly with pre-allocated capacity
+          table.rs               # the one writer for michi's own tabular blocks (truncated, totalCount, roll-up, …)
         truncate.rs              # Truncated, truncate()
         truncation.rs            # TruncationOutcome, truncate_by_count(), truncate_by_size()
       benches/

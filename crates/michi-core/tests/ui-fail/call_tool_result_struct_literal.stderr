@@ -5,6 +5,6 @@ error[E0639]: cannot create non-exhaustive struct using struct expression
   |  _____________^
 3 | |         content: vec![],
 4 | |         is_error: false,
-5 | |         structured_content: "{}".to_string(),
+5 | |         structured_content: None,
 6 | |     };
   | |_____^

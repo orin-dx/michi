@@ -6,7 +6,7 @@
 //! its data. Reporting what was cut is the same everywhere, so michi owns that contract and not the heuristic. Wrap
 //! whatever was kept in a [`TruncationOutcome`] (with [`TruncationOutcome::new`], or one of the two strategies michi
 //! ships, [`truncate_by_count`] and [`truncate_by_size`]) and every tool gets the same signal: the total before the
-//! cut, and a `help[]` hint worded the same way. [`AgentResponse::truncation`](crate::AgentResponse::truncation)
+//! cut, and a `help[]` hint worded the same way. [`AgentResponse::truncated_section`](crate::AgentResponse::truncated_section)
 //! puts both into a response.
 //!
 //! ```

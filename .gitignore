@@ -11,3 +11,6 @@ lcov.info
 /.moon/cache
 /.moon/hooks
 mutants.out/
+/.pnpm-store
+# `sed -i` backup files
+*-e

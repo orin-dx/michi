@@ -1,4 +1,3 @@
-use crate::hints::Hint;
 use std::fmt::Write as _;
 use std::time::Duration;
 
@@ -87,6 +86,21 @@ pub(crate) fn push_kv_value(out: &mut String, value: &KvValue) {
     }
 }
 
+/// A KV value as a TOON table cell that renders the same token: a float is rounded to its decimals first, a duration
+/// is the `1.5s` string, `Missing` is `null`. Used where a block of KV values becomes a table column (the status
+/// items).
+pub(crate) fn to_cell(value: &KvValue) -> crate::toon::Value {
+    use crate::toon::Value;
+    match value {
+        KvValue::Text(s) => Value::from(s.as_str()),
+        KvValue::Int(n) => Value::Int(*n),
+        KvValue::Float(f, decimals) => Value::Float(round_to_decimals(*f, *decimals)),
+        KvValue::Bool(b) => Value::Bool(*b),
+        KvValue::Duration(d) => Value::from(format!("{:.1}s", d.as_secs_f64())),
+        KvValue::Missing => Value::Null,
+    }
+}
+
 /// The decimal places `KvValue::Float` needs to reproduce `f` exactly: the fractional digits of its shortest exact
 /// representation (Rust's `Display` for f64, which never uses an exponent), so `1e-7` needs 7 and `2.0` needs 0.
 /// Non-finite values need 0. A value needing more than 254 places gets [`KvValue::FULL_PRECISION`], which never
@@ -109,66 +123,15 @@ fn round_to_decimals(f: f64, decimals: u8) -> f64 {
     format!("{f:.*}", usize::from(decimals)).parse().unwrap_or(f)
 }
 
-pub(crate) fn json_escape_str(out: &mut String, s: &str) {
-    out.push('"');
-    for ch in s.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            other if u32::from(other) < 0x20 => {
-                let code = u32::from(other);
-                out.push_str("\\u00");
-                out.push(char::from_digit(code >> 4, 16).unwrap_or('0'));
-                out.push(char::from_digit(code & 0xf, 16).unwrap_or('0'));
-            }
-            other => out.push(other),
-        }
-    }
-    out.push('"');
-}
-
-pub(crate) fn kv_value_to_json(out: &mut String, value: &KvValue) {
-    match value {
-        KvValue::Text(s) => json_escape_str(out, s),
-        KvValue::Int(n) => {
-            let _ = write!(out, "{n}");
-        }
-        KvValue::Float(f, decimals) => {
-            if !f.is_finite() {
-                // Not a JSON number: `null`, the same token the TOON body uses (§3), so the surfaces agree.
-                out.push_str("null");
-            } else if *decimals == KvValue::FULL_PRECISION {
-                // TOON's canonical number form is also valid JSON (`1e-300`, `1e+21`), and padding to 255 places
-                // would round a smaller value to zero.
-                crate::toon::push_f64(out, *f);
-            } else {
-                let _ = write!(out, "{f:.*}", *decimals as usize);
-            }
-        }
-        KvValue::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-        KvValue::Duration(d) => {
-            let mut secs = String::new();
-            let _ = write!(secs, "{:.1}s", d.as_secs_f64());
-            json_escape_str(out, &secs);
-        }
-        KvValue::Missing => out.push_str("null"),
-    }
-}
-
-/// Root keys michi composes next to a body (a TOON list's type entry or KV items), so a body may not use them: the
-/// document would otherwise hold a duplicate key, which TOON 4.4 §14.3 forbids.
-pub(crate) const RESERVED_ROOT_KEYS: [&str; 3] = ["totalCount", "help", "recovery"];
-
 /// Error returned by [`render_kv`] when the items cannot form a valid TOON document.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum KvError {
-    /// An item key is a root key michi composes next to the items (`totalCount`, `help` or `recovery`). It is
-    /// rejected whether or not that key is present in this document, so validity never depends on the data.
-    #[error("key {key:?} is a reserved document key (totalCount, help, recovery)")]
+    /// An item key is a root key michi writes itself (`totalCount`, `help`, `recovery`, `truncated`, `budget`,
+    /// `sections`, `provenance`, `error`, `message`, `causes` or `exit_code`). It is rejected whether or not that key
+    /// is present in this document, so validity never depends on the data, and caller data never renders as one of
+    /// michi's own blocks.
+    #[error("key {key:?} is a reserved document key ({})", crate::toon::ReservedRootKeys)]
     ReservedKey {
         /// The offending key.
         key: String,
@@ -185,7 +148,7 @@ pub enum KvError {
 pub(crate) fn validate_keys(items: &[KvItem]) -> Result<(), KvError> {
     let mut seen = std::collections::HashSet::with_capacity(items.len());
     for item in items {
-        if RESERVED_ROOT_KEYS.contains(&item.key.as_str()) {
+        if crate::toon::is_reserved_root_key(&item.key) {
             return Err(KvError::ReservedKey { key: item.key.clone() });
         }
         if !seen.insert(item.key.as_str()) {
@@ -205,32 +168,27 @@ pub(crate) fn push_kv_line(out: &mut String, key: &str, value: &KvValue) {
     push_kv_value(out, value);
 }
 
-/// Render key-value pairs as a TOON 4.4 root object (§8): one `key: value` line per item, then `totalCount: N` and
-/// the inline `help[N]: …` array when present, with no trailing newline.
+/// Render key-value pairs as a TOON 4.4 root object (§8): one `key: value` line per item, with no trailing newline.
 ///
 /// Keys are quoted per §7.3 and values written as TOON primitives (see [`KvValue`]). Exactly one space follows each
-/// colon, so values are not column-aligned. Returns the empty string (the empty TOON document) for empty `items`,
-/// ignoring `total_count` and `hints`.
+/// colon, so values are not column-aligned. Returns the empty string (the empty TOON document) for empty `items`.
+/// `totalCount` and `help[]` belong to [`crate::AgentResponse`]; add hints to a standalone block with
+/// [`crate::append_hints`].
 ///
 /// # Errors
 ///
-/// [`KvError::ReservedKey`] for an item key `totalCount`, `help` or `recovery`, and [`KvError::DuplicateKey`] for a
-/// repeated key: either would make the document hold a duplicate key (§14.3).
-pub fn render_kv(items: &[KvItem], total_count: Option<usize>, hints: &[Hint]) -> Result<String, KvError> {
+/// [`KvError::ReservedKey`] for an item key michi writes itself (see the variant), and [`KvError::DuplicateKey`] for a
+/// repeated key: either could make the document hold a duplicate key (§14.3).
+pub fn render_kv(items: &[KvItem]) -> Result<String, KvError> {
     if items.is_empty() {
         return Ok(String::new());
     }
     validate_keys(items)?;
-    let capacity = items.iter().map(|i| i.key.len() + 24).sum::<usize>() + hints.len() * 50 + 20;
+    let capacity = items.iter().map(|i| i.key.len() + 24).sum::<usize>() + 20;
     let mut out = String::with_capacity(capacity);
     for item in items {
         push_kv_line(&mut out, &item.key, &item.value);
     }
-    if let Some(total) = total_count {
-        out.push_str("\ntotalCount: ");
-        let _ = write!(out, "{total}");
-    }
-    crate::hints::append_hints(&mut out, hints);
     Ok(out)
 }
 
@@ -245,7 +203,7 @@ mod tests {
     }
 
     fn render(items: &[KvItem]) -> String {
-        render_kv(items, None, &[]).expect("valid items")
+        render_kv(items).expect("valid items")
     }
 
     #[test]
@@ -327,7 +285,7 @@ mod tests {
             let v = KvValue::Float(f, u8::MAX);
             assert_eq!(value(&v), expected, "TOON for {f:e}");
             let mut json = String::new();
-            kv_value_to_json(&mut json, &v);
+            crate::json::push_kv_value(&mut json, &v);
             assert_eq!(json, expected, "JSON for {f:e}");
             let back: f64 = json.parse().expect("a JSON number");
             assert_eq!(back.to_bits(), f.to_bits(), "{json} must read back as {f:e}");
@@ -339,13 +297,6 @@ mod tests {
     fn explicit_decimals_still_round_tiny_values() {
         assert_eq!(value(&KvValue::Float(1e-300, 2)), "0");
         assert_eq!(value(&KvValue::Float(1e-300, 254)), "0");
-    }
-
-    // AC-017: total_count and hints are NOT rendered when items is empty — not just the trivial all-None/empty case,
-    // but with both set.
-    #[test]
-    fn ac017_empty_items_ignores_total_count_and_hints() {
-        assert_eq!(render_kv(&[], Some(42), &[Hint::from("x")]), Ok(String::new()));
     }
 
     // AC-018 (superseded): values are no longer column-aligned; TOON 4.4 §8/§12 require exactly one space after the
@@ -371,15 +322,9 @@ mod tests {
     }
 
     #[test]
-    fn render_kv_total_count_appended() {
-        let items = vec![KvItem { key: "id".into(), value: KvValue::Int(1) }];
-        assert_eq!(render_kv(&items, Some(42), &[]), Ok("id: 1\ntotalCount: 42".to_string()));
-    }
-
-    #[test]
     fn render_kv_capacity_covers_the_items() {
         let items = vec![KvItem { key: "id".into(), value: KvValue::Int(1) }];
-        let out = render_kv(&items, None, &[]).expect("valid");
+        let out = render_kv(&items).expect("valid");
         assert!(out.capacity() >= "id".len() + 24, "capacity {} too small", out.capacity());
     }
 
@@ -392,7 +337,7 @@ mod tests {
         for (f, decimals) in [(f64::NAN, 2), (f64::INFINITY, 0), (f64::NEG_INFINITY, 0)] {
             let v = KvValue::Float(f, decimals);
             let mut json = String::new();
-            kv_value_to_json(&mut json, &v);
+            crate::json::push_kv_value(&mut json, &v);
             assert_eq!(json, "null", "{v:?}");
             assert_eq!(json, value(&v), "JSON and TOON tokens must agree for {v:?}");
         }
@@ -402,7 +347,7 @@ mod tests {
     #[test]
     fn float_nan_in_json_is_valid_json_with_serde() {
         let mut out = String::new();
-        kv_value_to_json(&mut out, &KvValue::Float(f64::NAN, 2));
+        crate::json::push_kv_value(&mut out, &KvValue::Float(f64::NAN, 2));
         let parsed: serde_json::Value = serde_json::from_str(&out).expect("must be valid JSON");
         assert!(parsed.is_null(), "NaN must be JSON null");
     }
@@ -411,7 +356,7 @@ mod tests {
     #[test]
     fn ac041_missing_renders_as_bare_json_null() {
         let mut out = String::new();
-        kv_value_to_json(&mut out, &KvValue::Missing);
+        crate::json::push_kv_value(&mut out, &KvValue::Missing);
         assert_eq!(out, "null");
     }
 
@@ -420,7 +365,7 @@ mod tests {
     #[test]
     fn ac044_duration_renders_as_quoted_json_string() {
         let mut out = String::new();
-        kv_value_to_json(&mut out, &KvValue::Duration(std::time::Duration::from_millis(1500)));
+        crate::json::push_kv_value(&mut out, &KvValue::Duration(std::time::Duration::from_millis(1500)));
         assert_eq!(out, "\"1.5s\"");
     }
 
@@ -428,7 +373,7 @@ mod tests {
     #[test]
     fn ac045_bool_renders_as_bare_json_boolean() {
         let mut out = String::new();
-        kv_value_to_json(&mut out, &KvValue::Bool(true));
+        crate::json::push_kv_value(&mut out, &KvValue::Bool(true));
         assert_eq!(out, "true");
     }
 }

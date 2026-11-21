@@ -169,17 +169,14 @@ fn outcomes_compare_and_clone_by_value() {
 
 // --- AgentResponse ---------------------------------------------------------------------------------------------------
 
-fn rows(kept: &[i64]) -> Vec<Vec<Value>> {
-    kept.iter().map(|n| vec![Value::Int(*n)]).collect()
+fn issues(r: AgentResponse, outcome: &TruncationOutcome<i64>, guidance: &str) -> AgentResponse {
+    r.truncated_section("issues", vec!["n".into()], outcome, |n| vec![Value::Int(*n)], guidance)
 }
 
 #[test]
-fn agent_response_truncation_sets_the_count_and_hint_together() {
+fn agent_response_truncated_section_sets_the_count_and_hint_together() {
     let outcome = truncate_by_count(vec![1, 2, 3, 4, 5], 2);
-    let r = AgentResponse::new("issues")
-        .items(rows(&outcome.kept), &["n"])
-        .truncation(&outcome, "pass --limit 5")
-        .hint("call get_issue for details");
+    let r = issues(AgentResponse::new("issues"), &outcome, "pass --limit 5").hint("call get_issue for details");
     let out = r.render(OutputFormat::Text);
     assert_eq!(
         out,
@@ -197,19 +194,53 @@ fn agent_response_truncation_sets_the_count_and_hint_together() {
 }
 
 #[test]
-fn agent_response_truncation_without_a_cut_sets_the_count_and_no_hint() {
+fn agent_response_truncated_section_without_a_cut_adds_no_count_and_no_hint() {
+    // A total equal to the rows returned says nothing new, so `totalCount` stays out (sections render it only when
+    // more existed).
     let outcome = truncate_by_count(vec![1, 2], 5);
-    let r = AgentResponse::new("issues").items(rows(&outcome.kept), &["n"]).truncation(&outcome, "pass --limit 5");
+    let r = issues(AgentResponse::new("issues"), &outcome, "pass --limit 5");
     let out = r.render(OutputFormat::Text);
-    assert_eq!(out, "issues[2]{n}:\n  1\n  2\ntotalCount: 2");
+    assert_eq!(out, "issues[2]{n}:\n  1\n  2");
+    assert!(!r.render(OutputFormat::Json).contains("\"truncated\":true"));
     decode(&out).unwrap_or_else(|e| panic!("not conformant TOON 4.4: {e}\n{out}"));
 }
 
 #[test]
 fn agent_response_truncation_with_nothing_kept_is_conformant() {
     let outcome = truncate_by_size(vec!["huge".to_string()], 1, String::len);
-    let r = AgentResponse::new("blocks").items(vec![], &["text"]).truncation(&outcome, "raise --budget");
+    let r = AgentResponse::new("blocks").truncated_section(
+        "blocks",
+        vec!["text".into()],
+        &outcome,
+        |s| vec![Value::from(s.as_str())],
+        "raise --budget",
+    );
     let out = r.render(OutputFormat::Text);
     assert_eq!(out, "blocks: []\ntotalCount: 1\nhelp[1]: showing 0 of 1; raise --budget");
     decode(&out).unwrap_or_else(|e| panic!("not conformant TOON 4.4: {e}\n{out}"));
+}
+
+/// Probe 10 of the architecture audit: with rows and outcome passed separately, five rows beside an outcome that
+/// kept two of four rendered `t[5]` next to `showing 2 of 4` and `totalCount: 4`. The rows now come from
+/// `outcome.kept`, so the list header, the JSON count, the total and the hint name one cut.
+#[test]
+fn truncated_section_rows_are_the_outcome_kept_items() {
+    for (items, cap) in [(vec![1, 2, 3, 4], 2), (vec![1, 2, 3], 3), (vec![], 1), (vec![7; 9], 0)] {
+        let outcome = truncate_by_count(items, cap);
+        let r = issues(AgentResponse::new("issues"), &outcome, "g");
+        let out = r.render(OutputFormat::Text);
+        let kept = outcome.kept.len();
+        let header = if kept == 0 { "issues: []".to_string() } else { format!("issues[{kept}]{{n}}:") };
+        assert!(out.starts_with(&header), "{out}");
+        let json: serde_json::Value = serde_json::from_str(&r.render(OutputFormat::Json)).unwrap();
+        assert_eq!(json["sections"][0]["returnedCount"], kept);
+        // The JSON reports the total the text does: a cut's total, or 0 for the empty list; none for a whole list.
+        let reported = (outcome.truncated() || kept == 0).then_some(outcome.total_before as u64);
+        assert_eq!(json["sections"][0].get("totalCount").and_then(serde_json::Value::as_u64), reported, "{out}");
+        assert_eq!(json["sections"][0]["truncated"], outcome.truncated());
+        match outcome.hint("g") {
+            Some(hint) => assert!(out.ends_with(&format!("help[1]: {}", hint.as_str()))),
+            None => assert!(!out.contains("help["), "{out}"),
+        }
+    }
 }

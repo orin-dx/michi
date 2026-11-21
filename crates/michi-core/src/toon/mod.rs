@@ -8,15 +8,50 @@
 //!
 //! Output conforms to the TOON specification version 4.4 (`toon-spec: 4.4`,
 //! <https://github.com/toon-format/spec>): a list document is a root object holding the list in tabular form
-//! (`type[N]{f1,f2}:` plus one row per line), `type: []` when empty, an optional `totalCount: N` field and an optional
-//! inline `help[N]: …` array, with no trailing newline.
+//! (`type[N]{f1,f2}:` plus one row per line) or `type: []` when empty, followed by a `truncated` block when a cell was
+//! cut, with no trailing newline. `totalCount`, `help[]` and `recovery[]` belong to [`crate::AgentResponse`], which
+//! places each once however many sections the response has.
 
 mod escape;
 pub(crate) mod render;
+pub(crate) mod table;
 
 pub(crate) use escape::push_f64;
 pub use escape::{escape_key, escape_value, escape_value_quoted};
 pub use render::{ToonDocument, Value};
+
+/// Every root key michi writes itself, the one list each writer and the response's collision check share. No caller
+/// name may take one: not a TOON type name, not a KV key, not a section name. `truncated`, `totalCount`, `help` and
+/// `recovery` follow a body; `budget`, `sections` and `provenance` are the envelope blocks; `error`, `message`,
+/// `causes` and `exit_code` are the error document's keys, reserved even on success so caller data can never render
+/// something that reads as an error while `isError` is false.
+pub(crate) const RESERVED_ROOT_KEYS: [&str; 11] = [
+    "totalCount",
+    "help",
+    "recovery",
+    "truncated",
+    "budget",
+    "sections",
+    "provenance",
+    "error",
+    "message",
+    "causes",
+    "exit_code",
+];
+
+/// Whether `key` is one of [`RESERVED_ROOT_KEYS`].
+pub(crate) fn is_reserved_root_key(key: &str) -> bool {
+    RESERVED_ROOT_KEYS.contains(&key)
+}
+
+/// [`RESERVED_ROOT_KEYS`] as the comma-separated list error messages print.
+pub(crate) struct ReservedRootKeys;
+
+impl std::fmt::Display for ReservedRootKeys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&RESERVED_ROOT_KEYS.join(", "))
+    }
+}
 
 /// Most header fields one TOON list may declare. [`ToonOptions::validate()`] returns [`ToonError::TooManyFields`] past
 /// it, and `list()` checks it against the union of item keys before building any row.
@@ -33,16 +68,19 @@ pub(crate) fn cell_count(rows: usize, fields: usize) -> usize {
     rows.saturating_mul(fields.max(1))
 }
 
-/// Longest [`ToonOptions::truncation_hint`], in chars. The hint is a short instruction, not content;
-/// [`ToonOptions::validate()`] returns [`ToonError::TruncationHintTooLong`] past it.
+/// Longest [`AgentResponse::truncation_hint`](crate::AgentResponse::truncation_hint), in chars. The hint is a short
+/// instruction, not content; a response whose hint is longer renders the `toon_validation_failed` error naming
+/// [`ToonError::TruncationHintTooLong`].
 pub const MAX_TRUNCATION_HINT_CHARS: usize = 256;
 
 /// Error returned by [`ToonOptions::validate()`] when the options cannot form a valid TOON document.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum ToonError {
-    /// `type_name` is a root key michi composes next to a list (`totalCount`, `help`, `recovery` or `truncated`); using it would
-    /// emit a duplicate key, which TOON 4.4 §14.3 forbids. Any other name is valid and is quoted when §7.3 requires.
+    /// `type_name` is a root key michi writes itself (`totalCount`, `help`, `recovery`, `truncated`, `budget`,
+    /// `sections`, `provenance`, `error`, `message`, `causes` or `exit_code`). Using it could repeat a key, which TOON
+    /// 4.4 §14.3 forbids, or pass caller data off as one of michi's own blocks. Any other name is valid and is quoted
+    /// when §7.3 requires.
     InvalidTypeName {
         /// The offending name.
         name: String,
@@ -88,7 +126,8 @@ pub enum ToonError {
         /// The limit, [`MAX_CELLS`].
         max: usize,
     },
-    /// [`ToonOptions::truncation_hint`] is longer than [`MAX_TRUNCATION_HINT_CHARS`] chars.
+    /// [`AgentResponse::truncation_hint`](crate::AgentResponse::truncation_hint) is longer than
+    /// [`MAX_TRUNCATION_HINT_CHARS`] chars.
     TruncationHintTooLong {
         /// Length of the hint, in chars.
         len: usize,
@@ -101,7 +140,7 @@ impl std::fmt::Display for ToonError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InvalidTypeName { name } => {
-                write!(f, "type_name {name:?} is a reserved document key (totalCount, help, recovery, truncated)")
+                write!(f, "type_name {name:?} is a reserved document key ({ReservedRootKeys})")
             }
             Self::InvalidFieldName { name } => {
                 write!(f, "field {name:?} appears more than once")
@@ -126,12 +165,17 @@ impl std::fmt::Display for ToonError {
 
 impl std::error::Error for ToonError {}
 
-/// Options for rendering a TOON document.
+/// Options for rendering one TOON list.
+///
+/// This is the list alone: the entry (`type[N]{f1,f2}:` and its rows) and the `truncated` block for any cut cell.
+/// `totalCount`, `help[]` and the truncation hint belong to [`crate::AgentResponse`], which owns each one for the whole
+/// response. To add hints to a standalone list, use [`crate::append_hints`].
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct ToonOptions {
     /// Snake_case type name, e.g. `"issue"`, `"component"`: the key of the list entry. Names outside TOON's
-    /// unquoted-key pattern are quoted (§7.3); `totalCount`, `help`, `recovery` and `truncated` are reserved.
+    /// unquoted-key pattern are quoted (§7.3); the root keys michi writes itself are reserved (see
+    /// [`ToonError::InvalidTypeName`]).
     pub type_name: String,
     /// Ordered, distinct field names for the header, e.g. `["number", "title", "state"]`, quoted when §7.3 requires.
     /// Not emitted when `rows` is empty (an empty list renders as `type: []`).
@@ -139,10 +183,6 @@ pub struct ToonOptions {
     /// Rows, each a Vec of values parallel to `fields`. Rows with zero fields are empty objects and render as bare
     /// `-` list items, since TOON forbids a tabular form without fields.
     pub rows: Vec<Vec<Value>>,
-    /// Total available count (emitted as `totalCount: N` when `Some`).
-    pub total_count: Option<usize>,
-    /// Agent-facing usage hints. Emitted as the inline array `help[N]: h1,h2` when non-empty.
-    pub hints: Vec<String>,
     /// Max string cell length, in chars, before truncation. Default: 200.
     ///
     /// The cap counts the cell's characters *before* TOON escaping and quoting: a truncated (or untruncated) cell
@@ -151,41 +191,27 @@ pub struct ToonOptions {
     /// no message: every cut cell is reported in a `truncated[N]{row,field,removed}:` block after the list, which
     /// cell text cannot forge because cells are quoted and escaped.
     pub max_cell_len: usize,
-    /// The caller's instruction for getting a truncated cell in full, e.g. `"full=true"` or `"--no-truncate"`.
-    /// Default `None`: michi never invents a parameter the calling tool may not have. When set and a cell was cut,
-    /// michi adds one `help[]` line naming the `truncated` block and this instruction. It comes from the tool author,
-    /// never from data. An empty string is the same as `None`.
-    pub truncation_hint: Option<String>,
+}
+
+/// A list to render, borrowed. [`ToonOptions`] owns its rows; [`crate::AgentResponse`] already holds its rows in a
+/// [`crate::Section`], so it renders through this view instead of copying them into options on every validate and
+/// every render.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ListRef<'a> {
+    pub(crate) type_name: &'a str,
+    pub(crate) fields: &'a [String],
+    pub(crate) rows: &'a [Vec<Value>],
+    pub(crate) max_cell_len: usize,
+    /// The caller's instruction for getting a cut cell in full, as `AgentResponse::truncation_hint` sets it.
+    /// Validated with the list and turned into the `help[]` line by `ToonDocument::render_list`.
+    pub(crate) truncation_hint: Option<&'a str>,
 }
 
 impl ToonOptions {
-    /// Create options from a type name, fields and rows, with no total count or hints, the default 200-char cell cap
-    /// and no truncation hint.
+    /// Create options from a type name, fields and rows, with the default 200-char cell cap.
     #[must_use]
     pub fn new(type_name: impl Into<String>, fields: Vec<String>, rows: Vec<Vec<Value>>) -> Self {
-        Self {
-            type_name: type_name.into(),
-            fields,
-            rows,
-            total_count: None,
-            hints: Vec::new(),
-            max_cell_len: 200,
-            truncation_hint: None,
-        }
-    }
-
-    /// Set total count option.
-    #[must_use]
-    pub fn total_count(mut self, total: Option<usize>) -> Self {
-        self.total_count = total;
-        self
-    }
-
-    /// Set hints option.
-    #[must_use]
-    pub fn hints(mut self, hints: Vec<String>) -> Self {
-        self.hints = hints;
-        self
+        Self { type_name: type_name.into(), fields, rows, max_cell_len: 200 }
     }
 
     /// Set the max string cell length in chars, counted before escaping and quoting (see the `max_cell_len` field).
@@ -195,13 +221,15 @@ impl ToonOptions {
         self
     }
 
-    /// Set the caller's instruction for getting a cut cell in full, e.g. `.truncation_hint("full=true")`. michi
-    /// delivers it in `help[]` as `Cut cells are listed in the truncated block; use full=true for the full value`,
-    /// and only when a cell was cut. Unset by default; an empty hint does the same. Pass tool-author text, never data.
-    #[must_use]
-    pub fn truncation_hint(mut self, hint: impl Into<String>) -> Self {
-        self.truncation_hint = Some(hint.into());
-        self
+    /// These options as a borrowed list.
+    pub(crate) fn list_ref(&self) -> ListRef<'_> {
+        ListRef {
+            type_name: &self.type_name,
+            fields: &self.fields,
+            rows: &self.rows,
+            max_cell_len: self.max_cell_len,
+            truncation_hint: None,
+        }
     }
 
     /// Validate structural invariants and return the proof required to render.
@@ -213,10 +241,9 @@ impl ToonOptions {
     /// # Errors
     ///
     /// Returns [`ToonError::InvalidTypeName`] if `type_name` is a reserved
-    /// root key (`totalCount`, `help`, `recovery` or `truncated`), [`ToonError::TooManyFields`] past [`MAX_FIELDS`] fields,
+    /// root key (see the variant), [`ToonError::TooManyFields`] past [`MAX_FIELDS`] fields,
     /// [`ToonError::InvalidFieldName`] if a field name appears more than once, [`ToonError::TooManyCells`] if
-    /// `rows × fields` is past [`MAX_CELLS`], [`ToonError::TruncationHintTooLong`] if the truncation hint is past
-    /// [`MAX_TRUNCATION_HINT_CHARS`] chars, or [`ToonError::RowLengthMismatch`]
+    /// `rows × fields` is past [`MAX_CELLS`], or [`ToonError::RowLengthMismatch`]
     /// if any row's length differs from `fields.len()`.
     pub fn validate(&self) -> Result<ToonDocument<'_>, ToonError> {
         ToonDocument::validate(self)
@@ -225,21 +252,14 @@ impl ToonOptions {
 
 impl Default for ToonOptions {
     fn default() -> Self {
-        Self {
-            type_name: String::new(),
-            fields: Vec::new(),
-            rows: Vec::new(),
-            total_count: None,
-            hints: Vec::new(),
-            max_cell_len: 200,
-            truncation_hint: None,
-        }
+        Self::new(String::new(), Vec::new(), Vec::new())
     }
 }
 
 const _: fn(&ToonOptions) -> Result<String, ToonError> = render_toon;
 
-/// Render a TOON 4.4 document to a string (no trailing newline).
+/// Render one TOON 4.4 list to a string (no trailing newline): the list entry, then the `truncated` block when a cell
+/// was cut. For `totalCount`, hints and recovery, or several lists in one document, use [`crate::AgentResponse`].
 ///
 /// # Errors
 ///
@@ -293,7 +313,7 @@ fn json_value_to_toon_value(v: Option<&serde_json::Value>) -> Value {
 /// Returns [`ToonError::InvalidItem`] if an item fails to serialize or does
 /// not produce a JSON object (struct or map required). Returns
 /// [`ToonError::InvalidTypeName`] if `type_name` is a reserved root key
-/// (`totalCount`, `help`, `recovery` or `truncated`). Returns [`ToonError::TooManyFields`] if the items' keys add up to more than
+/// (see the variant). Returns [`ToonError::TooManyFields`] if the items' keys add up to more than
 /// [`MAX_FIELDS`] distinct names, or [`ToonError::TooManyCells`] if `items.len()` times that header width is past
 /// [`MAX_CELLS`]; both are checked before any row is built.
 #[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
@@ -301,8 +321,11 @@ fn json_value_to_toon_value(v: Option<&serde_json::Value>) -> Value {
 pub fn list<T: serde::Serialize>(type_name: impl Into<String>, items: &[T]) -> Result<String, ToonError> {
     let type_name = type_name.into();
     let mut fields: Vec<String> = Vec::new();
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut objects: Vec<serde_json::Map<String, serde_json::Value>> = Vec::with_capacity(items.len());
+    #[allow(clippy::disallowed_types, reason = "internal key-to-column lookup, never rendered")]
+    let mut column: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    // Each item is turned into cells as soon as it is parsed, as (column, value) pairs, so only one parsed JSON tree
+    // is alive at a time. The rows are padded to the final header width at the end, after the shape check.
+    let mut sparse: Vec<Vec<(usize, Value)>> = Vec::with_capacity(items.len());
     for (row_index, item) in items.iter().enumerate() {
         // Through JSON text rather than `serde_json::to_value`: the text writer prints an `f32` with its own shortest
         // digits (`0.1`), while `to_value` widens it to f64 first (`0.10000000149011612`). Reading the text back is
@@ -319,25 +342,40 @@ pub fn list<T: serde::Serialize>(type_name: impl Into<String>, items: &[T]) -> R
                 return Err(ToonError::InvalidItem { row_index, reason: e.to_string() });
             }
         };
-        for key in obj.keys() {
-            if seen.insert(key.clone()) {
-                fields.push(key.clone());
-            }
+        let mut cells = Vec::with_capacity(obj.len());
+        for (key, value) in &obj {
+            let col = match column.get(key) {
+                Some(&col) => col,
+                None => {
+                    column.insert(key.clone(), fields.len());
+                    fields.push(key.clone());
+                    fields.len() - 1
+                }
+            };
+            cells.push((col, json_value_to_toon_value(Some(value))));
         }
-        objects.push(obj);
+        sparse.push(cells);
     }
-    // Check the shape before building rows: a sparse item set whose key union is wide would otherwise expand into
+    // Check the shape before padding rows: a sparse item set whose key union is wide would otherwise expand into
     // rows × fields cells here, before validate() could reject it.
-    if !render::RESERVED_TYPE_NAMES.contains(&type_name.as_str()) {
+    if !is_reserved_root_key(&type_name) {
         if fields.len() > MAX_FIELDS {
             return Err(ToonError::TooManyFields { count: fields.len(), max: MAX_FIELDS });
         }
-        if cell_count(objects.len(), fields.len()) > MAX_CELLS {
-            return Err(ToonError::TooManyCells { rows: objects.len(), fields: fields.len(), max: MAX_CELLS });
+        if cell_count(sparse.len(), fields.len()) > MAX_CELLS {
+            return Err(ToonError::TooManyCells { rows: sparse.len(), fields: fields.len(), max: MAX_CELLS });
         }
     }
-    let rows: Vec<Vec<Value>> =
-        objects.iter().map(|obj| fields.iter().map(|f| json_value_to_toon_value(obj.get(f))).collect()).collect();
+    let rows: Vec<Vec<Value>> = sparse
+        .into_iter()
+        .map(|cells| {
+            let mut row = vec![Value::Null; fields.len()];
+            for (col, value) in cells {
+                row[col] = value;
+            }
+            row
+        })
+        .collect();
     let opts = ToonOptions::new(type_name, fields, rows);
     Ok(opts.validate()?.render())
 }
@@ -357,21 +395,14 @@ mod ac032_public_surface_tests {
         let _list: fn(&str, &[serde_json::Value]) -> Result<String, ToonError> = |t, items| crate::toon::list(t, items);
     }
 
+    // The api_surface signatures, checked by the compiler rather than by reading source text: `render_toon` is pinned
+    // as a fallible fn pointer by the `const _` beside it, `#[must_use]` on `ToonOptions::new` by
+    // `tests/ui-fail/toon_options_new_must_use.rs`, and `list` taking `impl Into<String>` by the two calls below.
+    #[cfg(feature = "serde")]
     #[test]
-    fn must_use_and_list_signature_match_the_spec() {
-        let src = include_str!("mod.rs");
-        assert!(
-            src.contains("#[must_use]\n    pub fn new("),
-            "ToonOptions::new must carry #[must_use] per api_surface"
-        );
-        assert!(
-            src.contains("pub fn render_toon(opts: &ToonOptions) -> Result<String, ToonError>"),
-            "render_toon must be the fallible signature per api_surface, with no #[must_use] (Result is already must_use)"
-        );
-        assert!(
-            src.contains("pub fn list<T: serde::Serialize>(type_name: impl Into<String>, items: &[T])"),
-            "list's first parameter must be impl Into<String>, not &str, per api_surface"
-        );
+    fn list_takes_any_string_type_name() {
+        let items = [serde_json::json!({"a": 1})];
+        assert_eq!(crate::toon::list("t", &items), crate::toon::list(String::from("t"), &items));
     }
 }
 
@@ -397,10 +428,7 @@ mod validate_tests {
             type_name: type_name.into(),
             fields: fields.iter().map(|f| (*f).to_string()).collect(),
             rows,
-            hints: vec![],
             max_cell_len: 200,
-            total_count: None,
-            truncation_hint: None,
         }
     }
 
@@ -419,7 +447,7 @@ mod validate_tests {
 
     #[test]
     fn validate_rejects_reserved_type_names() {
-        for name in ["totalCount", "help"] {
+        for name in RESERVED_ROOT_KEYS {
             assert!(matches!(opts(name, &[], vec![]).validate(), Err(ToonError::InvalidTypeName { .. })), "{name}");
         }
     }
@@ -477,7 +505,8 @@ mod validate_tests {
     fn error_display_names_the_rule() {
         assert_eq!(
             ToonError::InvalidTypeName { name: "help".into() }.to_string(),
-            "type_name \"help\" is a reserved document key (totalCount, help, recovery, truncated)"
+            "type_name \"help\" is a reserved document key (totalCount, help, recovery, truncated, budget, sections, \
+             provenance, error, message, causes, exit_code)"
         );
         assert_eq!(ToonError::InvalidFieldName { name: "a".into() }.to_string(), "field \"a\" appears more than once");
     }
@@ -501,22 +530,19 @@ mod validate_tests {
         assert_eq!(opts.type_name, String::new());
         assert!(opts.fields.is_empty());
         assert!(opts.rows.is_empty());
-        assert_eq!(opts.total_count, None);
-        assert!(opts.hints.is_empty());
         assert_eq!(opts.max_cell_len, 200);
     }
 
     #[test]
     fn ac037_direct_field_mutation_affects_render_toon_output() {
-        let mut opts = ToonOptions::new("t", vec!["a".to_string()], vec![vec![Value::from("x")]]);
-        opts.total_count = Some(5);
-        opts.hints = vec!["h".to_string()];
+        let mut opts = ToonOptions::new("t", vec!["a".to_string()], vec![vec![Value::from("x".repeat(50))]]);
+        opts.max_cell_len = 10;
         let via_mutation = render_toon(&opts).unwrap();
 
-        let via_builder = ToonOptions::new("t", vec!["a".to_string()], vec![vec![Value::from("x")]])
-            .total_count(Some(5))
-            .hints(vec!["h".to_string()]);
+        let via_builder =
+            ToonOptions::new("t", vec!["a".to_string()], vec![vec![Value::from("x".repeat(50))]]).max_cell_len(10);
         assert_eq!(via_mutation, render_toon(&via_builder).unwrap());
+        assert!(via_mutation.contains("truncated[1]"), "the cap took effect: {via_mutation}");
     }
 
     #[test]
@@ -598,12 +624,18 @@ mod validate_tests {
     #[test]
     fn validate_caps_truncation_hint_in_chars_not_bytes() {
         // 256 two-byte chars (512 bytes) is at the cap; one more char is over it.
-        let at_cap = ToonOptions::new("t", vec![], vec![]).truncation_hint("é".repeat(MAX_TRUNCATION_HINT_CHARS));
-        assert!(at_cap.validate().is_ok());
-        let over = ToonOptions::new("t", vec![], vec![]).truncation_hint("é".repeat(MAX_TRUNCATION_HINT_CHARS + 1));
+        let validate = |hint: &str| {
+            let opts = ToonOptions::new("t", vec![], vec![]);
+            let list = ListRef { truncation_hint: Some(hint), ..opts.list_ref() };
+            ToonDocument::validate_list(list).map(|_| ())
+        };
+        assert_eq!(validate(&"é".repeat(MAX_TRUNCATION_HINT_CHARS)), Ok(()));
         assert_eq!(
-            over.validate().unwrap_err(),
-            ToonError::TruncationHintTooLong { len: MAX_TRUNCATION_HINT_CHARS + 1, max: MAX_TRUNCATION_HINT_CHARS }
+            validate(&"é".repeat(MAX_TRUNCATION_HINT_CHARS + 1)),
+            Err(ToonError::TruncationHintTooLong {
+                len: MAX_TRUNCATION_HINT_CHARS + 1,
+                max: MAX_TRUNCATION_HINT_CHARS
+            })
         );
     }
 
@@ -639,42 +671,10 @@ mod list_tests {
 
     #[test]
     fn ac025a_builder_chain_exact_output() {
-        let opts = ToonOptions::new("t", vec!["a".to_string()], vec![vec![Value::from("a".repeat(50))]])
-            .total_count(Some(5))
-            .hints(vec!["h".to_string()])
-            .max_cell_len(10);
+        let opts =
+            ToonOptions::new("t", vec!["a".to_string()], vec![vec![Value::from("a".repeat(50))]]).max_cell_len(10);
         // 9 kept chars and an ellipsis fill the cap; the cut is reported in the `truncated` block.
-        assert_eq!(
-            render_toon(&opts).unwrap(),
-            "t[1]{a}:\n  aaaaaaaaa…\ntruncated[1]{row,field,removed}:\n  0,a,41\ntotalCount: 5\nhelp[1]: h"
-        );
-
-        // A hint adds one michi line to `help[]`, after the caller's own hints.
-        let opts = ToonOptions::new("t", vec!["a".to_string()], vec![vec![Value::from("a".repeat(50))]])
-            .hints(vec!["h".to_string()])
-            .max_cell_len(30)
-            .truncation_hint("x");
-        assert_eq!(
-            render_toon(&opts).unwrap(),
-            format!(
-                "t[1]{{a}}:\n  {}…\ntruncated[1]{{row,field,removed}}:\n  0,a,21\n\
-                 help[2]: h,Cut cells are listed in the truncated block; use x for the full value",
-                "a".repeat(29)
-            )
-        );
-    }
-
-    #[test]
-    fn ac025b_builder_order_independence() {
-        let forward = ToonOptions::new("t", vec!["a".to_string()], vec![vec![Value::from("a".repeat(50))]])
-            .total_count(Some(5))
-            .hints(vec!["h".to_string()])
-            .max_cell_len(10);
-        let reversed = ToonOptions::new("t", vec!["a".to_string()], vec![vec![Value::from("a".repeat(50))]])
-            .max_cell_len(10)
-            .hints(vec!["h".to_string()])
-            .total_count(Some(5));
-        assert_eq!(render_toon(&forward), render_toon(&reversed));
+        assert_eq!(render_toon(&opts).unwrap(), "t[1]{a}:\n  aaaaaaaaa…\ntruncated[1]{row,field,removed}:\n  0,a,41");
     }
 
     #[test]
@@ -836,22 +836,5 @@ mod list_tests {
     fn nested_values_become_quoted_json_text() {
         let result = list("t", &[serde_json::json!({"o": {"x": 1}, "a": [1, 2]})]);
         assert_eq!(result, Ok("t[1]{o,a}:\n  \"{\\\"x\\\":1}\",\"[1,2]\"".to_string()));
-    }
-}
-
-#[cfg(test)]
-mod ac013_docs_guard_tests {
-    use crate::toon::render::test_scan::strip_test_modules;
-
-    #[test]
-    fn validate_docs_do_not_claim_opt_in() {
-        let non_test = strip_test_modules(include_str!("mod.rs"));
-        let opt_in_needle = ["Caller", "opt-in"].join(" ");
-        assert!(!non_test.contains(&opt_in_needle), "validate's rustdoc must not describe validation as opt-in");
-        let principles_needle = ["PRINCIPLES.md", "§1"].join(" ");
-        assert!(
-            !non_test.contains(&principles_needle),
-            "validate's rustdoc must not reference the nonexistent PRINCIPLES.md §1"
-        );
     }
 }

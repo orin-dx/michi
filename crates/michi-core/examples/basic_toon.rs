@@ -5,10 +5,11 @@
 // println! is scoped to library code, not demonstration binaries.
 #![allow(clippy::disallowed_macros)]
 
-use michi_core::toon::{render_toon, ToonOptions, Value};
+use michi_core::toon::Value;
+use michi_core::{AgentResponse, OutputFormat, Section};
 
 fn main() {
-    let opts = ToonOptions::new(
+    let issues = Section::toon(
         "issues",
         vec!["number".to_string(), "title".to_string(), "state".to_string()],
         vec![
@@ -17,12 +18,11 @@ fn main() {
             vec![Value::Int(51800), Value::from("update dependencies, bump major"), Value::from("closed")],
         ],
     )
-    .total_count(Some(8771))
-    .hints(vec![
-        "Run `gh-axi issue view <number>` to view an issue".to_string(),
-        "Run `gh-axi issue list --state=open` to filter".to_string(),
-    ]);
+    .total_count(Some(8771));
+    let response = AgentResponse::new("issues")
+        .section(issues)
+        .hint("Run `gh-axi issue view <number>` to view an issue")
+        .hint("Run `gh-axi issue list --state=open` to filter");
 
-    let output = render_toon(&opts).expect("example input is valid");
-    println!("{output}");
+    println!("{}", response.render(OutputFormat::Text));
 }

@@ -18,8 +18,6 @@ import {
 } from '@modelcontextprotocol/sdk/types.js'
 import {
   AgentResponse,
-  emptyState,
-  emptyStateWithHints,
   renderDomainError,
   renderStatus,
   renderPipeline,
@@ -218,21 +216,19 @@ void describe(`MCP CallToolResult conformance (SDK protocol ${LATEST_PROTOCOL_VE
 
   void it('empty states', () => {
     check('no rows', (r) => r.items([], ['a', 'b']))
-    check('emptyState as human content', (r) => {
+    check('empty response with hints as human content', (r) => {
       r.items([], ['a'])
-      r.humanContent(emptyState('issue'))
-    })
-    check('emptyStateWithHints as human content', (r) => {
-      r.items([], ['a'])
-      r.humanContent(emptyStateWithHints('issue', ['try a wider range', 'a, b']))
+      const empty = new AgentResponse('issue')
+      empty.hint('try a wider range')
+      empty.hint('a, b')
+      r.humanContent(empty.renderText())
     })
     check('kv with no items', (r) => r.kvItems([]))
   })
 
   void it('truncated lists and truncated cells', () => {
     check('count cut', (r) => {
-      r.items(rows(['a'], ['b']), ['v'])
-      r.totalCount(5000)
+      r.items(rows(['a'], ['b']), ['v'], 5000)
       r.hint('showing 2 of 5000')
     })
     const result = check('cell cut', (r) => {
@@ -275,8 +271,8 @@ void describe(`MCP CallToolResult conformance (SDK protocol ${LATEST_PROTOCOL_VE
           [s('b,c'), i(-2), f(0.1), b(false), nul],
         ],
         ['name', 'n', 'x', 'ok', 'gone'],
+        400,
       )
-      r.totalCount(400)
       r.hint('next: page=2')
       r.hint('filter with state=open')
       r.recoveryHint('list_pages', 'to see more')
@@ -292,7 +288,11 @@ void describe(`MCP CallToolResult conformance (SDK protocol ${LATEST_PROTOCOL_VE
     const blocks = [
       renderStatus('tool', 'a tool', [{ key: 'db', value: s('up'), health: 'ok' }], ['all good']),
       renderPipeline([{ id: 'a', name: 'Build', status: 'completed' }]),
-      renderPartialSuccess(['a'], [{ operation: 'b', reason: 'timeout' }], ['c']),
+      renderPartialSuccess(
+        [{ index: 0, operation: 'a' }],
+        [{ index: 1, operation: 'b', reason: 'timeout' }],
+        [{ index: 2, operation: 'c' }],
+      ),
       renderRecovery([{ tool: 'retry', reason: 'transient' }]),
     ]
     for (const text of blocks) check('renderer output', (r) => r.humanContent(text))

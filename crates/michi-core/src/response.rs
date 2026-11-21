@@ -1,7 +1,15 @@
+use crate::budget::BudgetSummary;
+use crate::error::DomainError;
 use crate::hints::Hint;
+use crate::idempotency::PartialSuccess;
+use crate::json;
 use crate::kv::KvItem;
+use crate::pipeline::Pipeline;
+use crate::provenance::ProvenanceBlock;
 use crate::recovery::RecoveryHint;
-use crate::toon::Value;
+use crate::section::{Section, SectionBody};
+use crate::status::StatusResponse;
+use crate::toon::{ListRef, ToonDocument, Value};
 
 /// The serialisation format for `AgentResponse::render`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -14,39 +22,68 @@ pub enum OutputFormat {
     Json,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum RenderTarget {
-    Unset,
-    Toon,
-    Kv,
-}
-
 /// Default per-cell truncation limit used by [`AgentResponse::new`].
 pub const DEFAULT_TRUNCATE_CELLS: usize = 200;
 
-/// Builder for an agent-facing response.
+/// Builder for an agent-facing response: an ordered list of [`Section`]s, an optional error, budget report and
+/// provenance block, hints and recovery hints.
+///
+/// It is the one composer and the one writer. Every outcome michi renders is a part of it: a [`DomainError`] is its
+/// error block ([`error`](Self::error)), and a [`PartialSuccess`], [`StatusResponse`], [`Pipeline`] or already-done
+/// report becomes sections ([`partial_success`](Self::partial_success), [`status`](Self::status),
+/// [`pipeline`](Self::pipeline), [`already_done`](Self::already_done)). Their hints and recovery hints join the
+/// response's one `help` and one `recovery` block, so a batch with results, per-op outcomes and an error is one valid
+/// document on every surface. Each type's own `render` is this writer too.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct AgentResponse {
-    /// The TOON list slot: type name, fields, rows, total count, cell cap and truncation hint, kept as the options
-    /// the renderer validates and renders by reference, so a render never copies the rows. Its `hints` stay empty:
-    /// the response's hints are appended after the body instead.
-    toon: crate::toon::ToonOptions,
-    target: RenderTarget,
-    single_item: Vec<KvItem>,
-    hints: Vec<Hint>,
+    /// The type name given to [`new`](Self::new): it names the sections that [`items`](Self::items) and
+    /// [`kv_items`](Self::kv_items) append, and the empty list an untouched response renders.
+    name: String,
+    /// Per-cell cap for every `Toon` section, set with [`truncate_cells_at`](Self::truncate_cells_at).
+    max_cell_len: usize,
+    /// The caller's instruction for getting a cut cell in full, set with [`truncation_hint`](Self::truncation_hint).
+    truncation_hint: Option<String>,
+    /// Every block, in call order. The one place a response keeps its body.
+    sections: Vec<Section>,
+    /// Response-level budget report, set with `budget()`.
+    budget: Option<BudgetSummary>,
+    /// Response-level provenance block, set with `provenance()`.
+    provenance: Option<ProvenanceBlock>,
+    /// The error this response reports, set with `error()`: rendered first, as the root `error`, `message`, `causes`
+    /// and `exit_code` keys.
+    error: Option<DomainError>,
+    /// Every hint in call order, each with who added it: the caller ([`hint`](Self::hint), [`hints`](Self::hints)) or
+    /// a part ([`status`](Self::status), [`truncated_section`](Self::truncated_section)). `hints()` replaces only the
+    /// caller's own, so no hint source drops another's.
+    hints: Vec<(Hint, HintSource)>,
     recovery: Vec<RecoveryHint>,
     is_error: bool,
     human_content: Option<String>,
 }
 
+/// Who added a hint: the caller, whose hints [`AgentResponse::hints`] replaces, or a part, whose hints stay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HintSource {
+    /// [`AgentResponse::hint`] or [`AgentResponse::hints`].
+    Caller,
+    /// A status report's hints or a cut section's `showing N of M` line.
+    Part,
+}
+
 impl AgentResponse {
-    /// Create a new, empty response for the given type name.
+    /// Create a new, empty response for the given type name. The name labels the sections that
+    /// [`items`](Self::items) and [`kv_items`](Self::kv_items) add. A response that never gets a section, budget or
+    /// provenance renders `name: []` and `totalCount: 0`, the definitive empty list.
     pub fn new(type_name: impl Into<String>) -> Self {
         Self {
-            toon: crate::toon::ToonOptions::new(type_name, Vec::new(), Vec::new()).max_cell_len(DEFAULT_TRUNCATE_CELLS),
-            target: RenderTarget::Unset,
-            single_item: Vec::new(),
+            name: type_name.into(),
+            max_cell_len: DEFAULT_TRUNCATE_CELLS,
+            truncation_hint: None,
+            sections: Vec::new(),
+            budget: None,
+            provenance: None,
+            error: None,
             hints: Vec::new(),
             recovery: Vec::new(),
             is_error: false,
@@ -54,74 +91,211 @@ impl AgentResponse {
         }
     }
 
-    /// Populate the TOON list path.
-    #[must_use]
-    pub fn items(mut self, rows: Vec<Vec<Value>>, fields: &[&str]) -> Self {
-        self.toon.rows = rows;
-        self.toon.fields = fields.iter().map(|s| (*s).to_string()).collect();
-        self.target = RenderTarget::Toon;
-        self
-    }
-
-    /// Set the total available count.
-    #[must_use]
-    pub fn total_count(mut self, n: usize) -> Self {
-        self.toon.total_count = Some(n);
-        self
-    }
-
-    /// Report a list cut in one call: sets the total count to `outcome.total_before` and, only when something was
-    /// cut, appends [`TruncationOutcome::hint`](crate::truncation::TruncationOutcome::hint)`(guidance)`, so the
-    /// `totalCount` and the `help[]` line always describe the same cut.
+    /// Append a TOON list section named for the response's type: shorthand for
+    /// `section(Section::toon(name, fields, rows))`. Every call adds a section, rendered in call order.
     ///
-    /// It does not set the rows: the response holds TOON [`Value`] rows, not the caller's `T`, so pass `outcome.kept`
-    /// (converted to rows) to [`items`](Self::items) yourself. Later [`total_count`](Self::total_count) or
-    /// [`hints`](Self::hints) calls still override what this sets.
+    /// Sections are root keys, and this shorthand gives each the same name, so for one list per response only: a
+    /// second `items()` call repeats the key `name`, and the response renders the `toon_validation_failed` error
+    /// naming it (and `is_error()` is true) instead of invalid TOON. Mixing with [`kv_items`](Self::kv_items) works
+    /// while no KV key equals the type name. For several lists, give each its own name with
+    /// `.section(Section::toon(distinct_name, ..))`. To report a total, build the section yourself and set
+    /// [`Section::total_count`].
+    #[must_use]
+    pub fn items(self, rows: Vec<Vec<Value>>, fields: &[&str]) -> Self {
+        let name = self.name.clone();
+        self.section(Section::toon(name, fields.iter().map(|s| (*s).to_string()).collect(), rows))
+    }
+
+    /// Append a TOON list section for a cut list, in one call. The rows are `outcome.kept`, each turned into a row by
+    /// `row`; the section's total is `outcome.total_before`; and, only when something was cut,
+    /// [`TruncationOutcome::hint`](crate::truncation::TruncationOutcome::hint) (`showing {kept} of {total}; {guidance}`)
+    /// is appended to the hints. michi builds the rows from the outcome itself, so the list's `[N]`, its `totalCount`
+    /// and the `help[]` line all describe the same cut.
+    ///
+    /// `totalCount` renders only when `total_before` exceeds the rows kept.
     ///
     /// ```
     /// use michi_core::toon::Value;
     /// use michi_core::{truncate_by_count, AgentResponse, OutputFormat};
     ///
     /// let outcome = truncate_by_count(vec![1, 2, 3, 4], 2);
-    /// let rows = outcome.kept.iter().map(|n| vec![Value::Int(*n)]).collect();
-    /// let r = AgentResponse::new("issues").items(rows, &["n"]).truncation(&outcome, "pass --limit 4");
+    /// let r = AgentResponse::new("issues").truncated_section(
+    ///     "issues",
+    ///     vec!["n".into()],
+    ///     &outcome,
+    ///     |n| vec![Value::Int(*n)],
+    ///     "pass --limit 4",
+    /// );
     /// assert_eq!(
     ///     r.render(OutputFormat::Text),
     ///     "issues[2]{n}:\n  1\n  2\ntotalCount: 4\nhelp[1]: showing 2 of 4; pass --limit 4"
     /// );
     /// ```
     #[must_use]
-    pub fn truncation<T>(
+    pub fn truncated_section<T>(
         mut self,
+        name: impl Into<String>,
+        fields: Vec<String>,
         outcome: &crate::truncation::TruncationOutcome<T>,
+        row: impl FnMut(&T) -> Vec<Value>,
         guidance: impl Into<String>,
     ) -> Self {
-        self.toon.total_count = Some(outcome.total_before);
+        let rows = outcome.kept.iter().map(row).collect();
         if let Some(hint) = outcome.hint(guidance) {
-            self.hints.push(hint);
+            self.hints.push((hint, HintSource::Part));
         }
+        self.section(Section::toon(name, fields, rows).total_count(Some(outcome.total_before)))
+    }
+
+    /// Append a KV section named for the response's type: shorthand for `section(Section::kv(name, items))`. The name
+    /// is not printed for a KV body. Every call adds a section, but the item keys are root keys: two calls sharing a
+    /// key render the `toon_validation_failed` error naming it. See [`items`](Self::items); for several KV sections
+    /// use `.section(Section::kv(name, ..))` and keep the keys distinct.
+    #[must_use]
+    pub fn kv_items(self, items: Vec<KvItem>) -> Self {
+        let name = self.name.clone();
+        self.section(Section::kv(name, items))
+    }
+
+    /// Append a section. Sections render in call order, the one place a response keeps its body: the caller owns
+    /// ordering.
+    ///
+    /// The response's cell cap ([`truncate_cells_at`](Self::truncate_cells_at)) and truncation hint apply to every
+    /// `Toon` body. A section's `totalCount` comes from [`Section::total_count`]. Each section is a root key of the
+    /// document, so names must be distinct (see [`Section`]).
+    #[must_use]
+    pub fn section(mut self, section: Section) -> Self {
+        self.sections.push(section);
         self
     }
 
-    /// Populate the KV single-item path.
+    /// Attach the response-level budget report; one per response, a second call replaces the first. It renders as a
+    /// `budget:` block after the last section (see [`BudgetSummary`] for what it carries), and the per-section
+    /// roll-up appears only when the response has two or more sections. michi renders the report; it never computes
+    /// it.
+    ///
+    /// A response with a budget or provenance but no section has no body of its own: the empty `type: []` line that
+    /// an untouched response renders is left out.
     #[must_use]
-    pub fn kv_items(mut self, items: Vec<KvItem>) -> Self {
-        self.single_item = items;
-        self.target = RenderTarget::Kv;
+    pub fn budget(mut self, budget: BudgetSummary) -> Self {
+        self.budget = Some(budget);
         self
+    }
+
+    /// Attach the response-level provenance block; one per response, a second call replaces the first. It renders as
+    /// a `provenance:` block after `budget:` (see [`ProvenanceBlock`]).
+    #[must_use]
+    pub fn provenance(mut self, provenance: ProvenanceBlock) -> Self {
+        self.provenance = Some(provenance);
+        self
+    }
+
+    /// Report `error` as this response's error; one per response, a second call replaces the first. It renders
+    /// first, before every section, as the root keys `error: <code>`, `message: …`, `causes[N]: …` (when there are
+    /// causes) and `exit_code: 1`, the same lines [`DomainError::render`] writes. Its hints lead the response's one
+    /// `help` block and its recovery hint leads the one `recovery` table. The response is an error on every surface.
+    ///
+    /// In JSON the error is one object, `"error": {"code", "message", "causes", "retryable"}`, next to the response's
+    /// `hints` and `recovery` arrays: the only error shape michi writes. A response that fails validation (an invalid
+    /// section, two blocks writing one root key) writes the same object, with code `toon_validation_failed` or
+    /// `kv_validation_failed`. When it also holds this error, this error stays the error on every surface and the
+    /// failure becomes its last cause (`toon_validation_failed: …`), so neither hides the other.
+    ///
+    /// ```
+    /// use michi_core::{AgentResponse, DomainError, ErrorCode, OutputFormat};
+    ///
+    /// let e = DomainError::new(ErrorCode::NotFound, "no issue 7").hint("list issues first");
+    /// let r = AgentResponse::new("issue").error(e.clone());
+    /// assert_eq!(r.render(OutputFormat::Text), e.render(OutputFormat::Text));
+    /// assert_eq!(
+    ///     r.render(OutputFormat::Text),
+    ///     "error: not_found\nmessage: no issue 7\nexit_code: 1\nhelp[1]: list issues first"
+    /// );
+    /// assert!(r.is_error());
+    /// ```
+    #[must_use]
+    pub fn error(mut self, error: DomainError) -> Self {
+        self.error = Some(error);
+        self
+    }
+
+    /// Append a batch's per-operation outcomes as a TOON list section named `name`: one row per operation, sorted by
+    /// index, `{index,operation,status,reason}` with `status` `completed`, `failed` or `skipped` and `reason` the
+    /// failure reason, the skip token or `null`. The failed operations' recovery hints are appended to the response's
+    /// recovery hints (in index order), so the document keeps one `recovery` table. A partial batch does not make the
+    /// response an error; call [`error`](Self::error) or [`as_error`](Self::as_error) when the call failed as a whole.
+    ///
+    /// ```
+    /// use michi_core::{AgentResponse, CompletedOp, FailedOp, OutputFormat, PartialSuccess, SkippedOp};
+    ///
+    /// let ops = PartialSuccess::try_new(
+    ///     vec![CompletedOp::new(0, "symbols")],
+    ///     vec![FailedOp::new(1, "refs", "not indexed")],
+    ///     vec![SkippedOp::new(2, "search").reason("budget_exhausted")],
+    /// )?;
+    /// assert_eq!(
+    ///     AgentResponse::new("batch").partial_success("ops", ops).render(OutputFormat::Text),
+    ///     "ops[3]{index,operation,status,reason}:\n  0,symbols,completed,null\n  1,refs,failed,not indexed\n  \
+    ///      2,search,skipped,budget_exhausted"
+    /// );
+    /// # Ok::<(), michi_core::DuplicateOpIndex>(())
+    /// ```
+    #[must_use]
+    pub fn partial_success(mut self, name: impl Into<String>, outcome: PartialSuccess) -> Self {
+        self.recovery.extend(outcome.recovery_hints());
+        let fields = crate::idempotency::FIELDS.map(String::from).to_vec();
+        self.section(Section::toon(name, fields, outcome.rows()))
+    }
+
+    /// Append a status report as two sections: `tool` and `description` as a KV section named `status`, then the
+    /// `items[N]{key,value,health,reason}:` list. Its hints are appended to the response's hints, and a later
+    /// [`hints`](Self::hints) call keeps them.
+    #[must_use]
+    pub fn status(mut self, status: StatusResponse) -> Self {
+        let [head, items] = status.sections();
+        self.hints.extend(status.hints.into_iter().map(|h| (h, HintSource::Part)));
+        self.section(head).section(items)
+    }
+
+    /// Append a pipeline's state as a TOON list section named `name`: `{id,name,status,reason}`, one row per step in
+    /// declaration order, `status` the [`StepStatus::label`](crate::pipeline::StepStatus::label) and `reason` its
+    /// reason or `null`. A `michi-pipeline` run record composes through its `to_pipeline()`.
+    #[must_use]
+    pub fn pipeline(self, name: impl Into<String>, pipeline: Pipeline) -> Self {
+        let fields = crate::pipeline::FIELDS.map(String::from).to_vec();
+        self.section(Section::toon(name, fields, pipeline.rows()))
+    }
+
+    /// Append an already-done report as a KV section named `already_done`: `operation: …`, `status: already_done`,
+    /// `summary: …`. Use it when an idempotency check ([`crate::resilience::already_done`]) found the operation
+    /// completed in an earlier call.
+    #[must_use]
+    pub fn already_done(self, operation: impl Into<String>, summary: impl Into<String>) -> Self {
+        self.section(crate::resilience::already_done_section(operation.into(), summary.into()))
     }
 
     /// Append a contextual hint.
     #[must_use]
     pub fn hint(mut self, hint: impl Into<String>) -> Self {
-        self.hints.push(Hint::new(hint));
+        self.hints.push((Hint::new(hint), HintSource::Caller));
         self
     }
 
-    /// Replace all contextual hints.
+    /// Replace the hints added with [`hint`](Self::hint) and `hints`. The hints a part brought keep their place: a
+    /// [`status`](Self::status) report's hints, the `showing N of M` line of a
+    /// [`truncated_section`](Self::truncated_section), and the error's hints. The new hints follow them.
+    ///
+    /// ```
+    /// use michi_core::{AgentResponse, Hint, StatusResponse};
+    ///
+    /// let status = StatusResponse::new("tool", "desc", vec![]).hints(vec![Hint::new("from the status")]);
+    /// let r = AgentResponse::new("t").hint("replaced").status(status).hints(vec![Hint::new("mine")]);
+    /// assert_eq!(r.render_hints_only(), "help[2]: from the status,mine");
+    /// ```
     #[must_use]
     pub fn hints(mut self, hints: Vec<Hint>) -> Self {
-        self.hints = hints;
+        self.hints.retain(|(_, source)| *source == HintSource::Part);
+        self.hints.extend(hints.into_iter().map(|h| (h, HintSource::Caller)));
         self
     }
 
@@ -137,23 +311,28 @@ impl AgentResponse {
     ///
     /// The limit counts characters before TOON escaping and quoting, so a cell that needs quotes or escapes is
     /// written longer than `limit` (see [`crate::toon::ToonOptions::max_cell_len`]). The KV path is never truncated.
+    ///
+    /// The cap shapes the text render only. The JSON `sections` (and so `structuredContent`) carry every cell in full:
+    /// they are the canonical data, and the text is the token-saving view of it.
     #[must_use]
     pub fn truncate_cells_at(mut self, limit: usize) -> Self {
-        self.toon.max_cell_len = limit;
+        self.max_cell_len = limit;
         self
     }
 
     /// Set the caller's instruction for getting a cut TOON cell in full. When a cell was cut, michi adds one line to
-    /// `help[]` (after your own hints) that names the `truncated` block and this instruction (see
-    /// [`crate::toon::ToonOptions::truncation_hint`]). Unset by default: michi never invents a parameter the tool
-    /// may not have, and the `truncated` block still reports each cut. Pass tool-author text, never data.
+    /// `help[]` (after your own hints) that names the `truncated` block and this instruction. At most
+    /// [`crate::toon::MAX_TRUNCATION_HINT_CHARS`] chars: a longer hint renders the `toon_validation_failed` error.
+    /// Unset by default: michi never invents a parameter the tool may not have, and the `truncated` block still
+    /// reports each cut. Pass tool-author text, never data.
     #[must_use]
     pub fn truncation_hint(mut self, hint: impl Into<String>) -> Self {
-        self.toon.truncation_hint = Some(hint.into());
+        self.truncation_hint = Some(hint.into());
         self
     }
 
-    /// Mark this response as an error state.
+    /// Mark this response as an error state. To report a typed error, use [`error`](Self::error), which also renders
+    /// its code, message and causes.
     #[must_use]
     pub fn as_error(mut self) -> Self {
         self.is_error = true;
@@ -167,70 +346,247 @@ impl AgentResponse {
         self
     }
 
-    /// The TOON body, and whether it is a validation-failure error block instead of the requested rows.
-    ///
-    /// The third item is the `help[]` line michi adds when it cut a cell and a truncation hint is set.
-    fn toon_body(&self) -> (String, bool, Option<Hint>) {
-        match self.toon.validate() {
-            Ok(doc) => {
-                let (body, extra) = doc.render_parts();
-                (body, false, extra.map(Hint::new))
-            }
-            Err(e) => (validation_error_body("toon_validation_failed", &e.to_string()), true, None),
-        }
+    /// The error's hints, the response's hints in call order, then michi's own truncation line when there is one: a
+    /// single `help` block.
+    fn hints_with(&self, extra: &[Hint]) -> Vec<Hint> {
+        let first = self.error.as_ref().map_or(&[][..], DomainError::hints);
+        let mut all = Vec::with_capacity(first.len() + self.hints.len() + extra.len());
+        all.extend(first.iter().cloned());
+        all.extend(self.hints.iter().map(|(h, _)| h.clone()));
+        all.extend(extra.iter().cloned());
+        all
     }
 
-    /// The caller's hints, then michi's own truncation line when there is one: a single `help` block.
-    fn hints_with<'a>(&'a self, extra: Option<&Hint>) -> std::borrow::Cow<'a, [Hint]> {
-        match extra {
-            None => std::borrow::Cow::Borrowed(&self.hints),
-            Some(e) => {
-                let mut all = Vec::with_capacity(self.hints.len() + 1);
-                all.extend(self.hints.iter().cloned());
-                all.push(e.clone());
+    /// The error's recovery hint, then the response's own: a single `recovery` block.
+    fn recovery_list(&self) -> std::borrow::Cow<'_, [RecoveryHint]> {
+        match self.error.as_ref().and_then(DomainError::get_recovery) {
+            None => std::borrow::Cow::Borrowed(&self.recovery),
+            Some(first) => {
+                let mut all = Vec::with_capacity(1 + self.recovery.len());
+                all.push(first.clone());
+                all.extend(self.recovery.iter().cloned());
                 std::borrow::Cow::Owned(all)
             }
         }
     }
 
-    /// The KV body, and whether it is a validation-failure error block instead of the requested items (a duplicate
-    /// or reserved key, see [`crate::kv::KvError`]).
-    fn kv_body(&self) -> (String, bool) {
-        // `render_kv` renders nothing for no items, dropping the count; a response that set one still reports it,
-        // as the TOON path does (`t: []\ntotalCount: 0`).
-        if self.single_item.is_empty() {
-            let body = self.toon.total_count.map_or_else(String::new, |n| format!("totalCount: {n}"));
-            return (body, false);
-        }
-        match crate::kv::render_kv(&self.single_item, self.toon.total_count, &[]) {
-            Ok(body) => (body, false),
-            Err(e) => (validation_error_body("kv_validation_failed", &e.to_string()), true),
+    /// The list a `Toon` section renders: borrowed from the section, with the response's cell cap and truncation hint.
+    /// Nothing is copied, so validating and rendering cost what the output costs, not a second copy of the rows.
+    fn list_ref<'a>(&'a self, name: &'a str, fields: &'a [String], rows: &'a [Vec<Value>]) -> ListRef<'a> {
+        ListRef {
+            type_name: name,
+            fields,
+            rows,
+            max_cell_len: self.max_cell_len,
+            truncation_hint: self.truncation_hint.as_deref(),
         }
     }
 
-    /// The selected body, and whether this response is an error: set by `as_error()` or by a body that failed
-    /// validation. Every output surface reads its error flag from here so text, JSON and MCP never disagree.
-    fn body(&self) -> (String, bool, Option<Hint>) {
-        let (body, failed, extra) = match self.target {
-            RenderTarget::Toon | RenderTarget::Unset => self.toon_body(),
-            RenderTarget::Kv => {
-                let (body, failed) = self.kv_body();
-                (body, failed, None)
+    /// The blocks to render: the sections, or, for a response with nothing at all, the one empty list that names
+    /// its type. An error, budget or provenance block stands alone, with no empty list before it.
+    fn blocks(&self) -> std::borrow::Cow<'_, [Section]> {
+        if self.sections.is_empty() && self.budget.is_none() && self.provenance.is_none() && self.error.is_none() {
+            std::borrow::Cow::Owned(vec![Section::toon(self.name.as_str(), Vec::new(), Vec::new())])
+        } else {
+            std::borrow::Cow::Borrowed(&self.sections)
+        }
+    }
+
+    /// One section as an envelope part, and michi's own cut-cell help line when it has one.
+    fn section_part<'a>(&self, s: &'a Section) -> (Part<'a>, Option<Hint>) {
+        let total = s.reported_total();
+        let name = s.name();
+        match s.body() {
+            SectionBody::Toon { fields, rows } => {
+                match ToonDocument::validate_list(self.list_ref(name, fields, rows)) {
+                    Ok(doc) => {
+                        let list = doc.render_list();
+                        let cuts = list
+                            .cuts
+                            .iter()
+                            .map(|&(row, field, removed)| crate::toon::table::Cut {
+                                section: name,
+                                row,
+                                field: fields.get(field).map_or("", String::as_str),
+                                removed,
+                            })
+                            .collect();
+                        (Part::ok(name, list.text, cuts, total), list.extra_hint.map(Hint::new))
+                    }
+                    Err(e) => (Part::failed(name, "toon_validation_failed", e.to_string()), None),
+                }
             }
-        };
-        (body, failed || self.is_error, extra)
+            SectionBody::Kv(items) => (kv_part(name, items, total), None),
+            // One string value under the section's name, escaped like any other value: prose cannot start a line
+            // of its own, so it cannot forge a `help[]` line or break the document.
+            SectionBody::Text { text, .. } => {
+                let line = format!("{}: {}", crate::toon::escape_key(name), crate::toon::escape_value(text));
+                (Part::ok(name, line, Vec::new(), total), None)
+            }
+        }
+    }
+
+    /// Whether each block fails validation, without rendering it.
+    fn failed_flags(&self) -> Vec<bool> {
+        self.blocks()
+            .iter()
+            .map(|s| match s.body() {
+                SectionBody::Toon { fields, rows } => {
+                    ToonDocument::validate_list(self.list_ref(s.name(), fields, rows)).is_err()
+                }
+                SectionBody::Kv(items) => crate::kv::validate_keys(items).is_err(),
+                SectionBody::Text { .. } => false,
+            })
+            .collect()
+    }
+
+    /// The first key the body cannot render, or `None`. Sections render as root keys (a TOON list or text section
+    /// under its name, a KV section as its item keys), beside the keys michi writes itself
+    /// ([`crate::toon::RESERVED_ROOT_KEYS`]: the envelope blocks, the keys that follow a body, and the error
+    /// document's keys). The reserved names are claimed whether or not michi writes that block here, so validity
+    /// never depends on the caller's data, and a success response cannot carry `error:` or `message:` lines.
+    /// `failed[i]` says whether block `i` failed validation: it writes no keys here, because its failure joins the
+    /// one `error` object as a cause (see [`body`](Self::body)), so any number of failed blocks is no collision.
+    /// Provenance labels sit one level down (see [`crate::provenance::label_collision`]).
+    fn root_collision(&self, failed: &[bool]) -> Option<String> {
+        let blocks = self.blocks();
+        let mut seen: std::collections::HashSet<&str> = crate::toon::RESERVED_ROOT_KEYS.into_iter().collect();
+        for (s, failed) in blocks.iter().zip(failed) {
+            if *failed {
+                continue;
+            }
+            let keys: Vec<&str> = match s.body() {
+                SectionBody::Toon { .. } | SectionBody::Text { .. } => vec![s.name()],
+                SectionBody::Kv(items) => items.iter().map(|i| i.key.as_str()).collect(),
+            };
+            for key in keys {
+                if !seen.insert(key) {
+                    return Some(key.to_string());
+                }
+            }
+        }
+        let p = self.provenance.as_ref()?;
+        crate::provenance::label_collision(p).map(str::to_string)
+    }
+
+    /// The body: the error block, sections, `budget:`, `provenance:`.
+    ///
+    /// Blocks are joined with one LF and empty ones are skipped. `truncated` and `totalCount` are root keys, so they
+    /// may appear once: when one block has them they stay inline after its list; when two or more do, each becomes
+    /// one table with a leading `section` column, after the last block.
+    ///
+    /// Validation failures of the response's own shape (every block that failed, and the first root key two blocks
+    /// write) never hide the caller's [`DomainError`] and never hide each other: there is one error block. When the
+    /// caller set an error it is the error block, with every failure added after its own causes
+    /// (`toon_validation_failed: …`), and a failed block writes no lines of its own. Without a caller's error the
+    /// first failure is the error block and the others are its causes. Either way [`Body::failures`] carries them to
+    /// the JSON `error` object, so text and JSON report the same error.
+    ///
+    /// The flag is whether this response is an error: `as_error()`, `error()` or a validation failure. Every output
+    /// surface reads its error flag from here so text, JSON and MCP never disagree.
+    fn body(&self) -> Body<'_> {
+        let blocks = self.blocks();
+        let mut parts: Vec<Part<'_>> = Vec::with_capacity(blocks.len());
+        let mut flags: Vec<bool> = Vec::with_capacity(blocks.len());
+        let mut extras: Vec<Hint> = Vec::new();
+        for s in blocks.iter() {
+            let (part, extra) = self.section_part(s);
+            flags.push(part.failure.is_some());
+            // One line per cut response is enough: every section's line says the same thing.
+            if let Some(h) = extra {
+                if !extras.contains(&h) {
+                    extras.push(h);
+                }
+            }
+            parts.push(part);
+        }
+        // Two blocks writing one root key would be invalid TOON. Like any other bad input the whole body becomes the
+        // visible validation error, so the caller sees it instead of a document a decoder rejects.
+        let mut failures: Vec<Failure> = parts.iter().filter_map(|p| p.failure.clone()).collect();
+        if let Some(key) = self.root_collision(&flags) {
+            failures.push(Failure::collision(&key));
+            let error = self.error_block(&failures);
+            let text = match &error {
+                Some(e) => {
+                    let mut out = String::new();
+                    crate::error::push_error_fields(&mut out, e);
+                    out
+                }
+                None => failures[0].body(&failures[1..]),
+            };
+            return Body { text, is_error: true, extra: Vec::new(), error, failures };
+        }
+        let error = self.error_block(&failures);
+        let cutters = parts.iter().filter(|p| !p.cuts.is_empty()).count();
+        let totals = parts.iter().filter(|p| p.total.is_some()).count();
+        let mut out = String::with_capacity(parts.iter().map(|p| p.text.len() + 24).sum::<usize>() + 256);
+        if let Some(e) = &error {
+            crate::error::push_error_fields(&mut out, e);
+        }
+        let mut lead_written = false;
+        for p in &parts {
+            // One `error` object per document: with the caller's error leading, every failed block is a cause of it,
+            // and without one the first failed block writes the lines, the others being its causes.
+            match &p.failure {
+                None => join_block(&mut out, &p.text),
+                Some(f) if error.is_none() && !lead_written => {
+                    lead_written = true;
+                    join_block(&mut out, &f.body(&failures[1..]));
+                }
+                Some(_) => {}
+            }
+            if cutters == 1 {
+                crate::toon::table::push_truncated(&mut out, &p.cuts, false);
+            }
+            if let (1, Some(n)) = (totals, p.total) {
+                join_block(&mut out, &format!("totalCount: {n}"));
+            }
+        }
+        if cutters >= 2 {
+            let cuts: Vec<crate::toon::table::Cut<'_>> = parts.iter().flat_map(|p| p.cuts.iter().cloned()).collect();
+            crate::toon::table::push_truncated(&mut out, &cuts, true);
+        }
+        if totals >= 2 {
+            use crate::toon::table::{self, Cell};
+            table::push_header(&mut out, "totalCount", totals, ["section", "total"]);
+            for p in &parts {
+                if let Some(total) = p.total {
+                    table::push_row(&mut out, &[Cell::Str(p.name), Cell::count(total)]);
+                }
+            }
+        }
+        if let Some(b) = &self.budget {
+            join_block(&mut out, &crate::budget::render_budget_block(b, &self.sections));
+        }
+        if let Some(p) = &self.provenance {
+            join_block(&mut out, &crate::provenance::render_provenance_block(p));
+        }
+        let is_error = !failures.is_empty() || self.is_error || error.is_some();
+        Body { text: out, is_error, extra: extras, error, failures }
+    }
+
+    /// The error block the response renders: the caller's error, with every failure added as a cause after its own
+    /// when the response's shape also failed validation, so none hides another. `None` without a caller's error.
+    fn error_block(&self, failures: &[Failure]) -> Option<std::borrow::Cow<'_, DomainError>> {
+        let e = self.error.as_ref()?;
+        Some(if failures.is_empty() {
+            std::borrow::Cow::Borrowed(e)
+        } else {
+            std::borrow::Cow::Owned(failures.iter().fold(e.clone(), |e, f| e.cause(f.cause())))
+        })
     }
 
     /// Compose the text document: body, help block, recovery block. Each part is a TOON 4.4 document without a
     /// trailing newline and the append helpers join them with one LF, so the result is one root object whose keys
     /// are unique (the body cannot use `totalCount`, `help`, `recovery` or `truncated`). Appends to `body` in place.
-    fn finish_text(&self, mut body: String, extra: Option<&Hint>) -> String {
+    fn finish_text(&self, mut body: String, extra: &[Hint]) -> String {
         let hints = self.hints_with(extra);
-        if !hints.is_empty() || !self.recovery.is_empty() {
-            body.reserve(1 + hints.len() * 60 + self.recovery.len() * 80);
+        let recovery = self.recovery_list();
+        if !hints.is_empty() || !recovery.is_empty() {
+            body.reserve(1 + hints.len() * 60 + recovery.len() * 80);
         }
         crate::hints::append_hints(&mut body, &hints);
-        crate::recovery::append_recovery(&mut body, &self.recovery);
+        crate::recovery::append_recovery(&mut body, &recovery);
         body
     }
 
@@ -243,39 +599,27 @@ impl AgentResponse {
         }
     }
 
-    /// Render via the TOON path.
-    #[must_use]
-    pub fn render_toon(&self) -> String {
-        let (body, _, extra) = self.toon_body();
-        self.finish_text(body, extra.as_ref())
-    }
-
-    /// Render via the KV path.
-    #[must_use]
-    pub fn render_kv(&self) -> String {
-        self.finish_text(self.kv_body().0, None)
-    }
-
     fn render_text(&self) -> String {
-        let (body, _, extra) = self.body();
-        self.finish_text(body, extra.as_ref())
+        let body = self.body();
+        self.finish_text(body.text, &body.extra)
     }
 
-    /// Whether this response is an error: `as_error()` was called, or the TOON rows or KV items failed validation and
-    /// the body is a `toon_validation_failed` or `kv_validation_failed` error block. Validates without rendering.
+    /// Whether this response is an error: `as_error()` or `error()` was called, or the response failed validation (a
+    /// section's TOON rows or KV items, or two blocks writing one root key), which renders the
+    /// `toon_validation_failed` or `kv_validation_failed` error. Validates without rendering.
     #[must_use]
     pub fn is_error(&self) -> bool {
-        self.is_error
-            || match self.target {
-                RenderTarget::Toon | RenderTarget::Unset => self.toon.validate().is_err(),
-                RenderTarget::Kv => crate::kv::validate_keys(&self.single_item).is_err(),
-            }
+        if self.is_error || self.error.is_some() {
+            return true;
+        }
+        let failed = self.failed_flags();
+        failed.contains(&true) || self.root_collision(&failed).is_some()
     }
 
-    /// Render just the `help[N]:` block for `self.hints`.
+    /// Render just the `help[N]:` block: the error's hints, then the response's own.
     #[must_use]
     pub fn render_hints_only(&self) -> String {
-        crate::hints::render_hints(&self.hints)
+        crate::hints::render_hints(&self.hints_with(&[]))
     }
 
     /// Render for the given audience.
@@ -296,10 +640,11 @@ impl AgentResponse {
     /// Build the MCP `CallToolResult` for this response.
     #[must_use]
     pub fn to_call_tool_result(&self) -> crate::mcp::CallToolResult {
-        let (body, is_error, extra) = self.body();
-        let structured_content = self.json_from_body(&body, is_error, extra.as_ref());
+        let body = self.body();
+        let structured_content = self.json_from_body(&body);
+        let is_error = body.is_error;
         let mut content = vec![crate::mcp::ContentBlock {
-            text: self.finish_text(body, extra.as_ref()),
+            text: self.finish_text(body.text, &body.extra),
             audience: vec![crate::audience::Audience::Assistant],
         }];
         if let Some(human) = &self.human_content {
@@ -308,63 +653,217 @@ impl AgentResponse {
                 audience: vec![crate::audience::Audience::User],
             });
         }
-        crate::mcp::CallToolResult { content, is_error, structured_content }
+        crate::mcp::CallToolResult::new(
+            content,
+            is_error,
+            Some(crate::mcp::JsonObject::from_trusted(structured_content)),
+        )
     }
 
     fn render_json(&self) -> String {
-        let (body, is_error, extra) = self.body();
-        self.json_from_body(&body, is_error, extra.as_ref())
+        self.json_from_body(&self.body())
     }
 
-    fn json_from_body(&self, body: &str, is_error: bool, extra: Option<&Hint>) -> String {
-        let hints = self.hints_with(extra);
+    /// The JSON object. Its `error` is the error block the text leads with: the caller's error (with a validation
+    /// failures among its causes), or the first validation failure with the others as causes, with the same four keys.
+    fn json_from_body(&self, body: &Body<'_>) -> String {
+        let hints = self.hints_with(&body.extra);
+        let recovery = self.recovery_list();
         let capacity =
-            body.len() + hints.iter().map(|h| h.as_str().len() + 16).sum::<usize>() + self.recovery.len() * 64 + 64;
-        let mut out = String::with_capacity(capacity);
+            body.text.len() + hints.iter().map(|h| h.as_str().len() + 16).sum::<usize>() + recovery.len() * 64 + 64;
+        let mut out = String::with_capacity(capacity + 128);
         out.push_str("{\"body\":");
-        json_string(&mut out, body);
-        out.push_str(",\"hints\":[");
-        for (i, h) in hints.iter().enumerate() {
-            if i > 0 {
-                out.push(',');
+        json::push_str(&mut out, &body.text);
+        match (&body.error, body.failures.split_first()) {
+            (Some(e), _) => {
+                out.push_str(",\"error\":");
+                crate::error::push_error_json(&mut out, e);
             }
-            json_string(&mut out, h.as_str());
+            (None, Some((lead, causes))) => {
+                out.push_str(",\"error\":");
+                lead.push_json(&mut out, causes);
+            }
+            (None, None) => {}
         }
-        out.push_str("],\"recovery\":[");
-        for (i, r) in self.recovery.iter().enumerate() {
-            if i > 0 {
-                out.push(',');
-            }
-            out.push_str("{\"tool\":");
-            json_string(&mut out, &r.tool);
-            out.push_str(",\"params\":");
-            crate::recovery::push_params_json(&mut out, &r.params);
-            if let Some(reason) = &r.reason {
-                out.push_str(",\"reason\":");
-                json_string(&mut out, reason);
-            }
-            out.push('}');
+        if !self.sections.is_empty() {
+            out.push_str(",\"sections\":");
+            json::push_array(&mut out, &self.sections, push_section_json);
         }
-        out.push_str("],\"isError\":");
-        out.push_str(if is_error { "true" } else { "false" });
+        if let Some(b) = &self.budget {
+            out.push_str(",\"budget\":");
+            crate::budget::push_budget_json(&mut out, b, &self.sections);
+        }
+        if let Some(p) = &self.provenance {
+            out.push_str(",\"provenance\":");
+            crate::provenance::push_provenance_json(&mut out, p);
+        }
+        out.push_str(",\"hints\":");
+        json::push_str_array(&mut out, hints.iter().map(Hint::as_str));
+        out.push_str(",\"recovery\":");
+        json::push_array(&mut out, recovery.iter(), json::push_recovery);
+        out.push_str(",\"isError\":");
+        json::push_bool(&mut out, body.is_error);
         out.push('}');
         out
     }
 }
 
-/// The body that replaces rows or items that cannot form a valid document: `error: <code>` and the quoted message.
-fn validation_error_body(code: &str, message: &str) -> String {
-    let message = crate::toon::escape_value(message);
-    let mut out = String::with_capacity(17 + code.len() + message.len());
-    out.push_str("error: ");
-    out.push_str(code);
-    out.push_str("\nmessage: ");
-    out.push_str(&message);
-    out
+/// A rendered body and what every surface reads from it.
+struct Body<'a> {
+    /// The document before `help` and `recovery`.
+    text: String,
+    /// Whether the response is an error, on every surface.
+    is_error: bool,
+    /// michi's own help line for cut cells, after the response's hints.
+    extra: Vec<Hint>,
+    /// The error block the text leads with: the caller's error, the validation failures among its causes.
+    error: Option<std::borrow::Cow<'a, DomainError>>,
+    /// The response's validation failures, in block order and the first root key collision last; empty when its
+    /// shape is valid.
+    failures: Vec<Failure>,
 }
 
-fn json_string(out: &mut String, s: &str) {
-    crate::kv::json_escape_str(out, s);
+/// What is wrong with a response's own shape: michi's validation code and message.
+#[derive(Debug, Clone)]
+struct Failure {
+    /// `toon_validation_failed` or `kv_validation_failed`.
+    code: &'static str,
+    /// What failed, as the validator says it.
+    message: String,
+}
+
+impl Failure {
+    /// Two blocks that would write the same root key.
+    fn collision(key: &str) -> Self {
+        Self {
+            code: "toon_validation_failed",
+            message: format!("duplicate root key '{key}': give every section and KV key a distinct name"),
+        }
+    }
+
+    /// The error lines that replace rows or items that cannot form a valid document: `error: <code>`, the quoted
+    /// message and, when other failures follow, `causes[N]: …` with each as `<code>: <message>`.
+    fn body(&self, causes: &[Failure]) -> String {
+        let message = crate::toon::escape_value(&self.message);
+        let mut out = String::with_capacity(17 + self.code.len() + message.len());
+        out.push_str("error: ");
+        out.push_str(self.code);
+        out.push_str("\nmessage: ");
+        out.push_str(&message);
+        let causes: Vec<String> = causes.iter().map(Failure::cause).collect();
+        crate::hints::append_inline_strings(&mut out, "causes", causes.iter().map(String::as_str));
+        out
+    }
+
+    /// The cause it adds to the caller's error: `<code>: <message>`, the form the NAPI exports throw.
+    fn cause(&self) -> String {
+        let mut out = String::with_capacity(self.code.len() + 2 + self.message.len());
+        out.push_str(self.code);
+        out.push_str(": ");
+        out.push_str(&self.message);
+        out
+    }
+
+    /// The JSON `error` object, with the keys a [`DomainError`] writes: michi's code and message, the other failures
+    /// as causes, and `retryable: false`, since the same input fails the same way.
+    fn push_json(&self, out: &mut String, causes: &[Failure]) {
+        out.push_str("{\"code\":");
+        json::push_str(out, self.code);
+        out.push_str(",\"message\":");
+        json::push_str(out, &self.message);
+        out.push_str(",\"causes\":");
+        let causes: Vec<String> = causes.iter().map(Failure::cause).collect();
+        json::push_str_array(out, causes.iter().map(String::as_str));
+        out.push_str(",\"retryable\":false}");
+    }
+}
+
+/// One block of an envelope body before the root-level `truncated` and `totalCount` keys are placed.
+struct Part<'a> {
+    /// The block's name, the `section` column when several blocks share a root key.
+    name: &'a str,
+    /// The block's text without its `truncated` block or `totalCount` line.
+    text: String,
+    /// Cut cells, for the `truncated` block.
+    cuts: Vec<crate::toon::table::Cut<'a>>,
+    /// The `totalCount` this block reports, when it reports one.
+    total: Option<usize>,
+    /// Why the block failed validation; its `text` is then the error lines.
+    failure: Option<Failure>,
+}
+
+impl<'a> Part<'a> {
+    /// A block that rendered.
+    fn ok(name: &'a str, text: String, cuts: Vec<crate::toon::table::Cut<'a>>, total: Option<usize>) -> Self {
+        Self { name, text, cuts, total, failure: None }
+    }
+
+    /// A block that failed validation: the error lines replace its content and it reports no count.
+    fn failed(name: &'a str, code: &'static str, message: String) -> Self {
+        let failure = Failure { code, message };
+        Self { name, text: failure.body(&[]), cuts: Vec::new(), total: None, failure: Some(failure) }
+    }
+}
+
+/// A KV block as a part. No items still reports a larger total the caller set.
+fn kv_part<'a>(name: &'a str, items: &[KvItem], total: Option<usize>) -> Part<'a> {
+    if items.is_empty() {
+        return Part::ok(name, String::new(), Vec::new(), total);
+    }
+    match crate::kv::render_kv(items) {
+        Ok(text) => Part::ok(name, text, Vec::new(), total),
+        Err(e) => Part::failed(name, "kv_validation_failed", e.to_string()),
+    }
+}
+
+/// Append `block` after a LF unless either side is empty.
+fn join_block(out: &mut String, block: &str) {
+    if block.is_empty() {
+        return;
+    }
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    out.push_str(block);
+}
+
+/// One section as the JSON object spec 07 section 5 describes. Rows carry the full values: the per-cell cap shapes
+/// the text render, and `structuredContent` is the typed copy of the same data. `returnedCount`, `totalCount` and
+/// `truncated` are the section's own derived facts, the ones the text render uses.
+fn push_section_json(out: &mut String, s: &Section) {
+    out.push_str("{\"name\":");
+    json::push_str(out, s.name());
+    match s.body() {
+        SectionBody::Toon { fields, rows } => {
+            out.push_str(",\"kind\":\"toon\",\"fields\":");
+            json::push_str_array(out, fields.iter().map(String::as_str));
+            out.push_str(",\"rows\":");
+            json::push_array(out, rows, |out, row| json::push_array(out, row, json::push_value));
+        }
+        SectionBody::Kv(items) => {
+            out.push_str(",\"kind\":\"kv\",\"items\":");
+            json::push_array(out, items, |out, item| {
+                out.push_str("{\"key\":");
+                json::push_str(out, &item.key);
+                out.push_str(",\"value\":");
+                json::push_kv_value(out, &item.value);
+                out.push('}');
+            });
+        }
+        SectionBody::Text { text, .. } => {
+            out.push_str(",\"kind\":\"text\",\"text\":");
+            json::push_str(out, text);
+        }
+    }
+    out.push_str(",\"returnedCount\":");
+    json::push_uint(out, s.count() as u64);
+    if let Some(total) = s.reported_total() {
+        out.push_str(",\"totalCount\":");
+        json::push_uint(out, total as u64);
+    }
+    out.push_str(",\"truncated\":");
+    json::push_bool(out, s.truncated());
+    out.push('}');
 }
 
 #[cfg(test)]
@@ -390,7 +889,10 @@ mod tests {
             let result = r.to_call_tool_result();
             assert!(result.is_error, "{message}");
             assert_eq!(result.content[0].text, text);
-            assert!(result.structured_content.contains("\"isError\":true"), "{message}");
+            assert!(
+                result.structured_content.map(String::from).unwrap_or_default().contains("\"isError\":true"),
+                "{message}"
+            );
         }
     }
 
@@ -425,7 +927,7 @@ mod tests {
     #[test]
     fn ac001_unset_target_renders_empty_toon_exactly() {
         let r = AgentResponse::new("widget");
-        assert_eq!(r.render(OutputFormat::Text), "widget: []");
+        assert_eq!(r.render(OutputFormat::Text), "widget: []\ntotalCount: 0");
     }
 
     // AC-002: the test above (items_path_renders_toon) only checks
@@ -445,16 +947,17 @@ mod tests {
         let items = vec![KvItem { key: "id".into(), value: KvValue::Int(1) }];
         let r = AgentResponse::new("t").kv_items(items.clone());
         // Without hints or recovery the composed text is exactly the KV document.
-        assert_eq!(Ok(r.render(OutputFormat::Text)), crate::kv::render_kv(&items, None, &[]));
+        assert_eq!(Ok(r.render(OutputFormat::Text)), crate::kv::render_kv(&items));
     }
 
     #[test]
-    fn kv_path_with_no_items_keeps_the_total_count() {
-        let r = AgentResponse::new("t").kv_items(vec![]).total_count(0);
-        assert_eq!(r.render(OutputFormat::Text), "totalCount: 0");
+    fn kv_section_with_no_items_still_reports_a_larger_total() {
+        let r = AgentResponse::new("t").section(Section::kv("k", vec![]).total_count(Some(3)));
+        assert_eq!(r.render(OutputFormat::Text), "totalCount: 3");
         let json = r.render(OutputFormat::Json);
-        assert!(json.starts_with("{\"body\":\"totalCount: 0\","), "{json}");
-        let with_hint = AgentResponse::new("t").kv_items(vec![]).total_count(3).hint("try another id");
+        assert!(json.starts_with("{\"body\":\"totalCount: 3\","), "{json}");
+        let with_hint =
+            AgentResponse::new("t").section(Section::kv("k", vec![]).total_count(Some(3))).hint("try another id");
         assert_eq!(with_hint.render(OutputFormat::Text), "totalCount: 3\nhelp[1]: try another id");
         assert_eq!(AgentResponse::new("t").kv_items(vec![]).render(OutputFormat::Text), "", "no count, no body");
     }
@@ -475,21 +978,45 @@ mod tests {
         assert!(json.contains("\"isError\":true"), "got: {json}");
     }
 
-    // AC-004: render(Json) parses as an object with exactly the 4 named
-    // top-level keys, for all three construction paths (items/kv_items/neither).
+    // AC-004: render(Json) parses as an object with exactly the 4 named top-level keys plus the envelope keys
+    // (`sections`, `budget`, `provenance`) that were set, for every construction path. `items()` and `kv_items()`
+    // add a section, so they add `sections`; a response with no body at all keeps exactly the four.
     #[test]
     #[cfg(feature = "serde")]
-    fn ac004_render_json_top_level_keys_are_exactly_the_specified_set_for_every_target() {
-        let unset = AgentResponse::new("t");
-        let toon = AgentResponse::new("t").items(vec![vec![Value::from("x")]], &["a"]);
-        let kv = AgentResponse::new("t")
-            .kv_items(vec![crate::kv::KvItem { key: "k".into(), value: crate::kv::KvValue::Int(1) }]);
-        for r in [unset, toon, kv] {
-            let parsed: serde_json::Value = serde_json::from_str(&r.render(OutputFormat::Json)).expect("valid JSON");
-            let obj = parsed.as_object().expect("top-level object");
-            let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
-            keys.sort_unstable();
-            assert_eq!(keys, vec!["body", "hints", "isError", "recovery"]);
+    fn ac004_render_json_top_level_keys_are_the_four_plus_the_envelope_keys_that_were_set() {
+        use crate::{BudgetSummary, ProvenanceBlock, Section};
+        let kv_item = || crate::kv::KvItem { key: "k".into(), value: crate::kv::KvValue::Int(1) };
+        let section = || Section::text("note", "x");
+        let base = ["body", "hints", "isError", "recovery"];
+        let cases: Vec<(AgentResponse, Vec<&str>)> = vec![
+            (AgentResponse::new("t"), vec![]),
+            (AgentResponse::new("t").items(vec![vec![Value::from("x")]], &["a"]), vec!["sections"]),
+            (AgentResponse::new("t").kv_items(vec![kv_item()]), vec!["sections"]),
+            (AgentResponse::new("t").section(section()), vec!["sections"]),
+            (AgentResponse::new("t").budget(BudgetSummary::new()), vec!["budget"]),
+            (AgentResponse::new("t").provenance(ProvenanceBlock::new()), vec!["provenance"]),
+            (
+                AgentResponse::new("t")
+                    .kv_items(vec![kv_item()])
+                    .section(section())
+                    .budget(BudgetSummary::new())
+                    .provenance(ProvenanceBlock::new()),
+                vec!["budget", "provenance", "sections"],
+            ),
+        ];
+        for (r, extra) in cases {
+            let mut want: Vec<&str> = base.iter().copied().chain(extra).collect();
+            want.sort_unstable();
+            for json in [
+                r.render(OutputFormat::Json),
+                r.to_call_tool_result().structured_content.map(String::from).unwrap_or_default(),
+            ] {
+                let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+                let obj = parsed.as_object().expect("top-level object");
+                let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+                keys.sort_unstable();
+                assert_eq!(keys, want, "{json}");
+            }
         }
     }
 
@@ -547,23 +1074,13 @@ mod tests {
         assert_eq!(parsed["body"].as_str().unwrap(), "k: \"body \\\"quoted\\\" \\\\slash\"");
     }
 
-    // AC-009: render_toon()/render_kv() always run their own named path
-    // regardless of which builder method last set the target.
+    // AC-010: render(Text) for a lone kv_items() section is exactly the kv document.
     #[test]
-    fn ac009_render_toon_and_render_kv_diverge_when_only_items_was_set() {
-        let r = AgentResponse::new("t").items(vec![vec![Value::from("x")]], &["a"]);
-        assert_eq!(r.render_toon(), "t[1]{a}:\n  x");
-        assert_eq!(r.render_kv(), "");
-    }
-
-    // AC-010: render(Text) target-based dispatch agrees with render_kv()
-    // when kv_items() was the last builder call used.
-    #[test]
-    fn ac010_render_text_agrees_with_render_kv_when_kv_items_set() {
+    fn ac010_render_text_for_kv_items_is_the_kv_document() {
         use crate::kv::{KvItem, KvValue};
         let items = vec![KvItem { key: "id".into(), value: KvValue::Int(1) }];
-        let r = AgentResponse::new("t").kv_items(items);
-        assert_eq!(r.render(OutputFormat::Text), r.render_kv());
+        let r = AgentResponse::new("t").kv_items(items.clone());
+        assert_eq!(Ok(r.render(OutputFormat::Text)), crate::kv::render_kv(&items));
     }
 
     // AC-012: Missing rendered via the AgentResponse Json body is the TOON
@@ -609,11 +1126,11 @@ mod tests {
     }
 
     // AC-041 through AC-045: RecoveryHint params through AgentResponse's Json
-    // path use kv_value_to_json (bare null for missing and non-finite floats, bare bool), in
+    // path use json::push_kv_value (bare null for missing and non-finite floats, bare bool), in
     // contrast to kv_items' plain-text body rendering above.
     #[test]
     #[cfg(feature = "serde")]
-    fn ac041_to_ac045_recovery_params_use_kv_value_to_json_typing() {
+    fn ac041_to_ac045_recovery_params_use_json_kv_value_typing() {
         use crate::kv::KvValue;
         use crate::recovery::RecoveryHint;
         let cases: Vec<(KvValue, serde_json::Value)> = vec![
@@ -638,7 +1155,10 @@ mod tests {
         let result = r.to_call_tool_result();
         assert!(result.is_error);
         assert!(!result.content.is_empty(), "content must not be empty");
-        assert!(result.structured_content.starts_with('{'), "structured_content must be JSON object");
+        assert!(
+            result.structured_content.map(String::from).unwrap_or_default().starts_with('{'),
+            "structured_content must be JSON object"
+        );
     }
 
     // AC-023: the test above only checks !content.is_empty(), which would
@@ -679,12 +1199,12 @@ mod tests {
     fn ac026_call_tool_result_structured_content_and_is_error_match_exactly() {
         let r = AgentResponse::new("items").items(vec![vec![Value::from("ok")]], &["name"]);
         let result = r.to_call_tool_result();
-        assert_eq!(result.structured_content, r.render(OutputFormat::Json));
+        assert_eq!(result.structured_content.map(String::from).unwrap_or_default(), r.render(OutputFormat::Json));
         assert!(!result.is_error);
 
         let err = r.as_error();
         let err_result = err.to_call_tool_result();
-        assert_eq!(err_result.structured_content, err.render(OutputFormat::Json));
+        assert_eq!(err_result.structured_content.map(String::from).unwrap_or_default(), err.render(OutputFormat::Json));
         assert!(err_result.is_error);
     }
 
@@ -775,7 +1295,7 @@ mod tests {
     #[test]
     fn ac029_truncate_cells_at_bounds_total_cell_length() {
         let r = AgentResponse::new("t").truncate_cells_at(5).items(vec![vec![Value::from("abcdefghij")]], &["name"]);
-        let out = r.render_toon();
+        let out = r.render(OutputFormat::Text);
         let row_line = out.lines().nth(1).expect("row line present");
         // A 5-char cap cannot hold the suffix, so the cell is 4 kept chars and an ellipsis.
         assert_eq!(row_line, "  abcd…");
@@ -784,12 +1304,12 @@ mod tests {
     #[test]
     fn truncation_hint_passes_through_to_toon_body() {
         let rows = vec![vec![Value::from("a".repeat(500))]];
-        let without = AgentResponse::new("t").items(rows.clone(), &["c"]).render_toon();
+        let without = AgentResponse::new("t").items(rows.clone(), &["c"]).render(OutputFormat::Text);
         let cut = format!("t[1]{{c}}:\n  {}\u{2026}\ntruncated[1]{{row,field,removed}}:\n  0,c,301", "a".repeat(199));
         assert_eq!(without, cut);
         let with = AgentResponse::new("t").truncation_hint("detail=full").items(rows, &["c"]);
         assert_eq!(
-            with.render_toon(),
+            with.render(OutputFormat::Text),
             format!("{cut}\nhelp[1]: Cut cells are listed in the truncated block; use detail=full for the full value")
         );
         assert!(with.render(OutputFormat::Json).contains("use detail=full"));
@@ -803,31 +1323,22 @@ mod tests {
         let r = AgentResponse::new("t")
             .truncate_cells_at(5)
             .kv_items(vec![KvItem { key: "k".into(), value: KvValue::Text(long_value.clone()) }]);
-        let out = r.render_kv();
+        let out = r.render(OutputFormat::Text);
         assert!(out.contains(&long_value), "value must be untruncated, got: {out}");
     }
 
-    // AC-051: .total_count() is threaded into the KV render path, not
-    // silently dropped.
+    // AC-051/052: a section's total count reaches the text on both the KV and the TOON path, and only when it exceeds
+    // the rows returned.
     #[test]
-    fn ac051_total_count_is_wired_into_kv_render_path() {
+    fn ac051_ac052_section_total_count_is_rendered_on_both_paths_only_when_larger() {
         use crate::kv::{KvItem, KvValue};
-        let r =
-            AgentResponse::new("t").total_count(3).kv_items(vec![KvItem { key: "k".into(), value: KvValue::Int(1) }]);
-        let out = r.render_kv();
-        assert!(out.ends_with("totalCount: 3"), "got: {out}");
-    }
-
-    // AC-052: .total_count() is threaded into the TOON render path via
-    // ToonOptions::total_count(), not silently dropped.
-    #[test]
-    fn ac052_total_count_is_wired_into_toon_render_path() {
-        let r = AgentResponse::new("t").total_count(3).items(vec![vec![Value::from("x")]], &["c"]);
-        let out = r.render_toon();
-        assert!(out.contains('3'), "expected total_count 3 to surface, got: {out}");
-
-        let without_total_count = AgentResponse::new("t").items(vec![vec![Value::from("x")]], &["c"]);
-        assert_ne!(out, without_total_count.render_toon(), "total_count must change the output");
+        let kv = |total| Section::kv("k", vec![KvItem { key: "k".into(), value: KvValue::Int(1) }]).total_count(total);
+        let toon = |total| Section::toon("t", vec!["c".into()], vec![vec![Value::from("x")]]).total_count(total);
+        let text = |s: Section| AgentResponse::new("t").section(s).render(OutputFormat::Text);
+        assert_eq!(text(kv(Some(3))), "k: 1\ntotalCount: 3");
+        assert_eq!(text(toon(Some(3))), "t[1]{c}:\n  x\ntotalCount: 3");
+        assert_eq!(text(kv(Some(1))), "k: 1", "a total equal to the rows adds nothing");
+        assert_eq!(text(toon(None)), "t[1]{c}:\n  x");
     }
 
     // AC-053: .hints() replaces the full hint list rather than appending to
@@ -841,7 +1352,7 @@ mod tests {
         assert!(!out.contains('a'), "got: {out}");
     }
 
-    // AC-038 (extended): json_escape_str's generic below-0x20 control-
+    // AC-038 (extended): json::push_str's generic below-0x20 control-
     // character branch (\u00XX), distinct from the dedicated \n/\r/\t arms.
     #[test]
     #[cfg(feature = "serde")]
@@ -864,12 +1375,12 @@ mod tests {
     #[test]
     fn ac050_default_truncate_boundary_holds_without_explicit_call() {
         let untruncated = AgentResponse::new("t").items(vec![vec![Value::from("x".repeat(199))]], &["c"]);
-        let out = untruncated.render_toon();
+        let out = untruncated.render(OutputFormat::Text);
         let cell_line = out.lines().nth(1).expect("row line present");
         assert!(cell_line.contains(&"x".repeat(199)), "199 chars must be untruncated, got: {cell_line:?}");
 
         let truncated = AgentResponse::new("t").items(vec![vec![Value::from("x".repeat(250))]], &["c"]);
-        let out = truncated.render_toon();
+        let out = truncated.render(OutputFormat::Text);
         let cell_line = out.lines().nth(1).expect("row line present");
         let value_part = cell_line.trim_start();
         assert!(
