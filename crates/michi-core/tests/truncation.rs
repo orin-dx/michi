@@ -15,8 +15,8 @@ fn empty_input_cuts_nothing() {
     let by_count = truncate_by_count(Vec::<u32>::new(), 5);
     let by_size = truncate_by_size(Vec::<u32>::new(), 5, |_| 1);
     for outcome in [by_count, by_size] {
-        assert!(outcome.kept.is_empty());
-        assert_eq!(outcome.total_before, 0);
+        assert!(outcome.kept().is_empty());
+        assert_eq!(outcome.total_before(), 0);
         assert!(!outcome.truncated());
         assert_eq!(outcome.omitted(), 0);
         assert_eq!(outcome.hint("pass --all"), None);
@@ -36,8 +36,8 @@ fn empty_input_with_a_zero_cap_cuts_nothing() {
 #[test]
 fn a_zero_cap_on_items_keeps_none_and_reports_all_omitted() {
     let outcome = truncate_by_count(vec![1, 2, 3], 0);
-    assert!(outcome.kept.is_empty());
-    assert_eq!(outcome.total_before, 3);
+    assert!(outcome.kept().is_empty());
+    assert_eq!(outcome.total_before(), 3);
     assert!(outcome.truncated());
     assert_eq!(outcome.omitted(), 3);
     assert_eq!(outcome.hint("pass --all"), Some(Hint::new("showing 0 of 3; pass --all")));
@@ -46,12 +46,12 @@ fn a_zero_cap_on_items_keeps_none_and_reports_all_omitted() {
 #[test]
 fn an_exact_fit_cuts_nothing() {
     let by_count = truncate_by_count(vec![1, 2, 3], 3);
-    assert_eq!(by_count.kept, vec![1, 2, 3]);
+    assert_eq!(by_count.kept(), vec![1, 2, 3]);
     assert!(!by_count.truncated());
     assert_eq!(by_count.hint("pass --all"), None);
 
     let by_size = truncate_by_size(vec![2, 3, 5], 10, |n| *n);
-    assert_eq!(by_size.kept, vec![2, 3, 5]);
+    assert_eq!(by_size.kept(), vec![2, 3, 5]);
     assert!(!by_size.truncated());
     assert_eq!(by_size.hint("pass --all"), None);
 }
@@ -61,8 +61,8 @@ fn an_exact_fit_cuts_nothing() {
 #[test]
 fn by_count_keeps_the_first_n_in_order() {
     let outcome = truncate_by_count(vec!["e", "d", "c", "b", "a"], 2);
-    assert_eq!(outcome.kept, vec!["e", "d"]);
-    assert_eq!(outcome.total_before, 5);
+    assert_eq!(outcome.kept(), vec!["e", "d"]);
+    assert_eq!(outcome.total_before(), 5);
     assert_eq!(outcome.omitted(), 3);
     assert!(outcome.truncated());
 }
@@ -70,8 +70,8 @@ fn by_count_keeps_the_first_n_in_order() {
 #[test]
 fn by_count_with_a_cap_above_the_length_keeps_everything() {
     let outcome = truncate_by_count(vec![1, 2], 10);
-    assert_eq!(outcome.kept, vec![1, 2]);
-    assert_eq!(outcome.total_before, 2);
+    assert_eq!(outcome.kept(), vec![1, 2]);
+    assert_eq!(outcome.total_before(), 2);
     assert!(!outcome.truncated());
 }
 
@@ -79,8 +79,8 @@ fn by_count_with_a_cap_above_the_length_keeps_everything() {
 fn by_size_stops_at_the_first_item_that_does_not_fit() {
     // 3 + 4 = 7 fits in 8; 7 + 5 does not, so the walk stops there even though the trailing 1 would fit.
     let outcome = truncate_by_size(vec![3, 4, 5, 1], 8, |n| *n);
-    assert_eq!(outcome.kept, vec![3, 4]);
-    assert_eq!(outcome.total_before, 4);
+    assert_eq!(outcome.kept(), vec![3, 4]);
+    assert_eq!(outcome.total_before(), 4);
     assert_eq!(outcome.omitted(), 2);
     assert!(outcome.truncated());
 }
@@ -88,8 +88,8 @@ fn by_size_stops_at_the_first_item_that_does_not_fit() {
 #[test]
 fn by_size_with_an_oversized_first_item_keeps_nothing() {
     let outcome = truncate_by_size(vec![100, 1, 1], 10, |n| *n);
-    assert!(outcome.kept.is_empty());
-    assert_eq!(outcome.total_before, 3);
+    assert!(outcome.kept().is_empty());
+    assert_eq!(outcome.total_before(), 3);
     assert!(outcome.truncated());
     assert_eq!(outcome.hint("raise --max-tokens"), Some(Hint::new("showing 0 of 3; raise --max-tokens")));
 }
@@ -97,7 +97,7 @@ fn by_size_with_an_oversized_first_item_keeps_nothing() {
 #[test]
 fn by_size_zero_sized_items_always_fit() {
     let outcome = truncate_by_size(vec!["a", "b"], 0, |_| 0);
-    assert_eq!(outcome.kept, vec!["a", "b"]);
+    assert_eq!(outcome.kept(), vec!["a", "b"]);
     assert!(!outcome.truncated());
 }
 
@@ -105,14 +105,14 @@ fn by_size_zero_sized_items_always_fit() {
 fn by_size_accumulation_never_overflows() {
     // A sum past usize::MAX must not wrap around to a small number and look like it fits.
     let outcome = truncate_by_size(vec![1u8, 2, 3], usize::MAX, |_| usize::MAX);
-    assert_eq!(outcome.kept, vec![1], "one usize::MAX item fits a usize::MAX budget, a second does not");
+    assert_eq!(outcome.kept(), vec![1], "one usize::MAX item fits a usize::MAX budget, a second does not");
     assert_eq!(outcome.omitted(), 2);
 
     let outcome = truncate_by_size(vec![1u8, 2], usize::MAX - 1, |_| usize::MAX);
-    assert!(outcome.kept.is_empty());
+    assert!(outcome.kept().is_empty());
 
     let outcome = truncate_by_size(vec![1u8, 2, 3], usize::MAX, |n| if *n == 1 { 1 } else { usize::MAX });
-    assert_eq!(outcome.kept, vec![1], "1 + usize::MAX overflows, so the second item does not fit");
+    assert_eq!(outcome.kept(), vec![1], "1 + usize::MAX overflows, so the second item does not fit");
 }
 
 // --- hint ------------------------------------------------------------------------------------------------------------
@@ -149,13 +149,13 @@ fn a_new_built_outcome_renders_the_same_hint_as_the_built_ins() {
 fn new_normalizes_a_total_below_the_kept_count() {
     // §6: infallible constructors normalize. A total smaller than what was kept is impossible, so it is raised.
     let outcome = TruncationOutcome::new(vec![1, 2, 3], 1);
-    assert_eq!(outcome.total_before, 3);
+    assert_eq!(outcome.total_before(), 3);
     assert!(!outcome.truncated());
     assert_eq!(outcome.omitted(), 0);
     assert_eq!(outcome.hint("pass --all"), None);
 
     let outcome = TruncationOutcome::new(vec![1, 2], 7);
-    assert_eq!(outcome.total_before, 7);
+    assert_eq!(outcome.total_before(), 7);
     assert_eq!(outcome.omitted(), 5);
 }
 
@@ -222,20 +222,20 @@ fn agent_response_truncation_with_nothing_kept_is_conformant() {
 
 /// Probe 10 of the architecture audit: with rows and outcome passed separately, five rows beside an outcome that
 /// kept two of four rendered `t[5]` next to `showing 2 of 4` and `totalCount: 4`. The rows now come from
-/// `outcome.kept`, so the list header, the JSON count, the total and the hint name one cut.
+/// `outcome.kept()`, so the list header, the JSON count, the total and the hint name one cut.
 #[test]
 fn truncated_section_rows_are_the_outcome_kept_items() {
     for (items, cap) in [(vec![1, 2, 3, 4], 2), (vec![1, 2, 3], 3), (vec![], 1), (vec![7; 9], 0)] {
         let outcome = truncate_by_count(items, cap);
         let r = issues(AgentResponse::new("issues"), &outcome, "g");
         let out = r.render(OutputFormat::Text);
-        let kept = outcome.kept.len();
+        let kept = outcome.kept().len();
         let header = if kept == 0 { "issues: []".to_string() } else { format!("issues[{kept}]{{n}}:") };
         assert!(out.starts_with(&header), "{out}");
         let json: serde_json::Value = serde_json::from_str(&r.render(OutputFormat::Json)).unwrap();
         assert_eq!(json["sections"][0]["returnedCount"], kept);
         // The JSON reports the total the text does: a cut's total, or 0 for the empty list; none for a whole list.
-        let reported = (outcome.truncated() || kept == 0).then_some(outcome.total_before as u64);
+        let reported = (outcome.truncated() || kept == 0).then_some(outcome.total_before() as u64);
         assert_eq!(json["sections"][0].get("totalCount").and_then(serde_json::Value::as_u64), reported, "{out}");
         assert_eq!(json["sections"][0]["truncated"], outcome.truncated());
         match outcome.hint("g") {

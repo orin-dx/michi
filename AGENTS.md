@@ -44,7 +44,7 @@
 - `crates/michi-core/` — pure sync rendering library, every primitive (default features: only `thiserror` + `compact_str`). Integration tests, divan benches and examples live in `crates/michi-core/{tests,benches,examples}` (`cargo run -p michi-core --example basic_toon`)
 - `crates/michi-graph/` — **MIT**, no dependencies, `no_std` + `alloc`: deterministic dependency graphs (`GraphBuilder` → `Graph` → `Dag`; validation reports every problem at once; topological order, layers, ready sets, closures; `Dag<K, E>` keeps edge kinds for `ready_by_edge`). Depends on nothing in michi, releases with the fixed group, and must never gain a non-permissive dependency (`just check-graph-license`). API: `docs/spec/09-graph.md`.
 - `crates/michi-pipeline/` — async pipeline execution (shipped): validated `Plan` of `ExecStep`s, `execute`/`resume` returning a `RunRecord`, keyed `BreakerRegistry`, retry budget, per-key concurrency limits, deadline groups, `poll_step`, `step_blocking`, `CancellationToken` (wraps tokio-util), `StepObserver`, its own `ExecutionError` (converts into `DomainError`, not a variant of it — see `docs/spec/06-decisions.md`). API: `docs/spec/08-pipeline-execution.md`. Depends on `michi-core` (exact `=` version pin), `michi-graph` (exact `=` pin; no michi-graph type in its public API) + `tokio` + `tokio-util`; not re-exported through `michi-core`.
-- `packages/michi-node/` — thin NAPI cdylib shim (`publish = false`), npm package name `@orin-dx/michi`; the exports themselves live in `crates/michi-core/src/napi.rs` behind michi-core's `napi` feature and are re-exported via `pub use michi_core::napi::*;`
+- `packages/michi-node/` — thin NAPI cdylib shim (`publish = false`), npm package name `@orin-dx/michi`; the exports themselves live in `crates/michi-core/src/napi/` (module root `napi.rs`) behind michi-core's `napi` feature and are re-exported via `pub use michi_core::napi::*;`
 - Published crates: `michi-core`, `michi-pipeline` and `michi-graph`. There is no `michi` crate (the name on crates.io belongs to an unrelated project)
 - Feature flags (on `michi-core`): `napi`, `serde` (opt-in Serialize/Deserialize + `toon::list()`), `schemars`, `miette`. Execution layers (`pipeline`, `fuzzy`, `cache`, `cli`) land as separate crates, never as features here — `michi-pipeline` shipped this way (see above); `fuzzy`/`cache`/`cli` are not built anywhere. See `docs/spec/01-overview-and-setup.md`'s Cargo.toml section for the current split.
 - See `docs/spec/06-decisions.md` and `docs/adr/README.md` for decisions (`docs/superpowers/` is historical)
@@ -74,7 +74,6 @@ All modules live in `crates/michi-core/src/`.
 | `mcp` | MCP `CallToolResult` assembly — always compiled, no feature gate |
 | `audience` | `Audience` (assistant/user) — shared by `mcp` and `response::render_for()` |
 | `pipeline` | Pipeline pure data type + render (execution lives in `crates/michi-pipeline`, not `crates/michi-core`) |
-| `telemetry` | No-op telemetry provider (`NoopProvider`) — zero-cost default, always compiled |
 | `napi` | NAPI export surface for `@orin-dx/michi` (`napi` feature only) — the one module allowed `unsafe` |
 
 <!-- prettier-ignore-start -->

@@ -176,22 +176,23 @@ michi/                           (workspace root — virtual manifest, no packag
     michi-core/
       Cargo.toml
       src/
-        lib.rs                   # module declarations, explicit root re-exports (incl. resilience and truncate items), Result<T>
+        lib.rs                   # module declarations, explicit root re-exports (incl. resilience and truncate items)
         audience.rs              # Audience — always compiled
         budget.rs                # BudgetSummary and its render/JSON (roll-up derived from the sections)
-        error.rs                 # Error, ErrorCode, DomainError, ErrorClass, Sensitive<T>,
+        error.rs                 # ErrorCode, UnknownErrorCode, DomainError, ErrorClass, Sensitive<T>,
                                   # MAY_HAVE_TAKEN_EFFECT_HINT
         float_wire.rs            # serde wire form for non-finite floats (serde feature, private)
         hints.rs                 # Hint, render_hints(), append_hints()
-        idempotency.rs           # FailedOp, PartialSuccess — NOT idempotency keys/already-done
+        idempotency.rs           # CompletedOp, SkippedOp, FailedOp, PartialSuccess, DuplicateOpIndex — NOT keys/already-done
                                   # (that's resilience::AlreadyDone/already_done(); the
                                   # module name is a known, tracked naming staleness)
         int_schema.rs            # integer JSON Schemas (schemars feature, private)
         json.rs                  # the hand-built JSON writers every structured companion shares (private)
         kv/mod.rs                # render_kv(), KvItem, KvValue, KvError
-        mcp.rs                   # ContentBlock, CallToolResult, StructuredContentError — always compiled
+        mcp.rs                   # ContentBlock, JsonObject, CallToolResult, StructuredContentError — always compiled
         napi.rs                  # NAPI module root: docs, lints, module list (napi feature only)
         napi/
+          cost.rs                # what a held item can cost in output beyond its own bytes
           num.rs                 # JsRanged/JsFloat/JsCount/... numeric-boundary newtype kernel
           input.rs               # bounded, incremental conversion of collection and string arguments; the caps
           value.rs               # ToonValue / KvItem and their one conversion into core values
@@ -203,13 +204,13 @@ michi/                           (workspace root — virtual manifest, no packag
         pipeline/mod.rs          # Pipeline, PipelineStep, StepStatus and its reasons — data model + render only
         provenance.rs            # ProvenanceBlock, ProvenanceEntry and their render/JSON
         recovery.rs              # RecoveryHint, render_recovery()
+        redact.rs                # redact_secrets(), redact_url_userinfo(), redact_common_shapes() (best effort)
         resilience.rs            # RetryConfig, next_retry_delay(), parse_retry_after(),
                                   # is_retryable_status(), AlreadyDone, IdempotencyKey
         resilience/budget.rs     # RetryBudget
         response.rs              # AgentResponse builder, OutputFormat, DEFAULT_TRUNCATE_CELLS
         section.rs               # Section, SectionBody (repeatable response blocks)
         status.rs                # StatusItem, StatusResponse, Health
-        telemetry/mod.rs         # NoopProvider — zero-cost, always compiled
         toon/
           mod.rs                 # ToonOptions, ToonError, render_toon(), list() (serde feature), size limits
           escape.rs              # escape_value(), escape_value_quoted(), escape_key(); canonical numbers

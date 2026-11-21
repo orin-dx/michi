@@ -13,7 +13,7 @@
 //! use michi_core::{truncate_by_count, Hint};
 //!
 //! let outcome = truncate_by_count(vec!["a", "b", "c", "d"], 2);
-//! assert_eq!(outcome.kept, ["a", "b"]);
+//! assert_eq!(outcome.kept(), ["a", "b"]);
 //! assert_eq!(outcome.omitted(), 2);
 //! assert_eq!(outcome.hint("pass --limit 4"), Some(Hint::new("showing 2 of 4; pass --limit 4")));
 //! ```
@@ -22,15 +22,20 @@ use crate::hints::Hint;
 
 /// What survived a cap on a list, however the survivors were chosen.
 ///
-/// `truncated()` and `omitted()` are derived from `kept.len()` and `total_before`, never stored, so they cannot
-/// disagree with the data. Build one with [`TruncationOutcome::new`], [`truncate_by_count`] or [`truncate_by_size`].
+/// `truncated()` and `omitted()` are derived from the kept items and the total, never stored, so they cannot disagree
+/// with the data. The fields are private so the total can never fall below the kept count:
+///
+/// ```compile_fail
+/// let mut outcome = michi_core::truncate_by_count(vec![1, 2, 3], 2);
+/// outcome.total_before = 0;
+/// ```
+///
+/// Build one with [`TruncationOutcome::new`], [`truncate_by_count`] or [`truncate_by_size`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct TruncationOutcome<T> {
-    /// The items that survived, in the order the strategy kept them.
-    pub kept: Vec<T>,
-    /// How many items there were before the cut. Never less than `kept.len()` when built by michi.
-    pub total_before: usize,
+    kept: Vec<T>,
+    total_before: usize,
 }
 
 impl<T> TruncationOutcome<T> {
@@ -43,16 +48,34 @@ impl<T> TruncationOutcome<T> {
         Self { total_before: total_before.max(kept.len()), kept }
     }
 
-    /// Whether any item was cut: `kept.len() < total_before`.
+    /// The items that survived, in the order the strategy kept them.
+    #[must_use]
+    pub fn kept(&self) -> &[T] {
+        &self.kept
+    }
+
+    /// The surviving items, by value.
+    #[must_use]
+    pub fn into_kept(self) -> Vec<T> {
+        self.kept
+    }
+
+    /// How many items there were before the cut. Never less than `kept().len()`.
+    #[must_use]
+    pub fn total_before(&self) -> usize {
+        self.total_before
+    }
+
+    /// Whether any item was cut: `kept().len() < total_before()`.
     #[must_use]
     pub fn truncated(&self) -> bool {
         self.kept.len() < self.total_before
     }
 
-    /// How many items were cut: `total_before - kept.len()`, or 0 if the public fields were later assigned so that
-    /// `kept` outnumbers `total_before`.
+    /// How many items were cut: `total_before() - kept().len()`.
     #[must_use]
     pub fn omitted(&self) -> usize {
+        // Every constructor keeps `total_before >= kept.len()`; saturating keeps a future slip from wrapping.
         self.total_before.saturating_sub(self.kept.len())
     }
 
@@ -88,8 +111,8 @@ impl<T> TruncationOutcome<T> {
 /// use michi_core::truncate_by_count;
 ///
 /// let outcome = truncate_by_count(vec![5, 4, 3], 2);
-/// assert_eq!(outcome.kept, [5, 4]);
-/// assert_eq!(outcome.total_before, 3);
+/// assert_eq!(outcome.kept(), [5, 4]);
+/// assert_eq!(outcome.total_before(), 3);
 /// ```
 #[must_use]
 pub fn truncate_by_count<T>(mut items: Vec<T>, max: usize) -> TruncationOutcome<T> {
@@ -113,7 +136,7 @@ pub fn truncate_by_count<T>(mut items: Vec<T>, max: usize) -> TruncationOutcome<
 /// use michi_core::truncate_by_size;
 ///
 /// let outcome = truncate_by_size(vec!["alpha", "beta", "gamma"], 10, |s| s.len());
-/// assert_eq!(outcome.kept, ["alpha", "beta"]);
+/// assert_eq!(outcome.kept(), ["alpha", "beta"]);
 /// assert_eq!(outcome.omitted(), 1);
 /// ```
 #[must_use]

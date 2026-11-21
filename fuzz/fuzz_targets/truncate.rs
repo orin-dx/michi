@@ -53,20 +53,20 @@ fuzz_target!(|input: Input| {
     // truncate_by_count: a prefix, at most `max` long, with the total recorded.
     let items: Vec<u8> = input.items.iter().map(|(b, _)| *b).collect();
     let by_count = truncate_by_count(items.clone(), usize::from(input.count_max));
-    assert_eq!(by_count.total_before, items.len());
-    assert_eq!(by_count.kept, items[..by_count.kept.len()]);
-    assert_eq!(by_count.kept.len(), items.len().min(usize::from(input.count_max)));
-    assert_eq!(by_count.omitted(), items.len() - by_count.kept.len());
-    assert_eq!(by_count.truncated(), by_count.kept.len() < items.len());
+    assert_eq!(by_count.total_before(), items.len());
+    assert_eq!(by_count.kept(), &items[..by_count.kept().len()]);
+    assert_eq!(by_count.kept().len(), items.len().min(usize::from(input.count_max)));
+    assert_eq!(by_count.omitted(), items.len() - by_count.kept().len());
+    assert_eq!(by_count.truncated(), by_count.kept().len() < items.len());
 
     // truncate_by_size: a prefix whose summed size fits, stopping at the first item that would not.
     let sized = input.items.clone();
     let by_size = truncate_by_size(sized.clone(), input.budget, |(_, size)| *size as usize);
-    assert_eq!(by_size.total_before, sized.len());
-    assert_eq!(by_size.kept, sized[..by_size.kept.len()]);
-    let used: u128 = by_size.kept.iter().map(|(_, s)| u128::from(*s)).sum();
+    assert_eq!(by_size.total_before(), sized.len());
+    assert_eq!(by_size.kept(), &sized[..by_size.kept().len()]);
+    let used: u128 = by_size.kept().iter().map(|(_, s)| u128::from(*s)).sum();
     assert!(used <= input.budget as u128);
-    if let Some((_, next)) = sized.get(by_size.kept.len()) {
+    if let Some((_, next)) = sized.get(by_size.kept().len()) {
         assert!(used + u128::from(*next) > input.budget as u128, "stopped early");
     }
 });

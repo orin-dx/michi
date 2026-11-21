@@ -58,6 +58,7 @@ pub struct StatusResponse {
 
 impl StatusResponse {
     /// Create a status response.
+    #[must_use]
     pub fn new(tool_name: impl Into<String>, description: impl Into<String>, items: Vec<StatusItem>) -> Self {
         Self { tool_name: tool_name.into(), description: description.into(), items, hints: Vec::new() }
     }

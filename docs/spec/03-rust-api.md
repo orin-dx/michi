@@ -35,7 +35,7 @@ One rule for every builder and getter, so 1.0 freezes one shape (see "Invariants
 - **Rendering:** a type with more than one output format renders through `render(OutputFormat)`; a text-only type has `render()`. Other targets get their own named method (`render_github_annotation`).
 - **Fields:** a type whose fields carry a cross-field invariant keeps them private (`DomainError`, `RetryConfig`, `PartialSuccess`, `Section`); a plain record keeps them public (`KvItem`, `FailedOp`, `CompletedOp`, `SkippedOp`, `RecoveryHint`, `StatusItem`, `StatusResponse`, `PipelineStep`, `Pipeline`, `CallToolResult`).
 
-The root re-exports are explicit lists (0.4.0 replaced the `resilience::*` and `truncate::*` globs), so a new item in a module does not appear at the root by accident. `toon`, `pipeline` and `telemetry` are not re-exported at the root; their items are reached as `michi_core::toon::ToonOptions`, `michi_core::toon::list()`, `michi_core::pipeline::StepStatus`, and so on. There is no `michi` crate (the name on crates.io belongs to an unrelated project); consumers who prefer `michi::` paths rename the dependency with `michi = { package = "michi-core", version = "0.7" }`.
+The root re-exports are explicit lists (0.4.0 replaced the `resilience::*` and `truncate::*` globs), so a new item in a module does not appear at the root by accident. `toon` and `pipeline` are not re-exported at the root; their items are reached as `michi_core::toon::ToonOptions`, `michi_core::toon::list()`, `michi_core::pipeline::StepStatus`, and so on. There is no `michi` crate (the name on crates.io belongs to an unrelated project); consumers who prefer `michi::` paths rename the dependency with `michi = { package = "michi-core", version = "0.7" }`.
 
 ## `toon` — List Rendering
 
@@ -242,8 +242,8 @@ impl AgentResponse {
     pub fn kv_items(self, items: Vec<KvItem>) -> Self;
     /// Appends a section; sections render in call order.
     pub fn section(self, section: Section) -> Self;
-    /// Appends a `Toon` section whose rows are `outcome.kept` (each mapped by `row`) and whose total is
-    /// `outcome.total_before`, and `outcome.hint(guidance)` to the hints only when something was cut.
+    /// Appends a `Toon` section whose rows are `outcome.kept()` (each mapped by `row`) and whose total is
+    /// `outcome.total_before()`, and `outcome.hint(guidance)` to the hints only when something was cut.
     pub fn truncated_section<T>(
         self,
         name: impl Into<String>,
@@ -325,7 +325,7 @@ Each type's own render is this writer: `DomainError::render(f)` is `AgentRespons
 
 A response with no section, budget or provenance renders `type_name: []` and `totalCount: 0`, the definitive empty list: the same text an empty `Toon` section renders, and the only empty-state API (there is no `empty_state()`). An empty KV section renders nothing (or `totalCount: n` when a larger total is set).
 
-`truncated_section(name, fields, &outcome, row, guidance)` builds the section from `outcome.kept` (each item turned into a row by `row`), sets its total to `outcome.total_before` and adds the cut hint, in one call. Because michi builds the rows itself, the list's `[N]`, its `totalCount`, the JSON `returnedCount`/`truncated` and the `showing N of M` hint cannot describe different cuts.
+`truncated_section(name, fields, &outcome, row, guidance)` builds the section from `outcome.kept()` (each item turned into a row by `row`), sets its total to `outcome.total_before()` and adds the cut hint, in one call. Because michi builds the rows itself, the list's `[N]`, its `totalCount`, the JSON `returnedCount`/`truncated` and the `showing N of M` hint cannot describe different cuts.
 
 ### Budget and provenance types (`budget`, `provenance`)
 
@@ -566,14 +566,6 @@ impl Pipeline {
 // michi_core::audience
 #[non_exhaustive]
 pub enum Audience { Assistant, User } // serde: "assistant" / "user"
-
-// michi_core::telemetry
-#[derive(Debug, Clone, Copy, Default)]
-pub struct NoopProvider;
-impl NoopProvider {
-    pub fn span(&self, name: &str);             // no-op
-    pub fn count(&self, name: &str, value: u64); // no-op
-}
 ```
 
 The structs above are `#[non_exhaustive]` from 0.4.0: build them with their constructors, then read or assign their public fields as before (`PartialSuccess` is read through its getters). Struct literals and exhaustive destructuring work only inside michi-core, so adding a field later is not a breaking change. `Value`, `KvValue`, `AlreadyDone`, `RetryConfigError` and the other enums marked `#[non_exhaustive]` above need a `_` arm in a `match` outside michi-core.
@@ -621,14 +613,14 @@ Cuts a string at a Unicode scalar boundary, never inside a UTF-8 code point. `ma
 ```rust
 #[derive(Debug, Clone, PartialEq, Eq)] // each only when T has it
 #[non_exhaustive]
-pub struct TruncationOutcome<T> {
-    pub kept: Vec<T>,
-    pub total_before: usize,
-}
+pub struct TruncationOutcome<T> { /* private: kept, total_before */ }
 
 impl<T> TruncationOutcome<T> {
     /// Wraps a caller's own selection. total_before is raised to kept.len() if lower.
     pub fn new(kept: Vec<T>, total_before: usize) -> Self;
+    pub fn kept(&self) -> &[T];
+    pub fn into_kept(self) -> Vec<T>;
+    pub fn total_before(&self) -> usize; // never below kept().len()
     pub fn truncated(&self) -> bool; // kept.len() < total_before
     pub fn omitted(&self) -> usize;  // total_before - kept.len(), saturating
     /// None when nothing was cut.
