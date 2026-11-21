@@ -1,10 +1,10 @@
-//! The one-shot document renders: `renderToon`, `renderKv` and `renderStatus`.
+//! The one-shot list renders `renderToon` and `renderKv`, and the status item `AgentResponse.status` takes.
 
 use napi::bindgen_prelude::Unknown;
 use napi_derive::napi;
 
 use super::cost;
-use super::input::{self, Budget, List, MAX_FIELDS, MAX_HINTS, MAX_NAME_BYTES, MAX_ROWS, MAX_STRING_BYTES};
+use super::input::{self, Budget, List, MAX_FIELDS, MAX_NAME_BYTES, MAX_ROWS};
 use super::value::{JsKvItem, JsToonValue};
 
 /// Options for rendering a TOON document (JavaScript-friendly).
@@ -94,7 +94,7 @@ fn kv_document(items: Vec<JsKvItem>) -> napi::Result<String> {
     crate::kv::render_kv(&converted).map_err(|e| napi::Error::from_reason(format!("kv_validation_failed: {e}")))
 }
 
-/// A component status item for `renderStatus`.
+/// A component status item for `AgentResponse.status`.
 #[napi(object, js_name = "StatusItem")]
 #[derive(Debug, Clone)]
 pub struct JsStatusItem {
@@ -105,39 +105,6 @@ pub struct JsStatusItem {
     pub value: JsToonValue,
     /// Health state: `"ok"`, `"degraded: <reason>"`, or `"error: <reason>"`.
     pub health: Option<String>,
-}
-
-/// Render a P8 content-first orientation response: `tool`, `description`, the TOON 4.4 table
-/// `items[N]{key,value,health,reason}:` and `help`. An item without `health` renders `ok`.
-///
-/// # Errors
-///
-/// Rejects an unknown `health`, more than 1,000 items or 10,000 hints, a `toolName` or key over 4 KiB, a
-/// `description`, value, `health` or hint over 1 MiB, and more than 16 MiB of strings per call.
-#[napi(
-    catch_unwind,
-    js_name = "renderStatus",
-    ts_args_type = "toolName: string, description: string, items: Array<StatusItem>, hints?: Array<string> | undefined | null"
-)]
-pub fn render_status(
-    tool_name: Unknown<'_>,
-    description: Unknown<'_>,
-    items: Unknown<'_>,
-    hints: Option<Unknown<'_>>,
-) -> napi::Result<String> {
-    let mut budget = Budget::new();
-    let items = List::new(items, "items")?;
-    let hints = List::optional(hints, "hints")?;
-    input::check_len("items", items.len(), MAX_FIELDS)?;
-    input::check_len("hints", hints.as_ref().map_or(0, List::len), MAX_HINTS)?;
-    let tool_name = budget.string(tool_name, "toolName", MAX_NAME_BYTES)?;
-    let description = budget.string(description, "description", MAX_STRING_BYTES)?;
-    let items = budget.status_items(&items, MAX_FIELDS)?;
-    let hints = match hints {
-        Some(hints) => budget.strings(&hints, "hints", MAX_HINTS, "hint", MAX_STRING_BYTES)?,
-        None => Vec::new(),
-    };
-    status_document(tool_name, description, items, hints)
 }
 
 /// A `health` string as the status table's [`crate::status::Health`].
@@ -155,17 +122,7 @@ fn parse_health(health: Option<&str>) -> napi::Result<crate::status::Health> {
     }
 }
 
-fn status_document(
-    tool_name: String,
-    description: String,
-    items: Vec<JsStatusItem>,
-    hints: Vec<String>,
-) -> napi::Result<String> {
-    let hints: Vec<crate::hints::Hint> = hints.into_iter().map(Into::into).collect();
-    Ok(build_status(tool_name, description, items)?.hints(hints).render())
-}
-
-/// A `StatusResponse` without hints, each item's `health` parsed. Shared by `renderStatus` and `AgentResponse.status`.
+/// A `StatusResponse` for `AgentResponse.status`, each item's `health` parsed.
 pub(super) fn build_status(
     tool_name: String,
     description: String,
@@ -336,13 +293,13 @@ mod tests {
             let out = kv_document(vec![JsKvItem { key: "x".into(), value: float(f) }]).unwrap();
             assert_eq!(out, expected, "{f}");
         }
-        let status = status_document(
+        let status = build_status(
             "tool".into(),
             "desc".into(),
             vec![JsStatusItem { key: "lag".into(), value: float(1e-7), health: None }],
-            vec![],
         )
-        .unwrap();
+        .unwrap()
+        .render();
         assert!(status.contains("lag,1e-7,ok,null"), "status items use the same rule: {status}");
     }
 
@@ -373,7 +330,7 @@ mod tests {
             ("degraded: high latency", "\n  k,v,degraded,high latency"),
             ("error: connection refused", "\n  k,v,error,connection refused"),
         ] {
-            let out = status_document("my-tool".into(), "desc".into(), status(health), vec![]).unwrap();
+            let out = build_status("my-tool".into(), "desc".into(), status(health)).unwrap().render();
             assert!(out.contains("tool:"), "got: {out}");
             assert!(out.ends_with(tail), "got: {out}");
         }
@@ -382,7 +339,7 @@ mod tests {
     #[test]
     fn render_status_napi_unknown_health_returns_error() {
         // Missing the colon and reason.
-        let err = status_document("t".into(), "d".into(), status("degraded"), vec![]).expect_err("unrecognized health");
+        let err = build_status("t".into(), "d".into(), status("degraded")).expect_err("unrecognized health");
         assert_eq!(
             err.reason,
             "unknown health value \"degraded\": expected \"ok\", \"degraded: <reason>\", or \"error: <reason>\""

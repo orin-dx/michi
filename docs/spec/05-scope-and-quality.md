@@ -23,7 +23,7 @@
 | TOON renderer | New format — token-efficient list encoding for agent context windows |
 | `kv::render_kv()` | Single item as TOON `key: value` lines; no standard Rust equivalent |
 | `status::StatusResponse` | Typed P8 content-first orientation response |
-| `resilience::already_done()` + `render_already_done()` | Typed already-done signal with canonical output format |
+| `AgentResponse::already_done()` | Canonical already-done report, composed like every other outcome |
 | `idempotency::PartialSuccess` | General partial-success reporting with per-op recovery hints |
 | `resilience::IdempotencyKey` | Canonical key construction with stable hashing |
 | `AgentResponse` builder | One construction API across every consumer |
@@ -114,7 +114,7 @@ Until 1.0, any public item or rendered string can change in a minor release, and
 | --- | --- |
 | `status` (`StatusResponse`, `StatusItem`, `Health`) | No consumer has used it |
 | `PartialSuccess`, `FailedOp`, `CompletedOp`, `SkippedOp` | Widened with the op index per [Spec 07](07-wisp-and-monokl-envelope.md) §4; still no consumer |
-| `AlreadyDone`, `already_done()` (Node `alreadyDone`) | The check half of the idempotency design; no caller yet |
+| `AgentResponse::already_done` (Node `AgentResponse.alreadyDone`) | The report half of the idempotency design; no caller yet |
 | `Sensitive<T>` | A redaction wrapper no renderer takes yet |
 | `Dag::ready_by_edge` and edge kinds | New in 0.7; the argument order has changed once already |
 | The `schemars` feature | JSON Schemas for MCP `outputSchema`; no consumer yet |
@@ -170,7 +170,7 @@ Benchmarks live in `crates/michi-core/benches/` and run via `divan`; CI builds t
 - Empty state: with and without hints
 - Recovery: single, multiple, with/without params and reason
 - Error: every `ErrorCode` variant — render, exit code, `Display`
-- Idempotency: `already_done` format, `PartialSuccess` with mixed results
+- Idempotency: the already-done report's format, `PartialSuccess` with mixed results
 - Resilience: `parse_retry_after` (integer seconds, HTTP-date, malformed); `next_retry_delay` (backoff progression, jitter bounds, `Retry-After` respect); `is_retryable_status` (covered and uncovered codes)
 - Status: every health state, degraded rendering, error rendering
 - `AgentResponse` builder: every method combination, correct format dispatch

@@ -16,14 +16,7 @@ import {
   AnnotationsSchema,
   LATEST_PROTOCOL_VERSION,
 } from '@modelcontextprotocol/sdk/types.js'
-import {
-  AgentResponse,
-  renderDomainError,
-  renderStatus,
-  renderPipeline,
-  renderPartialSuccess,
-  renderRecovery,
-} from '../index.js'
+import { AgentResponse, renderGithubAnnotation, renderRecovery } from '../index.js'
 
 const s = (strVal) => ({ type: 'str', strVal })
 const i = (intVal) => ({ type: 'int', intVal })
@@ -168,15 +161,16 @@ void describe(`MCP CallToolResult conformance (SDK protocol ${LATEST_PROTOCOL_VE
     assert.equal(both.isError, true)
   })
 
-  void it('DomainError-rendered text as the body of an error result', () => {
+  void it('an error with hints and causes, with its GitHub annotation as the human block', () => {
     for (const [code, message, hints, causes] of [
       ['not_found', 'No such repo', ['Check the name'], undefined],
       ['rate_limited', 'Slow down: "quota"\nretry in 30s', ['wait', 'retry, later'], ['upstream 429', 'timeout']],
       ['invalid_input', '日本語 🙂 é', [], []],
     ]) {
-      const text = renderDomainError(code, message, hints, true, causes)
+      const text = renderGithubAnnotation(code, message)
       const result = check(`domain error ${String(code)}`, (r) => {
-        r.asError()
+        r.error(code, message, causes)
+        for (const h of hints) r.hint(h)
         r.humanContent(text)
       })
       assert.equal(result.isError, true)
@@ -284,16 +278,28 @@ void describe(`MCP CallToolResult conformance (SDK protocol ${LATEST_PROTOCOL_VE
     assert.equal(result.isError, true)
   })
 
-  void it('other renderers used as the human block', () => {
+  void it('other renders used as the human block', () => {
+    const text = (build) => {
+      const r = new AgentResponse('t')
+      build(r)
+      return r.renderText()
+    }
     const blocks = [
-      renderStatus('tool', 'a tool', [{ key: 'db', value: s('up'), health: 'ok' }], ['all good']),
-      renderPipeline([{ id: 'a', name: 'Build', status: 'completed' }]),
-      renderPartialSuccess(
-        [{ index: 0, operation: 'a' }],
-        [{ index: 1, operation: 'b', reason: 'timeout' }],
-        [{ index: 2, operation: 'c' }],
+      text((r) => {
+        r.status('tool', 'a tool', [{ key: 'db', value: s('up'), health: 'ok' }])
+        r.hint('all good')
+      }),
+      text((r) => r.pipeline('step', [{ id: 'a', name: 'Build', status: 'completed' }])),
+      text((r) =>
+        r.partialSuccess(
+          'ops',
+          [{ index: 0, operation: 'a' }],
+          [{ index: 1, operation: 'b', reason: 'timeout' }],
+          [{ index: 2, operation: 'c' }],
+        ),
       ),
       renderRecovery([{ tool: 'retry', reason: 'transient' }]),
+      renderGithubAnnotation('timeout', 'took too long'),
     ]
     for (const text of blocks) check('renderer output', (r) => r.humanContent(text))
   })

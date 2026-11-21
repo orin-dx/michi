@@ -6,6 +6,5 @@ error[E0639]: cannot create non-exhaustive struct using struct expression
 3 | |         tool_name: "t".to_string(),
 4 | |         description: "d".to_string(),
 5 | |         items: vec![],
-6 | |         hints: vec![],
-7 | |     };
+6 | |     };
   | |_____^

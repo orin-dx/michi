@@ -18,12 +18,13 @@ use super::value::{JsKvItem, JsToonValue};
 /// Most rows one call's `rows` may hold (`renderToon`'s `opts.rows`, `AgentResponse.items`'s `rows`).
 pub(crate) const MAX_ROWS: usize = 100_000;
 /// Most entries for anything shaped like "one entry per field": `fields`, each row's value count, and the `items` of
-/// `renderKv`, `renderStatus` and `AgentResponse.kvItems` (one KV entry is one field).
+/// `renderKv`, `AgentResponse.kvItems` and `AgentResponse.status` (one KV entry is one field).
 pub(crate) const MAX_FIELDS: usize = 1_000;
 /// Most hints per call (`hints`, `causes`, recovery hints), and the cumulative count one `AgentResponse` takes
 /// through `hint` and `recoveryHint`.
 pub(crate) const MAX_HINTS: usize = 10_000;
-/// Most entries per list for `renderPartialSuccess`'s `completed`, `failed` and `skipped` and `renderPipeline`'s `steps`.
+/// Most entries per list for `AgentResponse.partialSuccess`'s `completed`, `failed` and `skipped` and
+/// `AgentResponse.pipeline`'s `steps`.
 pub(crate) const MAX_STEPS: usize = 10_000;
 /// Most cells (row values) one call may pass.
 pub(crate) const MAX_CELLS: usize = 1_000_000;
@@ -53,12 +54,12 @@ pub(crate) const OUTPUT_ENVELOPE: usize = 4096;
 /// JavaScript, so every output must stay under it.
 pub(crate) const V8_MAX_STRING_LEN: usize = (1 << 29) - 24;
 const _: () = assert!(MAX_INPUT_BYTES * MAX_OUTPUT_FACTOR + OUTPUT_ENVELOPE < V8_MAX_STRING_LEN);
-/// The most text one of the one-shot renders (`renderToon`, `renderKv`, `renderStatus`, `renderPartialSuccess`,
-/// `renderPipeline`, ...) can write: 6 bytes for each string byte charged, 26 for each cell (a float is at most 24
-/// chars, and the comma), 4 for each row, and 400 for each other entry (a KV or status item holds a float written to
-/// 330 places; a hint, an operation or a step is a short row).
+/// The most text one of the one-shot renders (`renderToon`, `renderKv`, `renderHints`, `renderRecovery`,
+/// `renderGithubAnnotation`, ...) can write: 6 bytes for each string byte charged, 26 for each cell (a float is at
+/// most 24 chars, and the comma), 4 for each row, and 400 for each other entry (a KV item holds a float written to
+/// 330 places; a hint is a short row).
 pub(crate) const STANDALONE_OUTPUT_MAX: usize =
-    6 * MAX_INPUT_BYTES + 26 * MAX_CELLS + 4 * MAX_ROWS + 400 * (MAX_FIELDS + MAX_HINTS + 3 * MAX_STEPS);
+    6 * MAX_INPUT_BYTES + 26 * MAX_CELLS + 4 * MAX_ROWS + 400 * (MAX_FIELDS + MAX_HINTS);
 const _: () = assert!(STANDALONE_OUTPUT_MAX < V8_MAX_STRING_LEN);
 /// Longest single cell value, hint, reason, description or message, in UTF-8 bytes.
 pub(crate) const MAX_STRING_BYTES: usize = 1024 * 1024;

@@ -15,8 +15,8 @@ pub use mcp::{CallToolResult, ContentBlock, JsonObject, StructuredContentError};
 pub use recovery::{append_recovery, render_recovery, RecoveryHint};
 pub use status::{Health, StatusItem, StatusResponse};
 pub use resilience::{
-    already_done, is_retryable_status, next_retry_delay, parse_retry_after, parse_retry_after_at,
-    render_already_done, AlreadyDone, IdempotencyKey, RetryBudget, RetryConfig, RetryConfigError,
+    is_retryable_status, next_retry_delay, parse_retry_after, parse_retry_after_at, IdempotencyKey, RetryBudget,
+    RetryConfig, RetryConfigError,
 };
 pub use truncate::{truncate, Truncated};
 pub use truncation::{truncate_by_count, truncate_by_size, TruncationOutcome};
@@ -254,7 +254,7 @@ impl AgentResponse {
     ) -> Self;
     pub fn hint(self, hint: impl Into<String>) -> Self;
     /// Replaces the hints added with `hint()` and `hints()` (contrast `hint()`, which appends). Hints a part brought
-    /// (a `status()` report's, a `truncated_section()`'s `showing N of M` line, the error's) keep their place.
+    /// (a `truncated_section()`'s `showing N of M` line, the error's) keep their place.
     pub fn hints(self, hints: Vec<Hint>) -> Self;
     pub fn recovery_hint(self, r: RecoveryHint) -> Self;
     /// Overrides the default TOON cell truncation limit (200 chars, counted before escaping/quoting); every `Toon`
@@ -274,7 +274,7 @@ impl AgentResponse {
     /// A `Toon` section `name[N]{index,operation,status,reason}:`, rows sorted by index; failed ops' recovery hints are
     /// appended to the response's.
     pub fn partial_success(self, name: impl Into<String>, outcome: PartialSuccess) -> Self;
-    /// A `Kv` section `status` (`tool`, `description`) and a `Toon` section `items`; the hints are appended.
+    /// A `Kv` section `status` (`tool`, `description`) and a `Toon` section `items`. Add hints with `hint`.
     pub fn status(self, status: StatusResponse) -> Self;
     /// A `Toon` section `name[N]{id,name,status,reason}:`.
     pub fn pipeline(self, name: impl Into<String>, pipeline: Pipeline) -> Self;
@@ -308,7 +308,7 @@ Every outcome michi renders is a part of `AgentResponse`, so a batch with result
 | --- | --- | --- | --- |
 | `DomainError` | `error(e)` | the error block, first: `error`, `message`, `causes`, `exit_code` (michi's reserved keys) | its hints lead `help[]`, its recovery leads `recovery[]`; `isError` true |
 | `PartialSuccess` | `partial_success(name, ps)` | `Toon` section `name[N]{index,operation,status,reason}:`, sorted by index | failed ops' recovery hints join `recovery[]` |
-| `StatusResponse` | `status(s)` | `Kv` section `status` (`tool`, `description`), `Toon` section `items` | its hints join `help[]` |
+| `StatusResponse` | `status(s)` | `Kv` section `status` (`tool`, `description`), `Toon` section `items` | none (add hints with `hint`) |
 | `Pipeline` (and `michi-pipeline`'s `RunRecord::to_pipeline()`) | `pipeline(name, p)` | `Toon` section `name[N]{id,name,status,reason}:` | none |
 | already done | `already_done(operation, summary)` | `Kv` section `already_done` (`operation`, `status`, `summary`) | none |
 
@@ -321,7 +321,7 @@ None of them writes a root key of its own beyond the error block's, so they neve
 
 Several failures are still one error object. Every failed section and the first root-key collision is a failure; the caller's error, or without one the first failure, is the error, and the other failures are its causes after any it already had (`causes[2]: …`), on every surface. Two failed sections are not a collision on `error`: a failed section writes no key of its own.
 
-Each type's own render is this writer: `DomainError::render(f)` is `AgentResponse::new(..).error(e).render(f)`, `PartialSuccess::render()` is the response with `partial_success("partial_success", ps)`, `StatusResponse::render()` with `status(s)`, `Pipeline::render()` with `pipeline("step", p)`, and `render_already_done(op, summary, hints)` with `already_done(op, summary).hints(hints)`. The standalone renders turn the cell cap off (`truncate_cells_at(usize::MAX)`), as they never cut a cell; inside a response the response's cap applies to their tables like any other `Toon` section.
+Each type's own render is this writer: `DomainError::render(f)` is `AgentResponse::new(..).error(e).render(f)`, `PartialSuccess::render()` is the response with `partial_success("partial_success", ps)`, `StatusResponse::render()` with `status(s)`, and `Pipeline::render()` with `pipeline("step", p)`. An already-done report has no render of its own: it is `AgentResponse::new(..).already_done(op, summary)`, with `hint` for what to do next. The standalone renders turn the cell cap off (`truncate_cells_at(usize::MAX)`), as they never cut a cell; inside a response the response's cap applies to their tables like any other `Toon` section.
 
 A response with no section, budget or provenance renders `type_name: []` and `totalCount: 0`, the definitive empty list: the same text an empty `Toon` section renders, and the only empty-state API (there is no `empty_state()`). An empty KV section renders nothing (or `totalCount: n` when a larger total is set).
 
@@ -465,11 +465,8 @@ impl FailedOp {
 //   3,search,skipped,budget_exhausted        <- `null` when the SkippedOp has no reason
 // recovery[N]{tool,params,reason}: follows when a failed op has a recovery hint
 
-// In michi_core::resilience (also at michi_core::already_done, michi_core::AlreadyDone)
-#[non_exhaustive]
-pub enum AlreadyDone { Yes { result: String }, No }
-pub fn already_done(stored: Option<String>) -> AlreadyDone;
-pub fn render_already_done(operation: &str, summary: &str, hints: &[Hint]) -> String;
+// In michi_core::resilience (also at michi_core::IdempotencyKey). An operation your store says already ran is reported
+// with AgentResponse::already_done(operation, summary).
 pub struct IdempotencyKey(pub String); // also From<String>, From<&str>
 impl IdempotencyKey {
     pub fn new(s: impl Into<String>) -> Self;
@@ -527,12 +524,10 @@ impl StatusItem {
     pub fn health(self, health: Health) -> Self;
 }
 #[non_exhaustive]
-pub struct StatusResponse { pub tool_name: String, pub description: String, pub items: Vec<StatusItem>, pub hints: Vec<Hint> }
+pub struct StatusResponse { pub tool_name: String, pub description: String, pub items: Vec<StatusItem> }
 impl StatusResponse {
     pub fn new(tool_name: impl Into<String>, description: impl Into<String>, items: Vec<StatusItem>) -> Self;
-    /// Replaces the hint list.
-    pub fn hints(self, hints: Vec<Hint>) -> Self;
-    pub fn render(&self) -> String;                           // tool, description, items[N]{key,value,health,reason}: (or items: [] and totalCount: 0), help
+    pub fn render(&self) -> String;                           // tool, description, items[N]{key,value,health,reason}: (or items: [] and totalCount: 0)
 }
 
 // michi_core::pipeline
@@ -568,7 +563,7 @@ impl Pipeline {
 pub enum Audience { Assistant, User } // serde: "assistant" / "user"
 ```
 
-The structs above are `#[non_exhaustive]` from 0.4.0: build them with their constructors, then read or assign their public fields as before (`PartialSuccess` is read through its getters). Struct literals and exhaustive destructuring work only inside michi-core, so adding a field later is not a breaking change. `Value`, `KvValue`, `AlreadyDone`, `RetryConfigError` and the other enums marked `#[non_exhaustive]` above need a `_` arm in a `match` outside michi-core.
+The structs above are `#[non_exhaustive]` from 0.4.0: build them with their constructors, then read or assign their public fields as before (`PartialSuccess` is read through its getters). Struct literals and exhaustive destructuring work only inside michi-core, so adding a field later is not a breaking change. `Value`, `KvValue`, `RetryConfigError` and the other enums marked `#[non_exhaustive]` above need a `_` arm in a `match` outside michi-core.
 
 `KvValue::Float(f, decimals)` rounds `f` to `decimals` places and writes the rounded value in canonical TOON number form, so `Float(1.5, 3)` is `1.5`, not `1.500`; `KvValue::FULL_PRECISION` (255) never rounds, so `Float(5e-324, KvValue::FULL_PRECISION)` is `5e-324` in TOON and in the JSON companions, while a smaller count rounds as asked (`Float(1e-300, 2)` is `0`); `Missing` is `null`; `Duration` is the string `1.5s`. `AgentResponse`'s KV path turns a `KvError` into a `kv_validation_failed` error body and sets `is_error`, like `toon_validation_failed` on the TOON path.
 

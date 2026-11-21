@@ -13,16 +13,18 @@ import {
   truncate,
   AgentResponse,
   renderKv,
-  renderAlreadyDone,
   parseRetryAfter,
   nextRetryDelay,
   isRetryableStatus,
-  renderDomainError,
-  renderStatus,
-  renderPartialSuccess,
-  renderPipeline,
-  alreadyDone,
+  renderGithubAnnotation,
 } from '../index.js'
+
+/** The text of a fresh `AgentResponse` after `build` has added to it. */
+const textOf = (build, name = 't') => {
+  const r = new AgentResponse(name)
+  build(r)
+  return r.renderText()
+}
 
 void describe('renderToon', () => {
   void it('renders a basic list', () => {
@@ -208,8 +210,11 @@ void describe('standalone helpers', () => {
     assert.throws(() => renderKv([k('help')]), /kv_validation_failed: key "help" is a reserved document key/)
   })
 
-  void it('renderAlreadyDone formats no-op block', () => {
-    const out = renderAlreadyDone('create_issue', 'Already exists', ['view issue 42'])
+  void it('AgentResponse.alreadyDone formats the no-op block', () => {
+    const out = textOf((r) => {
+      r.alreadyDone('create_issue', 'Already exists')
+      r.hint('view issue 42')
+    })
     assert.strictEqual(out, 'operation: create_issue\nstatus: already_done\nsummary: Already exists\nhelp[1]: view issue 42')
   })
 
@@ -254,55 +259,81 @@ void describe('standalone helpers', () => {
     )
   })
 
-  void it('renderDomainError formats error card and github annotation', () => {
-    const card = renderDomainError('not_found', 'Item not found: 42', ['check ID'])
+  void it('AgentResponse.error formats the error card', () => {
+    const card = textOf((r) => {
+      r.error('not_found', 'Item not found: 42')
+      r.hint('check ID')
+    })
     assert.strictEqual(card, 'error: not_found\nmessage: "Item not found: 42"\nexit_code: 1\nhelp[1]: check ID')
-
-    const gh = renderDomainError('not_found', 'Item not found', [], true)
-    assert.strictEqual(gh, '::error title=not_found::Item not found')
   })
 
-  void it('renderDomainError renders causes as their own key, apart from hints', () => {
-    const card = renderDomainError('external_failure', 'walk failed', ['check permissions'], false, [
-      'io error',
-      'line one\nline two',
-    ])
+  void it('AgentResponse.error renders causes as their own key, apart from hints', () => {
+    const card = textOf((r) => {
+      r.error('external_failure', 'walk failed', ['io error', 'line one\nline two'])
+      r.hint('check permissions')
+    })
     assert.strictEqual(
       card,
       'error: external_failure\nmessage: walk failed\ncauses[2]: io error,"line one\\nline two"\nexit_code: 1\n' +
         'help[1]: check permissions'
     )
-    assert.strictEqual(renderDomainError('not_found', 'm', [], null, []), renderDomainError('not_found', 'm', []))
-    assert.strictEqual(renderDomainError('not_found', 'm', [], undefined, null), renderDomainError('not_found', 'm', []))
-    // The GitHub annotation stays message-only.
-    assert.strictEqual(renderDomainError('not_found', 'm', [], true, ['c']), '::error title=not_found::m')
+    const plain = textOf((r) => r.error('not_found', 'm'))
+    assert.strictEqual(textOf((r) => r.error('not_found', 'm', [])), plain)
+    assert.strictEqual(textOf((r) => r.error('not_found', 'm', null)), plain)
+    assert.strictEqual(textOf((r) => r.error('not_found', 'm', undefined)), plain)
   })
 
-  void it('renderDomainError budgets causes like hints', () => {
+  void it('AgentResponse.error budgets causes like hints', () => {
     const big = 'x'.repeat(1_048_577)
-    assert.throws(() => renderDomainError('not_found', 'm', [], false, [big]), /^Error: cause byte length \(at least 1048577\) exceeds maximum of 1048576$/)
+    const r = new AgentResponse('t')
+    assert.throws(() => r.error('not_found', 'm', [big]), /^Error: cause byte length \(at least 1048577\) exceeds maximum of 1048576$/)
     assert.throws(
-      () => renderDomainError('not_found', 'm', [], false, Array.from({ length: 10_001 }, () => 'c')),
+      () => r.error('not_found', 'm', Array.from({ length: 10_001 }, () => 'c')),
       /^Error: causes length 10001 exceeds maximum of 10000$/
     )
-    assert.throws(() => renderDomainError('not_found', 'm', [], false, 'c'), /causes must be an array/)
-    // Causes share the call's 16 MiB budget with the message and hints.
+    assert.throws(() => r.error('not_found', 'm', 'c'), /causes must be an array/)
+    // Causes share the call's 16 MiB budget with the message.
     const mib = 'x'.repeat(1_048_576)
     assert.throws(
-      () => renderDomainError('not_found', 'm', Array.from({ length: 10 }, () => mib), false, Array.from({ length: 10 }, () => mib)),
+      () => r.error('not_found', 'm', Array.from({ length: 17 }, () => mib)),
       /^Error: input byte total \d+ exceeds maximum of 16777216$/
     )
   })
 
-  void it('renderDomainError throws on unknown error code', () => {
-    assert.throws(() => renderDomainError('made_up_code', 'msg', []), /unknown error code/)
+  void it('renderGithubAnnotation writes one encoded workflow-command line', () => {
+    assert.strictEqual(renderGithubAnnotation('not_found', 'Item not found'), '::error title=not_found::Item not found')
+    // The message is workflow command data: `%`, CR and LF are encoded, so the annotation stays on one line.
+    assert.strictEqual(
+      renderGithubAnnotation('external_failure', '50% done\r\nthen: failed, badly'),
+      '::error title=external_failure::50%25 done%0D%0Athen: failed, badly',
+    )
   })
 
-  void it('renderStatus formats orientation block', () => {
-    const out = renderStatus('my_tool', 'Does work', [
-      { key: 'cache', value: { type: 'str', strVal: 'ready' }, health: 'ok' },
-      { key: 'db', value: { type: 'int', intVal: 3 }, health: 'degraded: slow' },
-    ])
+  void it('renderGithubAnnotation validates its code and bounds its input', () => {
+    assert.throws(() => renderGithubAnnotation('made_up_code', 'msg'), /^Error: unknown error code "made_up_code"; expected one of: /)
+    assert.throws(() => renderGithubAnnotation(42, 'msg'), /^Error: code must be a string$/)
+    assert.throws(() => renderGithubAnnotation('not_found', null), /^Error: message must be a string$/)
+    assert.throws(
+      () => renderGithubAnnotation('x'.repeat(4097), 'm'),
+      /^Error: code byte length \(at least 4097\) exceeds maximum of 4096$/,
+    )
+    assert.throws(
+      () => renderGithubAnnotation('not_found', 'x'.repeat(1_048_577)),
+      /^Error: message byte length \(at least 1048577\) exceeds maximum of 1048576$/,
+    )
+  })
+
+  void it('AgentResponse.error throws on unknown error code', () => {
+    assert.throws(() => new AgentResponse('t').error('made_up_code', 'msg'), /unknown error code/)
+  })
+
+  void it('AgentResponse.status formats the orientation block', () => {
+    const out = textOf((r) =>
+      r.status('my_tool', 'Does work', [
+        { key: 'cache', value: { type: 'str', strVal: 'ready' }, health: 'ok' },
+        { key: 'db', value: { type: 'int', intVal: 3 }, health: 'degraded: slow' },
+      ]),
+    )
     assert.strictEqual(
       out,
       'tool: my_tool\ndescription: Does work\nitems[2]{key,value,health,reason}:\n  cache,ready,ok,null\n  db,3,degraded,slow'
@@ -575,7 +606,7 @@ void describe('rejection instead of coercion (SPEC-ARCH-003 AC-009)', () => {
     assert.strictEqual(kv(1e-300), 'score: 1e-300')
     assert.strictEqual(kv(5e-324), 'score: 5e-324')
     assert.strictEqual(Number(kv(-1.2345678901234568e-250).slice('score: '.length)), -1.2345678901234568e-250)
-    const status = renderStatus('tool', 'desc', [{ key: 'lag', value: { type: 'float', floatVal: 5e-324 } }])
+    const status = textOf((r) => r.status('tool', 'desc', [{ key: 'lag', value: { type: 'float', floatVal: 5e-324 } }]))
     assert.ok(status.includes('lag,5e-324,ok,null'), status)
   })
 })
@@ -940,7 +971,8 @@ void describe('input limits bound the work (capacity limits)', () => {
     assert.throws(() => renderKv([{ key: 'k', value: { type: 'str', strVal: big } }]), /strVal byte length/)
     assert.throws(() => new AgentResponse('t').hint(big), /hint byte length 1048577 exceeds maximum of 1048576/)
     assert.throws(() => renderRecovery([{ tool: 'retry', reason: big }]), /reason byte length/)
-    assert.throws(() => renderDomainError('not_found', big, []), /message byte length/)
+    assert.throws(() => new AgentResponse('t').error('not_found', big), /message byte length/)
+    assert.throws(() => renderGithubAnnotation('not_found', big), /message byte length/)
     // Exactly 1 MiB is accepted.
     const atCap = 'x'.repeat(1_048_576)
     const out = renderToon({ typeName: 't', fields: ['a'], rows: [[{ type: 'str', strVal: atCap }]] })
@@ -979,10 +1011,9 @@ void describe('input limits bound the work (capacity limits)', () => {
   })
 
   void it('keeps optional arguments optional', () => {
-    const item = { key: 'db', value: { type: 'int', intVal: 3 } }
-    assert.strictEqual(renderStatus('t', 'd', [item], null), renderStatus('t', 'd', [item]))
-    assert.strictEqual(renderStatus('t', 'd', [item], undefined), renderStatus('t', 'd', [item]))
-    assert.strictEqual(renderDomainError('not_found', 'm', [], undefined), renderDomainError('not_found', 'm', []))
+    const plain = textOf((r) => r.error('not_found', 'm'))
+    assert.strictEqual(textOf((r) => r.error('not_found', 'm', undefined, undefined)), plain)
+    assert.strictEqual(textOf((r) => r.error('not_found', 'm', null, null)), plain)
     const out = renderToon({
       typeName: 't',
       fields: ['a'],
@@ -1004,9 +1035,12 @@ void describe('full in-domain regression (SPEC-ARCH-004 AC-021)', () => {
   })
 })
 
-void describe('renderPartialSuccess', () => {
+void describe('AgentResponse.partialSuccess', () => {
+  const partial = (completed, failed, skipped) =>
+    textOf((r) => r.partialSuccess('partial_success', completed, failed, skipped))
+
   void it('renders the same document as the Rust PartialSuccess', () => {
-    const out = renderPartialSuccess(
+    const out = partial(
       [
         { index: 0, operation: 'create_issue' },
         { index: 1, operation: 'add_label' },
@@ -1023,16 +1057,16 @@ void describe('renderPartialSuccess', () => {
   })
 
   void it('renders no operations as the empty list, and no recovery table without a hint', () => {
-    assert.strictEqual(renderPartialSuccess([], [], []), 'partial_success: []\ntotalCount: 0')
+    assert.strictEqual(partial([], [], []), 'partial_success: []\ntotalCount: 0')
     assert.strictEqual(
-      renderPartialSuccess([{ index: 0, operation: 'a' }], [{ index: 1, operation: 'b', reason: 'c, d' }], []),
+      partial([{ index: 0, operation: 'a' }], [{ index: 1, operation: 'b', reason: 'c, d' }], []),
       'partial_success[2]{index,operation,status,reason}:\n  0,a,completed,null\n  1,b,failed,"c, d"',
     )
   })
 
   void it('keeps caller indexes, sorts rows by them, and renders a missing skip reason as null', () => {
     assert.strictEqual(
-      renderPartialSuccess(
+      partial(
         [
           { index: 7, operation: 'x' },
           { index: 2, operation: 'y' },
@@ -1049,58 +1083,60 @@ void describe('renderPartialSuccess', () => {
   })
 
   void it('rejects a missing or invalid index', () => {
-    assert.throws(() => renderPartialSuccess([{ operation: 'a' }], [], []), /Missing field `index`/)
-    assert.throws(() => renderPartialSuccess([], [{ operation: 'a', reason: 'r' }], []), /Missing field `index`/)
-    assert.throws(() => renderPartialSuccess([], [], [{ index: -1, operation: 'a' }]), /non-negative integer/)
-    assert.throws(() => renderPartialSuccess([{ index: 1.5, operation: 'a' }], [], []), /non-negative integer/)
+    assert.throws(() => partial([{ operation: 'a' }], [], []), /Missing field `index`/)
+    assert.throws(() => partial([], [{ operation: 'a', reason: 'r' }], []), /Missing field `index`/)
+    assert.throws(() => partial([], [], [{ index: -1, operation: 'a' }]), /non-negative integer/)
+    assert.throws(() => partial([{ index: 1.5, operation: 'a' }], [], []), /non-negative integer/)
   })
 
   void it('rejects two outcomes for one index and a reason on a completed operation', () => {
     assert.throws(
-      () => renderPartialSuccess([{ index: 0, operation: 'a' }], [{ index: 0, operation: 'a', reason: 'boom' }], []),
+      () => partial([{ index: 0, operation: 'a' }], [{ index: 0, operation: 'a', reason: 'boom' }], []),
       /^Error: operation index 0 has more than one outcome$/,
     )
     assert.throws(
-      () => renderPartialSuccess([], [], [{ index: 3, operation: 'a' }, { index: 3, operation: 'b' }]),
+      () => partial([], [], [{ index: 3, operation: 'a' }, { index: 3, operation: 'b' }]),
       /^Error: operation index 3 has more than one outcome$/,
     )
     assert.throws(
-      () => renderPartialSuccess([{ index: 0, operation: 'a', reason: 'because' }], [], []),
+      () => partial([{ index: 0, operation: 'a', reason: 'because' }], [], []),
       /^Error: a completed operation takes no `reason`$/,
     )
     assert.strictEqual(
-      renderPartialSuccess([{ index: 0, operation: 'a', reason: null }], [], []),
+      partial([{ index: 0, operation: 'a', reason: null }], [], []),
       'partial_success[1]{index,operation,status,reason}:\n  0,a,completed,null',
     )
   })
 
   void it('rejects inputs over the caps', () => {
     const many = Array.from({ length: 10_001 }, (_, i) => ({ index: i, operation: `s${i}` }))
-    assert.throws(() => renderPartialSuccess(many, [], []), /^Error: completed length 10001 exceeds maximum of 10000$/)
-    assert.throws(() => renderPartialSuccess([], [], many), /^Error: skipped length 10001 exceeds maximum of 10000$/)
+    assert.throws(() => partial(many, [], []), /^Error: completed length 10001 exceeds maximum of 10000$/)
+    assert.throws(() => partial([], [], many), /^Error: skipped length 10001 exceeds maximum of 10000$/)
     const failed = Array.from({ length: 10_001 }, () => ({ index: 0, operation: 'o', reason: 'r' }))
-    assert.throws(() => renderPartialSuccess([], failed, []), /^Error: failed length 10001 exceeds maximum of 10000$/)
+    assert.throws(() => partial([], failed, []), /^Error: failed length 10001 exceeds maximum of 10000$/)
     const long = 'x'.repeat(4097)
     assert.throws(
-      () => renderPartialSuccess([], [{ index: 0, operation: long, reason: 'r' }], []),
+      () => partial([], [{ index: 0, operation: long, reason: 'r' }], []),
       /^Error: operation byte length \(at least 4097\) exceeds maximum of 4096$/,
     )
     assert.throws(
-      () => renderPartialSuccess([{ index: 0, operation: long }], [], []),
+      () => partial([{ index: 0, operation: long }], [], []),
       /^Error: operation byte length \(at least 4097\) exceeds maximum of 4096$/,
     )
     assert.throws(
-      () => renderPartialSuccess([], [{ index: 0, operation: 'o', reason: 'x'.repeat(1_048_577) }], []),
+      () => partial([], [{ index: 0, operation: 'o', reason: 'x'.repeat(1_048_577) }], []),
       /^Error: reason byte length \(at least 1048577\) exceeds maximum of 1048576$/,
     )
-    assert.throws(() => renderPartialSuccess([], 'nope', []), /^Error: failed must be an array$/)
-    assert.throws(() => renderPartialSuccess([], [{ index: 0, reason: 'r' }], []), /Missing field `operation`/)
+    assert.throws(() => partial([], 'nope', []), /^Error: failed must be an array$/)
+    assert.throws(() => partial([], [{ index: 0, reason: 'r' }], []), /Missing field `operation`/)
   })
 })
 
-void describe('renderPipeline', () => {
+void describe('AgentResponse.pipeline', () => {
+  const pipeline = (steps) => textOf((r) => r.pipeline('step', steps))
+
   void it('renders each status with its reason', () => {
-    const out = renderPipeline([
+    const out = pipeline([
       { id: 'fetch', name: 'Fetch data', status: 'completed' },
       { id: 'upload', name: 'Upload, then verify', status: 'outcome_unknown', reason: 'timeout' },
       { id: 'notify', name: 'Notify', status: 'skipped', reason: 'prerequisite_failed' },
@@ -1113,7 +1149,7 @@ void describe('renderPipeline', () => {
         '  upload,"Upload, then verify",outcome_unknown,timeout\n  notify,Notify,skipped,prerequisite_failed\n' +
         '  sync,Sync,not_run,circuit_open\n  old,Old,completed_earlier,null',
     )
-    assert.strictEqual(renderPipeline([]), 'step: []\ntotalCount: 0')
+    assert.strictEqual(pipeline([]), 'step: []\ntotalCount: 0')
   })
 
   void it('accepts every status and reason the Rust StepStatus has', () => {
@@ -1136,60 +1172,41 @@ void describe('renderPipeline', () => {
       ['not_run', 'start_not_recorded'],
     ]
     for (const [status, reason] of cases) {
-      const out = renderPipeline([{ id: 's', name: 'n', status, reason }])
+      const out = pipeline([{ id: 's', name: 'n', status, reason }])
       assert.strictEqual(out, `step[1]{id,name,status,reason}:\n  s,n,${status},${reason ?? 'null'}`)
     }
   })
 
   void it('rejects an unknown status, a missing or unknown reason, and a reason on a status without one', () => {
     const step = (status, reason) => [{ id: 's', name: 'n', status, reason }]
-    assert.throws(() => renderPipeline(step('done')), /^Error: unknown step status "done": expected one of pending, /)
+    assert.throws(() => pipeline(step('done')), /^Error: unknown step status "done": expected one of pending, /)
     assert.throws(
-      () => renderPipeline(step('skipped')),
+      () => pipeline(step('skipped')),
       /^Error: step status "skipped" needs a reason: prerequisite_failed or cancelled$/,
     )
     assert.throws(
-      () => renderPipeline(step('outcome_unknown', 'circuit_open')),
+      () => pipeline(step('outcome_unknown', 'circuit_open')),
       /^Error: unknown reason "circuit_open" for step status "outcome_unknown": expected timeout, gateway, cancelled, interrupted or step_failed$/,
     )
     assert.throws(
-      () => renderPipeline(step('completed', 'timeout')),
+      () => pipeline(step('completed', 'timeout')),
       /^Error: step status "completed" takes no reason, got "timeout"$/,
     )
   })
 
   void it('rejects inputs over the caps', () => {
     const steps = Array.from({ length: 10_001 }, () => ({ id: 's', name: 'n', status: 'pending' }))
-    assert.throws(() => renderPipeline(steps), /^Error: steps length 10001 exceeds maximum of 10000$/)
+    assert.throws(() => pipeline(steps), /^Error: steps length 10001 exceeds maximum of 10000$/)
     assert.throws(
-      () => renderPipeline([{ id: 'x'.repeat(4097), name: 'n', status: 'pending' }]),
+      () => pipeline([{ id: 'x'.repeat(4097), name: 'n', status: 'pending' }]),
       /^Error: id byte length \(at least 4097\) exceeds maximum of 4096$/,
     )
     assert.throws(
-      () => renderPipeline([{ id: 's', name: 'x'.repeat(1_048_577), status: 'pending' }]),
+      () => pipeline([{ id: 's', name: 'x'.repeat(1_048_577), status: 'pending' }]),
       /^Error: name byte length \(at least 1048577\) exceeds maximum of 1048576$/,
     )
-    assert.throws(() => renderPipeline('nope'), /^Error: steps must be an array$/)
-    assert.throws(() => renderPipeline([{ id: 's', name: 'n' }]), /Missing field `status`/)
-  })
-})
-
-void describe('alreadyDone', () => {
-  void it('classifies a stored result as done and a missing one as not done', () => {
-    assert.deepStrictEqual({ ...alreadyDone('issue #42') }, { done: true, result: 'issue #42' })
-    assert.strictEqual(alreadyDone(null).done, false)
-    assert.strictEqual(alreadyDone(null).result, undefined)
-    assert.strictEqual(alreadyDone(undefined).done, false)
-    assert.strictEqual(alreadyDone().done, false)
-    assert.deepStrictEqual({ ...alreadyDone('') }, { done: true, result: '' })
-  })
-
-  void it('rejects a non-string and a stored result over 16 MiB', () => {
-    assert.throws(() => alreadyDone(42), /^Error: stored must be a string$/)
-    assert.throws(
-      () => alreadyDone('x'.repeat(16 * 1024 * 1024 + 1)),
-      /^Error: stored byte length \(at least 16777217\) exceeds maximum of 16777216$/,
-    )
+    assert.throws(() => pipeline('nope'), /^Error: steps must be an array$/)
+    assert.throws(() => pipeline([{ id: 's', name: 'n' }]), /Missing field `status`/)
   })
 })
 
@@ -1205,6 +1222,7 @@ void describe('count caps', () => {
   const names = (n) => Array.from({ length: n }, (_, i) => `f${i}`)
   const nullRow = (n) => reps(n, { type: 'null' })
   const toon = (over) => renderToon({ typeName: 't', fields: ['a'], rows: [], ...over })
+  const ps = (completed, failed, skipped) => new AgentResponse('t').partialSuccess('ops', completed, failed, skipped)
 
   // [name, call with `n` entries, what the rejection names, cap]
   const cases = [
@@ -1212,20 +1230,12 @@ void describe('count caps', () => {
     ['appendHints', (n) => appendHints('b', reps(n, 'h')), 'hints length', 10_000],
     ['renderRecovery', (n) => renderRecovery(reps(n, { tool: 'retry' })), 'hints length', 10_000],
     ['renderKv items', (n) => renderKv(kvItems(n)), 'items length', 1_000],
-    ['renderStatus items', (n) => renderStatus('t', 'd', kvItems(n)), 'items length', 1_000],
-    ['renderStatus hints', (n) => renderStatus('t', 'd', [], reps(n, 'h')), 'hints length', 10_000],
-    ['renderAlreadyDone', (n) => renderAlreadyDone('o', 's', reps(n, 'h')), 'hints length', 10_000],
-    ['renderDomainError hints', (n) => renderDomainError('not_found', 'm', reps(n, 'h')), 'hints length', 10_000],
-    [
-      'renderDomainError causes',
-      (n) => renderDomainError('not_found', 'm', [], false, reps(n, 'c')),
-      'causes length',
-      10_000,
-    ],
-    ['renderPartialSuccess completed', (n) => renderPartialSuccess(reps(n, op), [], []), 'completed length', 10_000],
-    ['renderPartialSuccess failed', (n) => renderPartialSuccess([], reps(n, failedOp), []), 'failed length', 10_000],
-    ['renderPartialSuccess skipped', (n) => renderPartialSuccess([], [], reps(n, op)), 'skipped length', 10_000],
-    ['renderPipeline', (n) => renderPipeline(reps(n, step)), 'steps length', 10_000],
+    ['AgentResponse.status items', (n) => new AgentResponse('t').status('t', 'd', kvItems(n)), 'items length', 1_000],
+    ['AgentResponse.error causes', (n) => new AgentResponse('t').error('not_found', 'm', reps(n, 'c')), 'causes length', 10_000],
+    ['AgentResponse.partialSuccess completed', (n) => ps(reps(n, op), [], []), 'completed length', 10_000],
+    ['AgentResponse.partialSuccess failed', (n) => ps([], reps(n, failedOp), []), 'failed length', 10_000],
+    ['AgentResponse.partialSuccess skipped', (n) => ps([], [], reps(n, op)), 'skipped length', 10_000],
+    ['AgentResponse.pipeline', (n) => new AgentResponse('t').pipeline('step', reps(n, step)), 'steps length', 10_000],
     ['renderToon rows', (n) => toon({ rows: reps(n, []) }), 'rows length', 100_000],
     ['renderToon fields', (n) => toon({ fields: names(n) }), 'fields length', 1_000],
     ['AgentResponse.items rows', (n) => new AgentResponse('t').items(reps(n, []), []), 'rows length', 100_000],
@@ -1427,7 +1437,8 @@ void describe('outcomes compose into one AgentResponse', () => {
     const text = r.renderText()
     assert.strictEqual(
       text,
-      renderDomainError('timeout', 'POST /charge timed out', [], null, ['socket closed']) +
+      'error: timeout\nmessage: POST /charge timed out\ncauses[1]: socket closed\nexit_code: 1\n' +
+        'help[1]: "the operation may have taken effect; verify whether it completed before retrying, unless it is idempotent"' +
         '\nrecovery[1]{tool,params,reason}:\n  get_charge,"{}",null',
     )
     const result = r.toCallToolResult()

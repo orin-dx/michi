@@ -1,4 +1,3 @@
-use crate::hints::Hint;
 use crate::kv::KvValue;
 
 /// Health classification for an individual status item.
@@ -52,27 +51,19 @@ pub struct StatusResponse {
     pub description: String,
     /// Component statuses.
     pub items: Vec<StatusItem>,
-    /// Optional contextual hints for the agent.
-    pub hints: Vec<Hint>,
 }
 
 impl StatusResponse {
     /// Create a status response.
     #[must_use]
     pub fn new(tool_name: impl Into<String>, description: impl Into<String>, items: Vec<StatusItem>) -> Self {
-        Self { tool_name: tool_name.into(), description: description.into(), items, hints: Vec::new() }
-    }
-
-    /// Replace the contextual hints with `hints`.
-    #[must_use]
-    pub fn hints(mut self, hints: Vec<Hint>) -> Self {
-        self.hints = hints;
-        self
+        Self { tool_name: tool_name.into(), description: description.into(), items }
     }
 
     /// Render this status response as a TOON 4.4 document, with no trailing newline: the response
     /// `AgentResponse::new("items").status(self)` with no cell cap, so it is the same writer a composed response uses
-    /// (see [`crate::AgentResponse::status`]).
+    /// (see [`crate::AgentResponse::status`]). To add hints for the agent, compose it:
+    /// `AgentResponse::new("status").status(s).hint(..)`.
     ///
     /// ```text
     /// tool: my-tool
@@ -80,7 +71,6 @@ impl StatusResponse {
     /// items[2]{key,value,health,reason}:
     ///   index,ready,ok,null
     ///   cache,warm,degraded,near limit
-    /// help[1]: Call get_status for detail
     /// ```
     ///
     /// `items` is a tabular array (§9.3); with no items it is `items: []` and `totalCount: 0`, the definitive empty
@@ -195,19 +185,6 @@ mod tests {
         assert!(!preceding[attr_start..].contains("pub enum") && !preceding[attr_start..].contains("pub struct"));
     }
 
-    #[test]
-    fn ac021_new_defaults_hints_empty_and_hints_is_a_consuming_builder() {
-        let resp = StatusResponse::new("tool", "desc", vec![]);
-        assert!(resp.hints.is_empty());
-
-        let hints = vec![Hint::new("a hint")];
-        let with = resp.hints(hints.clone());
-        assert_eq!(with.hints, hints);
-        assert_eq!(with.tool_name, "tool");
-        assert_eq!(with.description, "desc");
-        assert!(with.items.is_empty());
-    }
-
     // AC-023 (superseded): 3 lines (tool, description, items header) plus one row per item; no items is `items: []` and
     // `totalCount: 0`.
     #[test]
@@ -226,10 +203,13 @@ mod tests {
     }
 
     #[test]
-    fn ac023a_hints_appends_the_help_block_on_its_own_line() {
+    fn ac023a_composed_hints_append_the_help_block_on_its_own_line() {
         let items = || vec![StatusItem { key: "k".into(), value: KvValue::Int(1), health: None }];
-        let hints = vec![Hint::new("h1"), Hint::new("h2")];
-        let out = StatusResponse::new("tool", "desc", items()).hints(hints.clone()).render();
+        let hints = vec![crate::hints::Hint::new("h1"), crate::hints::Hint::new("h2")];
+        let out = crate::AgentResponse::new("status")
+            .status(StatusResponse::new("tool", "desc", items()))
+            .hints(hints.clone())
+            .render(crate::OutputFormat::Text);
         let no_hints = StatusResponse::new("tool", "desc", items()).render();
         assert_eq!(out, format!("{no_hints}\n{}", crate::hints::render_hints(&hints)));
     }
