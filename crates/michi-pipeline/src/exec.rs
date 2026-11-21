@@ -89,9 +89,12 @@ pub trait DurableObserver: StepObserver {
     /// `NotRun(StartNotRecorded)` without being invoked, and resume runs it again.
     ///
     /// Runs on a blocking thread (`tokio::task::spawn_blocking`) owned by the step it belongs to, so file or database
-    /// I/O here delays that step's start but not other steps' starts, timers or cancellation. Steps that start
-    /// together call it at the same time, from different threads, in no fixed order: it must be safe to call
-    /// concurrently (an append-only log behind a lock is). Each step still runs only after its own call returns `Ok`.
+    /// I/O here delays that step's start but not other steps' starts or timers. Steps that start together call it at
+    /// the same time, from different threads, in no fixed order: it must be safe to call concurrently (an append-only
+    /// log behind a lock is). Each step still runs only after its own call returns `Ok`.
+    ///
+    /// A blocking call can't be aborted. After a cancel, `execute` and `resume` still wait for every `record_start` in
+    /// progress to return, so one that hangs keeps the run from returning. Give the save its own timeout.
     ///
     /// # Errors
     ///

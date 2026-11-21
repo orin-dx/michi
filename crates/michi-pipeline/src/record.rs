@@ -124,13 +124,14 @@ impl StepRecord {
         &self.attempts
     }
 
-    /// When the step was dispatched, relative to the start of the run; `None` if it never was.
+    /// When the step was dispatched, relative to the start of the run; `None` if its code was never invoked (it was
+    /// not dispatched, or it ended before its precheck or first attempt, for example during its durable start).
     #[must_use]
     pub fn started_at(&self) -> Option<Duration> {
         self.started_at
     }
 
-    /// How long the step took from dispatch to its terminal status; `None` if it never ran.
+    /// How long the step took from dispatch to its terminal status; `None` if its code was never invoked.
     #[must_use]
     pub fn elapsed(&self) -> Option<Duration> {
         self.elapsed

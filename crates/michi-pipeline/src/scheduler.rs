@@ -45,8 +45,8 @@ struct Job {
     retry_after_cap: Duration,
     attempt_timeout: Duration,
     deadline: Option<Duration>,
-    /// When the step's deadline group's window ends, and the group's key.
-    group_deadline: Option<(Instant, String)>,
+    /// The step's deadline group window, once open with a representable end.
+    group_deadline: Option<GroupDeadline>,
     jitter_seed: Option<f64>,
     breaker: Option<(String, Arc<CircuitBreaker>)>,
     budget: Option<Arc<Mutex<RetryBudget>>>,
@@ -56,6 +56,27 @@ struct Job {
     durable: Option<Arc<dyn crate::DurableObserver>>,
     /// Set when `record_start` panicked, so the scheduler can count it in `observer_panics`.
     start_panicked: Arc<AtomicBool>,
+    /// Set just before the step's own code (its precheck or `run`) is first called. A step that ends without it set
+    /// was never invoked, so its record gets no start time or duration.
+    invoked: Arc<AtomicBool>,
+}
+
+/// When a step's deadline group window ends, with what the "window ended" message needs.
+struct GroupDeadline {
+    end: Instant,
+    key: String,
+    length: Duration,
+}
+
+/// The outcome of a step whose deadline group window ended before it was invoked. One message for both places this
+/// is found: at dispatch, and after its durable start is saved.
+fn deadline_passed_outcome(length: Duration, key: &str) -> Outcome {
+    let message = format!("the {}ms window of deadline group {key} ended before the step started", millis(length));
+    Outcome {
+        status: StepStatus::Failed,
+        reason: Some(format!("{message}, so it was not run")),
+        error: Some(ExecutionError::DeadlinePassed { message }),
+    }
 }
 
 /// A step's terminal result, before the scheduler adds timing and attempts.
@@ -74,6 +95,7 @@ struct Running {
     attempts: Attempts,
     replay: Replay,
     start_panicked: Arc<AtomicBool>,
+    invoked: Arc<AtomicBool>,
 }
 
 /// Runs `plan` from `initial` and returns the record. Owns its `JoinSet`, so no step outlives the call.
@@ -350,15 +372,11 @@ impl<'a> Scheduler<'a> {
     fn deadline_passed(&mut self, i: usize) {
         let Some(w) = self.window_of[i] else { return };
         let window = &self.windows[w];
-        let message = format!(
-            "the {}ms window of deadline group {} ended before the step started",
-            millis(window.length),
-            window.key
-        );
+        let outcome = deadline_passed_outcome(window.length, &window.key);
         let step = &self.plan.steps()[i];
-        let mut record = StepRecord::new(step.id().clone(), step.name().to_string(), StepStatus::Failed);
-        record.reason = Some(format!("{message}, so it was not run"));
-        record.error = Some(ExecutionError::DeadlinePassed { message });
+        let mut record = StepRecord::new(step.id().clone(), step.name().to_string(), outcome.status);
+        record.reason = outcome.reason;
+        record.error = outcome.error;
         self.failed(i, record);
     }
 
@@ -374,6 +392,7 @@ impl<'a> Scheduler<'a> {
         let step = &self.plan.steps()[i];
         let attempts: Attempts = Arc::default();
         let start_panicked = Arc::new(AtomicBool::new(false));
+        let invoked = Arc::new(AtomicBool::new(false));
         let replay = step.replay();
         let breaker = self.opts.breakers.as_ref().map(|registry| {
             let key = step.effective_breaker_key().to_string();
@@ -394,7 +413,7 @@ impl<'a> Scheduler<'a> {
             deadline: step.deadline_override().or(self.opts.step_deadline),
             group_deadline: self.window_of[i].and_then(|w| {
                 let window = &self.windows[w];
-                window.ends.map(|end| (end, window.key.clone()))
+                window.ends.map(|end| GroupDeadline { end, key: window.key.clone(), length: window.length })
             }),
             jitter_seed: self.opts.jitter_seed,
             breaker,
@@ -403,8 +422,18 @@ impl<'a> Scheduler<'a> {
             attempts: Arc::clone(&attempts),
             durable: self.opts.durable.clone(),
             start_panicked: Arc::clone(&start_panicked),
+            invoked: Arc::clone(&invoked),
         };
-        (job, Running { index: i, slot: self.slot_of[i], dispatched: Instant::now(), attempts, replay, start_panicked })
+        let running = Running {
+            index: i,
+            slot: self.slot_of[i],
+            dispatched: Instant::now(),
+            attempts,
+            replay,
+            start_panicked,
+            invoked,
+        };
+        (job, running)
     }
 
     fn step_finished(&mut self, entry: Running, outcome: Outcome) {
@@ -426,8 +455,9 @@ impl<'a> Scheduler<'a> {
                 elapsed: entry.dispatched.elapsed(),
             });
         }
-        // A step whose start was never recorded was never invoked, so it has no start time or duration.
-        if outcome.status != StepStatus::NotRun(NotRunReason::StartNotRecorded) {
+        // A step that was never invoked (its start not recorded, a cancel or window end during the save, an open
+        // breaker) has no start time or duration, however long it spent waiting before that was decided.
+        if entry.invoked.load(Ordering::Acquire) {
             record.started_at = Some(entry.dispatched.duration_since(self.run_start));
             record.elapsed = Some(entry.dispatched.elapsed());
         }
@@ -691,14 +721,9 @@ async fn run_step(job: Job) -> Outcome {
         if job.token.is_cancelled() {
             return cancelled_before_start();
         }
-        if let Some((end, key)) = &job.group_deadline {
-            if Instant::now() >= *end {
-                let message = format!("the window of deadline group {key} ended before the step started");
-                return Outcome {
-                    status: StepStatus::Failed,
-                    reason: Some(format!("{message}, so it was not run")),
-                    error: Some(ExecutionError::DeadlinePassed { message }),
-                };
+        if let Some(group) = &job.group_deadline {
+            if Instant::now() >= group.end {
+                return deadline_passed_outcome(group.length, &group.key);
             }
         }
     }
@@ -716,13 +741,15 @@ async fn run_step(job: Job) -> Outcome {
         None => None,
     };
     let probe = guard.as_ref().is_some_and(AdmissionGuard::is_probe);
+    // Past admission nothing returns before the step's precheck or first attempt is called.
+    job.invoked.store(true, Ordering::Release);
     let started = Instant::now();
     // A deadline too far away for the clock to represent is no deadline, rather than an overflow panic. With a
     // deadline group as well, the earlier end applies, and the reason names the one that did.
     let own = job.deadline.and_then(|d| started.checked_add(d));
     let (deadline, deadline_name) = match (own, &job.group_deadline) {
-        (Some(own), Some((group, _))) if own <= *group => (Some(own), "step deadline".to_string()),
-        (_, Some((group, key))) => (Some(*group), format!("deadline group {key}")),
+        (Some(own), Some(group)) if own <= group.end => (Some(own), "step deadline".to_string()),
+        (_, Some(group)) => (Some(group.end), format!("deadline group {}", group.key)),
         (own, None) => (own, "step deadline".to_string()),
     };
     let limit_from = |now: Instant| match deadline {
