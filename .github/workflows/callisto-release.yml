@@ -609,6 +609,21 @@ jobs:
           version=$(scripts/released-version.sh "$RUNNER_TEMP/release-receipt/release-receipt.json")
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
+      # Callisto attaches the group's one GitHub release to michi-core, so its page holds only michi-core's notes.
+      # Replace them with every package's section (scripts/group-release-notes.py), so pipeline and npm users find
+      # theirs too. The release is already published; a failure here leaves Callisto's notes and fails the run.
+      - name: Add every package's notes to the GitHub release
+        if: steps.published.outputs.version != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.published.outputs.version }}
+        run: |
+          set -euo pipefail
+          scripts/group-release-notes.py "$VERSION" > "$RUNNER_TEMP/release-notes.md"
+          if [[ -s "$RUNNER_TEMP/release-notes.md" ]]; then
+            gh release edit "michi@$VERSION" --notes-file "$RUNNER_TEMP/release-notes.md"
+          fi
+
       - name: Summarize the receipt
         if: always()
         run: |
