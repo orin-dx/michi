@@ -120,3 +120,88 @@ fn a_group_window_that_outlasts_the_save_still_runs_the_step() {
     assert_eq!(status(&record, "victim"), StepStatus::Completed);
     assert!(ran.load(Ordering::SeqCst));
 }
+
+fn step<'a>(record: &'a RunRecord, name: &str) -> &'a StepRecord {
+    record.steps().iter().find(|s| s.step_id().as_str() == name).expect("step in record")
+}
+
+#[test]
+fn a_step_cancelled_during_its_save_has_no_start_time() {
+    // The step waited out the save but was never invoked, so the save's duration is not reported as its run time.
+    let ran = Arc::new(AtomicBool::new(false));
+    let plan = Plan::new(vec![probe("victim", &ran)]).expect("plan");
+    let token = CancellationToken::new();
+    let opts = options("victim").cancellation(token.clone());
+    let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().expect("runtime");
+    let record = rt.block_on(async {
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            token.cancel();
+        });
+        execute(&plan, RunId::try_new("races").expect("valid id"), &opts).await
+    });
+
+    let victim = step(&record, "victim");
+    assert_eq!(victim.status(), StepStatus::Skipped(SkipReason::Cancelled));
+    assert_eq!(victim.started_at(), None);
+    assert_eq!(victim.elapsed(), None);
+}
+
+#[test]
+fn a_step_whose_window_ends_during_its_save_has_no_start_time() {
+    let ran = Arc::new(AtomicBool::new(false));
+    let plan = Plan::new(vec![probe("victim", &ran).deadline_group("g")]).expect("plan");
+    let record = run(&plan, &options("victim").group_deadline("g", Duration::from_millis(100)));
+
+    let victim = step(&record, "victim");
+    assert_eq!(victim.status(), StepStatus::Failed);
+    assert_eq!(victim.started_at(), None);
+    assert_eq!(victim.elapsed(), None);
+}
+
+#[test]
+fn a_step_that_ran_after_its_save_has_a_start_time() {
+    let ran = Arc::new(AtomicBool::new(false));
+    let plan = Plan::new(vec![probe("victim", &ran)]).expect("plan");
+    let record = run(&plan, &options("victim"));
+
+    let victim = step(&record, "victim");
+    assert_eq!(victim.status(), StepStatus::Completed);
+    assert!(victim.started_at().is_some());
+    assert!(victim.elapsed().is_some_and(|e| e >= SLOW_SAVE), "the save counts toward the step's duration");
+}
+
+#[test]
+fn a_window_ending_during_the_save_reads_the_same_as_one_ending_before_dispatch() {
+    let window = Duration::from_millis(100);
+    let deadline_text = |s: &StepRecord| match s.error() {
+        Some(ExecutionError::DeadlinePassed { message }) => (message.clone(), s.reason().map(str::to_string)),
+        other => panic!("expected DeadlinePassed, got {other:?}"),
+    };
+
+    // During the save: the 200 ms save outlasts the window.
+    let ran = Arc::new(AtomicBool::new(false));
+    let plan = Plan::new(vec![probe("victim", &ran).deadline_group("g")]).expect("plan");
+    let during = run(&plan, &options("victim").group_deadline("g", window));
+
+    // Before dispatch: `early` opens the window, and `victim` becomes ready only after `slow` outlasts it.
+    let (early, late) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
+    let slow = ExecStep::new(
+        id("slow"),
+        "step",
+        step_fn(|_| async {
+            tokio::time::sleep(SLOW_SAVE).await;
+            Ok(())
+        }),
+    );
+    let plan = Plan::new(vec![
+        probe("early", &early).deadline_group("g"),
+        slow,
+        probe("victim", &late).deadline_group("g").depends_on(id("slow")),
+    ])
+    .expect("plan");
+    let before = run(&plan, &options("none").group_deadline("g", window));
+    assert!(!late.load(Ordering::SeqCst), "a step whose window ended before dispatch was still invoked");
+
+    assert_eq!(deadline_text(step(&during, "victim")), deadline_text(step(&before, "victim")));
+}
