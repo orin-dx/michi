@@ -1,0 +1,135 @@
+{
+  "cli_version": "0.13.5-nightly.202611160626.76f1b5129",
+  "checkpoint_id": "01M7Y15S12404DQSVS3ZRQMD3Y",
+  "session_id": "f17aa24d-9610-4712-8551-262a8f85e742",
+  "strategy": "manual-commit",
+  "created_at": "2026-11-21T03:07:51.152145Z",
+  "branch": "chore/cargo-update",
+  "checkpoints_count": 3,
+  "files_touched": [],
+  "agent": "Claude Code",
+  "model": "claude-opus-5-5",
+  "turn_id": "b234669c8be9",
+  "checkpoint_transcript_start": 1639,
+  "transcript_lines_at_start": 1639,
+  "compact_transcript_start": 142,
+  "token_usage": {
+    "input_tokens": 58,
+    "cache_creation_tokens": 34319,
+    "cache_read_tokens": 7575854,
+    "output_tokens": 14602,
+    "api_call_count": 29,
+    "subagent_tokens": {
+      "input_tokens": 76,
+      "cache_creation_tokens": 133368,
+      "cache_read_tokens": 3870840,
+      "output_tokens": 17709,
+      "api_call_count": 38
+    },
+    "subagent_tokens_complete": true
+  },
+  "session_token_usage": {
+    "input_tokens": 316,
+    "cache_creation_tokens": 316924,
+    "cache_read_tokens": 25084777,
+    "output_tokens": 76632,
+    "api_call_count": 151,
+    "subagent_tokens": {
+      "input_tokens": 466,
+      "cache_creation_tokens": 791982,
+      "cache_read_tokens": 23495434,
+      "output_tokens": 136022,
+      "api_call_count": 233
+    },
+    "subagent_tokens_complete": true
+  },
+  "redaction": {
+    "replacements": 4,
+    "layers": {
+      "betterleaks": 4,
+      "connection_string": 0,
+      "credential_key": 0,
+      "credential_value": 0,
+      "credentialed_uri": 0,
+      "entropy": 0,
+      "key_context": 0,
+      "provider_token": 0,
+      "shell_stdin": 0
+    }
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_01Y7Eqmc3RnWLN8SDo5Yzpkj",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "courier:changeset"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "ae0475c8d7c6",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 1422,
+        "end": 1423,
+        "entry_ids": [
+          "0e92252a-f1f5-4b77-ae60-6d321a55695e"
+        ],
+        "tool_use_id": "toolu_01Y7Eqmc3RnWLN8SDo5Yzpkj"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01Y7Eqmc3RnWLN8SDo5Yzpkj"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: courier:changeset",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 15
+  },
+  "summary": {
+    "intent": "Release prep for michi 0.11: rewrite changesets so they are user-first, then upgrade to Callisto 0.22 (simplified TOML config) and check whether Rust and crate dependencies are current.",
+    "outcome": "Changesets were rewritten into 17 audience-split entries and pushed to stacked PRs #137/#138, with the changeset standard saved to memory. A Callisto 0.22 migration research agent was launched, with no config changes made yet. Rust was confirmed current on CI (stable 1.100.0), and both lockfiles were updated (24 workspace changes, 6 in fuzz) on a new branch and opened as a PR after MSRV, check and test runs.",
+    "learnings": {
+      "repo": [
+        "Changesets feed per-package changelogs via Callisto, which copies each entry into every listed package's changelog, so entries must be split by audience (Rust core, pipeline, JS) and use that audience's method names.",
+        "The repo has a `courier:changeset` skill that must be used for every changeset edit. Its rules: lead with reader impact, write old → new → action for breaking changes, omit implementation detail, and put fixes to unreleased behaviour into the feature's own entry.",
+        "michi tracks the `stable` Rust channel, so CI uses the latest Rust (1.100.0). The MSRV is 1.93, and the local machine had rustc 1.99.1.",
+        "michi was on Callisto 0.20.0. Migrating to 0.22 may affect the release workflow customizations (napi build matrix, macOS runner override, attestation signing, npm/crates.io tokens), renamed error codes, ignored npm scripts, the decision-file schema, and the open release PR #131.",
+        "`just check` includes a markdown format check, and `just test` includes the Node binding tests; wall-clock scaling tests are sensitive to machine load.",
+        "There is a separate fuzz lockfile that needs updating alongside the workspace lockfile.",
+        "Updated napi crates all require Rust 1.88 or older, within the 1.93 MSRV."
+      ],
+      "code": [],
+      "workflow": [
+        "`cargo update --workspace` only updates the workspace's own crates, not their dependencies; run `cargo update` without that flag to preview real lockfile updates.",
+        "Use `cargo info` to look up the latest crate versions rather than hand-built HTTP requests to crates.io.",
+        "Never put the user's email in request headers such as User-Agent; a safety check blocked this once.",
+        "Passing CI and merged PRs do not mean a release is ready; audit the release artifacts (changelog rendering, docs, API freeze) from the reader's view.",
+        "Stack dependent PRs (#138 on #137) and retarget after the base merges."
+      ]
+    },
+    "friction": [
+      "The user had to point out that the changesets were hard to read; the first pass only fixed factual errors and ignored the writing.",
+      "The `courier:changeset` skill was skipped, causing rework.",
+      "The pipeline patch changeset wrongly described bugs in unreleased code.",
+      "`just test` on the stacked #138 branch failed on wall-clock scaling tests with a machine load average of 151, so local results were unreliable and CI is the real check.",
+      "The first dependency check was wrong because `cargo update --workspace` reported nothing to update.",
+      "A crates.io lookup included the user's email in the User-Agent header and was blocked by the safety check; it was redone with `cargo info`.",
+      "The local rustc (1.99.1) is behind CI's 1.100.0."
+    ],
+    "open_items": [
+      "Complete the Callisto 0.20 → 0.22 migration: new simplified `callisto.toml`, regenerated workflow, breaking-change handling, and the effect on open release PR #131. This is planned on a branch stacked after #137/#138.",
+      "Merge #137 first, then #138 retargets onto main; confirm CI passes the timing-sensitive tests.",
+      "22 direct dependencies are behind their latest major or incompatible versions and need manifest changes to adopt; none were upgraded.",
+      "Local Rust toolchain should be updated to match CI's 1.100.0."
+    ]
+  }
+}

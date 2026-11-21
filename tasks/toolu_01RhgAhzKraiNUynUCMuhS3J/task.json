@@ -1,0 +1,15 @@
+{
+  "tool_use_id": "toolu_01RhgAhzKraiNUynUCMuhS3J",
+  "agent_id": "ab9070147b56b2535",
+  "subagent_type": "general-purpose",
+  "task_description": "Research Callisto 0.22 migration for michi",
+  "token_usage": {
+    "input_tokens": 76,
+    "cache_creation_tokens": 133368,
+    "cache_read_tokens": 3870840,
+    "output_tokens": 17709,
+    "api_call_count": 38
+  },
+  "started_at": "2026-11-20T19:02:22.527778-08:00",
+  "completed_at": "2026-11-20T19:05:54.824074-08:00"
+}
