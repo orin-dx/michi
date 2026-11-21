@@ -328,3 +328,19 @@ fn toon_list_is_linear_in_items_and_sparse_keys() {
         },
     );
 }
+
+#[test]
+fn redact_common_shapes_is_linear_in_pairs() {
+    // One long line of pairs: each quoted, unterminated or scheme value must be found without rescanning the rest of
+    // the text. A per-value scan to the end of the line was quadratic here.
+    for unit in ["token=\"", "token: Basic ", "a:b=c ", "x=1&password='p'&", "Cookie: a=1; "] {
+        assert_linear(
+            unit,
+            1_000,
+            |n| unit.repeat(n),
+            |text| {
+                black_box(michi_core::redact::redact_common_shapes(text));
+            },
+        );
+    }
+}
