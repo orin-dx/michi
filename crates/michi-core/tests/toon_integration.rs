@@ -126,8 +126,6 @@ fn short_cell_value_is_not_truncated() {
 fn crate_root_reexports_are_reachable() {
     type KvResult = Result<String, michi_core::KvError>;
     let _: fn(&[michi_core::kv::KvItem]) -> KvResult = michi_core::render_kv;
-    let _: fn(Option<String>) -> michi_core::AlreadyDone = michi_core::already_done;
-    let _: fn(&str, &str, &[michi_core::Hint]) -> String = michi_core::render_already_done;
     let _ = michi_core::RetryConfig::default();
     let _: fn(&str) -> Option<std::time::Duration> = michi_core::parse_retry_after;
     let _: fn(

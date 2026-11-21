@@ -12,9 +12,9 @@
 //!
 //! | Module | Exports |
 //! | --- | --- |
-//! | `toon` | `renderToon`, `renderKv`, `renderStatus` |
+//! | `toon` | `renderToon`, `renderKv` |
 //! | `hints` | `renderHints`, `appendHints`, `renderRecovery` |
-//! | `outcome` | `renderDomainError`, `renderAlreadyDone`, `alreadyDone`, `renderPartialSuccess`, `renderPipeline` |
+//! | `outcome` | `renderGithubAnnotation`, and the outcome types `AgentResponse` takes |
 //! | `resilience` | `parseRetryAfter`, `nextRetryDelay`, `isRetryableStatus`, `truncate` |
 //! | `response` | the `AgentResponse` class and `toCallToolResult` |
 //! | `value` | the `ToonValue` cell and `KvItem`, shared by the rest |

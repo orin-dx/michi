@@ -6,11 +6,10 @@
 //!
 //! Retry configuration, delay calculation, RFC 9110 `Retry-After` parsing,
 //! retryable HTTP statuses, a [`RetryBudget`], and idempotency primitives:
-//! FNV-1a [`IdempotencyKey`]s and already-done detection ([`already_done`]).
+//! FNV-1a [`IdempotencyKey`]s. An operation an idempotency check found already done is reported with
+//! [`AgentResponse::already_done`](crate::AgentResponse::already_done).
 
 use std::time::Duration;
-
-use crate::hints::Hint;
 
 mod budget;
 pub use budget::RetryBudget;
@@ -426,49 +425,6 @@ impl From<&str> for IdempotencyKey {
     }
 }
 
-/// Result of an idempotency check.
-///
-/// # Caller responsibility
-///
-/// Use [`AlreadyDone`] when an operation fully completed in a prior call.
-/// For operations that only partially completed (some steps succeeded, some
-/// failed), use [`crate::idempotency::PartialSuccess`] instead. michi
-/// does not enforce this distinction — the choice is the caller's responsibility.
-#[derive(Debug, Clone, PartialEq)]
-#[non_exhaustive]
-pub enum AlreadyDone {
-    /// The operation completed in a previous call.
-    Yes {
-        /// The previously stored result.
-        result: String,
-    },
-    /// The operation has not been seen before — proceed with execution.
-    No,
-}
-
-/// Check whether an operation has already completed.
-#[must_use]
-pub fn already_done(stored: Option<String>) -> AlreadyDone {
-    match stored {
-        Some(result) => AlreadyDone::Yes { result },
-        None => AlreadyDone::No,
-    }
-}
-
-/// Render an already-done response as a TOON 4.4 root object, with no trailing newline:
-/// `operation: …`, `status: already_done`, `summary: …`, then the inline `help[N]: …` array when `hints` is non-empty.
-/// `operation` and `summary` are quoted per §7.2.
-///
-/// It is the response `AgentResponse::new("already_done").already_done(operation, summary).hints(hints)`, so it is the
-/// same writer a composed response uses (see [`crate::AgentResponse::already_done`]).
-#[must_use]
-pub fn render_already_done(operation: &str, summary: &str, hints: &[Hint]) -> String {
-    crate::AgentResponse::new("already_done")
-        .already_done(operation, summary)
-        .hints(hints.to_vec())
-        .render(crate::OutputFormat::Text)
-}
-
 /// The KV section a composed already-done report is: `operation`, `status: already_done`, `summary`.
 pub(crate) fn already_done_section(operation: String, summary: String) -> crate::section::Section {
     use crate::kv::{KvItem, KvValue};
@@ -496,6 +452,7 @@ fn fnv1a_64(data: &[u8]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hints::Hint;
 
     #[test]
     fn first_retry_uses_base_delay() {
@@ -1020,7 +977,6 @@ mod tests {
     fn test_auto_traits() {
         assert_send_sync_static::<RetryConfig>();
         assert_send_sync_static::<IdempotencyKey>();
-        assert_send_sync_static::<AlreadyDone>();
     }
 
     #[test]
@@ -1122,38 +1078,29 @@ mod tests {
         assert_eq!(c.jitter_factor(), 0.2);
     }
 
-    #[test]
-    fn already_done_yes_when_stored() {
-        assert_eq!(already_done(Some("prior result".into())), AlreadyDone::Yes { result: "prior result".into() });
+    /// An already-done report on its own, with hints.
+    fn already_done_text(operation: &str, summary: &str, hints: &[Hint]) -> String {
+        crate::AgentResponse::new("already_done")
+            .already_done(operation, summary)
+            .hints(hints.to_vec())
+            .render(crate::OutputFormat::Text)
     }
 
     #[test]
-    fn already_done_no_when_none() {
-        assert_eq!(already_done(None), AlreadyDone::No);
-    }
-
-    #[test]
-    fn render_already_done_no_hints_format() {
-        let out = render_already_done("delete_item", "item 42 was deleted in run abc", &[]);
+    fn already_done_no_hints_format() {
+        let out = already_done_text("delete_item", "item 42 was deleted in run abc", &[]);
         assert_eq!(out, "operation: delete_item\nstatus: already_done\nsummary: item 42 was deleted in run abc");
     }
 
     #[test]
-    fn render_already_done_with_hints() {
-        let out = render_already_done("my_op", "did the thing", &[Hint::new("hint one")]);
+    fn already_done_with_hints() {
+        let out = already_done_text("my_op", "did the thing", &[Hint::new("hint one")]);
         assert_eq!(out, "operation: my_op\nstatus: already_done\nsummary: did the thing\nhelp[1]: hint one");
     }
 
     #[test]
-    fn render_already_done_multiple_hints() {
-        let hints = [Hint::new("hint a"), Hint::new("hint b")];
-        let out = render_already_done("op", "done", &hints);
-        assert_eq!(out, "operation: op\nstatus: already_done\nsummary: done\nhelp[2]: hint a,hint b");
-    }
-
-    #[test]
-    fn render_already_done_quotes_operation_and_summary_per_toon() {
-        let out = render_already_done("op, retry", "done: 3\nitems", &[]);
+    fn already_done_quotes_operation_and_summary_per_toon() {
+        let out = already_done_text("op, retry", "done: 3\nitems", &[]);
         assert_eq!(out, "operation: \"op, retry\"\nstatus: already_done\nsummary: \"done: 3\\nitems\"");
     }
 }

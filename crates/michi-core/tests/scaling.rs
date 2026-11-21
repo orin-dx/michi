@@ -225,7 +225,7 @@ fn partial_success_composes_and_renders_linearly() {
 }
 
 fn status(n: usize) -> michi_core::StatusResponse {
-    use michi_core::{Health, Hint, StatusItem, StatusResponse};
+    use michi_core::{Health, StatusItem, StatusResponse};
     let items = (0..n)
         .map(|i| {
             StatusItem::new(format!("check{i}"), KvValue::Float(i as f64 / 7.0, 2))
@@ -233,7 +233,6 @@ fn status(n: usize) -> michi_core::StatusResponse {
         })
         .collect();
     StatusResponse::new("tool", "does things", items)
-        .hints((0..n).map(|i| Hint::new(format!("look at check{i}"))).collect())
 }
 
 #[test]

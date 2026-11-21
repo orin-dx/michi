@@ -54,8 +54,8 @@ pub struct AgentResponse {
     /// and `exit_code` keys.
     error: Option<DomainError>,
     /// Every hint in call order, each with who added it: the caller ([`hint`](Self::hint), [`hints`](Self::hints)) or
-    /// a part ([`status`](Self::status), [`truncated_section`](Self::truncated_section)). `hints()` replaces only the
-    /// caller's own, so no hint source drops another's.
+    /// a part ([`truncated_section`](Self::truncated_section)). `hints()` replaces only the caller's own, so no hint
+    /// source drops another's.
     hints: Vec<(Hint, HintSource)>,
     recovery: Vec<RecoveryHint>,
     is_error: bool,
@@ -249,12 +249,10 @@ impl AgentResponse {
     }
 
     /// Append a status report as two sections: `tool` and `description` as a KV section named `status`, then the
-    /// `items[N]{key,value,health,reason}:` list. Its hints are appended to the response's hints, and a later
-    /// [`hints`](Self::hints) call keeps them.
+    /// `items[N]{key,value,health,reason}:` list. Add hints for the agent with [`hint`](Self::hint).
     #[must_use]
-    pub fn status(mut self, status: StatusResponse) -> Self {
+    pub fn status(self, status: StatusResponse) -> Self {
         let [head, items] = status.sections();
-        self.hints.extend(status.hints.into_iter().map(|h| (h, HintSource::Part)));
         self.section(head).section(items)
     }
 
@@ -268,8 +266,7 @@ impl AgentResponse {
     }
 
     /// Append an already-done report as a KV section named `already_done`: `operation: …`, `status: already_done`,
-    /// `summary: …`. Use it when an idempotency check ([`crate::resilience::already_done`]) found the operation
-    /// completed in an earlier call.
+    /// `summary: …`. Use it when an idempotency check found the operation completed in an earlier call.
     #[must_use]
     pub fn already_done(self, operation: impl Into<String>, summary: impl Into<String>) -> Self {
         self.section(crate::resilience::already_done_section(operation.into(), summary.into()))
@@ -282,16 +279,19 @@ impl AgentResponse {
         self
     }
 
-    /// Replace the hints added with [`hint`](Self::hint) and `hints`. The hints a part brought keep their place: a
-    /// [`status`](Self::status) report's hints, the `showing N of M` line of a
-    /// [`truncated_section`](Self::truncated_section), and the error's hints. The new hints follow them.
+    /// Replace the hints added with [`hint`](Self::hint) and `hints`. The hints a part brought keep their place: the
+    /// `showing N of M` line of a [`truncated_section`](Self::truncated_section) and the error's hints. The new hints
+    /// follow them.
     ///
     /// ```
-    /// use michi_core::{AgentResponse, Hint, StatusResponse};
+    /// use michi_core::{truncate_by_count, AgentResponse, Hint};
     ///
-    /// let status = StatusResponse::new("tool", "desc", vec![]).hints(vec![Hint::new("from the status")]);
-    /// let r = AgentResponse::new("t").hint("replaced").status(status).hints(vec![Hint::new("mine")]);
-    /// assert_eq!(r.render_hints_only(), "help[2]: from the status,mine");
+    /// let outcome = truncate_by_count(vec![1, 2, 3], 1);
+    /// let r = AgentResponse::new("t")
+    ///     .hint("replaced")
+    ///     .truncated_section("n", vec!["n".into()], &outcome, |n| vec![(*n).into()], "pass --limit 3")
+    ///     .hints(vec![Hint::new("mine")]);
+    /// assert_eq!(r.render_hints_only(), "help[2]: showing 1 of 3; pass --limit 3,mine");
     /// ```
     #[must_use]
     pub fn hints(mut self, hints: Vec<Hint>) -> Self {

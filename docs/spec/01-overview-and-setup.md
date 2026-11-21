@@ -183,9 +183,9 @@ michi/                           (workspace root — virtual manifest, no packag
                                   # MAY_HAVE_TAKEN_EFFECT_HINT
         float_wire.rs            # serde wire form for non-finite floats (serde feature, private)
         hints.rs                 # Hint, render_hints(), append_hints()
-        idempotency.rs           # CompletedOp, SkippedOp, FailedOp, PartialSuccess, DuplicateOpIndex — NOT keys/already-done
-                                  # (that's resilience::AlreadyDone/already_done(); the
-                                  # module name is a known, tracked naming staleness)
+        idempotency.rs           # CompletedOp, SkippedOp, FailedOp, PartialSuccess, DuplicateOpIndex — NOT keys
+                                  # (that's resilience::IdempotencyKey; the module name
+                                  # is a known, tracked naming staleness)
         int_schema.rs            # integer JSON Schemas (schemars feature, private)
         json.rs                  # the hand-built JSON writers every structured companion shares (private)
         kv/mod.rs                # render_kv(), KvItem, KvValue, KvError
@@ -196,9 +196,9 @@ michi/                           (workspace root — virtual manifest, no packag
           num.rs                 # JsRanged/JsFloat/JsCount/... numeric-boundary newtype kernel
           input.rs               # bounded, incremental conversion of collection and string arguments; the caps
           value.rs               # ToonValue / KvItem and their one conversion into core values
-          toon.rs                # renderToon, renderKv, renderStatus
+          toon.rs                # renderToon, renderKv; the StatusItem input of AgentResponse.status
           hints.rs               # renderHints, appendHints, renderRecovery
-          outcome.rs             # renderDomainError, renderAlreadyDone, alreadyDone, renderPartialSuccess, renderPipeline
+          outcome.rs             # renderGithubAnnotation; the error, batch-op and pipeline-step inputs AgentResponse takes
           resilience.rs          # parseRetryAfter, nextRetryDelay, isRetryableStatus, truncate
           response.rs            # the AgentResponse class, its cumulative budget, toCallToolResult
         pipeline/mod.rs          # Pipeline, PipelineStep, StepStatus and its reasons — data model + render only
@@ -206,7 +206,7 @@ michi/                           (workspace root — virtual manifest, no packag
         recovery.rs              # RecoveryHint, render_recovery()
         redact.rs                # redact_secrets(), redact_url_userinfo(), redact_common_shapes() (best effort)
         resilience.rs            # RetryConfig, next_retry_delay(), parse_retry_after(),
-                                  # is_retryable_status(), AlreadyDone, IdempotencyKey
+                                  # is_retryable_status(), IdempotencyKey
         resilience/budget.rs     # RetryBudget
         response.rs              # AgentResponse builder, OutputFormat, DEFAULT_TRUNCATE_CELLS
         section.rs               # Section, SectionBody (repeatable response blocks)

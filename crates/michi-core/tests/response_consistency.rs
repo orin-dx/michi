@@ -5,8 +5,7 @@
 use michi_core::kv::{KvItem, KvValue};
 use michi_core::toon::Value;
 use michi_core::{
-    truncate_by_count, AgentResponse, Audience, BudgetSummary, DomainError, ErrorCode, Health, Hint, OutputFormat,
-    Section, StatusItem, StatusResponse,
+    truncate_by_count, AgentResponse, Audience, BudgetSummary, DomainError, ErrorCode, Hint, OutputFormat, Section,
 };
 
 mod support;
@@ -245,22 +244,12 @@ fn a_total_below_the_rows_and_an_empty_list_match_across_surfaces() {
 
 // ---- Finding 5: hint sources compose ----
 
-fn status() -> StatusResponse {
-    StatusResponse::new(
-        "tool",
-        "desc",
-        vec![StatusItem::new("index", KvValue::Text("ready".into())).health(Health::Ok)],
-    )
-    .hints(vec!["call get_status for detail".into()])
-}
-
 #[test]
 fn hints_replaces_only_the_callers_own_hints() {
-    let r = AgentResponse::new("t").hint("dropped").status(status()).hints(vec![Hint::new("mine")]);
+    let err = DomainError::new(ErrorCode::NotFound, "gone").hint("check the id");
+    let r = AgentResponse::new("t").hint("dropped").error(err).hints(vec![Hint::new("mine")]);
     let help = r.render_hints_only();
-    assert_eq!(help, "help[2]: call get_status for detail,mine");
-    let v = json(&r);
-    assert_eq!(v["hints"], serde_json::json!(["call get_status for detail", "mine"]));
+    assert_eq!(help, "help[2]: check the id,mine");
     assert!(r.render(OutputFormat::Text).ends_with(&help));
 }
 

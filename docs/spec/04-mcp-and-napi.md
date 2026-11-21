@@ -182,7 +182,7 @@ const out = new AgentResponse("issues")
 
 Any `#[napi]` function returning `napi::Result<T>` throws a JS `Error` on `Err`. Two practices apply here:
 
-- Wrap fallible conversions (row shape mismatches, oversized inputs) in `Result` and surface them as `napi::Error::from_reason(...)`. Inputs that cannot form a valid TOON document throw with a prefixed message: `toon_validation_failed: …` from `renderToon` (a reserved `typeName`), `kv_validation_failed: …` from `renderKv` (a duplicate key, or a reserved root key such as `help` or `message`; the list is in [02](02-toon-format.md#trust-model)). `renderPipeline` throws for a status or reason that does not name a `StepStatus` (`unknown step status "done": expected one of pending, …`, `step status "skipped" needs a reason: prerequisite_failed or cancelled`, `step status "completed" takes no reason, got "timeout"`).
+- Wrap fallible conversions (row shape mismatches, oversized inputs) in `Result` and surface them as `napi::Error::from_reason(...)`. Inputs that cannot form a valid TOON document throw with a prefixed message: `toon_validation_failed: …` from `renderToon` (a reserved `typeName`), `kv_validation_failed: …` from `renderKv` (a duplicate key, or a reserved root key such as `help` or `message`; the list is in [02](02-toon-format.md#trust-model)). `AgentResponse.pipeline` throws for a status or reason that does not name a `StepStatus` (`unknown step status "done": expected one of pending, …`, `step status "skipped" needs a reason: prerequisite_failed or cancelled`, `step status "completed" takes no reason, got "timeout"`).
 - Annotate exports that call into non-trivial rendering with `#[napi(catch_unwind)]`.
   - Without it: **a Rust panic crashes the entire Node process** — there's no isolation boundary.
   - With it: a panic becomes a thrown JS `Error` (or a rejected `Promise` for async) instead of process death.
@@ -191,10 +191,10 @@ Any `#[napi]` function returning `napi::Result<T>` throws a JS `Error` on `Err`.
 
 `catch_unwind` does not stop a single call from blocking Node's event loop with a huge allocation, so every export that takes caller collections bounds the work before doing it. napi-derive converts a typed parameter such as `Vec<Vec<JsToonValue>>` or `String` in full before the export's body runs; a check in the body comes too late (a rejected 100,001 × 100 `rows` array cost 3.4 s and 2.6 GiB that way, and 10k × 10 cells sharing one 100 KB JS string were copied out once per cell, ~10 GB). These exports therefore take untyped napi values and convert them incrementally (`crates/michi-core/src/napi/input.rs`):
 
-- `renderToon`, `renderHints`, `appendHints`, `renderRecovery`, `renderKv`, `renderAlreadyDone`, `renderDomainError`, `renderStatus`, `renderPartialSuccess`, `renderPipeline`, `alreadyDone`, and `AgentResponse.items` / `kvItems` / `error` / `partialSuccess` / `pipeline` / `status` / `alreadyDone`, which take the same limits as the standalone function for the same input.
-- Array lengths are checked first: at most 100,000 rows, 1,000 fields, values per row, KV items or status items, 10,000 hints, 10,000 `renderDomainError` causes, and 10,000 entries in each of `renderPartialSuccess`' `completed`, `failed` and `skipped` and `renderPipeline`'s `steps`. For rows, every row's length is read and summed before any cell is converted.
+- `renderToon`, `renderHints`, `appendHints`, `renderRecovery`, `renderKv`, `renderGithubAnnotation`, and `AgentResponse.items` / `kvItems` / `error` / `partialSuccess` / `pipeline` / `status` / `alreadyDone`. An input has the same limits wherever it is accepted.
+- Array lengths are checked first: at most 100,000 rows, 1,000 fields, values per row, KV items or status items, 10,000 hints, 10,000 `AgentResponse.error` causes, and 10,000 entries in each of `AgentResponse.partialSuccess`' `completed`, `failed` and `skipped` and `AgentResponse.pipeline`'s `steps`. For rows, every row's length is read and summed before any cell is converted.
 - Then each value is converted against a per-call budget: at most **1,000,000 cells** and **16 MiB of string data** in all (see "Output size" below). A string's UTF-8 length is read, and charged, before it is copied, so a JS string referenced many times is counted every time it is used.
-- Per-string caps: **1 MiB** for a cell value (`strVal`), hint, `renderDomainError` cause, recovery or failed-op `reason`, status `description`/`health`, error `message`, `summary` or pipeline step `name`; **4 KiB** for `typeName`, a field name, a KV or status key, `truncationHint`, a recovery `tool`, `toolName`, an error `code`, `operation`, a completed or skipped step id, and a pipeline step's `id`, `status` and `reason`. `appendHints`' `body` and `alreadyDone`'s `stored` count toward the 16 MiB budget only.
+- Per-string caps: **1 MiB** for a cell value (`strVal`), hint, error cause, recovery or failed-op `reason`, status `description`/`health`, error `message`, `summary` or pipeline step `name`; **4 KiB** for `typeName`, a field name, a KV or status key, `truncationHint`, a recovery `tool`, `toolName`, an error `code`, `operation`, a completed or skipped step id, and a pipeline step's `id`, `status` and `reason`. `appendHints`' `body` counts toward the 16 MiB budget only.
 - Errors keep the usual wording: `rows length 100001 exceeds maximum of 100000`, `cell count 1000100 exceeds maximum of 1000000`, `input byte total 16777226 exceeds maximum of 16777216`, `strVal byte length 1200000 exceeds maximum of 1048576`. A string whose UTF-16 length already exceeds the cap is rejected without scanning it, reported as `byte length (at least N)`.
 - Only the payload a cell's `type` names is read (`strVal` for `"str"`, `floatVal` and `decimalsVal` for `"float"`, …). As before, an object field set to `null` is a wrong-typed value, not an absent one.
 - The single-string `AgentResponse` members (the constructor's `typeName`, `hint`, `recoveryHint`, `truncationHint`, `humanContent`) keep plain `string` parameters, since napi copies their one argument exactly once; they reject a value over the caps after the copy: 4 KiB for `typeName`, a recovery `tool` and `truncationHint`, 1 MiB for a hint, a recovery `reason` and `humanContent`. `AgentResponse.hint`/`recoveryHint` also keep their cumulative 10,000-call caps.
@@ -257,10 +257,10 @@ The first published release was 0.3.1 (0.3.0 was never published). The four pack
 
 This is auto-generated, never hand-written — `napi build` regenerates it from the `#[napi]` attributes in `crates/michi-core/src/napi.rs` every time.
 
-- Object types export without a prefix: `ToonValue`, `ToonOptions`, `KvItem`, `RecoveryHint`, `StatusItem`, `FailedOp`, `CompletedOp`, `SkippedOp`, `PipelineStep`, `AlreadyDone`, `ContentBlock`, `Annotations`, `CallToolResult`, `Truncated`. Their Rust structs keep a `Js` prefix (`JsToonValue`, ...) and are renamed with `js_name`.
+- Object types export without a prefix: `ToonValue`, `ToonOptions`, `KvItem`, `RecoveryHint`, `StatusItem`, `FailedOp`, `CompletedOp`, `SkippedOp`, `PipelineStep`, `ContentBlock`, `Annotations`, `CallToolResult`, `Truncated`. Their Rust structs keep a `Js` prefix (`JsToonValue`, ...) and are renamed with `js_name`.
 - There's no unprefixed `ToonValue`/`CallToolResult`/etc. in the real output, whatever an older sketch of this section might have suggested.
 
-What's actually in `packages/michi-node/index.d.ts` today (rendering-domain surface; the resilience-, status-, and error-domain functions follow further down):
+What's actually in `packages/michi-node/index.d.ts` today (rendering-domain surface; the resilience functions and `renderGithubAnnotation` follow further down):
 
 <details>
 <summary>Full rendering-domain <code>index.d.ts</code> (118 lines)</summary>
@@ -456,26 +456,24 @@ export declare function nextRetryDelay(
  * HTTP-date, where a past date (before 1970 too) is `0`. Returns `null` for a malformed value. */
 export declare function parseRetryAfter(headerValue: string): number | null;
 
-/** Render the TOON 4.4 `already_done` document: `operation`, `status: already_done`, `summary`, `help`. */
-export declare function renderAlreadyDone(
-  operation: string,
-  summary: string,
-  hints: Array<string>,
-): string;
-
-/** Render a classified `DomainError` as a TOON 4.4 document (`error`, `message`, `causes`, `exit_code`, `help`), or
- * a GitHub Actions annotation (message only) when `githubAnnotation` is true. `causes` are why it happened, outermost
- * first, rendered as their own `causes[N]: …` key; `hints` are what to do next. For the JSON or an MCP result, use
- * `AgentResponse.error()`, which renders the same text. */
-export declare function renderDomainError(
-  code: string,
+/** Render a classified error as a GitHub Actions workflow annotation: `::error title={code}::{message}`, on one line.
+ * The message is encoded as workflow command data (`%`, CR and LF), and the title also encodes `:` and `,`. For the
+ * agent-facing error document, its JSON or an MCP result, use `AgentResponse.error()`. */
+export declare function renderGithubAnnotation(
+  code:
+    | "invalid_input"
+    | "not_found"
+    | "unauthorized"
+    | "forbidden"
+    | "conflict"
+    | "rate_limited"
+    | "unavailable"
+    | "timeout"
+    | "external_failure",
   message: string,
-  hints: Array<string>,
-  githubAnnotation?: boolean | undefined | null,
-  causes?: Array<string> | undefined | null,
 ): string;
 
-/** A component status item for `renderStatus`. */
+/** A component status item for `AgentResponse.status`. */
 export interface StatusItem {
   /** Component key. */
   key: string;
@@ -484,16 +482,7 @@ export interface StatusItem {
   health?: string;
 }
 
-/** Render a P8 content-first orientation response: `tool`, `description`, the TOON 4.4 table
- * `items[N]{key,value,health,reason}:` and `help`. An item without `health` renders `ok`. */
-export declare function renderStatus(
-  toolName: string,
-  description: string,
-  items: Array<StatusItem>,
-  hints?: Array<string> | undefined | null,
-): string;
-
-/** One failed operation for `renderPartialSuccess`. */
+/** One failed operation for `AgentResponse.partialSuccess`. */
 export interface FailedOp {
   /** Position in the caller's op slice. */
   index: number;
@@ -503,14 +492,14 @@ export interface FailedOp {
   recovery?: RecoveryHint | null;
 }
 
-/** One completed operation for `renderPartialSuccess`. A non-null `reason` on it is rejected. */
+/** One completed operation for `AgentResponse.partialSuccess`. A non-null `reason` on it is rejected. */
 export interface CompletedOp {
   /** Position in the caller's op slice. */
   index: number;
   operation: string;
 }
 
-/** One skipped operation for `renderPartialSuccess`. */
+/** One skipped operation for `AgentResponse.partialSuccess`. */
 export interface SkippedOp {
   /** Position in the caller's op slice. */
   index: number;
@@ -519,16 +508,7 @@ export interface SkippedOp {
   reason?: string | null;
 }
 
-/** Render `PartialSuccess`: one `partial_success[N]{index,operation,status,reason}:` table, a row per operation
- * sorted by `index`, then one `recovery[N]{tool,params,reason}:` table (`partial_success: []` and `totalCount: 0` with
- * no operations). Throws when one `index` appears twice across the three lists. */
-export declare function renderPartialSuccess(
-  completed: Array<CompletedOp>,
-  failed: Array<FailedOp>,
-  skipped: Array<SkippedOp>,
-): string;
-
-/** One step for `renderPipeline`: the labels `StepStatus::label` and `StepStatus::reason` write. */
+/** One step for `AgentResponse.pipeline`: the labels `StepStatus::label` and `StepStatus::reason` write. */
 export interface PipelineStep {
   id: string;
   name: string;
@@ -555,18 +535,6 @@ export interface PipelineStep {
     | "start_not_recorded"
     | null;
 }
-
-/** Render pipeline state as `step[N]{id,name,status,reason}:`, or `step: []` and `totalCount: 0` with no steps. */
-export declare function renderPipeline(steps: Array<PipelineStep>): string;
-
-export interface AlreadyDone {
-  done: boolean;
-  /** The stored result when `done`. */
-  result?: string;
-}
-
-/** Classify an idempotency lookup: any stored string (even empty) is done; `null`/`undefined` is not. */
-export declare function alreadyDone(stored?: string | undefined | null): AlreadyDone;
 ```
 
 `truncate` returns the same fields as Rust's `Truncated` (`content`, `originalChars`, `removed`, `wasTruncated`); `Truncated::hint()` does not cross the boundary, so build the hint text in JavaScript.
