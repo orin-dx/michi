@@ -1,0 +1,34 @@
+{
+  "tool_use_id": "toolu_01WEzS8bkadJG6hNZsqXm2Wx",
+  "agent_id": "a7aec616b48b7d81f",
+  "subagent_type": "courier:changeset-analyzer",
+  "task_description": "Rewrite 0.11 changesets user-first",
+  "files": [
+    ".changeset/core-api-invariants.md",
+    ".changeset/core-compose.md",
+    ".changeset/core-hints-replace.md",
+    ".changeset/core-json-output.md",
+    ".changeset/core-legacy-removal.md",
+    ".changeset/core-partial-success.md",
+    ".changeset/core-redaction.md",
+    ".changeset/core-reserved-keys.md",
+    ".changeset/js-compose.md",
+    ".changeset/js-input-limit.md",
+    ".changeset/js-json-output.md",
+    ".changeset/js-legacy-removal.md",
+    ".changeset/js-partial-success.md",
+    ".changeset/js-reserved-keys.md",
+    ".changeset/pipeline-durable-start.md",
+    ".changeset/pipeline-error-causes.md",
+    ".changeset/pipeline-run-record.md"
+  ],
+  "token_usage": {
+    "input_tokens": 24,
+    "cache_creation_tokens": 97001,
+    "cache_read_tokens": 767026,
+    "output_tokens": 29735,
+    "api_call_count": 12
+  },
+  "started_at": "2026-11-20T18:31:27.488721-08:00",
+  "completed_at": "2026-11-20T18:34:45.963287-08:00"
+}

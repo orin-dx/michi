@@ -1,0 +1,64 @@
+{
+  "cli_version": "0.13.5-nightly.202611160626.76f1b5129",
+  "checkpoint_id": "01M7XZBJVNECSG8EGXKD0B50Q9",
+  "strategy": "manual-commit",
+  "branch": "prerelease-audit",
+  "checkpoints_count": 2,
+  "files_touched": [
+    ".changeset/core-api-invariants.md",
+    ".changeset/core-compose.md",
+    ".changeset/core-hints-replace.md",
+    ".changeset/core-json-output.md",
+    ".changeset/core-legacy-removal.md",
+    ".changeset/core-partial-success.md",
+    ".changeset/core-redaction.md",
+    ".changeset/core-reserved-keys.md",
+    ".changeset/js-compose.md",
+    ".changeset/js-input-limit.md",
+    ".changeset/js-json-output.md",
+    ".changeset/js-legacy-removal.md",
+    ".changeset/js-partial-success.md",
+    ".changeset/js-reserved-keys.md",
+    ".changeset/pipeline-durable-start.md",
+    ".changeset/pipeline-error-causes.md",
+    ".changeset/pipeline-run-record.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/0/metadata.json",
+      "transcript": "/0/full.jsonl",
+      "compact_transcript": "/0/transcript.jsonl",
+      "content_hash": "/0/content_hash.txt",
+      "prompt": "/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 28,
+    "cache_creation_tokens": 34994,
+    "cache_read_tokens": 2880823,
+    "output_tokens": 9971,
+    "api_call_count": 13,
+    "subagent_tokens": {
+      "input_tokens": 24,
+      "cache_creation_tokens": 97001,
+      "cache_read_tokens": 767026,
+      "output_tokens": 29735,
+      "api_call_count": 12
+    },
+    "subagent_tokens_complete": true
+  },
+  "redaction": {
+    "replacements": 4,
+    "layers": {
+      "betterleaks": 4,
+      "connection_string": 0,
+      "credential_key": 0,
+      "credential_value": 0,
+      "credentialed_uri": 0,
+      "entropy": 0,
+      "key_context": 0,
+      "provider_token": 0,
+      "shell_stdin": 0
+    }
+  }
+}
