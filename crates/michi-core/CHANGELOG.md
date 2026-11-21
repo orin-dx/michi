@@ -1,5 +1,80 @@
 # michi-core
 
+## 0.11.0
+
+_2026-11-21 · [compare](https://github.com/orin-dx/michi/compare/michi@0.10.0...michi@0.11.0)_
+
+### Minor Changes
+
+- **Breaking:** types that have a rule across their fields now keep those fields private, so the rule holds for the value's whole life.
+
+  - A `RetryConfig` can no longer get a zero `max_delay` after `try_new` (that turned a server's `Retry-After: 60` into an immediate retry).
+  - A `DomainError` can no longer have its code or retry flag changed behind the builder (that left a retryable timeout without its "verify first" hint).
+  - `CallToolResult.structured_content` is an `Option<JsonObject>`, checked when it is built in every build, so every result serializes.
+  - `TruncationOutcome`'s total can never fall below the items kept.
+
+  Changes to your code:
+
+  - `DomainError`: read fields with `code()`, `message()`, `causes()`, `hints()`, `get_recovery()`, `get_retry_after()` and `is_retryable()`; classify with `class()`. `render()` and `render_json()` become `render(OutputFormat::Text)` and `render(OutputFormat::Json)`. `retry_after` takes `impl Into<Option<Duration>>`. Use the new `context(prefix)` instead of writing to `message`.
+  - `michi_core::Error` and `michi_core::Result` are removed; nothing in michi produced them. Replace `michi_core::Error::Domain(e)` with `e`.
+  - `RetryConfig`: read with `max_retries()`, `base_delay()`, `max_delay()` and `jitter_factor()`; build with `new`, `try_new` or `default`.
+  - `TruncationOutcome`: `outcome.kept` becomes `outcome.kept()` (or `into_kept()` to take the items), `outcome.total_before` becomes `total_before()`. Build one with `new`, `truncate_by_count` or `truncate_by_size` as before.
+  - `Pipeline::new(id, steps)` becomes `Pipeline::new(steps)`; a `Pipeline` has no `id`.
+  - `CallToolResult::new` takes `Option<JsonObject>`: wrap structured content as `Some(JsonObject::try_new(text)?)`. `CallToolResult::try_new` is removed.
+  - `StatusResponse::with_hints` is renamed `hints`; `render_already_done` takes `&[Hint]`.
+  - The `telemetry` module and its `NoopProvider` are removed (nothing used them).
+
+  Also new: `ErrorCode` and `ErrorClass` implement `Hash`; `ErrorCode` implements `Display` (its label) and `FromStr` (error type `UnknownErrorCode`) and has `ALL`; `StepStatus` has `ALL` and `from_labels` (error type `StepLabelError`); `DomainError` implements `PartialEq`; `JsonObject` has `as_str()` and `into_string()`. `AgentResponse::new`, `StatusResponse::new`, `Hint::new` and `IdempotencyKey::new` are `#[must_use]`.
+- One `AgentResponse` can now hold every kind of outcome, so a batch with results, per-operation outcomes and an error is one valid TOON document, one JSON object and one MCP result.
+
+  - `error(DomainError)` adds the error block, which renders first.
+  - `partial_success(name, ps)`, `status(s)`, `pipeline(name, p)` and `already_done(operation, summary)` add sections.
+  - Their hints and recovery hints join the response's single `help` and `recovery` block.
+  - If the response has an error and an invalid section, or two blocks that write the same root key, it reports both on every output (text, JSON, `render_for`, `to_call_tool_result`): your error leads and stays the JSON `error`, and each validation failure follows its causes as `toon_validation_failed: <message>` (or `kv_validation_failed`). `isError` stays true. With several failures and no caller error, the first failure is the `error` and the rest are its causes.
+- **Breaking:** `AgentResponse::hints(vec)` now replaces only the hints you added with `hint()` and `hints()`. A `truncated_section()`'s `showing N of M` line is kept (before, `hints()` dropped it), and so are the hints of `status()`, `partial_success()` and `error()` blocks. If you called `hints()` to clear everything, that line and those hints now stay.
+- **Breaking:** the JSON your tools return changes in three places.
+
+  - Error JSON: `DomainError::render(OutputFormat::Json)`, its serde form and its `schemars` schema are now the response envelope `{"body", "error": {"code", "message", "causes", "retryable"}, "hints", "recovery", "isError"}`. Before it was `{isError, error, message, causes, retryable, hints, recovery}`, where `error` was the code and `recovery` an object or `null`. Read `error.code` where you read `error`, and `recovery[0]` where you read `recovery` (`recovery` is always an array). The text render is unchanged.
+  - Validation failures: a section or key-value failure is now an `error` object, `{"code": "toon_validation_failed", "message": …, "causes": [], "retryable": false}` (or `kv_validation_failed`). Before it was `isError: true` with no `error` object. The text is unchanged.
+  - `totalCount` in a section's JSON follows the text's rule: it appears when the total is larger than the rows returned, is `0` for an empty list, and is left out otherwise (before, it was the declared value whenever one was set). The budget roll-up's `total` column follows the same rule. `Section::total()` still returns the value as given.
+- **Breaking:** list rendering is now `AgentResponse`'s job, and the older standalone paths are removed so `totalCount`, `help[]` and the truncation hint appear once for the whole response.
+
+  - `ToonOptions` describes the list alone: `hints`, `total_count` and `truncation_hint` (and their builders) are removed. `render_toon` writes the list and the `truncated` block. `render_kv(items)` loses its `total_count` and `hints` parameters.
+  - `empty_state`, `empty_state_with_hints`, `try_empty_state`, `try_empty_state_with_hints` and the `empty` module are removed. Use `AgentResponse::new(name)` (plus `.hint(..)`) where you called `empty_state`.
+  - One empty list everywhere: an empty `Toon` section (so an untouched `AgentResponse`), an empty `Pipeline` and a `StatusResponse` with no items now render `name: []` and `totalCount: 0` (`step: []` and `items: []` for the last two). Before, an empty `Toon` section rendered `name: []` alone. An empty `Kv` section still renders nothing.
+
+  Migration:
+
+  - `render_toon(&ToonOptions::new(..).total_count(Some(n)).hints(h))` becomes `AgentResponse::new(name).section(Section::toon(name, fields, rows).total_count(Some(n))).hint(..)` rendered with `render(OutputFormat::Text)`.
+  - For hints on a standalone list, use `append_hints(&mut out, &hints)`.
+- **Breaking:** `PartialSuccess` now renders as one table with a row per operation, and can no longer list one operation as both completed and failed.
+
+  - Before: a quoted summary line, then separate `completed`, `failed` and `skipped` tables. Now: `partial_success[N]{index,operation,status,reason}:`, rows sorted by index. The failed operations' recovery table is unchanged. An empty report renders `partial_success: []` and `totalCount: 0`. Anything that parses the old text must read the new table.
+  - `PartialSuccess::new` becomes `PartialSuccess::try_new`, which returns `DuplicateOpIndex` when an index repeats. Its fields are private: read them with `completed()`, `failed()` and `skipped()`.
+  - `OpRef` is split into `CompletedOp` (no reason) and `SkippedOp`. Replace `OpRef::new` with `CompletedOp::new` or `SkippedOp::new`, and `PartialSuccess::new(c, f, s)` with `PartialSuccess::try_new(c, f, s)?`.
+- Error text that reaches an agent now has more credentials removed. `DomainError::from_error` and `from_error_with_causes` use the new `michi_core::redact::redact_common_shapes`, which, on top of URL userinfo, redacts:
+
+  - the value of `token=`, `access_token=`, `api_key=`, `password=` and similar pairs, quoted (`'x'`), as JSON (`"password": "x"` or JSON-escaped `\"x\"`), and after the fullwidth `＝` and `：`
+  - `Key: value` headers such as `X-Api-Key:`, `Cookie:` and `Set-Cookie:`
+  - the credential after a scheme word (`Authorization: Basic ...`, `Bearer`, `Token`, `Digest`)
+  - `ghp_`, `github_pat_`, `npm_` and `pypi-` tokens
+
+  Details:
+
+  - Prose such as `token: ...` is redacted too, which is the safe direction.
+  - `redact_url_userinfo` also handles JSON-escaped (`https:\/\/`) and percent-encoded (`https%3A%2F%2F`) URLs, and a `"` inside a password.
+  - `redact_secrets` is now idempotent: it copies an existing `[REDACTED]` through, so a secret such as `RED` no longer turns the marker into `[[REDACTED]ACTED]` on a second pass. A known secret that starts with or contains the marker (`[REDACTED]private-tail`) is still removed whole; redacting twice is a no-op unless a secret contains `[`.
+  - This is best effort: the docs list what is and is not covered.
+- **Breaking:** a response's text and JSON can no longer contradict each other, and more names are reserved so caller data cannot pose as michi's own keys.
+
+  - A section's `truncated` is derived (its total is above its count). The budget's `truncated` is also true whenever a section was cut.
+  - A successful response can no longer render an `error:` / `message:` document from caller data.
+  - A provenance label `fingerprint` is always rejected (it read exactly like the real fingerprint).
+  - `budget`, `sections`, `provenance`, `error`, `message`, `causes` and `exit_code` join `totalCount`, `help`, `recovery` and `truncated` as reserved. `truncated` was already a reserved type name and is now a reserved KV key too. As a type name (`render_toon`, `list`), a KV key (`render_kv`, `kv_items`) or a section name, a reserved name is a validation error, and the message lists the reserved keys. Rename the offender, for example a `message` field becomes `commit_message`.
+  - `Section`'s fields are private: read them with `name()`, `body()`, `count()`, `total()` and `truncated()`. `Section::truncated(bool)` and `Section::returned_count(n)` are removed. A text section that stands for several items is `Section::text_with_count(name, body, n)`, and `SectionBody::Text` is now `Text { text, count }`.
+  - `SectionCost` and `BudgetSummary::section()` are removed, and the budget's JSON no longer has a `sections` array (the response's `sections` carries those counts). Drop `.section(SectionCost::new(..))` on budgets.
+  - `truncated_section` now takes `(name, fields, &outcome, row, guidance)` and builds the rows from `outcome.kept()`: `.truncated_section(Section::toon(name, f, rows), &outcome, g)` becomes `.truncated_section(name, f, &outcome, |item| row_of(item), g)`. Drop `.truncated(..)` on sections.
+
 ## 0.10.0
 
 _2026-11-15 · [compare](https://github.com/orin-dx/michi/compare/michi@0.9.0...michi@0.10.0)_

@@ -1,5 +1,11 @@
 # michi-graph
 
+## 0.11.0
+
+_2026-11-21 · [compare](https://github.com/orin-dx/michi/compare/michi-graph@0.10.0...michi-graph@0.11.0)_
+
+- Released together with the `michi` fixed group.
+
 ## 0.10.0
 
 _2026-11-15 · [compare](https://github.com/orin-dx/michi/compare/michi-graph@0.9.0...michi-graph@0.10.0)_
