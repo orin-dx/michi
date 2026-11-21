@@ -281,12 +281,12 @@ Accepts `delay-seconds` and every HTTP-date form RFC 9110 §5.6.7 requires recip
 A heuristic, not a hard bound:
 
 ```
-capacity = 60 + row_count × (field_count × 12 + 10) + hints.len() × 60
+capacity = 60 + row_count × (field_count × 12 + 10)
 ```
 
 - The `60` covers the type name, bracketed count, and brace-wrapped field list.
 - `× 12 + 10` per row estimates a typical short cell (an id, a short title fragment, a state word) plus its delimiter.
-- `hints.len() × 60` covers the trailing `help[]` block.
+- Hints are not counted: the `help[]` block and `truncated` block append after the list and may grow the buffer once.
 - The estimate intentionally runs slightly high so the common case never reallocates — a wildly under-estimated row (very long untruncated cells) may trigger one reallocation, acceptable since `max_cell_len` truncation caps the realistic upper bound.
 - None of these are configurable — they're tuning constants, not part of the public contract.
 

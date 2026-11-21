@@ -149,7 +149,7 @@ jobs:
           toolchain: ${{ steps.msrv.outputs.version }}
           cache-key: msrv
       # `+version` because rust-toolchain.toml (stable) would otherwise win over the default toolchain.
-      - run: cargo "+$MSRV" check --workspace --all-features --locked
+      - run: cargo "+$MSRV" check --workspace --all-features --all-targets --locked
         env:
           MSRV: ${{ steps.msrv.outputs.version }}
 
@@ -202,7 +202,7 @@ jobs:
           targets: thumbv7em-none-eabihf
           cache-key: graph-no-std
       # A bare-metal target with no std: proves the crate is no_std + alloc. It needs pointer-sized atomics (Arc and
-      # the builder id), which thumbv7em has; targets without compare-and-swap (thumbv6m) are not supported.
+      # the builder id), which thumbv7em has; targets without compare-and-swap (thumbv6m) are not supported, because the builder id is an `AtomicUsize::fetch_add`.
       - run: cargo build -p michi-graph --target thumbv7em-none-eabihf
 
   version-sync:
@@ -350,7 +350,15 @@ jobs:
         working-directory: packages/michi-node
       - name: Install ziglang (cross-compile targets only)
         if: matrix.cross
-        run: pip install ziglang
+        # Pinned by version and wheel hash (x86_64 and aarch64 Linux runners), same as the release build.
+        # Bump both together from the ziglang release page on PyPI.
+        run: |
+          set -euo pipefail
+          pip install --require-hashes --only-binary=:all: -r /dev/stdin <<'REQS'
+          ziglang==0.17.1 \
+            --hash=sha256:ea6cc5d87b033cf0aedfbc8f9549a908cae6c50ac31f1698188fa48a74524b54 \
+            --hash=sha256:b7c5f02fccd40f89b999ee16a1f5ddced56e6182370f8affe494bcf8a28cf07e
+          REQS
       - name: Cache cargo-zigbuild binary (cross-compile targets only)
         if: matrix.cross
         id: zigbuild-cache
