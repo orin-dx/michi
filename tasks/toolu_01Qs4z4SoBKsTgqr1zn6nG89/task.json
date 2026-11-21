@@ -1,0 +1,15 @@
+{
+  "tool_use_id": "toolu_01Qs4z4SoBKsTgqr1zn6nG89",
+  "agent_id": "ac542e088edebe777",
+  "subagent_type": "general-purpose",
+  "task_description": "Implement Callisto 0.22 upgrade",
+  "token_usage": {
+    "input_tokens": 280,
+    "cache_creation_tokens": 220277,
+    "cache_read_tokens": 20462923,
+    "output_tokens": 67412,
+    "api_call_count": 139
+  },
+  "started_at": "2026-11-20T19:24:28.142247-08:00",
+  "completed_at": "2026-11-20T19:40:11.352124-08:00"
+}
