@@ -9,6 +9,7 @@ impl Hint {
     ///
     /// Hints are instructions to the agent: pass text the tool author wrote, never text taken from data (a file, a
     /// web page, a user field). See the trust model in `docs/spec/02-toon-format.md`.
+    #[must_use]
     pub fn new(s: impl Into<String>) -> Self {
         Self(s.into())
     }

@@ -116,7 +116,6 @@ Until 1.0, any public item or rendered string can change in a minor release, and
 | `PartialSuccess`, `FailedOp`, `CompletedOp`, `SkippedOp` | Widened with the op index per [Spec 07](07-wisp-and-monokl-envelope.md) §4; still no consumer |
 | `AlreadyDone`, `already_done()` (Node `alreadyDone`) | The check half of the idempotency design; no caller yet |
 | `Sensitive<T>` | A redaction wrapper no renderer takes yet |
-| `telemetry::NoopProvider` | A placeholder for an observability seam |
 | `Dag::ready_by_edge` and edge kinds | New in 0.7; the argument order has changed once already |
 | The `schemars` feature | JSON Schemas for MCP `outputSchema`; no consumer yet |
 | `michi-pipeline`: `ExecutionError` variants, `StepObserver`, `DurableObserver`, `ExecOptions` defaults | Nothing runs pipelines yet |

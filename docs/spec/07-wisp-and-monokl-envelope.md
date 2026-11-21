@@ -67,7 +67,7 @@ impl AgentResponse {
 }
 ```
 
-`items()` and `kv_items()` stay, as one-section sugar over the same storage: `items(rows, fields)` is `section(Section::toon(type_name, fields, rows))`, `kv_items(items)` is `section(Section::kv(type_name, items))`. `RenderTarget`, `render_toon()` and `render_kv()` are gone (see 06-decisions, "One section model").
+`items()` and `kv_items()` stay, as one-section sugar over the same storage: `items(rows, fields)` is `section(Section::toon(type_name, fields, rows))`, `kv_items(items)` is `section(Section::kv(type_name, items))`. `RenderTarget`, `AgentResponse::render_toon()` and `AgentResponse::render_kv()` are gone (the free functions `toon::render_toon` and `render_kv` remain, for a list alone) (see 06-decisions, "One section model").
 
 **Sections are root keys.** A section renders as a root key of the TOON document (a list or text section under its name, a KV section as its item keys), so names must be distinct from each other and from the keys michi writes (`budget`, `sections`, `provenance`, `truncated`, `totalCount`, `help`, `recovery`; `error` and `message` when a section fails validation). The sugar names every section for the response, so it serves one list per response; several lists use `section(Section::toon(distinct_name, ..))`. A collision, or two equal provenance labels, never reaches the output as invalid TOON: the response renders the `toon_validation_failed` error naming the key, with `isError` true on every surface.
 
@@ -187,6 +187,8 @@ Per-edge precision stays out of the envelope. monokl carries `CapabilityPrecisio
 ### 4. Per-op outcomes: `PartialSuccess`, widened
 
 `idempotency::PartialSuccess` already has the completed/failed/skipped trichotomy a batch needs. What it lacks is position: `Vec<String>` cannot express `results[i]` ↔ `ops[i]`, which is the ordering contract the batch API is built on (DataLoader's rule, restated in monokl §7.4 as an invariant). Reuse the type, widen the identifiers:
+
+Original proposal (superseded; the shipped types are below):
 
 ```rust
 /// One operation's identity within a batch.

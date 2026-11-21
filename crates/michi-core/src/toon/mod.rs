@@ -208,10 +208,11 @@ pub(crate) struct ListRef<'a> {
 }
 
 impl ToonOptions {
-    /// Create options from a type name, fields and rows, with the default 200-char cell cap.
+    /// Create options from a type name, fields and rows, with the default cell cap
+    /// ([`DEFAULT_TRUNCATE_CELLS`](crate::response::DEFAULT_TRUNCATE_CELLS), 200 chars).
     #[must_use]
     pub fn new(type_name: impl Into<String>, fields: Vec<String>, rows: Vec<Vec<Value>>) -> Self {
-        Self { type_name: type_name.into(), fields, rows, max_cell_len: 200 }
+        Self { type_name: type_name.into(), fields, rows, max_cell_len: crate::response::DEFAULT_TRUNCATE_CELLS }
     }
 
     /// Set the max string cell length in chars, counted before escaping and quoting (see the `max_cell_len` field).

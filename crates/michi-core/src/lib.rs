@@ -101,8 +101,6 @@ pub mod response;
 pub mod section;
 /// Health and status response rendering.
 pub mod status;
-/// No-op telemetry provider.
-pub mod telemetry;
 /// TOON list rendering, the token-optimized list format.
 pub mod toon;
 /// UTF-8 char-boundary-safe truncation within one string.
