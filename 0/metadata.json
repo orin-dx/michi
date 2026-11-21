@@ -1,0 +1,114 @@
+{
+  "cli_version": "0.13.5-nightly.202611160626.76f1b5129",
+  "checkpoint_id": "01M7XZG8NN7BREVFRKFMXVF418",
+  "session_id": "f17aa24d-9610-4712-8551-262a8f85e742",
+  "strategy": "manual-commit",
+  "created_at": "2026-11-21T02:38:33.604698Z",
+  "branch": "pipeline-start-record",
+  "checkpoints_count": 2,
+  "files_touched": [
+    ".changeset/pipeline-durable-start.md"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-opus-5-5",
+  "turn_id": "ae0475c8d7c6",
+  "checkpoint_transcript_start": 1561,
+  "transcript_lines_at_start": 1561,
+  "compact_transcript_start": 135,
+  "token_usage": {
+    "input_tokens": 14,
+    "cache_creation_tokens": 4803,
+    "cache_read_tokens": 1684133,
+    "output_tokens": 2298,
+    "api_call_count": 7
+  },
+  "session_token_usage": {
+    "input_tokens": 258,
+    "cache_creation_tokens": 282605,
+    "cache_read_tokens": 17508923,
+    "output_tokens": 62030,
+    "api_call_count": 122,
+    "subagent_tokens": {
+      "input_tokens": 390,
+      "cache_creation_tokens": 658614,
+      "cache_read_tokens": 19624594,
+      "output_tokens": 118313,
+      "api_call_count": 195
+    },
+    "subagent_tokens_complete": true
+  },
+  "redaction": {
+    "replacements": 4,
+    "layers": {
+      "betterleaks": 4,
+      "connection_string": 0,
+      "credential_key": 0,
+      "credential_value": 0,
+      "credentialed_uri": 0,
+      "entropy": 0,
+      "key_context": 0,
+      "provider_token": 0,
+      "shell_stdin": 0
+    }
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_01Y7Eqmc3RnWLN8SDo5Yzpkj",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "courier:changeset"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "ae0475c8d7c6",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 1422,
+        "end": 1423,
+        "entry_ids": [
+          "0e92252a-f1f5-4b77-ae60-6d321a55695e"
+        ],
+        "tool_use_id": "toolu_01Y7Eqmc3RnWLN8SDo5Yzpkj"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01Y7Eqmc3RnWLN8SDo5Yzpkj"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: courier:changeset",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 12
+  },
+  "summary": {
+    "intent": "Stack PR #138 on top of the already-pushed #137 by merging #137's branch into #138's branch, moving the pipeline wording (save-time cases) into the durable-start entry, and verifying with checks.",
+    "outcome": "Merged #137 into #138's branch, moved the save-time cases into the durable-start changeset entry, committed and pushed the stacked branch. Checks showed scaling test failures that appear to be load-related rather than code-related.",
+    "learnings": {
+      "repo": [
+        "Changesets are used for release notes; the pipeline durable-start wording lives in .changeset/pipeline-durable-start.md.",
+        "PRs are stacked by merging the parent PR's branch into the child branch (#138 on #137) rather than rebasing."
+      ],
+      "code": [],
+      "workflow": [
+        "When tests fail differently when run alone versus in the full suite (5 scaling failures alone, some of which passed in the full run), suspect machine load or timing sensitivity and check system load and top CPU processes before blaming the code.",
+        "Run checks on the stacked branch after merging the parent to catch integration issues before pushing."
+      ]
+    },
+    "friction": [
+      "Scaling tests are flaky under load: 5 failed when rerun alone, a few of which had passed in the full run, which makes check results hard to trust on a busy machine.",
+      "The transcript doesn't show the outcome of the load check, so it is unclear whether the failures were conclusively attributed to load."
+    ],
+    "open_items": [
+      "Confirm the scaling test failures are environmental by rerunning on a quiet machine or in CI for the stacked #138 branch.",
+      "Consider making the scaling tests less sensitive to timing or CPU load."
+    ]
+  }
+}
