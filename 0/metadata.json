@@ -1,0 +1,122 @@
+{
+  "cli_version": "0.13.5-nightly.202611160626.76f1b5129",
+  "checkpoint_id": "01M7Y2ZK74TKY4MYDHKK220D5V",
+  "session_id": "f17aa24d-9610-4712-8551-262a8f85e742",
+  "strategy": "manual-commit",
+  "created_at": "2026-11-21T03:39:25.515484Z",
+  "branch": "chore/callisto-0.22",
+  "checkpoints_count": 5,
+  "files_touched": [],
+  "agent": "Claude Code",
+  "model": "claude-opus-5-5",
+  "turn_id": "feeeabe86a53",
+  "checkpoint_transcript_start": 1988,
+  "transcript_lines_at_start": 1988,
+  "compact_transcript_start": 174,
+  "token_usage": {
+    "input_tokens": 52,
+    "cache_creation_tokens": 32739,
+    "cache_read_tokens": 7650122,
+    "output_tokens": 19115,
+    "api_call_count": 26,
+    "subagent_tokens": {
+      "input_tokens": 412,
+      "cache_creation_tokens": 374629,
+      "cache_read_tokens": 28814622,
+      "output_tokens": 95075,
+      "api_call_count": 206
+    },
+    "subagent_tokens_complete": true
+  },
+  "session_token_usage": {
+    "input_tokens": 368,
+    "cache_creation_tokens": 349663,
+    "cache_read_tokens": 32734899,
+    "output_tokens": 95747,
+    "api_call_count": 177,
+    "subagent_tokens": {
+      "input_tokens": 878,
+      "cache_creation_tokens": 1166611,
+      "cache_read_tokens": 52310056,
+      "output_tokens": 231097,
+      "api_call_count": 439
+    },
+    "subagent_tokens_complete": true
+  },
+  "redaction": {
+    "replacements": 4,
+    "layers": {
+      "betterleaks": 4,
+      "connection_string": 0,
+      "credential_key": 0,
+      "credential_value": 0,
+      "credentialed_uri": 0,
+      "entropy": 0,
+      "key_context": 0,
+      "provider_token": 0,
+      "shell_stdin": 0
+    }
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_01Y7Eqmc3RnWLN8SDo5Yzpkj",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "courier:changeset"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "ae0475c8d7c6",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 1422,
+        "end": 1423,
+        "entry_ids": [
+          "0e92252a-f1f5-4b77-ae60-6d321a55695e"
+        ],
+        "tool_use_id": "toolu_01Y7Eqmc3RnWLN8SDo5Yzpkj"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01Y7Eqmc3RnWLN8SDo5Yzpkj"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: courier:changeset",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 20
+  },
+  "summary": {
+    "intent": "Prepare and ship the michi 0.11.0 release (verify the release preview, CI, and changelogs), upgrade Callisto to 0.22 safely, and keep progressing on 0.12 work in parallel while the user handles release prep.",
+    "outcome": "Verified the 0.11.0 release preview with Callisto 0.20.0 (all four packages 0.10.0 to 0.11.0, changelogs correct, CI green on #137-#139), updated lockfiles in #139, and launched two background agents for the Callisto 0.22 draft PR and the 0.12 render-path cleanup. Release merge of #131 awaits the user's explicit go-ahead.",
+    "learnings": {
+      "repo": [
+        "michi tracks Rust `stable` in CI (1.100.0); MSRV is 1.93 and local toolchain was 1.99.1.",
+        "Release PR #131 is maintained by Callisto and refreshes itself when #137/#138 merge; merging it publishes to crates.io and npm irreversibly.",
+        "Callisto 0.20.0 is what the release workflow pins and is installed locally; `callisto version` writes files, so preview it on a throwaway branch and delete the branch afterwards.",
+        "The GitHub release (`michi@X`) attaches only to michi-core, so JS and pipeline users see no notes there; Callisto has no per-package-group release, so a workflow step must assemble notes from all four changelogs.",
+        "Callisto 0.22's `callisto init --workflow` regeneration would ship a broken npm package (skips index.js/index.d.ts) and drop attestation verification, the merged-version-PR release check, manual stuck-release recovery, and the post-publish smoke test. The workflow must be hand-edited instead.",
+        "Callisto 0.22 rules: build/pack without credentials, publish only sealed artifacts, and use `npm publish --ignore-scripts`. callisto.toml shrinks from 38 to about 10 lines since [changesets], [cascade] and release-trigger are defaults; napi platforms still come from package.json.",
+        "monokl is the only consumer of michi and is a Rust crate, so the duplicate JS renderers (renderPartialSuccess, renderPipeline, renderStatus, renderAlreadyDone) have no users.",
+        "Test counts: 1,224 Rust and 186 Node tests; `just check` and `just test` are the verification commands."
+      ],
+      "code": [],
+      "workflow": [
+        "Delegate large, risky edits (like the release workflow rewrite) to a separate agent, then review the diff personally before opening a draft PR.",
+        "Preview releases locally on a throwaway branch and read the generated changelogs before authorizing publish.",
+        "Stack dependent PRs (#138 on #137) and retarget to main after the base branch is deleted.",
+        "Ordering irreversible release work: ship on the proven workflow (0.20) first, merge the workflow upgrade only afterwards."
+      ]
+    },
+    "friction": null,
+    "open_items": null
+  }
+}
