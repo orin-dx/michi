@@ -42,7 +42,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: orin-dx/callisto/.github/actions/callisto-validate@aebeedcdaa1dce8f0d9ad1836844ab6be68daf1f # callisto@0.20.0
+      - uses: orin-dx/callisto/.github/actions/callisto-validate@9234c02c00f65c7b742da4f4dd8b9fdbfbb0215a # callisto@0.22.0
 
   lint:
     name: Lint
