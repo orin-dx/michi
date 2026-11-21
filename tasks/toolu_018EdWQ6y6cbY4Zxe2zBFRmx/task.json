@@ -1,0 +1,15 @@
+{
+  "tool_use_id": "toolu_018EdWQ6y6cbY4Zxe2zBFRmx",
+  "agent_id": "a84a20af86f679a4a",
+  "subagent_type": "general-purpose",
+  "task_description": "Release notes and docs accuracy",
+  "token_usage": {
+    "input_tokens": 122,
+    "cache_creation_tokens": 146951,
+    "cache_read_tokens": 6375199,
+    "output_tokens": 25241,
+    "api_call_count": 61
+  },
+  "started_at": "2026-11-20T18:14:42.202621-08:00",
+  "completed_at": "2026-11-20T18:20:17.478417-08:00"
+}

@@ -1,0 +1,15 @@
+{
+  "tool_use_id": "toolu_01YRCV5DFMJvLJ8on1Uzb5Xg",
+  "agent_id": "a866a935e5658142a",
+  "subagent_type": "general-purpose",
+  "task_description": "Bug review of release diff",
+  "token_usage": {
+    "input_tokens": 98,
+    "cache_creation_tokens": 198986,
+    "cache_read_tokens": 6427523,
+    "output_tokens": 28202,
+    "api_call_count": 49
+  },
+  "started_at": "2026-11-20T18:14:42.204638-08:00",
+  "completed_at": "2026-11-20T18:20:54.039554-08:00"
+}

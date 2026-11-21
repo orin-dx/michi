@@ -1,0 +1,160 @@
+{
+  "cli_version": "0.13.5-nightly.202611160626.76f1b5129",
+  "checkpoint_id": "01M7XYTA2V53X7MF933A8NF775",
+  "session_id": "f17aa24d-9610-4712-8551-262a8f85e742",
+  "strategy": "manual-commit",
+  "created_at": "2026-11-21T02:26:44.385104Z",
+  "branch": "prerelease-audit",
+  "checkpoints_count": 9,
+  "files_touched": [
+    ".changeset/api-invariants.md",
+    ".changeset/api-leftovers.md",
+    ".changeset/envelope-facts-one-source.md",
+    ".changeset/legacy-removal-render-perf.md",
+    ".changeset/napi-structure-output-bound.md",
+    ".changeset/pipeline-error-redaction.md",
+    ".changeset/response-consistency.md",
+    "AGENTS.md",
+    "ARCHITECTURE.md",
+    "crates/michi-core/src/hints.rs",
+    "crates/michi-core/src/lib.rs",
+    "crates/michi-core/src/resilience.rs",
+    "crates/michi-core/src/response.rs",
+    "crates/michi-core/src/status.rs",
+    "crates/michi-core/src/telemetry/mod.rs",
+    "crates/michi-core/src/toon/mod.rs",
+    "crates/michi-core/src/truncation.rs",
+    "crates/michi-core/tests/truncation.rs",
+    "docs/spec/01-overview-and-setup.md",
+    "docs/spec/03-rust-api.md",
+    "docs/spec/05-scope-and-quality.md",
+    "docs/spec/06-decisions.md",
+    "docs/spec/07-wisp-and-monokl-envelope.md",
+    "docs/spec/README.md",
+    "fuzz/fuzz_targets/truncate.rs"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-opus-5-5",
+  "turn_id": "86095a015ffd",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 198,
+    "cache_creation_tokens": 228105,
+    "cache_read_tokens": 11381020,
+    "output_tokens": 46255,
+    "api_call_count": 94,
+    "subagent_tokens": {
+      "input_tokens": 352,
+      "cache_creation_tokens": 554759,
+      "cache_read_tokens": 18160147,
+      "output_tokens": 84740,
+      "api_call_count": 176
+    },
+    "subagent_tokens_complete": true
+  },
+  "session_token_usage": {
+    "input_tokens": 198,
+    "cache_creation_tokens": 228105,
+    "cache_read_tokens": 11381020,
+    "output_tokens": 46255,
+    "api_call_count": 94,
+    "subagent_tokens": {
+      "input_tokens": 352,
+      "cache_creation_tokens": 554759,
+      "cache_read_tokens": 18160147,
+      "output_tokens": 84740,
+      "api_call_count": 176
+    },
+    "subagent_tokens_complete": true
+  },
+  "redaction": {
+    "replacements": 4,
+    "layers": {
+      "betterleaks": 4,
+      "connection_string": 0,
+      "credential_key": 0,
+      "credential_value": 0,
+      "credentialed_uri": 0,
+      "entropy": 0,
+      "key_context": 0,
+      "provider_token": 0,
+      "shell_stdin": 0
+    }
+  },
+  "session_metrics": {
+    "turn_count": 9
+  },
+  "summary": {
+    "intent": "Clean up unneeded michi worktrees, get all open PRs unblocked (conflicts and CI failures), then audit main thoroughly and fix problems before releasing 0.11.0.",
+    "outcome": "Removed 4 merged worktrees and ran cargo clean (~13 GB freed); resolved #119's conflict (CI green), closed redundant #124, and the user merged the rest except release PR #131. A three-reviewer pre-release audit found no blockers; the session committed fixes for changesets, stale docs and API leftovers (private fields, NoopProvider removed, must_use) on the fix-open-prs branch, while the pipeline scheduler subagent and the redaction fix were still pending.",
+    "learnings": {
+      "repo": [
+        "Worktree removal for agent-locked worktrees needs a double `--force`; Claude-created worktrees live in `.claude/worktrees/` and `~/.claude/jobs/*/tmp/wt/`.",
+        "Entire Gates CI check fails only on an 'Approvals' gate for Dependabot PRs; clearing it needs `entire trail approve michi/<n>`, a human sign-off that auto-mode refused to do on the user's behalf.",
+        "The pre-commit hook (`moon format-check`) fails inside the sandbox because it can't lock the shared git config; commits must run outside the sandbox.",
+        "`just check` covers fmt, clippy, rustdoc, fuzz-target builds, deny, typos and markdown formatting; `just test` runs ~1,224 Rust tests plus 186 Node tests in about 30s.",
+        "Scaling tests retry twice by design in nextest config, so 'flaky' retries there are expected; isolating them would roughly double test time.",
+        "Changesets only produce a package's CHANGELOG entry if that package is listed in the front matter; two JS-breaking changesets listed only michi-core and omitted michi-node.",
+        "`index.d.ts` is generated and gitignored, so NAPI surface audits must read `#[napi]` attributes in the Rust source.",
+        "Removing the `telemetry` module deleted six NoopProvider tests, which accounts for the drop from 1,224 to 1,218 Rust tests."
+      ],
+      "code": [
+        {
+          "path": "crates/michi-pipeline/src/scheduler.rs",
+          "line": 430,
+          "end_line": 703,
+          "finding": "Steps that never started (Skipped(Cancelled) or DeadlinePassed after record_start) still get started_at/elapsed, and the in-task deadline message differs from the one at lines 353-356."
+        },
+        {
+          "path": "crates/michi-core/src/redact.rs",
+          "line": 234,
+          "end_line": 295,
+          "finding": "URL password redaction fallback only runs when a quote ends the URL; a raw `<`, `>`, backtick or whitespace ending it first leaves part of the password in clear text."
+        },
+        {
+          "path": "crates/michi-core/src/truncation.rs",
+          "line": 31,
+          "end_line": 33,
+          "finding": "TruncationOutcome.kept/total_before were pub despite the invariant total_before >= kept.len(); now private with kept()/into_kept()/total_before() accessors and a compile_fail doctest guarding it."
+        },
+        {
+          "path": "crates/michi-core/src/toon/mod.rs",
+          "line": 214,
+          "finding": "ToonOptions::new hard-coded 200 instead of using DEFAULT_TRUNCATE_CELLS from response.rs:26."
+        },
+        {
+          "path": "crates/michi-core/src/response.rs",
+          "line": 506,
+          "end_line": 699,
+          "finding": "After a root-key collision the text output shows only the error block while JSON still carries sections, budget and provenance (JSON is canonical); this looks intended but is a text/JSON disagreement."
+        }
+      ],
+      "workflow": [
+        "Subagent reports can be wrong; verifying against the 0.10.0 tag showed the claim that `DomainError::to_call_tool_result` was new was false, so spot-check reviewer claims before acting.",
+        "Parallel read-only reviewer subagents (bugs, release notes/docs, API hygiene) while running `just check`/`just test` in the background gave broad pre-release coverage quickly.",
+        "Auto-mode blocks irreversible local deletion and approvals made as the user; give the user a copy-pasteable `!` command or ask for explicit OK.",
+        "Sandboxed `gh` can fail TLS; read-only retries outside the sandbox work.",
+        "A compile_fail doctest is a cheap regression guard for field privacy."
+      ]
+    },
+    "friction": [
+      "`git fetch` was blocked in the sandbox, so origin/main was stale and PR state had to be read from GitHub.",
+      "`gh` TLS failed inside the sandbox and needed a retry outside it.",
+      "The auto-mode safety check blocked the first worktree removal, forcing a round trip for user approval.",
+      "The pre-commit hook failed under the sandbox due to git config locking.",
+      "Auto-mode refused to approve the Dependabot Entire trails on the user's behalf, leaving that to the user.",
+      "The first `just check` on the audit branch failed on a doc parse error and needed a fix and re-run.",
+      "One subagent finding (to_call_tool_result as new) was factually wrong, costing verification time."
+    ],
+    "open_items": [
+      "Pipeline scheduler subagent fixes (started_at/elapsed for never-started steps, unified deadline message, record_start doc) were still running at session end.",
+      "Redaction fix for URL passwords ending at `<`, `>`, backtick or whitespace was planned but not shown as done.",
+      "Release PR #131 (0.11.0) is still open; merging publishes to crates.io and npm and needs the user's explicit go-ahead, and Callisto may regenerate the body.",
+      "Remaining API-hygiene items not done: Rust/NAPI mismatches (items/kvItems totalCount), NAPI missing section/budget/provenance, renderDomainError argument order, and removal of redundant wrappers like render_already_done, renderPipeline, renderStatus and StatusResponse.hints.",
+      "Migrate monokl and wisp to 0.11 after release, one session per repo.",
+      "About 40 stale local branches remain, and the fix-open-prs worktree holds build output.",
+      "The fix-open-prs branch commit has not been shown pushed or opened as a PR.",
+      "The reviewer's remaining doc and changeset findings (e.g. response-consistency 'before' comparisons) may not all have been addressed."
+    ]
+  }
+}

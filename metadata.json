@@ -1,0 +1,72 @@
+{
+  "cli_version": "0.13.5-nightly.202611160626.76f1b5129",
+  "checkpoint_id": "01M7XYTA2V53X7MF933A8NF775",
+  "strategy": "manual-commit",
+  "branch": "prerelease-audit",
+  "checkpoints_count": 9,
+  "files_touched": [
+    ".changeset/api-invariants.md",
+    ".changeset/api-leftovers.md",
+    ".changeset/envelope-facts-one-source.md",
+    ".changeset/legacy-removal-render-perf.md",
+    ".changeset/napi-structure-output-bound.md",
+    ".changeset/pipeline-error-redaction.md",
+    ".changeset/response-consistency.md",
+    "AGENTS.md",
+    "ARCHITECTURE.md",
+    "crates/michi-core/src/hints.rs",
+    "crates/michi-core/src/lib.rs",
+    "crates/michi-core/src/resilience.rs",
+    "crates/michi-core/src/response.rs",
+    "crates/michi-core/src/status.rs",
+    "crates/michi-core/src/telemetry/mod.rs",
+    "crates/michi-core/src/toon/mod.rs",
+    "crates/michi-core/src/truncation.rs",
+    "crates/michi-core/tests/truncation.rs",
+    "docs/spec/01-overview-and-setup.md",
+    "docs/spec/03-rust-api.md",
+    "docs/spec/05-scope-and-quality.md",
+    "docs/spec/06-decisions.md",
+    "docs/spec/07-wisp-and-monokl-envelope.md",
+    "docs/spec/README.md",
+    "fuzz/fuzz_targets/truncate.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/0/metadata.json",
+      "transcript": "/0/full.jsonl",
+      "compact_transcript": "/0/transcript.jsonl",
+      "content_hash": "/0/content_hash.txt",
+      "prompt": "/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 198,
+    "cache_creation_tokens": 228105,
+    "cache_read_tokens": 11381020,
+    "output_tokens": 46255,
+    "api_call_count": 94,
+    "subagent_tokens": {
+      "input_tokens": 352,
+      "cache_creation_tokens": 554759,
+      "cache_read_tokens": 18160147,
+      "output_tokens": 84740,
+      "api_call_count": 176
+    },
+    "subagent_tokens_complete": true
+  },
+  "redaction": {
+    "replacements": 4,
+    "layers": {
+      "betterleaks": 4,
+      "connection_string": 0,
+      "credential_key": 0,
+      "credential_value": 0,
+      "credentialed_uri": 0,
+      "entropy": 0,
+      "key_context": 0,
+      "provider_token": 0,
+      "shell_stdin": 0
+    }
+  }
+}

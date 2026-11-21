@@ -1,0 +1,15 @@
+{
+  "tool_use_id": "toolu_018NwyiifEq72CFK7knb3bhf",
+  "agent_id": "ac68427673e1e6261",
+  "subagent_type": "general-purpose",
+  "task_description": "Pre-1.0 API hygiene audit",
+  "token_usage": {
+    "input_tokens": 54,
+    "cache_creation_tokens": 132757,
+    "cache_read_tokens": 2434278,
+    "output_tokens": 12350,
+    "api_call_count": 27
+  },
+  "started_at": "2026-11-20T18:14:42.202207-08:00",
+  "completed_at": "2026-11-20T18:17:20.870564-08:00"
+}
