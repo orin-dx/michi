@@ -75,6 +75,7 @@ impl AgentResponse {
     /// Create a new, empty response for the given type name. The name labels the sections that
     /// [`items`](Self::items) and [`kv_items`](Self::kv_items) add. A response that never gets a section, budget or
     /// provenance renders `name: []` and `totalCount: 0`, the definitive empty list.
+    #[must_use]
     pub fn new(type_name: impl Into<String>) -> Self {
         Self {
             name: type_name.into(),
@@ -106,8 +107,8 @@ impl AgentResponse {
         self.section(Section::toon(name, fields.iter().map(|s| (*s).to_string()).collect(), rows))
     }
 
-    /// Append a TOON list section for a cut list, in one call. The rows are `outcome.kept`, each turned into a row by
-    /// `row`; the section's total is `outcome.total_before`; and, only when something was cut,
+    /// Append a TOON list section for a cut list, in one call. The rows are `outcome.kept()`, each turned into a row by
+    /// `row`; the section's total is `outcome.total_before()`; and, only when something was cut,
     /// [`TruncationOutcome::hint`](crate::truncation::TruncationOutcome::hint) (`showing {kept} of {total}; {guidance}`)
     /// is appended to the hints. michi builds the rows from the outcome itself, so the list's `[N]`, its `totalCount`
     /// and the `help[]` line all describe the same cut.
@@ -140,11 +141,11 @@ impl AgentResponse {
         row: impl FnMut(&T) -> Vec<Value>,
         guidance: impl Into<String>,
     ) -> Self {
-        let rows = outcome.kept.iter().map(row).collect();
+        let rows = outcome.kept().iter().map(row).collect();
         if let Some(hint) = outcome.hint(guidance) {
             self.hints.push((hint, HintSource::Part));
         }
-        self.section(Section::toon(name, fields, rows).total_count(Some(outcome.total_before)))
+        self.section(Section::toon(name, fields, rows).total_count(Some(outcome.total_before())))
     }
 
     /// Append a KV section named for the response's type: shorthand for `section(Section::kv(name, items))`. The name

@@ -1,5 +1,6 @@
 ---
 michi-core: minor
+michi-node: minor
 ---
 
 michi-core: Breaking: `ToonOptions` is the list alone. `hints`, `total_count` and `truncation_hint` (and their builders) are removed; `totalCount`, `help[]` and the truncation hint belong to `AgentResponse`, which places each once for the whole response. `render_toon` writes the list entry and the `truncated` block. `render_kv(items)` lost its `total_count` and `hints` parameters. NAPI: `renderToon` no longer takes `totalCount`, `hints` or `truncationHint`, and `renderKv(items)` no longer takes `totalCount` or `hints`; `AgentResponse.items`, `kvItems` and `truncationHint` keep them.

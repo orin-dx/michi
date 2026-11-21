@@ -396,6 +396,7 @@ pub struct IdempotencyKey(pub String);
 
 impl IdempotencyKey {
     /// Create an idempotency key from any string-like value.
+    #[must_use]
     pub fn new(s: impl Into<String>) -> Self {
         Self(s.into())
     }

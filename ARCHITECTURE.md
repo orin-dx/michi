@@ -9,9 +9,9 @@ This document describes how the `michi` workspace crates fit together.
 ```text
 michi (workspace root, virtual manifest)
 ├── crates/
-│   ├── michi-core        # Every sync primitive: toon, kv, hints, recovery, empty, error, status, mcp, audience,
-│   │                     #   response (AgentResponse), pipeline (data type), truncate, truncation, resilience, telemetry;
-│   │                     #   napi (feature)
+│   ├── michi-core        # Every sync primitive: toon, kv, hints, recovery, error, redact, status, mcp, audience,
+│   │                     #   response (AgentResponse), section, budget, provenance, pipeline (data type), truncate,
+│   │                     #   truncation, resilience; napi (feature)
 │   ├── michi-graph       # MIT, no dependencies: dependency graphs (GraphBuilder, Graph, Dag), validation, order, layers
 │   └── michi-pipeline    # Async pipeline execution: Plan, execute/resume, RunRecord, BreakerRegistry, CancellationToken
 └── packages/michi-node   # Node.js NAPI cdylib (@orin-dx/michi), publish = false
@@ -89,17 +89,17 @@ flowchart TB
 
 The Node.js native addon lives in `packages/michi-node` because Cargo requires a separate `cdylib` target definition:
 
-- Public FFI exports, input validation, and bounds checking live in `crates/michi-core/src/napi.rs` (numeric newtypes in `napi/num.rs`), compiled only with `michi-core`'s `napi` feature.
+- Public FFI exports, input validation, and bounds checking live in `crates/michi-core/src/napi/` (module root `napi.rs`; numeric newtypes in `napi/num.rs`), compiled only with `michi-core`'s `napi` feature.
 - `packages/michi-node/src/lib.rs` re-exports those functions across the crate boundary via `pub use michi_core::napi::*;`.
 - `napi-derive` uses linker sections (`ctor`) to register native functions across crate boundaries without manual wrapper boilerplates.
 
 ## NAPI Boundary Contract
 
-The NAPI boundary (`crates/michi-core/src/napi.rs`) has a specific constructor discipline that differs from pure-Rust callers:
+The NAPI boundary (`crates/michi-core/src/napi/`) has a specific constructor discipline that differs from pure-Rust callers:
 
 **NAPI functions always use normalizing constructors (`new()`), never strict ones (`try_new()`).**
 
-- `RetryConfig::new()` normalizes out-of-range inputs silently (clamps `jitter_factor`, floors `max_delay`, etc.). `napi.rs`'s resilience-domain call sites use it this way; making it fallible there would require either `unwrap()`/`expect()` (banned) or a silent fallback to `Default` (defeats validation).
+- `RetryConfig::new()` normalizes out-of-range inputs silently (clamps `jitter_factor`, floors `max_delay`, etc.). The resilience-domain call sites in `napi/resilience.rs` use it this way; making it fallible there would require either `unwrap()`/`expect()` (banned) or a silent fallback to `Default` (defeats validation).
 - Pure-Rust callers and tests may use `try_new()` / `validate()` for explicit error signals.
 - JS-facing functions report errors via `napi::Error`, not `Result` propagation — validation that can't be normalized (truly invalid JS input) becomes a JS exception at the boundary, not a Rust panic.
 
