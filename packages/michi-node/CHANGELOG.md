@@ -1,5 +1,40 @@
 # michi-node
 
+## 0.11.0
+
+_2026-11-21 · [compare](https://github.com/orin-dx/michi/compare/michi-node@0.10.0...michi-node@0.11.0)_
+
+### Minor Changes
+
+- `AgentResponse` can now hold every kind of outcome, so a batch with results, per-operation outcomes and an error is one valid TOON document, one JSON object and one MCP result.
+
+  - New methods: `error`, `partialSuccess`, `pipeline`, `status` and `alreadyDone`. `renderJson()` and `toCallToolResult()` now cover errors too.
+  - Their hints and recovery hints join the response's single `help` and `recovery` block.
+  - A response with an error and an invalid section reports both on every output: your error leads and stays the JSON `error`, and each validation failure follows its causes as `toon_validation_failed: <message>` (or `kv_validation_failed`). `isError` stays true.
+- **Breaking:** the input limit per call, and per `AgentResponse`, is now 16 MiB, down from 64 MiB.
+
+  - Over the limit, a call throws `input byte total N exceeds maximum of 16777216` or `cumulative byte total N exceeds maximum of 16777216`, and the builder is unchanged. Split larger content across calls or trim it.
+  - Why: output can be many times larger than input (escaping, repeated names), and at 64 MiB a response could take gigabytes to render or fail only after rendering. Now an oversized response is rejected up front.
+  - Long cells and repeated names count toward the limit wherever the output repeats them. Typical responses (short names, cells under 200 chars) are charged about the same as before.
+- **Breaking:** the JSON from `renderJson()` and `toCallToolResult().structuredContent` changes in two places.
+
+  - A validation failure is now an `error` object, `{"code": "toon_validation_failed", "message": …, "causes": [], "retryable": false}` (or `kv_validation_failed`). Before it was `isError: true` with no `error` object. The text is unchanged.
+  - A section's `totalCount` appears when the total is larger than the rows returned, is `0` for an empty list, and is left out otherwise (before, it was whatever total you passed).
+- **Breaking:** `totalCount`, `help[]` and the truncation hint now belong to `AgentResponse`, which places each once for the whole response. The older standalone parameters and functions are removed.
+
+  - `renderToon` no longer takes `totalCount`, `hints` or `truncationHint`, and `renderKv(items)` no longer takes `totalCount` or `hints`. `AgentResponse.items`, `kvItems` and `truncationHint` keep them: use those to attach them.
+  - `emptyState` and `emptyStateWithHints` are removed. Use `new AgentResponse(name)` (plus `.hint(..)`).
+  - An empty list now renders `name: []` and `totalCount: 0` (it rendered `name: []` alone), also from `renderPipeline` (`step: []`) and `renderStatus` (`items: []`).
+- **Breaking:** `renderPartialSuccess` renders one table and checks its input harder.
+
+  - Before: a quoted summary line, then separate `completed`, `failed` and `skipped` tables. Now: `partial_success[N]{index,operation,status,reason}:`, one row per operation sorted by index. An empty report renders `partial_success: []` and `totalCount: 0`. Anything that parses the old text must read the new table.
+  - It takes `CompletedOp[]` and `SkippedOp[]` in place of `OpRef[]`.
+  - It throws when an `index` appears twice across the three lists, and when a completed operation has a `reason`. Before, a duplicate rendered as two outcomes and the reason was dropped without a word.
+- **Breaking:** `renderToon`, `renderKv` and `kvItems` now reject more names, so caller data cannot pose as michi's own keys.
+
+  - `budget`, `sections`, `provenance`, `error`, `message`, `causes` and `exit_code` join `totalCount`, `help`, `recovery` and `truncated` as reserved, as a list type name or a key-value key. The error message lists the reserved keys.
+  - Rename any key or list type that matches one, for example a `message` field becomes `commit_message`.
+
 ## 0.10.0
 
 _2026-11-15 · [compare](https://github.com/orin-dx/michi/compare/michi-node@0.9.0...michi-node@0.10.0)_
