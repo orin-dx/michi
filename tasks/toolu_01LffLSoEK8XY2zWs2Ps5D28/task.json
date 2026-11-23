@@ -1,0 +1,15 @@
+{
+  "tool_use_id": "toolu_01LffLSoEK8XY2zWs2Ps5D28",
+  "agent_id": "a8ece33b0cce242a2",
+  "subagent_type": "general-purpose",
+  "task_description": "Separate NAPI string and structure budgets",
+  "token_usage": {
+    "input_tokens": 144,
+    "cache_creation_tokens": 244785,
+    "cache_read_tokens": 13494988,
+    "output_tokens": 93928,
+    "api_call_count": 72
+  },
+  "started_at": "2026-11-23T15:19:20.885578-08:00",
+  "completed_at": "2026-11-23T15:40:33.127249-08:00"
+}
