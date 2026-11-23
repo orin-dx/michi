@@ -1,0 +1,123 @@
+{
+  "cli_version": "0.13.5-nightly.202611160626.76f1b5129",
+  "checkpoint_id": "01M85282S83MBNRR7ZP3XYQAPY",
+  "session_id": "f17aa24d-9610-4712-8551-262a8f85e742",
+  "strategy": "manual-commit",
+  "created_at": "2026-11-23T20:41:13.299392Z",
+  "branch": "callisto-0.22",
+  "checkpoints_count": 1,
+  "files_touched": [],
+  "agent": "Claude Code",
+  "model": "claude-opus-5-5",
+  "turn_id": "465af1ad5038",
+  "checkpoint_transcript_start": 3132,
+  "transcript_lines_at_start": 3132,
+  "compact_transcript_start": 268,
+  "token_usage": {
+    "input_tokens": 14,
+    "cache_creation_tokens": 7019,
+    "cache_read_tokens": 2772522,
+    "output_tokens": 3533,
+    "api_call_count": 7
+  },
+  "session_token_usage": {
+    "input_tokens": 508,
+    "cache_creation_tokens": 759857,
+    "cache_read_tokens": 57219934,
+    "output_tokens": 132133,
+    "api_call_count": 245,
+    "subagent_tokens": {
+      "input_tokens": 1032,
+      "cache_creation_tokens": 1289859,
+      "cache_read_tokens": 71089533,
+      "output_tokens": 277884,
+      "api_call_count": 515
+    },
+    "subagent_tokens_complete": true
+  },
+  "redaction": {
+    "replacements": 4,
+    "layers": {
+      "betterleaks": 4,
+      "connection_string": 0,
+      "credential_key": 0,
+      "credential_value": 0,
+      "credentialed_uri": 0,
+      "entropy": 0,
+      "key_context": 0,
+      "provider_token": 0,
+      "shell_stdin": 0
+    }
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_01Y7Eqmc3RnWLN8SDo5Yzpkj",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "courier:changeset"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "ae0475c8d7c6",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 1422,
+        "end": 1423,
+        "entry_ids": [
+          "0e92252a-f1f5-4b77-ae60-6d321a55695e"
+        ],
+        "tool_use_id": "toolu_01Y7Eqmc3RnWLN8SDo5Yzpkj"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01Y7Eqmc3RnWLN8SDo5Yzpkj"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: courier:changeset",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 23
+  },
+  "summary": {
+    "intent": "Resolve review feedback on michi PRs: fix a finding on change #53 (pushed to #141) and decide whether to keep the cargo-semver-checks CI job added in #140.",
+    "outcome": "Error-cause byte charging was fixed and pushed to #141 (58363219) with a regression test and passing checks. The user decided changesets are intentional, so the semver CI job, scripts/check-semver.sh and the related recipe were removed from #140, then committed and pushed.",
+    "learnings": {
+      "repo": [
+        "michi uses Callisto changesets to declare version bumps; the user treats them as deliberate, so CI that second-guesses the bump level is unwanted.",
+        "Before 1.0, almost every michi release is a minor bump, which may break the API. The semver check only mattered for breaking changes hidden in patch releases (e.g. 0.7.1).",
+        "There is a separate check-api check that verifies docs change when public API changes; it is unrelated to the semver check and was kept.",
+        "Error causes in the output-size accounting are charged like hints (text + 1 byte), not text + 24, so a full 10,000-cause report fits a fresh builder.",
+        "There are 14 output-bound tests guarding the output-size guarantee.",
+        "The test suite has about 1,191 non-scaling Rust tests, 183 Node tests and 18 scaling tests. `just check` is the main local gate.",
+        "Branch protection is implemented via repository rulesets, so removing a CI job requires checking whether it is a required check."
+      ],
+      "code": [
+        {
+          "path": "scripts/check-semver.sh",
+          "finding": "Removed along with the semver CI job and its just recipe. It was a shell script calling `callisto status` to get the pending bump for cargo-semver-checks."
+        }
+      ],
+      "workflow": [
+        "Before removing a CI job, check whether branch protection or rulesets require it, and grep docs for references.",
+        "Scaling tests can fail spuriously under heavy machine load (load average 155) and should be rerun alone to confirm.",
+        "Validate a regression test by reverting the fix and confirming it fails with the original error."
+      ]
+    },
+    "friction": [
+      "High machine load (load average 155) caused the 18 scaling tests to fail in the full run, needing isolated reruns.",
+      "Spent effort recommending and explaining a semver check that the user had already decided against on principle."
+    ],
+    "open_items": [
+      "Possibly re-add semver checking before 1.0 if patch releases become more common (not pursued, since the user rejected it).",
+      "The npm package was never covered by semver checking."
+    ]
+  }
+}
