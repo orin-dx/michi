@@ -95,15 +95,18 @@ jobs:
       - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2
         with:
           tool: cargo-semver-checks
-      # The baseline is the latest version of each crate published on crates.io. The release type comes from the
-      # pending changesets, translated to cargo-semver-checks' terms: it names release types literally, so a breaking
-      # change needs `major` even before 1.0, where Callisto's minor bump (0.3 -> 0.4) is the breaking bump.
-      - run: python3 scripts/test_pending_release_type.py
+      # The baseline is the latest version of each crate published on crates.io. The release type is Callisto's
+      # pending bump (`callisto status`), translated to cargo-semver-checks' terms: it names release types literally,
+      # so a breaking change needs `major` even before 1.0, where Callisto's minor bump (0.3 -> 0.4) is the breaking
+      # bump.
+      - uses: orin-dx/callisto/.github/actions/setup-callisto@9234c02c00f65c7b742da4f4dd8b9fdbfbb0215a # callisto@0.22.0
+        with:
+          version: callisto@0.22.0
+          verification: require
       - name: Check API compatibility against the pending release type
         run: |
           set -euo pipefail
-          # Front matter of the fixed group's changesets, or the version bump when none are pending, as on Callisto's
-          # version PR.
+          # Callisto's pending bump, or the version bump when nothing is pending, as on Callisto's version PR.
           bash scripts/check-semver.sh
 
   # Spec first: a PR that changes public Rust API must also touch the docs (docs/spec, docs/adr, a README or
