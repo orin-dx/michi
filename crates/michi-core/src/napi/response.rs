@@ -249,7 +249,13 @@ impl JsAgentResponse {
         causes: Vec<String>,
         retryable: Option<bool>,
     ) -> napi::Result<()> {
-        let bytes = sum(causes.iter().map(|c| field_cost(c)).chain([message.len(), ERROR_OVERHEAD]));
+        // A cause is written like a hint (its text plus a quote or separator per surface), so it is charged like one.
+        // Charging the `String` that holds it as well cut the capacity of one error report below what the per-call
+        // string cap allows.
+        let bytes = sum(causes
+            .iter()
+            .map(|c| c.len().saturating_add(cost::HINT_OVERHEAD))
+            .chain([message.len(), ERROR_OVERHEAD]));
         self.held.check_replace(self.held.error, bytes)?;
         let mut err = super::outcome::build_domain_error(code, message, causes)?;
         if let Some(retryable) = retryable {

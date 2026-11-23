@@ -483,6 +483,18 @@ fn a_long_section_name_is_charged_for_every_cell_it_can_be_repeated_in() {
 
 /// The cap on what a response holds is what stops a hostile table: 60,000 rows of the review's reproduction used to
 /// fit under the cap and then fail to render.
+/// An error report as large as one call may carry (10,000 causes, under the 16 MiB string cap) fits a fresh builder:
+/// the report must not be lost while handling the failure it describes.
+#[test]
+fn a_full_error_report_fits_a_fresh_builder() {
+    let mut r = JsAgentResponse::new("t".into()).expect("a valid type name");
+    let causes: Vec<String> = (0..MAX_HINTS).map(|_| text('a', 1_660)).collect();
+    r.set_error("external_failure", text('a', 100), causes, None).expect("one call's worth of causes fits");
+    let [text_len, json_len, mcp_len] = output_sizes(&r);
+    let bound = input::MAX_OUTPUT_FACTOR * input::MAX_INPUT_BYTES + input::OUTPUT_ENVELOPE;
+    assert!(text_len.max(json_len).max(mcp_len) <= bound, "rendered past the output bound");
+}
+
 #[test]
 fn the_reviews_reproduction_is_rejected_before_rendering() {
     let mut r = JsAgentResponse::new("t".into()).expect("a valid type name");
