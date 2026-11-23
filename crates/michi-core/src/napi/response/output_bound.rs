@@ -481,8 +481,6 @@ fn a_long_section_name_is_charged_for_every_cell_it_can_be_repeated_in() {
     assert!(output_sizes(&r)[0] <= input::MAX_OUTPUT_FACTOR * held);
 }
 
-/// The cap on what a response holds is what stops a hostile table: 60,000 rows of the review's reproduction used to
-/// fit under the cap and then fail to render.
 /// An error report as large as one call may carry (10,000 causes, under the 16 MiB string cap) fits a fresh builder:
 /// the report must not be lost while handling the failure it describes.
 #[test]
@@ -491,14 +489,237 @@ fn a_full_error_report_fits_a_fresh_builder() {
     let causes: Vec<String> = (0..MAX_HINTS).map(|_| text('a', 1_660)).collect();
     r.set_error("external_failure", text('a', 100), causes, None).expect("one call's worth of causes fits");
     let [text_len, json_len, mcp_len] = output_sizes(&r);
-    let bound = input::MAX_OUTPUT_FACTOR * input::MAX_INPUT_BYTES + input::OUTPUT_ENVELOPE;
+    let bound = input::MAX_OUTPUT_FACTOR * input::MAX_HELD_BYTES + input::OUTPUT_ENVELOPE;
     assert!(text_len.max(json_len).max(mcp_len) <= bound, "rendered past the output bound");
 }
 
+/// The cap on what a response holds is what stops a hostile table: 60,000 rows of the review's reproduction used to
+/// fit under the cap and then fail to render.
 #[test]
 fn the_reviews_reproduction_is_rejected_before_rendering() {
     let mut r = JsAgentResponse::new("t".into()).expect("a valid type name");
     let field = text('\u{1}', MAX_NAME_BYTES);
     let err = r.add_items(cut_rows('a', 60_000, 1), vec![field], None).expect_err("over the cap");
-    assert!(err.reason.starts_with("cumulative byte total"), "{}", err.reason);
+    // Its strings (12 MB) fit; the field name it would write again for every cut cell does not.
+    assert!(err.reason.starts_with("cumulative held total"), "{}", err.reason);
+}
+
+// --- One full call on a fresh builder ---
+//
+// Each case below is one call at its caps that passes the call's own checks (its strings, as the per-call budget
+// charges them, are at most 16 MiB), made on a fresh builder with a 4 KiB type name. When strings and structure shared
+// one 16 MiB cap, the structure charged beside a full 16 MiB of strings pushed every one of these but the setters and
+// `alreadyDone` past it, so a report the removed standalone renderers accepted could not be built.
+
+/// A fresh builder with the longest type name.
+fn fresh() -> JsAgentResponse {
+    JsAgentResponse::new(text('t', MAX_NAME_BYTES)).expect("a valid type name")
+}
+
+/// Asserts that `charged`, the bytes the per-call budget charges a case's strings, passes the per-call check and is
+/// close to it.
+fn passes_the_call_checks(charged: usize) {
+    assert!(charged <= input::MAX_INPUT_BYTES, "{charged} bytes: the case would fail its own call's checks");
+    assert!(charged > input::MAX_INPUT_BYTES - 64 * 1024, "{charged} bytes: the case is not near the per-call cap");
+}
+
+/// The review's case: 10,000 pending steps with five-byte ids and 1,660-byte names.
+fn full_pipeline(unit: char) -> napi::Result<JsAgentResponse> {
+    let step = |i: usize| JsPipelineStep {
+        id: format!("s{i:04}"),
+        name: text(unit, 1_660),
+        status: "pending".into(),
+        reason: None,
+    };
+    let steps: Vec<JsPipelineStep> = (0..MAX_STEPS).map(step).collect();
+    let strings = steps.iter().map(|s| s.id.len() + s.name.len() + s.status.len()).sum::<usize>();
+    passes_the_call_checks("step".len() + strings);
+    let mut r = fresh();
+    r.add_pipeline("step".into(), steps)?;
+    Ok(r)
+}
+
+/// 10,000 steps whose id and name are both cut, under a 100-byte section name: 20,000 cut cells that each charge the
+/// section name again.
+fn full_cut_pipeline(unit: char) -> napi::Result<JsAgentResponse> {
+    let step = |i: usize| JsPipelineStep {
+        id: format!("{}{i:05}", text(unit, 196)),
+        name: text(unit, 1_467),
+        status: "completed".into(),
+        reason: None,
+    };
+    let steps: Vec<JsPipelineStep> = (0..MAX_STEPS).map(step).collect();
+    let section = name(unit, 100, 's');
+    let strings = steps.iter().map(|s| s.id.len() + s.name.len() + s.status.len()).sum::<usize>();
+    passes_the_call_checks(section.len() + strings);
+    let mut r = fresh();
+    r.add_pipeline(section, steps)?;
+    Ok(r)
+}
+
+/// 10,000 entries in each list, every string cut, every failure with a recovery hint, under a 100-byte section name:
+/// about the most structure one `partialSuccess` call can carry beside a full 16 MiB of strings.
+fn full_partial_success(unit: char) -> napi::Result<JsAgentResponse> {
+    let n = u32::try_from(MAX_STEPS).expect("fits");
+    let cut = || text(unit, 201);
+    let completed: Vec<_> = (0..n).map(|i| JsCompletedOp { index: count(i), operation: cut() }).collect();
+    let failed: Vec<_> = (0..n)
+        .map(|i| JsFailedOp {
+            index: count(n + i),
+            operation: cut(),
+            reason: text(unit, 871),
+            recovery: Some(super::super::hints::JsRecoveryHint { tool: "t".into(), reason: None }),
+        })
+        .collect();
+    let skipped: Vec<_> =
+        (0..n).map(|i| JsSkippedOp { index: count(2 * n + i), operation: cut(), reason: Some(cut()) }).collect();
+    let section = name(unit, 100, 'p');
+    let per_entry = 201 + (201 + 871 + 1) + (201 + 201);
+    passes_the_call_checks(section.len() + MAX_STEPS * per_entry);
+    let mut r = fresh();
+    r.add_partial_success(section, completed, failed, skipped)?;
+    Ok(r)
+}
+
+/// 1,000 items with 4 KiB keys and long values, a 4 KiB tool name and a 1 MiB description.
+fn full_status(unit: char) -> napi::Result<JsAgentResponse> {
+    let item = |i: usize| JsStatusItem {
+        key: format!("{}{i:04}", text(unit, MAX_NAME_BYTES - 4)),
+        value: str_cell(text(unit, 11_600)),
+        health: None,
+    };
+    let items: Vec<JsStatusItem> = (0..MAX_FIELDS).map(item).collect();
+    let strings = items.iter().map(|i| i.key.len() + "str".len() + cell_bytes(&i.value)).sum::<usize>();
+    passes_the_call_checks(MAX_NAME_BYTES + MAX_STRING_BYTES + strings);
+    let mut r = fresh();
+    r.add_status(text(unit, MAX_NAME_BYTES), text(unit, MAX_STRING_BYTES), items)?;
+    Ok(r)
+}
+
+/// 1,000 KV items with 4 KiB keys and long values.
+fn full_kv(unit: char) -> napi::Result<JsAgentResponse> {
+    let item = |i: usize| JsKvItem {
+        key: format!("{}{i:04}", text(unit, MAX_NAME_BYTES - 4)),
+        value: str_cell(text(unit, 12_670)),
+    };
+    let items: Vec<JsKvItem> = (0..MAX_FIELDS).map(item).collect();
+    passes_the_call_checks(items.iter().map(|i| i.key.len() + "str".len() + cell_bytes(&i.value)).sum());
+    let mut r = fresh();
+    r.add_kv_items(items, Some(count(9_000_000)))?;
+    Ok(r)
+}
+
+/// 16 cells of about 1 MiB each: a full 16 MiB of strings in one `items` call.
+fn full_items(unit: char) -> napi::Result<JsAgentResponse> {
+    let rows: Vec<Vec<JsToonValue>> = (0..16).map(|_| vec![str_cell(text(unit, 1_048_572))]).collect();
+    passes_the_call_checks(1 + rows.iter().flatten().map(|c| "str".len() + cell_bytes(c)).sum::<usize>());
+    let mut r = fresh();
+    r.add_items(rows, vec!["f".into()], None)?;
+    Ok(r)
+}
+
+/// A million cells (the per-call cap) of the widest float: 24 MB of cell storage and no string beyond the field names.
+fn million_cells() -> napi::Result<JsAgentResponse> {
+    let row = vec![float_cell(-f64::MAX, None); MAX_FIELDS];
+    let fields: Vec<String> = (0..MAX_FIELDS).map(|i| format!("f{i}")).collect();
+    let mut r = fresh();
+    r.add_items(vec![row; input::MAX_CELLS / MAX_FIELDS], fields, None)?;
+    Ok(r)
+}
+
+/// An error with a 1 MiB message and 10,000 causes.
+fn full_error(unit: char) -> napi::Result<JsAgentResponse> {
+    let causes: Vec<String> = (0..MAX_HINTS).map(|_| text(unit, 1_572)).collect();
+    let code = "external_failure";
+    passes_the_call_checks(code.len() + MAX_STRING_BYTES + causes.iter().map(String::len).sum::<usize>());
+    let mut r = fresh();
+    r.set_error(code, text(unit, MAX_STRING_BYTES), causes, None)?;
+    Ok(r)
+}
+
+/// An already-done report at its caps.
+fn full_already_done(unit: char) -> napi::Result<JsAgentResponse> {
+    let mut r = fresh();
+    r.add_already_done(text(unit, MAX_NAME_BYTES), text(unit, MAX_STRING_BYTES))?;
+    Ok(r)
+}
+
+/// Each single-string setter at its cap (a truncation hint over 256 chars renders a validation error).
+fn full_setters(unit: char) -> napi::Result<JsAgentResponse> {
+    let mut r = fresh();
+    r.hint(text(unit, MAX_STRING_BYTES))?;
+    r.recovery_hint(text(unit, MAX_NAME_BYTES), Some(text(unit, MAX_STRING_BYTES)))?;
+    r.truncation_hint(text('a', 256))?;
+    r.human_content(text(unit, MAX_STRING_BYTES))?;
+    Ok(r)
+}
+
+macro_rules! full_call_test {
+    ($($name:ident: $build:expr),* $(,)?) => {$(
+        #[test]
+        fn $name() {
+            let r = $build.expect("one call that passes its own checks fits a fresh builder");
+            assert!(r.held.total() <= input::MAX_HELD_BYTES);
+        }
+    )*};
+}
+
+full_call_test! {
+    the_reviews_pipeline_fits_a_fresh_builder: full_pipeline('a'),
+    a_pipeline_of_cut_cells_fits_a_fresh_builder: full_cut_pipeline('a'),
+    a_full_partial_success_fits_a_fresh_builder: full_partial_success('a'),
+    a_full_status_report_fits_a_fresh_builder: full_status('a'),
+    full_kv_items_fit_a_fresh_builder: full_kv('a'),
+    full_items_fit_a_fresh_builder: full_items('a'),
+    a_million_cells_fit_a_fresh_builder: million_cells(),
+    a_full_error_with_a_long_message_fits_a_fresh_builder: full_error('a'),
+    a_full_already_done_fits_a_fresh_builder: full_already_done('a'),
+    every_setter_at_its_cap_fits_a_fresh_builder: full_setters('a'),
+}
+
+/// Asserts that every surface of `r` is within the bound and under V8's string limit, and returns the largest.
+fn within_the_bound_and_v8s_limit(r: &JsAgentResponse) -> usize {
+    let held = r.held.total();
+    let mut largest = 0;
+    for (surface, out) in ["text", "json", "toCallToolResult"].into_iter().zip(output_sizes(r)) {
+        assert!(out <= input::MAX_OUTPUT_FACTOR * held + input::OUTPUT_ENVELOPE, "{surface}: {out} bytes for {held}");
+        assert!(out < input::V8_MAX_STRING_LEN, "{surface}: {out} bytes");
+        largest = largest.max(out);
+    }
+    largest
+}
+
+// The full calls with control characters, the worst escape, measured against the bound and V8's string limit; one
+// test each, so they run in parallel.
+macro_rules! full_call_bound_test {
+    ($($name:ident: $build:expr),* $(,)?) => {$(
+        #[test]
+        fn $name() {
+            let largest = within_the_bound_and_v8s_limit(&$build.expect("fits"));
+            assert!(largest > 20 * 1024 * 1024, "the largest render is {largest} bytes: the case is not at the caps");
+        }
+    )*};
+}
+
+full_call_bound_test! {
+    the_reviews_pipeline_renders_within_the_bound: full_pipeline('\u{1}'),
+    a_pipeline_of_cut_cells_renders_within_the_bound: full_cut_pipeline('\u{1}'),
+    a_full_status_report_renders_within_the_bound: full_status('\u{1}'),
+    full_kv_items_render_within_the_bound: full_kv('\u{1}'),
+    full_items_render_within_the_bound: full_items('\u{1}'),
+    a_million_cells_render_within_the_bound: million_cells(),
+    a_full_error_renders_within_the_bound: full_error('\u{1}'),
+}
+
+/// Maximal strings and maximal structure together: the partial-success case holds a full 16 MiB of strings and over
+/// 9 MiB of structure, close to the 26 MiB held cap, and its control characters are the worst escape.
+#[test]
+fn both_caps_at_once_render_within_the_bound() {
+    let r = full_partial_success('\u{1}').expect("fits");
+    let held = r.held.sum();
+    assert!(held.strings > input::MAX_INPUT_BYTES - 64 * 1024, "{held:?}");
+    assert!(held.structure > 9 * 1024 * 1024, "{held:?}");
+    assert!(held.total() > input::MAX_HELD_BYTES - 1024 * 1024, "{held:?}");
+    let largest = within_the_bound_and_v8s_limit(&r);
+    assert!(largest > 100 * 1024 * 1024, "the largest render is {largest} bytes");
 }

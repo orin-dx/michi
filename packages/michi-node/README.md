@@ -100,7 +100,9 @@ Every export that takes arrays or strings rejects oversize input with a thrown `
 
 - 100,000 rows; 1,000 fields, values per row, KV items or status items; 10,000 hints, causes, steps or partial-success entries; 1,000,000 cells per call.
 - 1 MiB per cell value, hint, reason, message or step name; 4 KiB per type name, field name, key, tool or identifier.
-- **16 MiB of string data** per call, and per `AgentResponse` across all its calls (`input byte total … exceeds maximum of 16777216`, `cumulative byte total … exceeds maximum of 16777216`). This was 64 MiB before it was found to bound only the input: a render writes up to 19 times the bytes it holds (control characters are the worst case), so 64 MiB could produce 1.2 GiB and a `renderJson()` string over V8's limit. At 16 MiB every render stays under 304 MiB, so a response either renders in every format or is rejected up front.
+- **16 MiB of string data** per call, and per `AgentResponse` across all its calls (`input byte total … exceeds maximum of 16777216`, `cumulative byte total … exceeds maximum of 16777216`). Any one call that passes its own checks therefore has room in a new `AgentResponse`, such as 10,000 pipeline steps with 1,660-byte names.
+- **26 MiB held** per `AgentResponse`: its strings plus the bookkeeping charged beside them, which is the storage rows, cells and sections keep, and the names a `truncated` or `totalCount` row can write again (`cumulative held total … exceeds maximum of 27262976`). This is what stops a loop of `items(Array(100000).fill([]), [])` calls, or a table with a 4 KiB field name and tens of thousands of cut cells.
+- A render writes at most 19 times the bytes held, plus 4 KiB (control characters are the worst case). At 26 MiB that is under 494 MiB, inside V8's string limit, so a response either renders in every format or is rejected up front. The old 64 MiB cap could produce 1.2 GiB and a `renderJson()` string V8 could not hold.
 
 ## Supported platforms
 

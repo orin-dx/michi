@@ -22,9 +22,8 @@
 //! Every export uses `#[napi(catch_unwind)]` so a Rust panic cannot crash the host Node.js process, and every export
 //! that accepts caller-controlled collection sizes validates them against hard limits before doing any work, since a
 //! single crafted call from untrusted JS is otherwise able to force unbounded synchronous allocation on Node's
-//! single-threaded event loop. The byte cap also bounds the output: a render is at most 19 times the bytes held plus
-//! 4 KiB, because every held byte is charged for each place a writer can put it (see `input::MAX_INPUT_BYTES` and
-//! `cost`).
+//! single-threaded event loop. The held cap also bounds the output: a render is at most 19 times the bytes held plus
+//! 4 KiB, because every byte a writer can put out is charged to a held byte (see `input::MAX_HELD_BYTES` and `cost`).
 //!
 //! This is the one module in the crate exempted from the workspace's
 //! `unsafe_code = "deny"` lint (`[workspace.lints.rust]` in the root
@@ -85,6 +84,7 @@ mod tests {
         assert_eq!(MAX_HINTS, 10_000);
         assert_eq!(MAX_STEPS, 10_000);
         assert_eq!(super::input::MAX_INPUT_BYTES, 16 * 1024 * 1024);
+        assert_eq!(super::input::MAX_HELD_BYTES, 26 * 1024 * 1024);
         assert_eq!(super::input::MAX_OUTPUT_FACTOR, 19);
         assert_eq!(super::input::OUTPUT_ENVELOPE, 4096);
     }

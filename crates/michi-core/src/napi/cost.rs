@@ -1,10 +1,13 @@
 //! What a held item can cost in output, beyond its own bytes.
 //!
-//! The byte caps in [`super::input`] bound the output only if every held byte is charged for each place a writer can
-//! put it. A string is written once in the text body, once more in the JSON `body`, and once as a raw copy in the
-//! JSON `sections`, `error` and `hints`: at most 6 + 7 + 6 = 19 output bytes per held byte (a control character is
-//! the worst case, `\u0001` in the text, `\\u0001` in the JSON `body`). Charging each string once covers that. The
-//! writers also put some strings in more places, and those places are charged here:
+//! An `AgentResponse` holds two kinds of bytes: caller strings, capped at [`super::input::MAX_INPUT_BYTES`], and the
+//! structure charged beside them; the two together are capped at [`super::input::MAX_HELD_BYTES`], and a render is at
+//! most 19 times that total plus 4 KiB. That bound holds only if every byte a writer can put out is paid for by a
+//! held byte at 19 output bytes each. A string is written once in the text body, once more in the JSON `body`, and
+//! once as a raw copy in the JSON `sections`, `error` and `hints`: at most 6 + 7 + 6 = 19 output bytes per held byte
+//! (a control character is the worst case, `\u0001` in the text, `\\u0001` in the JSON `body`). Charging each string
+//! once covers that. The writers also put some strings in more places, and those places are charged here, as
+//! structure:
 //!
 //! | String | Written again | Charge |
 //! | --- | --- | --- |
@@ -13,7 +16,11 @@
 //!
 //! Only a string cell longer than [`CUT_CHARS`] chars is cut (the exports never change the response's cap; a test
 //! scans for it). Everything else is written in a fixed number of places, so it is charged its bytes plus a fixed
-//! allowance for the punctuation the writers add around it.
+//! allowance (structure) for the punctuation the writers add around it, sized so that 19 times the allowance covers
+//! that punctuation.
+//!
+//! These repeats are not capped per call: a 4 KiB section name over 20,000 cut cells would be 82 MB of repeats, more
+//! than any render could write under V8's string limit, so only the held cap decides whether such a table fits.
 
 use super::value::JsToonValue;
 

@@ -108,9 +108,3 @@ impl From<Cell> for crate::kv::KvValue {
 pub(crate) fn cell_bytes(v: &JsToonValue) -> usize {
     v.str_val.as_ref().map_or(0, String::len)
 }
-
-/// What one cell costs a response that keeps it: the stored value plus its string. Every cell keeps a
-/// [`crate::toon::Value`] whatever its type, so a table of numbers or nulls is not free.
-pub(crate) fn cell_cost(v: &JsToonValue) -> usize {
-    std::mem::size_of::<crate::toon::Value>().saturating_add(cell_bytes(v))
-}

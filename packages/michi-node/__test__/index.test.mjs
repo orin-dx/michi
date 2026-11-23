@@ -634,11 +634,24 @@ void describe('AgentResponse cumulative byte budget', () => {
           accepted++
         }
       },
-      // Each hint is charged its bytes and one more for the quotes and separator it is written with.
-      (err) => err.message === `cumulative byte total ${1 + 16 * (1_048_576 + 1)} exceeds maximum of 16777216`
+      // Strings are capped at 16 MiB; the type name and each hint's allowance for its punctuation are structure.
+      (err) => err.message === `cumulative byte total ${17 * 1_048_576} exceeds maximum of 16777216`
     )
-    assert.strictEqual(accepted, 15, '"t" takes one byte, so the 16th full hint passes 16 MiB')
+    assert.strictEqual(accepted, 16, '16 full hints are exactly 16 MiB of strings, so the 17th passes it')
     assert.ok(r.renderText().length < 16_777_216 + 4096)
+  })
+
+  void it('fits any one report a single call accepts', () => {
+    // 10,000 pending steps with 1,660-byte names: 16.7 MB of strings, under the call's 16 MiB, plus the rows' storage
+    // and the cut names' bookkeeping. With one 16 MiB cap for both, this threw on a fresh AgentResponse.
+    const steps = Array.from({ length: 10_000 }, (_, i) => ({
+      id: `s${String(i).padStart(4, '0')}`,
+      name: 'n'.repeat(1_660),
+      status: 'pending',
+    }))
+    const r = new AgentResponse('t')
+    r.pipeline('step', steps)
+    assert.ok(r.renderText().startsWith('step[10000]{id,name,status,reason}:\n  s0000,'))
   })
 
   void it('charges recovery hints, items and kvItems to the same total', () => {
@@ -1276,9 +1289,10 @@ void describe('count caps', () => {
   })
 })
 
-// The byte cap bounds the output as well as the input. Rendering writes a control character as `\u0001` in the text,
+// The caps bound the output as well as the input. Rendering writes a control character as `\u0001` in the text,
 // again escaped in the JSON, and the JSON again beside the text in toCallToolResult, so a render is at most 19 times
-// the bytes held. At 16 MiB that is 304 MiB, under V8's string limit (2^29 - 24 characters). At the old 64 MiB cap a
+// the bytes held (strings and structure, at most 26 MiB). That is 494 MiB, under V8's string limit (2^29 - 24
+// characters). At the old 64 MiB cap a
 // maximal response produced 377 MB of text, a renderJson string V8 could not hold (GenericFailure after rendering it),
 // and a toCallToolResult that took 25 s and 3 GiB.
 void describe('output size at the byte cap', () => {
@@ -1341,16 +1355,20 @@ void describe('output size at the byte cap', () => {
       build(n)
       return true
     } catch (err) {
-      assert.match(err.message, /^(cumulative|input) byte total \d+ exceeds maximum of 16777216$/)
+      assert.match(
+        err.message,
+        /^((cumulative|input) byte total \d+ exceeds maximum of 16777216|cumulative held total \d+ exceeds maximum of 27262976)$/
+      )
       return false
     }
   }
 
   void it('rejects the 60,000-row table whose field name a truncated row would write 60,000 times', () => {
     const r = new AgentResponse('t')
+    // Its strings fit the 16 MiB; the field name it could write again for every cut cell does not fit the 26 MiB held.
     assert.throws(
       () => r.items(cut(60_000), [longName]),
-      /^Error: cumulative byte total \d+ exceeds maximum of 16777216$/
+      /^Error: cumulative held total \d+ exceeds maximum of 27262976$/
     )
     assert.throws(
       () => renderToon({ typeName: 't', fields: [longName], rows: cut(60_000) }),
@@ -1364,9 +1382,9 @@ void describe('output size at the byte cap', () => {
       r.items(cut(n), [longName])
       return r
     }
-    const n = largest(accepts(build), 5000)
-    // About 16 MiB / (4 KiB name + the cell) rows: far fewer than the 60,000 that used to be accepted.
-    assert.ok(n > 3000 && n < 4500, `${n} rows accepted`)
+    const n = largest(accepts(build), 10_000)
+    // About 26 MiB / (4 KiB name + the cell and its storage) rows: far fewer than the 60,000 once accepted.
+    assert.ok(n > 6000 && n < 6500, `${n} rows accepted`)
     const r = build(n)
     const text = r.renderText()
     const json = r.renderJson()
@@ -1392,8 +1410,8 @@ void describe('output size at the byte cap', () => {
       r.pipeline(longName, cutSteps(n))
       return r
     }
-    const n = largest(accepts(build), 5000)
-    assert.ok(n > 3000 && n < 4500, `${n} steps accepted`)
+    const n = largest(accepts(build), 10_000)
+    assert.ok(n > 6000 && n < 6500, `${n} steps accepted`)
     const r = build(n)
     const text = r.renderText()
     const json = r.renderJson()
