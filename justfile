@@ -124,11 +124,6 @@ doc-check:
     # Default features alone: intra-doc links to feature-gated items only break here.
     RUSTDOCFLAGS="-D warnings" cargo doc -p michi-core --no-deps
 
-# API SemVer check of the published crates against their latest crates.io release (the default baseline). CI runs the
-# same check.
-check-api:
-    bash scripts/check-semver.sh
-
 # Unused-dependency check.
 machete:
     cargo machete
