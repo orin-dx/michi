@@ -1,0 +1,97 @@
+{
+  "cli_version": "0.13.5-nightly.202611160626.76f1b5129",
+  "checkpoint_id": "01M851KZM6AA45JX25QV7BBEF8",
+  "session_id": "f17aa24d-9610-4712-8551-262a8f85e742",
+  "strategy": "manual-commit",
+  "created_at": "2026-11-23T20:30:21.290827Z",
+  "branch": "callisto-0.22",
+  "checkpoints_count": 2,
+  "files_touched": [],
+  "agent": "Claude Code",
+  "model": "claude-opus-5-5",
+  "turn_id": "607d79130a94",
+  "checkpoint_transcript_start": 2519,
+  "transcript_lines_at_start": 2519,
+  "compact_transcript_start": 218,
+  "token_usage": {
+    "input_tokens": 46,
+    "cache_creation_tokens": 363953,
+    "cache_read_tokens": 7472873,
+    "output_tokens": 13677,
+    "api_call_count": 22,
+    "subagent_tokens": {
+      "input_tokens": 106,
+      "cache_creation_tokens": 72366,
+      "cache_read_tokens": 14182978,
+      "output_tokens": 27223,
+      "api_call_count": 53
+    },
+    "subagent_tokens_complete": true
+  },
+  "session_token_usage": {
+    "input_tokens": 442,
+    "cache_creation_tokens": 734191,
+    "cache_read_tokens": 44458514,
+    "output_tokens": 117464,
+    "api_call_count": 212,
+    "subagent_tokens": {
+      "input_tokens": 1032,
+      "cache_creation_tokens": 1289859,
+      "cache_read_tokens": 71089533,
+      "output_tokens": 277884,
+      "api_call_count": 515
+    },
+    "subagent_tokens_complete": true
+  },
+  "redaction": {
+    "replacements": 4,
+    "layers": {
+      "betterleaks": 4,
+      "connection_string": 0,
+      "credential_key": 0,
+      "credential_value": 0,
+      "credentialed_uri": 0,
+      "entropy": 0,
+      "key_context": 0,
+      "provider_token": 0,
+      "shell_stdin": 0
+    }
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_01Y7Eqmc3RnWLN8SDo5Yzpkj",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "courier:changeset"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "ae0475c8d7c6",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 1422,
+        "end": 1423,
+        "entry_ids": [
+          "0e92252a-f1f5-4b77-ae60-6d321a55695e"
+        ],
+        "tool_use_id": "toolu_01Y7Eqmc3RnWLN8SDo5Yzpkj"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01Y7Eqmc3RnWLN8SDo5Yzpkj"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: courier:changeset",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 22
+  }
+}
