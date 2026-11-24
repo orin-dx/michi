@@ -654,6 +654,24 @@ void describe('AgentResponse cumulative byte budget', () => {
     assert.ok(r.renderText().startsWith('step[10000]{id,name,status,reason}:\n  s0000,'))
   })
 
+  void it('keeps the section name out of the call budget', () => {
+    // Exactly 16 MiB of step strings (16 x (5 + 1,048,564 + 7)), which the removed renderPipeline accepted. The name
+    // `step` is checked on its own, so it does not push the call over its budget.
+    const steps = Array.from({ length: 16 }, (_, i) => ({
+      id: `s${String(i).padStart(4, '0')}`,
+      name: 'n'.repeat(1_048_564),
+      status: 'pending',
+    }))
+    const r = new AgentResponse('t')
+    r.pipeline('step', steps)
+    const failed = Array.from({ length: 16 }, (_, i) => ({
+      index: i,
+      operation: `o${String(i).padStart(4, '0')}`,
+      reason: 'r'.repeat(1_048_571),
+    }))
+    new AgentResponse('t').partialSuccess('partial_success', [], failed, [])
+  })
+
   void it('charges recovery hints, items and kvItems to the same total', () => {
     const r = new AgentResponse('t')
     for (let i = 0; i < 10; i++) r.recoveryHint('retry', mib)

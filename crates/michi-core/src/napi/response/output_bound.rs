@@ -523,6 +523,40 @@ fn passes_the_call_checks(charged: usize) {
     assert!(charged > input::MAX_INPUT_BYTES - 64 * 1024, "{charged} bytes: the case is not near the per-call cap");
 }
 
+/// Exactly 16 MiB of step strings (16 pending steps, five-byte ids, 1,048,564-byte names) beside a section name. The
+/// removed `renderPipeline` took this payload with no name, so the name must not count against the string cap.
+#[test]
+fn a_full_16_mib_pipeline_fits_beside_its_section_name() {
+    let step = |i: usize| JsPipelineStep {
+        id: format!("s{i:04}"),
+        name: text('a', 1_048_564),
+        status: "pending".into(),
+        reason: None,
+    };
+    let steps: Vec<JsPipelineStep> = (0..16).map(step).collect();
+    let strings = steps.iter().map(|s| s.id.len() + s.name.len() + s.status.len()).sum::<usize>();
+    assert_eq!(strings, input::MAX_INPUT_BYTES, "the case is exactly the per-call cap");
+    fresh().add_pipeline("step".into(), steps).expect("a full payload fits beside its section name");
+}
+
+/// The same for `partialSuccess`: exactly 16 MiB of entry strings beside the section name.
+#[test]
+fn a_full_16_mib_partial_success_fits_beside_its_section_name() {
+    let failed: Vec<_> = (0..16u32)
+        .map(|i| JsFailedOp {
+            index: count(i),
+            operation: format!("o{i:04}"),
+            reason: text('a', 1_048_571),
+            recovery: None,
+        })
+        .collect();
+    let strings = failed.iter().map(|f| f.operation.len() + f.reason.len()).sum::<usize>();
+    assert_eq!(strings, input::MAX_INPUT_BYTES, "the case is exactly the per-call cap");
+    fresh()
+        .add_partial_success("partial_success".into(), Vec::new(), failed, Vec::new())
+        .expect("a full payload fits beside its section name");
+}
+
 /// The review's case: 10,000 pending steps with five-byte ids and 1,660-byte names.
 fn full_pipeline(unit: char) -> napi::Result<JsAgentResponse> {
     let step = |i: usize| JsPipelineStep {
@@ -533,7 +567,7 @@ fn full_pipeline(unit: char) -> napi::Result<JsAgentResponse> {
     };
     let steps: Vec<JsPipelineStep> = (0..MAX_STEPS).map(step).collect();
     let strings = steps.iter().map(|s| s.id.len() + s.name.len() + s.status.len()).sum::<usize>();
-    passes_the_call_checks("step".len() + strings);
+    passes_the_call_checks(strings);
     let mut r = fresh();
     r.add_pipeline("step".into(), steps)?;
     Ok(r)
@@ -551,7 +585,7 @@ fn full_cut_pipeline(unit: char) -> napi::Result<JsAgentResponse> {
     let steps: Vec<JsPipelineStep> = (0..MAX_STEPS).map(step).collect();
     let section = name(unit, 100, 's');
     let strings = steps.iter().map(|s| s.id.len() + s.name.len() + s.status.len()).sum::<usize>();
-    passes_the_call_checks(section.len() + strings);
+    passes_the_call_checks(strings);
     let mut r = fresh();
     r.add_pipeline(section, steps)?;
     Ok(r)

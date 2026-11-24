@@ -168,10 +168,12 @@ const CELL_OVERHEAD: usize = std::mem::size_of::<crate::toon::Value>();
 /// What one row of a four-column outcome table (`partialSuccess`, `pipeline`, `status`) keeps beyond its strings.
 const OUTCOME_ROW: usize = ROW_OVERHEAD + 4 * CELL_OVERHEAD;
 
-/// What a named outcome section costs before its rows: its name as a string, and as structure the `String` that holds
-/// it, its second write in the `totalCount` table, and the section itself.
+/// What a named outcome section costs before its rows, all as structure: its name (written in its header and again in
+/// the `totalCount` table), the `String` that holds it, and the section itself. The name is michi's label for the
+/// block, like the type name, so it stays out of the string cap: a report that is a full 16 MiB of strings still
+/// fits, as it did under the standalone renderers, which took no name.
 fn outcome_section_cost(name: &str) -> Charge {
-    Charge::new(name.len(), sum([STRING_OVERHEAD, name.len(), SECTION_OVERHEAD]))
+    Charge::new(0, sum([STRING_OVERHEAD, name.len(), name.len(), SECTION_OVERHEAD]))
 }
 
 /// The sum of `costs`, saturating.
@@ -535,7 +537,9 @@ impl JsAgentResponse {
         input::check_len("completed", completed.len(), MAX_STEPS)?;
         input::check_len("failed", failed.len(), MAX_STEPS)?;
         input::check_len("skipped", skipped.len(), MAX_STEPS)?;
-        let name = budget.string(name, "name", MAX_NAME_BYTES)?;
+        // The section name is checked on its own and charged as structure (see `outcome_section_cost`), so the
+        // report's own strings keep the whole per-call budget.
+        let name = Budget::new().string(name, "name", MAX_NAME_BYTES)?;
         let completed = budget.completed_ops(&completed, MAX_STEPS)?;
         let failed = budget.failed_ops(&failed, MAX_STEPS)?;
         let skipped = budget.skipped_ops(&skipped, MAX_STEPS)?;
@@ -555,7 +559,8 @@ impl JsAgentResponse {
         let mut budget = Budget::new();
         let steps = List::new(steps, "steps")?;
         input::check_len("steps", steps.len(), MAX_STEPS)?;
-        let name = budget.string(name, "name", MAX_NAME_BYTES)?;
+        // The section name is checked on its own; see `partial_success`.
+        let name = Budget::new().string(name, "name", MAX_NAME_BYTES)?;
         let steps = budget.pipeline_steps(&steps, MAX_STEPS)?;
         self.add_pipeline(name, steps)
     }
