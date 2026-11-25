@@ -8,7 +8,7 @@ use super::input::{self, Budget, List, MAX_FIELDS, MAX_HINTS, MAX_NAME_BYTES, MA
 use super::num::JsCount;
 use super::outcome::{JsCompletedOp, JsFailedOp, JsPipelineStep, JsSkippedOp};
 use super::toon::JsStatusItem;
-use super::value::{cell_cost, JsKvItem, JsToonValue};
+use super::value::{cell_bytes, JsKvItem, JsToonValue};
 
 /// MCP content-block annotations (JavaScript-friendly). Currently carries
 /// only `audience` — michi has no concept of MCP's optional `priority`.
@@ -56,24 +56,60 @@ const SECTION_OVERHEAD: usize = 64;
 /// timeout carries.
 const ERROR_OVERHEAD: usize = 256;
 
-/// String bytes one [`JsAgentResponse`] holds, per slot. A slot that a call replaces (`truncationHint`,
-/// `humanContent`, `error`) gives its old bytes back; `items`, `kvItems`, `hint`, `recoveryHint` and the outcome
-/// sections (`partialSuccess`, `pipeline`, `status`, `alreadyDone`) each add a block, so they only add.
+/// What one call or slot holds: the caller's string bytes, and the structure charged beside them (the storage rows,
+/// cells and sections keep, the punctuation a fixed allowance pays for, the type name, and the names a writer can
+/// write again). Strings are capped at [`input::MAX_INPUT_BYTES`] across calls, the cap each call already has, so one
+/// call's strings always fit a fresh builder; strings and structure together are capped at [`input::MAX_HELD_BYTES`],
+/// which bounds both what the builder keeps and what it renders.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct Charge {
+    strings: usize,
+    structure: usize,
+}
+
+impl Charge {
+    fn new(strings: usize, structure: usize) -> Self {
+        Self { strings, structure }
+    }
+
+    fn plus(self, other: Self) -> Self {
+        Self {
+            strings: self.strings.saturating_add(other.strings),
+            structure: self.structure.saturating_add(other.structure),
+        }
+    }
+
+    fn minus(self, other: Self) -> Self {
+        Self {
+            strings: self.strings.saturating_sub(other.strings),
+            structure: self.structure.saturating_sub(other.structure),
+        }
+    }
+
+    /// Strings and structure together: what the output bound is a multiple of.
+    fn total(self) -> usize {
+        self.strings.saturating_add(self.structure)
+    }
+}
+
+/// What one [`JsAgentResponse`] holds, per slot. A slot that a call replaces (`truncationHint`, `humanContent`,
+/// `error`) gives its old charge back; `items`, `kvItems`, `hint`, `recoveryHint` and the outcome sections
+/// (`partialSuccess`, `pipeline`, `status`, `alreadyDone`) each add a block, so they only add.
 #[derive(Debug, Default)]
 struct HeldBytes {
-    type_name: usize,
-    items: usize,
-    kv_items: usize,
-    hints: usize,
-    recovery: usize,
-    truncation_hint: usize,
-    human_content: usize,
-    error: usize,
-    outcomes: usize,
+    type_name: Charge,
+    items: Charge,
+    kv_items: Charge,
+    hints: Charge,
+    recovery: Charge,
+    truncation_hint: Charge,
+    human_content: Charge,
+    error: Charge,
+    outcomes: Charge,
 }
 
 impl HeldBytes {
-    fn total(&self) -> usize {
+    fn sum(&self) -> Charge {
         [
             self.type_name,
             self.items,
@@ -86,17 +122,32 @@ impl HeldBytes {
             self.outcomes,
         ]
         .iter()
-        .fold(0, |acc, n| acc.saturating_add(*n))
+        .fold(Charge::default(), |acc, c| acc.plus(*c))
     }
 
-    /// An error if replacing a slot holding `old` bytes with `new` would take the total past
-    /// [`input::MAX_INPUT_BYTES`]. Changes nothing: the caller stores the new slot size once its call succeeds.
-    fn check_replace(&self, old: usize, new: usize) -> napi::Result<()> {
-        let total = self.total().saturating_sub(old).saturating_add(new);
-        if total > input::MAX_INPUT_BYTES {
+    /// Strings and structure held in all.
+    #[cfg(test)]
+    fn total(&self) -> usize {
+        self.sum().total()
+    }
+
+    /// An error if replacing a slot holding `old` with `new` would take the strings past [`input::MAX_INPUT_BYTES`],
+    /// or strings and structure together past [`input::MAX_HELD_BYTES`]. Changes nothing: the caller stores the new
+    /// slot once its call succeeds.
+    fn check_replace(&self, old: Charge, new: Charge) -> napi::Result<()> {
+        let held = self.sum().minus(old).plus(new);
+        if held.strings > input::MAX_INPUT_BYTES {
             return Err(napi::Error::from_reason(format!(
-                "cumulative byte total {total} exceeds maximum of {}",
+                "cumulative byte total {} exceeds maximum of {}",
+                held.strings,
                 input::MAX_INPUT_BYTES
+            )));
+        }
+        if held.total() > input::MAX_HELD_BYTES {
+            return Err(napi::Error::from_reason(format!(
+                "cumulative held total {} exceeds maximum of {}",
+                held.total(),
+                input::MAX_HELD_BYTES
             )));
         }
         Ok(())
@@ -107,18 +158,22 @@ impl HeldBytes {
 /// 100,000 of these.
 const ROW_OVERHEAD: usize = std::mem::size_of::<Vec<crate::toon::Value>>();
 
-/// What one field name costs: its string and the `String` that holds it.
-fn field_cost(f: &str) -> usize {
-    std::mem::size_of::<String>().saturating_add(f.len())
-}
+/// What one string keeps beyond its bytes: the `String` that holds it.
+const STRING_OVERHEAD: usize = std::mem::size_of::<String>();
+
+/// What one cell keeps beyond its string: the [`crate::toon::Value`] every cell stores, whatever its type, so a table
+/// of numbers or nulls is not free.
+const CELL_OVERHEAD: usize = std::mem::size_of::<crate::toon::Value>();
 
 /// What one row of a four-column outcome table (`partialSuccess`, `pipeline`, `status`) keeps beyond its strings.
-const OUTCOME_ROW: usize = ROW_OVERHEAD + 4 * std::mem::size_of::<crate::toon::Value>();
+const OUTCOME_ROW: usize = ROW_OVERHEAD + 4 * CELL_OVERHEAD;
 
-/// What a named outcome section costs before its rows: its name, which is written in its header and again in the
-/// `totalCount` table, and the section itself.
-fn outcome_section_cost(name: &str) -> usize {
-    field_cost(name).saturating_add(name.len()).saturating_add(SECTION_OVERHEAD)
+/// What a named outcome section costs before its rows, all as structure: its name (written in its header and again in
+/// the `totalCount` table), the `String` that holds it, and the section itself. The name is michi's label for the
+/// block, like the type name, so it stays out of the string cap: a report that is a full 16 MiB of strings still
+/// fits, as it did under the standalone renderers, which took no name.
+fn outcome_section_cost(name: &str) -> Charge {
+    Charge::new(0, sum([STRING_OVERHEAD, name.len(), name.len(), SECTION_OVERHEAD]))
 }
 
 /// The sum of `costs`, saturating.
@@ -128,20 +183,31 @@ fn sum(costs: impl IntoIterator<Item = usize>) -> usize {
 
 /// NAPI wrapper around [`crate::response::AgentResponse`].
 ///
-/// Besides each call's own limits, one object holds at most 16 MiB across all its calls: caller strings (type name,
-/// fields, cells, keys, hints, recovery hints, truncation hint and human content) plus the storage rows and cells
-/// keep, so a table of empty rows, numbers or nulls is charged too. A call that would pass that total
-/// is rejected and leaves the builder unchanged; replacing `truncationHint` or `humanContent` gives the old value's
-/// bytes back first. Every `items` and `kvItems` call adds a section, so their bytes add up; each section is also
-/// charged the type name's bytes plus 64, so empty calls are not free.
+/// Besides each call's own limits, one object keeps two totals across all its calls:
 ///
-/// The total bounds the output too: a render is at most 19 times the bytes held, plus 4 KiB, on every surface (text,
-/// JSON, `toCallToolResult`), under V8's string limit; see [`input::MAX_INPUT_BYTES`]. Control characters, which
-/// escape to six bytes in the text and again in the JSON, are the worst case for a string. A name can be written
-/// more often than a string, so each is charged for every place it can be written: a field name, and the type name
-/// or an outcome section's name, once for every cell of the table that is longer than 200 chars (a `truncated` row
-/// repeats them for every cut cell), a section's name twice (its header and the `totalCount` table), and each hint
-/// and recovery hint a few bytes for the row or object that holds it.
+/// - **Strings**, at most 16 MiB ([`input::MAX_INPUT_BYTES`]): the caller strings it holds (fields, cells, keys,
+///   hints, causes, recovery hints, outcome names and text, truncation hint and human content). Each call is capped at
+///   the same 16 MiB, so one call's strings always fit a fresh builder.
+/// - **Held**, at most 26 MiB ([`input::MAX_HELD_BYTES`]): those strings plus the structure charged beside them. That
+///   is the storage rows, cells and sections keep (so a table of empty rows, numbers or nulls is charged), the type
+///   name and its copy in every section, a fixed allowance for the punctuation around each hint, cause and recovery
+///   hint, and every extra place a writer can put a name (see below). The 10 MiB above the string cap is room for one
+///   call's structure: a full 16 MiB report of 10,000 pipeline steps or 30,000 partial-success entries fits.
+///
+/// A call that would pass either total is rejected and leaves the builder unchanged (`cumulative byte total N exceeds
+/// maximum of 16777216`, `cumulative held total N exceeds maximum of 27262976`); replacing `truncationHint`,
+/// `humanContent` or `error` gives the old value's charge back first. Every `items` and `kvItems` call adds a section,
+/// so their charges add up; each section is also charged the type name's bytes plus 64, so empty calls are not free.
+///
+/// The held total bounds the output: a render is at most 19 times the bytes held, plus 4 KiB, on every surface (text,
+/// JSON, `toCallToolResult`), so at most 19 × 26 MiB + 4 KiB (494 MiB), under V8's string limit of about 512 MiB;
+/// see [`input::MAX_HELD_BYTES`]. Control characters, which escape to six bytes in the text and again in the JSON,
+/// are the worst case for a string. A name can be written more often than a string, so each is charged for every
+/// place it can be written: a field name, and the type name or an outcome section's name, once for every cell of the
+/// table that is longer than 200 chars (a `truncated` row repeats them for every cut cell), a section's name twice
+/// (its header and the `totalCount` table), and each hint and recovery hint a few bytes for the row or object that
+/// holds it. Those repeats are why the held cap, and not a call's own checks, decides whether a table with long names
+/// and many cut cells fits: a 4 KiB section name over 20,000 cut cells could write 82 MB of names again.
 ///
 /// Both methods name their section for the type name, and a section is a root key in the rendered document. Two
 /// `items` calls, or a `kvItems` key equal to the type name, therefore render the `toon_validation_failed` error
@@ -156,14 +222,15 @@ pub struct JsAgentResponse {
     hint_count: usize,
     /// Cumulative count of [`Self::recovery_hint`] calls, capped at [`MAX_HINTS`].
     recovery_count: usize,
-    /// String bytes held, capped at [`input::MAX_INPUT_BYTES`] in all.
+    /// What this response holds: strings capped at [`input::MAX_INPUT_BYTES`], strings and structure together at
+    /// [`input::MAX_HELD_BYTES`].
     held: HeldBytes,
 }
 
 impl JsAgentResponse {
-    /// What every section costs before its own strings: a copy of the type name, which names it, plus a fixed
-    /// allowance for the section itself. Without it an empty `items` or `kvItems` call would be free, and a loop of
-    /// them would grow the response past the cap.
+    /// What every section costs before its own strings, all structure: a copy of the type name, which names it, plus
+    /// a fixed allowance for the section itself. Without it an empty `items` or `kvItems` call would be free, and a
+    /// loop of them would grow the response past the cap.
     ///
     /// A list writes its name in its header and again in the `totalCount` table, a KV section only in the table, and
     /// each also writes it once in the JSON `sections`. That is two writes of the name per section, and the name is
@@ -183,20 +250,24 @@ impl JsAgentResponse {
     }
 
     /// Append a TOON list section. The caller has bounded `rows`, `fields` and every row's length (see
-    /// [`Self::items`]); this charges the bytes they keep, then converts, so the builder is unchanged on error.
+    /// [`Self::items`]); this charges what they keep, then converts, so the builder is unchanged on error.
     fn add_items(
         &mut self,
         rows: Vec<Vec<JsToonValue>>,
         fields: Vec<String>,
         total_count: Option<JsCount>,
     ) -> napi::Result<()> {
-        let bytes = fields
-            .iter()
-            .map(|f| field_cost(f.as_str()))
-            .chain(rows.iter().map(|row| row.iter().map(cell_cost).fold(ROW_OVERHEAD, usize::saturating_add)))
-            .chain([cost::table_repeats(&rows, &fields, self.name.len())])
-            .fold(self.section_cost(), usize::saturating_add);
-        self.held.check_replace(0, bytes)?;
+        let cells = sum(rows.iter().map(Vec::len));
+        let strings = sum(fields.iter().map(String::len).chain(rows.iter().flat_map(|row| row.iter().map(cell_bytes))));
+        let structure = sum([
+            self.section_cost(),
+            fields.len().saturating_mul(STRING_OVERHEAD),
+            rows.len().saturating_mul(ROW_OVERHEAD),
+            cells.saturating_mul(CELL_OVERHEAD),
+            cost::table_repeats(&rows, &fields, self.name.len()),
+        ]);
+        let charge = Charge::new(strings, structure);
+        self.held.check_replace(Charge::default(), charge)?;
         let converted: Vec<Vec<crate::toon::Value>> = rows
             .into_iter()
             .map(|row| row.into_iter().map(|v| Ok(v.into_cell()?.into())).collect::<napi::Result<Vec<_>>>())
@@ -205,17 +276,16 @@ impl JsAgentResponse {
         let section = crate::section::Section::toon(self.name.clone(), fields, converted)
             .total_count(total_count.map(JsCount::get));
         self.inner = Some(b.section(section));
-        self.held.items = self.held.items.saturating_add(bytes);
+        self.held.items = self.held.items.plus(charge);
         Ok(())
     }
 
     /// Append a KV section: the same accounting as [`Self::add_items`].
     fn add_kv_items(&mut self, items: Vec<JsKvItem>, total_count: Option<JsCount>) -> napi::Result<()> {
-        let bytes = items
-            .iter()
-            .map(|i| std::mem::size_of::<String>().saturating_add(i.key.len()).saturating_add(cell_cost(&i.value)))
-            .fold(self.section_cost(), usize::saturating_add);
-        self.held.check_replace(0, bytes)?;
+        let strings = sum(items.iter().map(|i| i.key.len().saturating_add(cell_bytes(&i.value))));
+        let structure = sum([self.section_cost(), items.len().saturating_mul(STRING_OVERHEAD + CELL_OVERHEAD)]);
+        let charge = Charge::new(strings, structure);
+        self.held.check_replace(Charge::default(), charge)?;
         let converted = items
             .into_iter()
             .map(|i| Ok(crate::kv::KvItem::new(i.key, i.value.into_cell()?.into())))
@@ -224,20 +294,20 @@ impl JsAgentResponse {
         let section =
             crate::section::Section::kv(self.name.clone(), converted).total_count(total_count.map(JsCount::get));
         self.inner = Some(b.section(section));
-        self.held.kv_items = self.held.kv_items.saturating_add(bytes);
+        self.held.kv_items = self.held.kv_items.plus(charge);
         Ok(())
     }
 
-    /// Charge `bytes` to the outcome slot, then apply `add` to the builder. The builder is unchanged on error.
+    /// Charge `charge` to the outcome slot, then apply `add` to the builder. The builder is unchanged on error.
     fn add_outcome(
         &mut self,
-        bytes: usize,
+        charge: Charge,
         add: impl FnOnce(crate::response::AgentResponse) -> crate::response::AgentResponse,
     ) -> napi::Result<()> {
-        self.held.check_replace(0, bytes)?;
+        self.held.check_replace(Charge::default(), charge)?;
         let b = self.take()?;
         self.inner = Some(add(b));
-        self.held.outcomes = self.held.outcomes.saturating_add(bytes);
+        self.held.outcomes = self.held.outcomes.plus(charge);
         Ok(())
     }
 
@@ -249,15 +319,20 @@ impl JsAgentResponse {
         causes: Vec<String>,
         retryable: Option<bool>,
     ) -> napi::Result<()> {
-        let bytes = sum(causes.iter().map(|c| field_cost(c)).chain([message.len(), ERROR_OVERHEAD]));
-        self.held.check_replace(self.held.error, bytes)?;
+        // A cause is written like a hint (its text plus a quote or separator per surface), so it is charged like one.
+        // Charging the `String` that holds it as well cut the capacity of one error report below what the per-call
+        // string cap allows.
+        let strings = sum(causes.iter().map(String::len).chain([message.len()]));
+        let structure = causes.len().saturating_mul(cost::HINT_OVERHEAD).saturating_add(ERROR_OVERHEAD);
+        let charge = Charge::new(strings, structure);
+        self.held.check_replace(self.held.error, charge)?;
         let mut err = super::outcome::build_domain_error(code, message, causes)?;
         if let Some(retryable) = retryable {
             err = err.retryable(retryable);
         }
         let b = self.take()?;
         self.inner = Some(b.error(err));
-        self.held.error = bytes;
+        self.held.error = charge;
         Ok(())
     }
 
@@ -270,16 +345,12 @@ impl JsAgentResponse {
         skipped: Vec<JsSkippedOp>,
     ) -> napi::Result<()> {
         let rows = completed.len() + failed.len() + skipped.len();
+        let recoveries = failed.iter().filter_map(|o| o.recovery.as_ref());
         let strings = sum(completed
             .iter()
             .map(|o| o.operation.len())
-            .chain(failed.iter().map(|o| {
-                let recovery = o
-                    .recovery
-                    .as_ref()
-                    .map_or(0, |r| SECTION_OVERHEAD + r.tool.len() + r.reason.as_ref().map_or(0, String::len));
-                o.operation.len() + o.reason.len() + recovery
-            }))
+            .chain(failed.iter().map(|o| o.operation.len() + o.reason.len()))
+            .chain(recoveries.clone().map(|r| r.tool.len() + r.reason.as_ref().map_or(0, String::len)))
             .chain(skipped.iter().map(|o| o.operation.len() + o.reason.as_ref().map_or(0, String::len))));
         let cut = cost::cut_count(
             completed
@@ -288,40 +359,51 @@ impl JsAgentResponse {
                 .chain(failed.iter().flat_map(|o| [o.operation.as_str(), o.reason.as_str()]))
                 .chain(skipped.iter().flat_map(|o| [o.operation.as_str(), o.reason.as_deref().unwrap_or("")])),
         );
-        let repeats = cost::fixed_table_repeats(cut, name.len());
-        let bytes = sum([outcome_section_cost(&name), strings, rows.saturating_mul(OUTCOME_ROW), repeats]);
+        let structure = sum([
+            rows.saturating_mul(OUTCOME_ROW),
+            recoveries.count().saturating_mul(SECTION_OVERHEAD),
+            cost::fixed_table_repeats(cut, name.len()),
+        ]);
+        let charge = outcome_section_cost(&name).plus(Charge::new(strings, structure));
         let outcome = super::outcome::build_partial_success(completed, failed, skipped)?;
-        self.add_outcome(bytes, |b| b.partial_success(name, outcome))
+        self.add_outcome(charge, |b| b.partial_success(name, outcome))
     }
 
     /// Append the pipeline table; see [`Self::pipeline`].
     fn add_pipeline(&mut self, name: String, steps: Vec<JsPipelineStep>) -> napi::Result<()> {
         let strings = sum(steps.iter().map(|s| s.id.len() + s.name.len()));
         let cut = cost::cut_count(steps.iter().flat_map(|s| [s.id.as_str(), s.name.as_str()]));
-        let repeats = cost::fixed_table_repeats(cut, name.len());
-        let bytes = sum([outcome_section_cost(&name), strings, steps.len().saturating_mul(OUTCOME_ROW), repeats]);
+        let structure =
+            steps.len().saturating_mul(OUTCOME_ROW).saturating_add(cost::fixed_table_repeats(cut, name.len()));
+        let charge = outcome_section_cost(&name).plus(Charge::new(strings, structure));
         let pipeline = super::outcome::build_pipeline(steps)?;
-        self.add_outcome(bytes, |b| b.pipeline(name, pipeline))
+        self.add_outcome(charge, |b| b.pipeline(name, pipeline))
     }
 
     /// Append the status sections; see [`Self::status`].
     fn add_status(&mut self, tool_name: String, description: String, items: Vec<JsStatusItem>) -> napi::Result<()> {
-        let strings =
-            sum(items.iter().map(|i| i.key.len() + cell_cost(&i.value) + i.health.as_ref().map_or(0, String::len)));
-        let head = sum([tool_name.len(), description.len(), 2 * SECTION_OVERHEAD]);
+        let strings = sum(items
+            .iter()
+            .map(|i| i.key.len() + cell_bytes(&i.value) + i.health.as_ref().map_or(0, String::len))
+            .chain([tool_name.len(), description.len()]));
         let cut = cost::cut_count(items.iter().flat_map(|i| {
             [i.key.as_str(), i.value.str_val.as_deref().unwrap_or(""), i.health.as_deref().unwrap_or("")]
         }));
-        let repeats = cost::fixed_table_repeats(cut, "items".len());
-        let bytes = sum([head, strings, items.len().saturating_mul(OUTCOME_ROW), repeats]);
+        let structure = sum([
+            2 * SECTION_OVERHEAD,
+            items.len().saturating_mul(OUTCOME_ROW + CELL_OVERHEAD),
+            cost::fixed_table_repeats(cut, "items".len()),
+        ]);
         let status = super::toon::build_status(tool_name, description, items)?;
-        self.add_outcome(bytes, |b| b.status(status))
+        self.add_outcome(Charge::new(strings, structure), |b| b.status(status))
     }
 
-    /// Append the already-done section; see [`Self::already_done`].
+    /// Append the already-done section; see [`Self::already_done`]. Its section name is michi's own, so the whole
+    /// section cost is structure.
     fn add_already_done(&mut self, operation: String, summary: String) -> napi::Result<()> {
-        let bytes = sum([operation.len(), summary.len(), outcome_section_cost("already_done"), 3 * OUTCOME_ROW]);
-        self.add_outcome(bytes, |b| b.already_done(operation, summary))
+        let strings = operation.len().saturating_add(summary.len());
+        let structure = outcome_section_cost("already_done").total().saturating_add(3 * OUTCOME_ROW);
+        self.add_outcome(Charge::new(strings, structure), |b| b.already_done(operation, summary))
     }
 }
 
@@ -339,7 +421,9 @@ impl JsAgentResponse {
     #[napi(constructor, catch_unwind)]
     pub fn new(type_name: String) -> napi::Result<Self> {
         input::check_bytes("typeName", &type_name, MAX_NAME_BYTES)?;
-        let held = HeldBytes { type_name: type_name.len(), ..HeldBytes::default() };
+        // The type name is structure: it is written as a name, and charging it as a string would leave a fresh builder
+        // less than the 16 MiB of strings one call may pass.
+        let held = HeldBytes { type_name: Charge::new(0, type_name.len()), ..HeldBytes::default() };
         let inner = Some(crate::response::AgentResponse::new(type_name.clone()));
         Ok(Self { inner, name: type_name, hint_count: 0, recovery_count: 0, held })
     }
@@ -453,7 +537,9 @@ impl JsAgentResponse {
         input::check_len("completed", completed.len(), MAX_STEPS)?;
         input::check_len("failed", failed.len(), MAX_STEPS)?;
         input::check_len("skipped", skipped.len(), MAX_STEPS)?;
-        let name = budget.string(name, "name", MAX_NAME_BYTES)?;
+        // The section name is checked on its own and charged as structure (see `outcome_section_cost`), so the
+        // report's own strings keep the whole per-call budget.
+        let name = Budget::new().string(name, "name", MAX_NAME_BYTES)?;
         let completed = budget.completed_ops(&completed, MAX_STEPS)?;
         let failed = budget.failed_ops(&failed, MAX_STEPS)?;
         let skipped = budget.skipped_ops(&skipped, MAX_STEPS)?;
@@ -473,7 +559,8 @@ impl JsAgentResponse {
         let mut budget = Budget::new();
         let steps = List::new(steps, "steps")?;
         input::check_len("steps", steps.len(), MAX_STEPS)?;
-        let name = budget.string(name, "name", MAX_NAME_BYTES)?;
+        // The section name is checked on its own; see `partial_success`.
+        let name = Budget::new().string(name, "name", MAX_NAME_BYTES)?;
         let steps = budget.pipeline_steps(&steps, MAX_STEPS)?;
         self.add_pipeline(name, steps)
     }
@@ -523,12 +610,12 @@ impl JsAgentResponse {
             return Err(napi::Error::from_reason(format!("cumulative hint count exceeds maximum of {MAX_HINTS}")));
         }
         input::check_bytes("hint", &hint, MAX_STRING_BYTES)?;
-        let bytes = hint.len().saturating_add(cost::HINT_OVERHEAD);
-        self.held.check_replace(0, bytes)?;
+        let charge = Charge::new(hint.len(), cost::HINT_OVERHEAD);
+        self.held.check_replace(Charge::default(), charge)?;
         let b = self.take()?;
         self.inner = Some(b.hint(hint));
         self.hint_count += 1;
-        self.held.hints = self.held.hints.saturating_add(bytes);
+        self.held.hints = self.held.hints.plus(charge);
         Ok(())
     }
 
@@ -549,8 +636,9 @@ impl JsAgentResponse {
         if let Some(reason) = &reason {
             input::check_bytes("reason", reason, MAX_STRING_BYTES)?;
         }
-        let bytes = sum([tool.len(), reason.as_ref().map_or(0, String::len), cost::RECOVERY_OVERHEAD]);
-        self.held.check_replace(0, bytes)?;
+        let charge =
+            Charge::new(tool.len().saturating_add(reason.as_ref().map_or(0, String::len)), cost::RECOVERY_OVERHEAD);
+        self.held.check_replace(Charge::default(), charge)?;
         let b = self.take()?;
         let mut hint = crate::recovery::RecoveryHint::new(tool);
         if let Some(reason) = reason {
@@ -558,7 +646,7 @@ impl JsAgentResponse {
         }
         self.inner = Some(b.recovery_hint(hint));
         self.recovery_count += 1;
-        self.held.recovery = self.held.recovery.saturating_add(bytes);
+        self.held.recovery = self.held.recovery.plus(charge);
         Ok(())
     }
 
@@ -574,11 +662,11 @@ impl JsAgentResponse {
     #[napi(catch_unwind)]
     pub fn truncation_hint(&mut self, hint: String) -> napi::Result<()> {
         input::check_bytes("truncationHint", &hint, MAX_NAME_BYTES)?;
-        let bytes = hint.len();
-        self.held.check_replace(self.held.truncation_hint, bytes)?;
+        let charge = Charge::new(hint.len(), 0);
+        self.held.check_replace(self.held.truncation_hint, charge)?;
         let b = self.take()?;
         self.inner = Some(b.truncation_hint(hint));
-        self.held.truncation_hint = bytes;
+        self.held.truncation_hint = charge;
         Ok(())
     }
 
@@ -603,11 +691,11 @@ impl JsAgentResponse {
     #[napi(catch_unwind)]
     pub fn human_content(&mut self, text: String) -> napi::Result<()> {
         input::check_bytes("humanContent", &text, MAX_STRING_BYTES)?;
-        let bytes = text.len();
-        self.held.check_replace(self.held.human_content, bytes)?;
+        let charge = Charge::new(text.len(), 0);
+        self.held.check_replace(self.held.human_content, charge)?;
         let b = self.take()?;
         self.inner = Some(b.human_content(text));
-        self.held.human_content = bytes;
+        self.held.human_content = charge;
         Ok(())
     }
 
@@ -957,13 +1045,14 @@ mod tests {
             }
             assert!(accepted <= 16, "17 one-MiB hints were accepted; the budget is per call only");
         };
-        // "t" takes one byte, so 15 full hints fit and the 16th would pass 16 MiB.
-        assert_eq!(accepted, 15);
+        // The type name and each hint's one-byte allowance are structure, so 16 full hints are exactly the 16 MiB of
+        // strings and the 17th passes it.
+        assert_eq!(accepted, 16);
         assert!(err.reason.starts_with("cumulative byte total "), "{}", err.reason);
         assert!(err.reason.ends_with(&format!("exceeds maximum of {}", input::MAX_INPUT_BYTES)), "{}", err.reason);
         let rendered = r.render_text().expect("still usable after the rejected hint");
         assert!(rendered.len() < input::MAX_INPUT_BYTES + 4096, "rendered {} bytes", rendered.len());
-        r.hint("small".to_string()).expect("a hint that still fits is accepted");
+        r.hint(String::new()).expect("an empty hint holds no string and still fits");
     }
 
     #[test]
@@ -1034,9 +1123,9 @@ mod tests {
                 }
                 accepted += 1;
             }
-            // 16 MiB / (4 KiB name + overhead) is about 4k sections; uncharged, the loop would run past a million.
-            assert!(accepted < 5_000, "{accepted} empty sections accepted (kv: {kv})");
-            assert!(accepted > 2_500, "{accepted} empty sections accepted (kv: {kv}): overhead too large");
+            // 26 MiB / (4 KiB name + overhead) is about 6.5k sections; uncharged, the loop would run past a million.
+            assert!(accepted < 7_000, "{accepted} empty sections accepted (kv: {kv})");
+            assert!(accepted > 5_000, "{accepted} empty sections accepted (kv: {kv}): overhead too large");
         }
     }
 
@@ -1048,15 +1137,18 @@ mod tests {
         let empty_rows = || vec![Vec::<JsToonValue>::new(); MAX_ROWS];
         let mut r = new_response("t".to_string());
         let mut accepted = 0usize;
-        while accepted < 1_000 {
-            if r.add_items(empty_rows(), vec![], None).is_err() {
-                break;
+        let err = loop {
+            match r.add_items(empty_rows(), vec![], None) {
+                Ok(()) => accepted += 1,
+                Err(e) => break e,
             }
-            accepted += 1;
-        }
-        // 16 MiB / (100,000 rows * 24 bytes) is about 7 calls. Uncharged, the loop would run to its cap.
-        assert!(accepted < 100, "{accepted} calls of {MAX_ROWS} empty rows accepted");
-        assert!(accepted > 3, "{accepted} calls accepted: row charge is too large");
+            assert!(accepted < 1_000, "{accepted} calls of {MAX_ROWS} empty rows accepted: rows are not charged");
+        };
+        // 26 MiB / (100,000 rows * 24 bytes) is about 11 calls. Uncharged, the loop would run to its cap. No string is
+        // held, so the held cap is the one that stops it.
+        assert!((4..20).contains(&accepted), "{accepted} calls of {MAX_ROWS} empty rows accepted");
+        assert!(err.reason.starts_with("cumulative held total "), "{}", err.reason);
+        assert!(err.reason.ends_with(&format!("exceeds maximum of {}", input::MAX_HELD_BYTES)), "{}", err.reason);
 
         // A cell that is not a string also keeps a `Value`, so a number-only table is not free either.
         let null_cell = || JsToonValue { r#type: "null".to_string(), ..JsToonValue::default() };

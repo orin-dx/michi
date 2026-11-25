@@ -1,7 +1,6 @@
 //! Caller text must never start a new line in line-oriented output. CR and LF render as the escapes `\r` and `\n`,
 //! so a value like "x\nstatus: failed" cannot fake an extra field.
 
-use michi_core::resilience::render_already_done;
 use michi_core::toon::{render_toon, ToonOptions, Value};
 use michi_core::{
     render_hints, render_kv, render_recovery, AgentResponse, CompletedOp, DomainError, ErrorCode, FailedOp, Hint,
@@ -86,9 +85,10 @@ fn kv_key_and_value() {
 
 #[test]
 fn already_done_fields() {
-    assert_not_injected(&render_already_done(INJECTED, "s", &[]));
-    assert_not_injected(&render_already_done("op", INJECTED, &[]));
-    assert_not_injected(&render_already_done("op", "s", &[Hint::new(INJECTED)]));
+    let done = |op: &str, summary: &str| AgentResponse::new("t").already_done(op, summary);
+    assert_not_injected(&done(INJECTED, "s").render(OutputFormat::Text));
+    assert_not_injected(&done("op", INJECTED).render(OutputFormat::Text));
+    assert_not_injected(&done("op", "s").hint(INJECTED).render(OutputFormat::Text));
 }
 
 #[test]

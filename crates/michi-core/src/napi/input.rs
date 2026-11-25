@@ -18,33 +18,43 @@ use super::value::{JsKvItem, JsToonValue};
 /// Most rows one call's `rows` may hold (`renderToon`'s `opts.rows`, `AgentResponse.items`'s `rows`).
 pub(crate) const MAX_ROWS: usize = 100_000;
 /// Most entries for anything shaped like "one entry per field": `fields`, each row's value count, and the `items` of
-/// `renderKv`, `renderStatus` and `AgentResponse.kvItems` (one KV entry is one field).
+/// `renderKv`, `AgentResponse.kvItems` and `AgentResponse.status` (one KV entry is one field).
 pub(crate) const MAX_FIELDS: usize = 1_000;
 /// Most hints per call (`hints`, `causes`, recovery hints), and the cumulative count one `AgentResponse` takes
 /// through `hint` and `recoveryHint`.
 pub(crate) const MAX_HINTS: usize = 10_000;
-/// Most entries per list for `renderPartialSuccess`'s `completed`, `failed` and `skipped` and `renderPipeline`'s `steps`.
+/// Most entries per list for `AgentResponse.partialSuccess`'s `completed`, `failed` and `skipped` and
+/// `AgentResponse.pipeline`'s `steps`.
 pub(crate) const MAX_STEPS: usize = 10_000;
 /// Most cells (row values) one call may pass.
 pub(crate) const MAX_CELLS: usize = 1_000_000;
 /// Most UTF-8 bytes of string data one call may pass, summed over every string argument and nested string, and most
-/// one `AgentResponse` may hold across all its calls.
-///
-/// This bounds the OUTPUT as well as the input: a render is at most [`MAX_OUTPUT_FACTOR`] times the bytes held, plus
-/// [`OUTPUT_ENVELOPE`], on every surface. Rendering writes a string in more than one place, and a control character
-/// is the worst case: `\u0001` is six bytes in the text, seven in the JSON `body` (the text, escaped again) and six in
-/// the raw `sections`, `error` and `hints` copies, so one held byte is at most 6 + 7 + 6 = 19 output bytes across the
-/// text and the JSON that `toCallToolResult` returns together. A name is written in more places than that (a
-/// `truncated` row repeats the field name and the section name for every cut cell, and a `totalCount` row repeats the
-/// section name), so the bytes held count a name once for every place it can be written (see [`super::cost`]). At the
-/// old 64 MiB that was 1.2 GiB per call on Node's event loop, and a response over V8's string limit (about 512 MiB)
-/// failed only after rendering it. At 16 MiB it is at most 304 MiB, under that limit, so a response either renders or
-/// is rejected here, before anything is rendered.
+/// caller string bytes one `AgentResponse` may hold across all its calls. The two are equal, so one call's strings
+/// always fit a fresh `AgentResponse`; what it holds beyond them is capped by [`MAX_HELD_BYTES`].
 ///
 /// The one-shot renders write text only: at most 6 bytes per byte charged, and what the counts allow beyond that (see
 /// [`STANDALONE_OUTPUT_MAX`]).
 pub(crate) const MAX_INPUT_BYTES: usize = 16 * 1024 * 1024;
-/// Largest ratio of any render's output to the bytes held (see [`MAX_INPUT_BYTES`]); tests measure it.
+/// Most bytes one `AgentResponse` may hold across all its calls: its strings (at most [`MAX_INPUT_BYTES`]) plus the
+/// structure charged beside them (the storage rows, cells and sections keep, the type name, fixed allowances for the
+/// punctuation around hints, causes and recovery hints, and every extra place a writer can put a name). The 10 MiB
+/// above the string cap is room for one call's structure, so a full 16 MiB report of 10,000 pipeline steps or 30,000
+/// partial-success entries fits a fresh builder; it was rejected when both shared the 16 MiB.
+///
+/// This bounds the OUTPUT as well as what is kept: a render is at most [`MAX_OUTPUT_FACTOR`] times the bytes held,
+/// plus [`OUTPUT_ENVELOPE`], on every surface. Rendering writes a string in more than one place, and a control
+/// character is the worst case: `\u0001` is six bytes in the text, seven in the JSON `body` (the text, escaped again)
+/// and six in the raw `sections`, `error` and `hints` copies, so one held byte is at most 6 + 7 + 6 = 19 output bytes
+/// across the text and the JSON that `toCallToolResult` returns together. Structure is charged at the same rate: each
+/// allowance is sized so that 19 times it covers the punctuation it pays for, and a name is charged once for every
+/// place it can be written (a `truncated` row repeats the field name and the section name for every cut cell, and a
+/// `totalCount` row repeats the section name; see [`super::cost`]). So a render is at most 19 × 26 MiB + 4 KiB
+/// (494 MiB), under V8's string limit (about 512 MiB), and a response either renders or is rejected before anything
+/// is rendered. 26 MiB is the largest whole MiB that keeps that true (27 would be 513 MiB). At the old 64 MiB a
+/// render could reach 1.2 GiB on Node's event loop and fail only after rendering it.
+pub(crate) const MAX_HELD_BYTES: usize = 26 * 1024 * 1024;
+const _: () = assert!(MAX_HELD_BYTES >= MAX_INPUT_BYTES);
+/// Largest ratio of any render's output to the bytes held (see [`MAX_HELD_BYTES`]); tests measure it.
 pub(crate) const MAX_OUTPUT_FACTOR: usize = 19;
 /// Bytes of output that no held byte pays for: the fixed parts of the envelope (the `help[]`, `recovery[]` and
 /// `totalCount` headers, the JSON keys).
@@ -52,13 +62,13 @@ pub(crate) const OUTPUT_ENVELOPE: usize = 4096;
 /// V8's longest string, in characters, on 64-bit builds (`2^29 - 24`). A string longer than this cannot be handed to
 /// JavaScript, so every output must stay under it.
 pub(crate) const V8_MAX_STRING_LEN: usize = (1 << 29) - 24;
-const _: () = assert!(MAX_INPUT_BYTES * MAX_OUTPUT_FACTOR + OUTPUT_ENVELOPE < V8_MAX_STRING_LEN);
-/// The most text one of the one-shot renders (`renderToon`, `renderKv`, `renderStatus`, `renderPartialSuccess`,
-/// `renderPipeline`, ...) can write: 6 bytes for each string byte charged, 26 for each cell (a float is at most 24
-/// chars, and the comma), 4 for each row, and 400 for each other entry (a KV or status item holds a float written to
-/// 330 places; a hint, an operation or a step is a short row).
+const _: () = assert!(MAX_HELD_BYTES * MAX_OUTPUT_FACTOR + OUTPUT_ENVELOPE < V8_MAX_STRING_LEN);
+/// The most text one of the one-shot renders (`renderToon`, `renderKv`, `renderHints`, `renderRecovery`,
+/// `renderGithubAnnotation`, ...) can write: 6 bytes for each string byte charged, 26 for each cell (a float is at
+/// most 24 chars, and the comma), 4 for each row, and 400 for each other entry (a KV item holds a float written to
+/// 330 places; a hint is a short row).
 pub(crate) const STANDALONE_OUTPUT_MAX: usize =
-    6 * MAX_INPUT_BYTES + 26 * MAX_CELLS + 4 * MAX_ROWS + 400 * (MAX_FIELDS + MAX_HINTS + 3 * MAX_STEPS);
+    6 * MAX_INPUT_BYTES + 26 * MAX_CELLS + 4 * MAX_ROWS + 400 * (MAX_FIELDS + MAX_HINTS);
 const _: () = assert!(STANDALONE_OUTPUT_MAX < V8_MAX_STRING_LEN);
 /// Longest single cell value, hint, reason, description or message, in UTF-8 bytes.
 pub(crate) const MAX_STRING_BYTES: usize = 1024 * 1024;

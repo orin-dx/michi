@@ -62,7 +62,7 @@ All modules live in `crates/michi-core/src/`.
 | `truncate` | Token-safe content truncation |
 | `truncation` | `TruncationOutcome`: what a cap on a list cut, however the caller chose the survivors |
 | `error` | `DomainError` (with `ErrorCode`/`ErrorClass`): the one agent-facing error, with agent rendering |
-| `idempotency` | Partial-success reporting (`PartialSuccess`/`FailedOp`) — despite the name, idempotency keys and already-done detection live in `resilience` (`AlreadyDone`/`already_done()`), not here |
+| `idempotency` | Partial-success reporting (`PartialSuccess`/`FailedOp`) — despite the name, idempotency keys live in `resilience` and an already-done report is `AgentResponse::already_done`, not here |
 | `resilience` | Retry config, delay calculation, retry-after parsing |
 | `redact` | Best-effort redaction: known secrets, URL userinfo and common credential shapes (`redact_common_shapes`); applied by `DomainError::from_error` |
 | `status` | Health/status response rendering |

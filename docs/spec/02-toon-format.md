@@ -134,7 +134,7 @@ recovery[1]{tool,params,reason}:
 
 `causes[N]` is an inline array of strings (§9.1), present only when the error has causes: why it happened, outermost first. `help[N]` is what to do next. Keeping them under separate keys lets an agent tell diagnosis from guidance. In a response with sections the error lines come first, then the sections, then the one `help` and `recovery` block (see "One response" below). `AgentResponse`'s validation failures are `error: toon_validation_failed` / `error: kv_validation_failed` plus a quoted `message`.
 
-**Status (`StatusResponse::render`)** — item keys are cells of a table, not root keys, so any key is valid; `health` is `ok`, `degraded`, `error`, or `null` for no signal, and `reason` is `null` unless degraded or error:
+**Status (`StatusResponse::render`, `AgentResponse::status`)** — item keys are cells of a table, not root keys, so any key is valid; `health` is `ok`, `degraded`, `error`, or `null` for no signal, and `reason` is `null` unless degraded or error:
 
 ```
 tool: my-tool
@@ -146,9 +146,9 @@ items[3]{key,value,health,reason}:
 help[1]: Call get_status for detail
 ```
 
-With no items the table is `items: []` and `totalCount: 0`, the definitive empty list.
+The `help` line is the response's: `AgentResponse::new("status").status(s).hint("Call get_status for detail")`. With no items the table is `items: []` and `totalCount: 0`, the definitive empty list.
 
-**Already done (`resilience::render_already_done`)**:
+**Already done (`AgentResponse::already_done`)**, with a `hint`:
 
 ```
 operation: delete_item

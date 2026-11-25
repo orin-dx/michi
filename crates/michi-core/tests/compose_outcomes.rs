@@ -238,12 +238,14 @@ fn status() -> StatusResponse {
             StatusItem::new("uptime", KvValue::Duration(std::time::Duration::from_millis(1500))),
         ],
     )
-    .hints(vec!["call get_status for detail".into()])
 }
 
 #[test]
 fn a_status_response_composes_into_a_response() {
-    let r = AgentResponse::new("t").status(status()).section(Section::text("note", "all good"));
+    let r = AgentResponse::new("t")
+        .status(status())
+        .section(Section::text("note", "all good"))
+        .hint("call get_status for detail");
     let text = r.render(OutputFormat::Text);
     assert_eq!(
         text,
@@ -256,8 +258,7 @@ fn a_status_response_composes_into_a_response() {
     assert_eq!(
         status().render(),
         "tool: my-tool\ndescription: does things\nitems[3]{key,value,health,reason}:\n  \
-         index,ready,ok,null\n  cache,0.26,degraded,near limit\n  uptime,1.5s,null,null\n\
-         help[1]: call get_status for detail"
+         index,ready,ok,null\n  cache,0.26,degraded,near limit\n  uptime,1.5s,null,null"
     );
 }
 
@@ -304,7 +305,6 @@ fn already_done_composes_into_a_response() {
         text,
         "operation: delete_item\nstatus: already_done\nsummary: \"deleted at 12:00\"\nhelp[1]: nothing to do"
     );
-    assert_eq!(text, michi_core::render_already_done("delete_item", "deleted at 12:00", &["nothing to do".into()]));
     valid(&text);
     assert_eq!(json(&r)["sections"][0]["items"][1], serde_json::json!({"key": "status", "value": "already_done"}));
 }
@@ -398,8 +398,8 @@ fn arb_partial() -> impl Strategy<Value = PartialSuccess> {
 }
 
 fn arb_status() -> impl Strategy<Value = StatusResponse> {
-    (hostile(), hostile(), proptest::collection::vec((hostile(), hostile(), 0u8..4), 0..4), hostile()).prop_map(
-        |(tool, desc, items, hint)| {
+    (hostile(), hostile(), proptest::collection::vec((hostile(), hostile(), 0u8..4), 0..4)).prop_map(
+        |(tool, desc, items)| {
             let items = items
                 .into_iter()
                 .map(|(k, v, h)| {
@@ -412,7 +412,7 @@ fn arb_status() -> impl Strategy<Value = StatusResponse> {
                     }
                 })
                 .collect();
-            StatusResponse::new(tool, desc, items).hints(vec![hint.into()])
+            StatusResponse::new(tool, desc, items)
         },
     )
 }

@@ -47,7 +47,7 @@ help[1]: Run `gh-axi issue view <number>` to view an issue
 
 ## API
 
-Every string these functions return for an agent is a TOON 4.4 document with no trailing newline — lists, key-value blocks, errors, status, recovery hints and help blocks alike.
+Every string these functions return for an agent is a TOON 4.4 document with no trailing newline — lists, key-value blocks, errors, status, recovery hints and help blocks alike. The one exception is `renderGithubAnnotation`, which writes for GitHub Actions, not for an agent.
 
 ### Free functions
 
@@ -58,12 +58,7 @@ Every string these functions return for an agent is a TOON 4.4 document with no 
 | `appendHints` | `(body: string, hints: string[]) => string` — append `help[N]: …` to a document, on its own line |
 | `renderRecovery` | `(hints: RecoveryHint[]) => string` — the table `recovery[N]{tool,params,reason}:` (`params` is `"{}"` here; an absent reason is `null`) |
 | `renderKv` | `(items: KvItem[]) => string` — `key: value` lines; throws `kv_validation_failed: …` for a repeated key or a reserved key (a root key michi writes, such as `help` or `message`) |
-| `renderDomainError` | `(code, message, hints, githubAnnotation?, causes?) => string` — `error`, `message`, `causes`, `exit_code`, `help`. For the JSON or an MCP result, use `AgentResponse.error()`, which renders the same text |
-| `renderStatus` | `(toolName, description, items, hints?) => string` — `tool`, `description`, the table `items[N]{key,value,health,reason}:`, `help` |
-| `renderAlreadyDone` | `(operation, summary, hints) => string` — `operation`, `status: already_done`, `summary`, `help` |
-| `alreadyDone` | `(stored?: string \| null) => { done: boolean, result?: string }` — classify an idempotency lookup: any stored string (even empty) is done |
-| `renderPartialSuccess` | `(completed: CompletedOp[], failed: FailedOp[], skipped: SkippedOp[]) => string` (throws when an `index` repeats) — one `partial_success[N]{index,operation,status,reason}:` table, a row per op sorted by `index` (the op's position in your batch; `status` is `completed`, `failed` or `skipped`; `reason` is the failure reason, the skip token or `null`), then the failed ops' `recovery[N]{tool,params,reason}:` table |
-| `renderPipeline` | `(steps: PipelineStep[]) => string` — the table `step[N]{id,name,status,reason}:`; `status` is a `StepStatus` label (`completed`, `outcome_unknown`, …) and `reason` is required exactly for `outcome_unknown`, `skipped` and `not_run` |
+| `renderGithubAnnotation` | `(code, message) => string` — a GitHub Actions annotation, `::error title={code}::{message}`, on one line (`%`, CR and LF in the message are encoded). For the error an agent reads, use `AgentResponse.error()` |
 | `truncate` | `(content: string, maxChars: number) => { content, originalChars, removed, wasTruncated }` — text that fits comes back unchanged; a longer text keeps its first `maxChars - 1` chars and ends in `…`, and the cut is reported in `removed` and `wasTruncated`, never inside `content`. Add your own hint, for example `cut ${removed} of ${originalChars} chars; pass full=true`, to the response's `help[]`. |
 | `parseRetryAfter` | `(headerValue: string) => number \| null` — an RFC 9110 `Retry-After` value (delay-seconds or HTTP-date) in seconds; a past date is `0`, a malformed value `null` |
 | `nextRetryDelay` | `(maxRetries, baseDelayMs, maxDelayMs, jitterFactor, jitterSeed, attempt, retryAfterMs?) => number \| null` — the next back-off delay in ms, or `null` once retries are used up; pass a random `jitterSeed` in `[0, 1]` per call |
@@ -85,10 +80,10 @@ Setters return `void`, not `this`, so call them as sequential statements rather 
 | `.truncationHint` | `(hint: string) => void` — the caller's instruction for getting a cut cell in full. Cut cells end in `…` and are listed in a `truncated[N]{row,field,removed}:` block; when a cell was cut, the hint adds one `help[]` line after your own hints. Without it the block still reports each cut |
 | `.asError` | `() => void` |
 | `.error` | `(code, message, causes?, retryable?) => void` — report a classified error: it renders first (`error`, `message`, `causes`, `exit_code`), `isError` is true everywhere, and the JSON carries `error: {code, message, causes, retryable}` beside `hints` and `recovery`. One per response |
-| `.partialSuccess` | `(name, completed, failed, skipped) => void` — append a batch's outcomes as the list `name[N]{index,operation,status,reason}:`; failed ops' recovery hints join the one `recovery` table |
-| `.pipeline` | `(name, steps: PipelineStep[]) => void` — append `name[N]{id,name,status,reason}:` |
-| `.status` | `(toolName, description, items: StatusItem[]) => void` — append `tool`, `description` and `items[N]{key,value,health,reason}:` |
-| `.alreadyDone` | `(operation, summary) => void` — append `operation`, `status: already_done`, `summary` |
+| `.partialSuccess` | `(name, completed: CompletedOp[], failed: FailedOp[], skipped: SkippedOp[]) => void` (throws when an `index` repeats) — append a batch's outcomes as the list `name[N]{index,operation,status,reason}:`, a row per op sorted by `index` (the op's position in your batch; `status` is `completed`, `failed` or `skipped`; `reason` is the failure reason, the skip token or `null`); failed ops' recovery hints join the one `recovery` table |
+| `.pipeline` | `(name, steps: PipelineStep[]) => void` — append `name[N]{id,name,status,reason}:`; `status` is a `StepStatus` label (`completed`, `outcome_unknown`, …) and `reason` is required exactly for `outcome_unknown`, `skipped` and `not_run` |
+| `.status` | `(toolName, description, items: StatusItem[]) => void` — append `tool`, `description` and `items[N]{key,value,health,reason}:`; add hints with `.hint` |
+| `.alreadyDone` | `(operation, summary) => void` — append `operation`, `status: already_done`, `summary`, for an operation your idempotency check found already done |
 | `.renderText` | `() => string` — the sections in call order, then `help[]` and `recovery[]` |
 | `.renderJson` | `() => string` — compact JSON: `{"body":...,"error":{...},"sections":[...],"hints":[...],"recovery":[...],"isError":bool}` (`error` and `sections` only when set) |
 | `.renderHintsOnly` | `() => string` — just the `help[N]: …` line |
@@ -105,7 +100,9 @@ Every export that takes arrays or strings rejects oversize input with a thrown `
 
 - 100,000 rows; 1,000 fields, values per row, KV items or status items; 10,000 hints, causes, steps or partial-success entries; 1,000,000 cells per call.
 - 1 MiB per cell value, hint, reason, message or step name; 4 KiB per type name, field name, key, tool or identifier.
-- **16 MiB of string data** per call, and per `AgentResponse` across all its calls (`input byte total … exceeds maximum of 16777216`, `cumulative byte total … exceeds maximum of 16777216`). This was 64 MiB before it was found to bound only the input: a render writes up to 19 times the bytes it holds (control characters are the worst case), so 64 MiB could produce 1.2 GiB and a `renderJson()` string over V8's limit. At 16 MiB every render stays under 304 MiB, so a response either renders in every format or is rejected up front.
+- **16 MiB of string data** per call, and per `AgentResponse` across all its calls (`input byte total … exceeds maximum of 16777216`, `cumulative byte total … exceeds maximum of 16777216`). Any one call that passes its own checks therefore has room in a new `AgentResponse`, such as 10,000 pipeline steps with 1,660-byte names.
+- **26 MiB held** per `AgentResponse`: its strings plus the bookkeeping charged beside them, which is the storage rows, cells and sections keep, and the names a `truncated` or `totalCount` row can write again (`cumulative held total … exceeds maximum of 27262976`). This is what stops a loop of `items(Array(100000).fill([]), [])` calls, or a table with a 4 KiB field name and tens of thousands of cut cells.
+- A render writes at most 19 times the bytes held, plus 4 KiB (control characters are the worst case). At 26 MiB that is under 494 MiB, inside V8's string limit, so a response either renders in every format or is rejected up front. The old 64 MiB cap could produce 1.2 GiB and a `renderJson()` string V8 could not hold.
 
 ## Supported platforms
 

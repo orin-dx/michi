@@ -91,8 +91,8 @@ impl FailedOp {
 /// than retrying from scratch. Every entry carries its `index` in the caller's op slice, so the rendered report
 /// keeps `results[i]` and `ops[i]` aligned.
 ///
-/// For a fully-completed prior call, see [`crate::resilience::AlreadyDone`]
-/// and [`crate::resilience::already_done`].
+/// For a call that fully completed earlier, report it with
+/// [`AgentResponse::already_done`](crate::AgentResponse::already_done).
 ///
 /// Build it with [`PartialSuccess::try_new`] (or [`PartialSuccess::default`] for an empty batch) and read it with the
 /// getters. Each index has exactly one outcome: the fields are private, so a report that lists an operation as both

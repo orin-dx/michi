@@ -5,7 +5,6 @@
 use std::time::Duration;
 
 use michi_core::kv::KvError;
-use michi_core::resilience::render_already_done;
 use michi_core::response::{AgentResponse, OutputFormat};
 use michi_core::toon::Value;
 use michi_core::{
@@ -236,9 +235,8 @@ fn status_items_are_a_tabular_array_with_health_and_reason_columns() {
             StatusItem::new("queue", KvValue::Text("down".into())).health(Health::Error("disconnected".into())),
             StatusItem::new("workers", KvValue::Int(4)),
         ],
-    )
-    .hints(vec![Hint::new("Call get_status for detail")]);
-    let out = resp.render();
+    );
+    let out = AgentResponse::new("status").status(resp).hint("Call get_status for detail").render(OutputFormat::Text);
     assert_eq!(
         out,
         "tool: my-tool\ndescription: does things\nitems[4]{key,value,health,reason}:\n  \
@@ -259,7 +257,10 @@ fn status_without_items_has_an_empty_items_array() {
 #[test]
 fn status_item_keys_cannot_collide_with_root_keys() {
     let items = ["tool", "help", "help"].into_iter().map(|k| StatusItem::new(k, KvValue::Missing)).collect();
-    let out = StatusResponse::new("t", "a, b", items).hints(vec![Hint::new("h")]).render();
+    let out = AgentResponse::new("status")
+        .status(StatusResponse::new("t", "a, b", items))
+        .hint("h")
+        .render(OutputFormat::Text);
     assert_eq!(
         out,
         "tool: t\ndescription: \"a, b\"\nitems[3]{key,value,health,reason}:\n  tool,null,null,null\n  \
@@ -272,13 +273,14 @@ fn status_item_keys_cannot_collide_with_root_keys() {
 
 #[test]
 fn already_done_is_a_root_object() {
-    let out = render_already_done("delete_item", "item 42 was deleted in run abc", &[Hint::new("use get_item")]);
+    let done = |op: &str, summary: &str| AgentResponse::new("already_done").already_done(op, summary);
+    let out = done("delete_item", "item 42 was deleted in run abc").hint("use get_item").render(OutputFormat::Text);
     assert_eq!(
         out,
         "operation: delete_item\nstatus: already_done\nsummary: item 42 was deleted in run abc\nhelp[1]: use get_item"
     );
     conformant(&out);
-    let out = render_already_done("op", "done: 3 items, 0 errors", &[]);
+    let out = done("op", "done: 3 items, 0 errors").render(OutputFormat::Text);
     assert_eq!(out, "operation: op\nstatus: already_done\nsummary: \"done: 3 items, 0 errors\"");
     conformant(&out);
 }

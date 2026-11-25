@@ -3,6 +3,5 @@ fn main() {
         tool_name: "t".to_string(),
         description: "d".to_string(),
         items: vec![],
-        hints: vec![],
     };
 }
