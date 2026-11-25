@@ -1,5 +1,33 @@
 # michi-pipeline
 
+## 0.11.0
+
+_2026-11-25 · [compare](https://github.com/orin-dx/michi/compare/michi-pipeline@0.10.0...michi-pipeline@0.11.0)_
+
+### Minor Changes
+
+- **Breaking:** `DurableObserver::record_start` for parallel steps now runs concurrently, so their saves overlap instead of queuing.
+
+  - Before: start markers were saved one after another in the scheduler loop. Now each step saves its own, so `record_start` must be safe to call concurrently and in any order across steps. Make your implementation thread-safe.
+  - A step still runs only after its own `record_start` returns `Ok`. A cancel or fail-fast stop during the save ends the step `Skipped(Cancelled)`.
+  - A deadline group's window now opens before the first step's save, so the save counts against it. A step whose window ends during its save ends `Failed` with `DeadlinePassed` (the same message as a window that ends before dispatch) without being invoked.
+  - A step that ends during its save was never invoked, so its record has no `started_at` or `elapsed`.
+- **Breaking:** converting an `ExecutionError` to a `DomainError` no longer puts step text in the trusted `message`.
+
+  - Before: `message` carried what the step or server said. Now: `message` is fixed text (`http 502`, `the step reported an error`, `step panicked`, `deadline passed`) after the step context `step <id> (<name>) failed: `.
+  - What the step or server said (an HTTP body, a `failed()` message, a panic payload) is one entry in `causes`, redacted and cut to 512 bytes including the `…` marker. Read it from `causes`, not `message`.
+  - An ambiguous timeout's `DomainError` now carries its "verify first" hint (it carried none before).
+- **Breaking:** `RunRecord::to_pipeline()` no longer carries the run id (read it with `run_id()`), and `RunRecord::render` of a run with no steps now renders `step: []` and `totalCount: 0`.
+
+  Also new: `StepId` and `RunId` implement `FromStr` and `Borrow<str>`, so `"fetch".parse::<StepId>()` works and a map keyed by id can be looked up with a `&str`. `AttemptRecord` implements `Eq`.
+
+### Patch Changes
+
+- A step that never ran no longer reports a run time: a step refused by an open breaker, or cancelled before it started, now has no `started_at` or `elapsed` in its record. Before, both showed how long the step waited.
+- Dependency updates
+  - `michi-core` → `0.11.0`
+  - `michi-graph` → `0.11.0`
+
 ## 0.10.0
 
 _2026-11-15 · [compare](https://github.com/orin-dx/michi/compare/michi-pipeline@0.9.0...michi-pipeline@0.10.0)_

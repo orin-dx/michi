@@ -1,9 +1,9 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "entries": [
     {
       "package": "cargo/michi-core",
-      "targetVersion": "0.10.0",
+      "targetVersion": "0.11.0",
       "reasons": [
         {
           "kind": "changeset"
@@ -12,7 +12,7 @@
     },
     {
       "package": "cargo/michi-graph",
-      "targetVersion": "0.10.0",
+      "targetVersion": "0.11.0",
       "reasons": [
         {
           "kind": "fixedGroup",
@@ -22,34 +22,53 @@
     },
     {
       "package": "cargo/michi-node",
-      "targetVersion": "0.10.0",
+      "targetVersion": "0.11.0",
       "reasons": [
         {
-          "kind": "fixedGroup",
-          "groupId": "michi"
+          "kind": "changeset"
         }
       ]
     },
     {
       "package": "cargo/michi-pipeline",
-      "targetVersion": "0.10.0",
+      "targetVersion": "0.11.0",
       "reasons": [
         {
-          "kind": "fixedGroup",
-          "groupId": "michi"
+          "kind": "changeset"
         }
       ]
     },
     {
       "package": "npm/@orin-dx/michi",
-      "targetVersion": "0.10.0",
+      "targetVersion": "0.11.0",
       "reasons": [
         {
-          "kind": "fixedGroup",
-          "groupId": "michi"
+          "kind": "changeset"
         }
       ]
     }
   ],
-  "digest": "081cd4d3dcc284ee8e0c943eb8896e93da0faefb0e0966866da9accb159037dc"
+  "consumedChangesets": [
+    ".changeset/core-api-invariants.md",
+    ".changeset/core-compose.md",
+    ".changeset/core-hints-replace.md",
+    ".changeset/core-json-output.md",
+    ".changeset/core-legacy-removal.md",
+    ".changeset/core-one-render-path.md",
+    ".changeset/core-partial-success.md",
+    ".changeset/core-redaction.md",
+    ".changeset/core-reserved-keys.md",
+    ".changeset/js-compose.md",
+    ".changeset/js-input-limit.md",
+    ".changeset/js-json-output.md",
+    ".changeset/js-legacy-removal.md",
+    ".changeset/js-one-render-path.md",
+    ".changeset/js-partial-success.md",
+    ".changeset/js-reserved-keys.md",
+    ".changeset/pipeline-durable-start.md",
+    ".changeset/pipeline-error-causes.md",
+    ".changeset/pipeline-run-record.md",
+    ".changeset/pipeline-start-record.md"
+  ],
+  "digest": "b98789585c4270428ea18ab0346fb9535e38bd80437e5669c16b29e3401b986a"
 }
