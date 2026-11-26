@@ -214,7 +214,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: orin-dx/actions/setup-rust@2521888266780dabc7f5fd4c32b02d6ab82849db # v1.1
-      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2
+      - uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2
         with:
           tool: cargo-nextest,just
       - run: cargo nextest run --workspace
@@ -235,7 +235,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+      - uses: EmbarkStudios/cargo-deny-action@17aeb3c839e42274e2b8adf721c8c65edfdc74dd # v2.1.3
 
   coverage:
     name: Coverage
@@ -247,7 +247,7 @@ jobs:
       - uses: orin-dx/actions/setup-rust@2521888266780dabc7f5fd4c32b02d6ab82849db # v1.1
         with:
           components: llvm-tools-preview
-      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2
+      - uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2
         with:
           tool: cargo-llvm-cov,cargo-nextest
       - run: cargo llvm-cov nextest --workspace --all-features --lcov --output-path lcov.info
