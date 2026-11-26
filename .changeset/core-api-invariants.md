@@ -17,7 +17,6 @@ Changes to your code:
 - `TruncationOutcome`: `outcome.kept` becomes `outcome.kept()` (or `into_kept()` to take the items), `outcome.total_before` becomes `total_before()`. Build one with `new`, `truncate_by_count` or `truncate_by_size` as before.
 - `Pipeline::new(id, steps)` becomes `Pipeline::new(steps)`; a `Pipeline` has no `id`.
 - `CallToolResult::new` takes `Option<JsonObject>`: wrap structured content as `Some(JsonObject::try_new(text)?)`. `CallToolResult::try_new` is removed.
-- `StatusResponse::with_hints` is renamed `hints`; `render_already_done` takes `&[Hint]`.
 - The `telemetry` module and its `NoopProvider` are removed (nothing used them).
 
 Also new: `ErrorCode` and `ErrorClass` implement `Hash`; `ErrorCode` implements `Display` (its label) and `FromStr` (error type `UnknownErrorCode`) and has `ALL`; `StepStatus` has `ALL` and `from_labels` (error type `StepLabelError`); `DomainError` implements `PartialEq`; `JsonObject` has `as_str()` and `into_string()`. `AgentResponse::new`, `StatusResponse::new`, `Hint::new` and `IdempotencyKey::new` are `#[must_use]`.
