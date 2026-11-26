@@ -6,4 +6,4 @@ michi-node: minor
 
 - `renderToon` no longer takes `totalCount`, `hints` or `truncationHint`, and `renderKv(items)` no longer takes `totalCount` or `hints`. `AgentResponse.items`, `kvItems` and `truncationHint` keep them: use those to attach them.
 - `emptyState` and `emptyStateWithHints` are removed. Use `new AgentResponse(name)` (plus `.hint(..)`).
-- An empty list now renders `name: []` and `totalCount: 0` (it rendered `name: []` alone), also from `renderPipeline` (`step: []`) and `renderStatus` (`items: []`).
+- An empty list now renders `name: []` and `totalCount: 0` (it rendered `name: []` alone), also from `AgentResponse.pipeline()` (`step: []`) and `.status()` (`items: []`).
